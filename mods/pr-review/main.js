@@ -130,6 +130,8 @@ export default class PrReview extends View {
         else if (c === "walkthrough") this.openWalk(cx, false);
         else if (c === "review" && this.pr?.url) startReview(this.prSel ?? this.branchTarget());
         else if (name === "explore") startExplore(arg || null); // pr-review.explore[:<folder>]: a topic in existing code, no PR
+        // For keys and scripted demos: a listed PR's row click (pick:<number>, the shown source's list).
+        else if (name === "pick") { const pr = this.listNow().find((p) => String(p.number) === arg); if (pr) this.pickTarget(pr, cx); }
         cx.notify();
       }
     });

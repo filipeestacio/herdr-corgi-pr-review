@@ -383,6 +383,14 @@ export const ReviewMode = {
     }
     else if (name === "order") { if (arg === "reading" || arg === "risk") { this.order = arg; this.cur = 0; } }
     else if (name === "minimize") minimize();
+    // The same as their clicks: "Run review" (the reviewers popup), the composer's "Start a review / Add review
+    // comment" (add), and a finding's "Fix…" (fix-finding:<finding id>: the preview opens).
+    else if (name === "reviews") { // reviews[:<x>,<y>]: where a click on the button would open it (default: the pointer)
+      const [x, y] = arg.split(",").map(Number);
+      openOverlay({ mod: "pr-review", props: { part: "reviews" }, kind: "popup", width: 460, height: codexChoices().length ? 330 : 250, ...(Number.isFinite(y) ? { at: { x, y } } : {}) });
+    }
+    else if (name === "add") this.addDraft(cx);
+    else if (name === "fix-finding") { const f = this.findings().find((x) => x.id === arg); if (f) this.fix([f], cx); }
     else if (name === "trust") this.trust("pr", cx);
     else if (name === "cmenu") { const [k, ...key] = arg.split("|"), card = this.cardByKey(key.join("|")); card?.menu[Number(k)]?.[2]?.(cx); }
     else if (name === "ask") this.setDrawer(arg === "close" ? null : arg === "fold" ? "collapsed" : "open", cx); // the Ask drawer: open | fold | close
