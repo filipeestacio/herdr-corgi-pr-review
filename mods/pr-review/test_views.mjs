@@ -194,3 +194,20 @@ assert.equal(progressText(), "");
 
 assert.equal(pendingText([{ file: "a.py" }]), "1 pending comment in 1 file");
 assert.equal(pendingText([{ file: "a.py" }, { file: "a.py" }, { file: "b.py" }]), "3 pending comments in 2 files");
+
+// The review's left column. The order switch only matters when reading order and the analysis' order differ.
+{
+  const { orderDiffers, worst, byUrgency } = await import("./views.js");
+  assert.equal(orderDiffers([{ order: 1 }, { order: 2 }, { order: 3 }]), false);
+  assert.equal(orderDiffers([{ order: 2 }, { order: 1 }]), true);
+  assert.equal(orderDiffers([]), false);
+  // A row's findings in words: the highest severity with its count, all of them for the tooltip, security counted.
+  assert.equal(worst([]), null);
+  assert.deepEqual(worst([{ severity: "medium" }, { severity: "high", security: true }, { severity: "medium" }, { severity: "low" }]),
+    { severity: "high", count: 1, total: 4, label: "1 high", words: "1 high, 2 medium, 1 low", security: 1 });
+  assert.equal(worst([{ severity: "low" }, { severity: "low" }]).label, "2 low");
+  // Blockers by severity, security first among equals, the rest in their order.
+  const bs = [{ severity: "medium", title: "rule" }, { severity: "high", title: "bug" }, { severity: "low", title: "overlap" }, { severity: "high", title: "auth", finding: "s1" }, { severity: "high", title: "bug 2" }];
+  assert.deepEqual(byUrgency(bs, (b) => b.finding === "s1").map((b) => b.title), ["auth", "bug", "bug 2", "rule", "overlap"]);
+  assert.deepEqual(byUrgency(bs).map((b) => b.title), ["bug", "auth", "bug 2", "rule", "overlap"]);
+}

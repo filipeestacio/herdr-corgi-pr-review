@@ -164,6 +164,43 @@ for (const n of [0, 3, 310]) {
   assert.ok(items.some((it) => it.t === "gh" && it.loose && it.g.id === 5), "the outdated comment shows loose");
   assert.ok(items.some((it) => it.t === "gh" && !it.loose && it.g.id === 1), "a resolved thread under its line once shown");
 }
+// The left column. A layer is ticked by its files' "Viewed" boxes alone: not by opening its hunks, not by an old stored
+// tick. A reviewer's finding counts at the layer of its file. "Needs your attention" lists the blockers, security first.
+{
+  const v = review(3), [h0, h1, h2] = v.hunks;
+  const lf = { id: "a2", reviewer: "analysis", step: "k", file: "src/f0.ts", line: 1, end: 1, severity: "high", category: "bug", title: "Wrong sum", detail: "d", suggestion: "" };
+  v.ai = { cut: [], exact: true, visuals: [], asks: [], model: "sonnet", title: "t", summary: "s", arch: { nodes: [{ id: "a", label: "A" }, { id: "b", label: "B" }], edges: [{ from: "a", to: "b", label: "x" }] }, steps: [
+    { title: "one", why: "w", text: "", hunks: [h0.id, h1.id], questions: [], risk: "high", order: 1, findings: [lf] }, { title: "two", why: "w", text: "", hunks: [h2.id], questions: [], risk: "low", order: 2, findings: [] }] };
+  v.find = { ...v.find, list: [{ id: "s9", reviewer: "security", file: "src/f1.ts", line: 3, end: 3, severity: "high", title: "Open door", detail: "d", suggestion: "" },
+    { id: "c9", reviewer: "claude", file: "src/f2.ts", line: 1, end: 1, severity: "medium", title: "Edge case", detail: "d", suggestion: "" }] };
+  const [one, two] = v.steps();
+  v.prog.visited = new Set(v.hunks.map((h) => h.id)); v.prog.checked = { [stepKey(one)]: true };
+  assert.equal(v.done(one), false, "opening every hunk, or a tick stored by an older version, does not tick a layer");
+  v.toggleSeen("src/f0.ts", cx); assert.equal(v.done(one), false, "one of its two files viewed");
+  v.toggleSeen("src/f1.ts", cx); assert.deepEqual([v.done(one), v.done(two)], [true, false], "all its files viewed");
+  assert.deepEqual(v.layerFindings(one).map((f) => f.id), ["a2", "s9"], "the reviewer's finding counts at the layer of its file");
+  assert.deepEqual(v.layerFindings(two).map((f) => f.id), ["c9"]);
+  assert.deepEqual(v.attention().map((a) => [a.label, a.security, a.at]), [["Open door", true, "f1.ts:3"], ["Wrong sum", false, "f0.ts:1"], ["Rule not met: Conventional Commit title", false, ""]],
+    "the blockers by severity, security first among equals; no layers and no medium finding");
+  v.tab = "steps"; v.page = "arch";
+  ok("Layers tab beside a page: the attention box open", () => v.render(cx));
+  v.page = null; v.cur = 0;
+  ok("Layers tab with a layer open: the box folded, the layer's files with their ticks", () => v.render(cx));
+  v.attFold = false;
+  ok("Layers tab with a layer open: the box unfolded by a click", () => v.render(cx));
+  v.tab = "files";
+  ok("Files tab: findings in words, the security mark, the ticks", () => v.render(cx));
+  v.find = { ...v.find, status: { a2: { s: "progress", fixHead: "h0", at: "2024-01-01" } } };
+  assert.deepEqual(v.attention().map((a) => a.sent), [false, true, false], "a fix sent stays a blocker and says so");
+  v.tab = "steps"; v.attFold = false;
+  ok("Layers tab: a blocker with a fix sent", () => v.render(cx));
+  v.dismiss(v.findingById("s9"), cx); v.dismiss(v.findingById("a2"), cx);
+  assert.deepEqual(v.attention().map((a) => a.severity), ["medium"], "the findings settled: the title rule is left");
+  v.tab = "steps"; v.prSel = { ...v.prSel, title: "feat: t" };
+  ok("Layers tab without blockers", () => v.render(cx));
+  assert.deepEqual(v.attention(), []);
+  console.log("left column ok");
+}
 // The minimized review: nothing without one, an entry with Resume and ✕ with one.
 globalThis.__rv.store.set("review.minimized", null);
 renderMini();
