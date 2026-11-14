@@ -316,9 +316,12 @@ function layerFindings(list, step) {
 // What a newer analysis or reviewer says about a finding beyond its text, in one shape whoever found it (an older one
 // has none of it): impact (what the severity follows from), effect (one sentence), preconditions ([]: it always
 // happens), certainty (confirmed | derived | assumed), criteria (ids of the asks it breaks) and breaks ({node} or
-// {from, to, edge} in the architecture picture, else null).
+// {from, to, edge} in the architecture picture, else null), and effort (how much work the fix is: quick | moderate |
+// heavy, null when the analysis does not say).
+export const EFFORTS = ["quick", "moderate", "heavy"];
 export const findingFacts = (f) => ({ impact: f.impact ?? null, effect: String(f.effect ?? ""), preconditions: (f.preconditions ?? []).map(String),
-  certainty: ["confirmed", "derived", "assumed"].includes(f.certainty) ? f.certainty : null, criteria: (f.criteria ?? []).map(String), breaks: f.breaks ?? null });
+  certainty: ["confirmed", "derived", "assumed"].includes(f.certainty) ? f.certainty : null, criteria: (f.criteria ?? []).map(String), breaks: f.breaks ?? null,
+  effort: EFFORTS.includes(f.effort) ? f.effort : null });
 
 // A suspicious line taken over as a pending review comment (rows: its hunk's or file's rows); null when not shown there.
 export function suspectComment(s, rows, id) {
@@ -852,3 +855,63 @@ export function plainText(text) {
   return para.split("\n").map((l) => l.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "").replace(/^\s*(?:#{1,6}\s+|>\s?)/, "")).join(" ")
     .replace(/`([^`]*)`/g, "$1").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/\s+/g, " ").trim();
 }
+
+// ---- the Findings tab: a finding's way into the PR, how its number comes about, owners, effort (review.js findingsPane)
+
+// A finding's five steps, in order: reported, evidence (something that ran shows it: certainty "confirmed"), fix sent
+// (and not declined by the agent), verified (a check said fixed: on the fix branch or on the PR head, or an older mark
+// by hand) and in the PR (that check read the PR head; one on the fix branch does not). st: its status entry (verify
+// {result, reason, head, branch?}: branch set = checked on the fix branch); report: the fix agent's; facts: review.js
+// fixFacts' [label, text] pairs. → [{key, label, done, next, missing, details}]: every step not reached says in one
+// sentence what is missing, `next` marks the first of them after the furthest step reached (the one the tab shows);
+// details are the pairs that belong to a step (agent, branch, commit and report to "Fix sent", the check to "Verified").
+export const STEPS = [["reported", "Reported"], ["evidence", "Evidence"], ["sent", "Fix sent"], ["verified", "Verified"], ["in_pr", "In the PR"]];
+export function findingSteps(f, st = null, { report = null, facts = [] } = {}) {
+  const v = st?.verify ?? null, declined = report?.status === "wontfix", at = (x) => String(x ?? "").slice(0, 7), word = String(v?.result ?? "").replace("_", " ");
+  const done = { reported: true, evidence: f.certainty === "confirmed", sent: Boolean(st?.fixHead) && !declined, verified: v?.result === "fixed" || (st?.s === "fixed" && !v),
+    in_pr: v?.result === "fixed" && !v.branch };
+  const missing = {
+    evidence: f.certainty === "derived" ? "No evidence yet: the finding is derived from the code." : f.certainty === "assumed" ? "No evidence yet: the finding rests on something that could not be checked."
+      : "No evidence yet: nothing that ran shows it.",
+    sent: declined ? `No fix on its way: the agent declined${report.note ? `, ${report.note}` : "."}` : "No fix sent yet: Fix hands the finding to an agent.",
+    verified: !v ? "Not verified yet: Verify checks the commit the fix agent reports, on its branch or in the PR head."
+      : `Not verified: the check ${v.branch ? `on ${v.branch} ` : ""}at ${at(v.head)} says ${word}${v.reason ? `, ${v.reason}` : "."}`,
+    in_pr: v?.branch ? "Verified on the fix branch, not in the PR yet: Apply to PR brings it in, then Verify checks the PR head."
+      : "Marked fixed by hand: no check has read the PR head.",
+  };
+  const own = { sent: ["Agent", "Branch", "Commit", "Report"], verified: v ? ["Check"] : [] };
+  const last = STEPS.map(([k]) => done[k]).lastIndexOf(true), next = STEPS.findIndex(([k], i) => i > last && !done[k]);
+  return STEPS.map(([key, label], i) => ({ key, label, done: done[key], next: i === next, missing: done[key] ? null : missing[key], details: facts.filter(([l]) => own[key]?.includes(l)) }));
+}
+
+// How the Findings tab's number comes about: what each source reported (every report counts), how
+// many findings that makes after merging by file and line, of those unresolved, of those on security, and of those
+// confirmed by something that ran. → {by: [[reviewer, n]] (analysis first, AI suggestions last), reported, merged,
+// unresolved, security, confirmed}
+const SOURCE_ORDER = ["analysis", "claude", "security", "codex", "ai"];
+export function funnel(findings, statusOf) {
+  const by = {};
+  for (const f of findings) for (const s of f.sources ?? []) by[s.reviewer] = (by[s.reviewer] ?? 0) + 1;
+  const rank = (k) => (SOURCE_ORDER.includes(k) ? SOURCE_ORDER.indexOf(k) : SOURCE_ORDER.length - 1.5);
+  const open = findings.filter((f) => !["fixed", "dismissed"].includes(statusOf(f))), sec = open.filter((f) => f.security);
+  return { by: Object.entries(by).sort(([a], [b]) => rank(a) - rank(b)), reported: Object.values(by).reduce((n, k) => n + k, 0), merged: findings.length,
+    unresolved: open.length, security: sec.length, confirmed: sec.filter((f) => f.certainty === "confirmed").length };
+}
+// The same as a sentence (name: a reviewer key's name): "Analysis reported 16, Security review 4 and AI suggestion 3,
+// 23 in all. Merged by file and line, that is 21 findings. 18 are unresolved, 3 of them on security, 1 of those
+// confirmed by a run."
+export function funnelLine(x, name = (k) => k) {
+  if (!x.merged) return "No findings reported.";
+  const who = x.by.map(([k, n], i) => (i ? `${name(k)} ${n}` : `${name(k)} reported ${n}`));
+  const list = who.length > 1 ? `${who.slice(0, -1).join(", ")} and ${who.at(-1)}, ${x.reported} in all` : who[0];
+  const sec = !x.unresolved ? "" : !x.security ? ", none of them on security" : `, ${x.security} of them on security, ${x.confirmed || "none"} of those confirmed by a run`;
+  return `${list}. Merged by file and line, that is ${x.merged} ${x.merged === 1 ? "finding" : "findings"}. ${x.unresolved || "None"} ${x.unresolved === 1 ? "is" : "are"} unresolved${sec}.`;
+}
+
+// Who owns the code a finding sits in: the owner of the first component at the finding's file that names one
+// (the analysis' components: {at: "file:line", owner}), else null.
+export const ownerOf = (f, components = []) => (components ?? []).find((c) => c?.owner && String(c.at ?? "").replace(/:\d+.*$/, "") === f.file)?.owner ?? null;
+
+// "Quick wins first": by effort, the ones without one last; within one effort the order stays (severity, file, line).
+export const hasEffort = (list) => list.some((f) => EFFORTS.includes(f.effort));
+export const quickFirst = (list) => { const r = (f) => (EFFORTS.indexOf(f.effort) + EFFORTS.length + 1) % (EFFORTS.length + 1); return [...list].sort((a, b) => r(a) - r(b)); };
