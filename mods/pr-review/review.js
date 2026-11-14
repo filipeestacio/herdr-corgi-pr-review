@@ -2461,6 +2461,101 @@ export const ReviewMode = {
       .child(Scrollbar.vertical(`rv-page-${this.page}`).absolute().inset_0());
   },
 
+  // "4 files changed since your last review (abc1234 → def5678)" with Since last review / Full PR.
+  sinceBanner(t) {
+    const s = this.since;
+    if (!s) return null;
+    const seg = (on, label, click) => div().id(`rv-since-${on}`).tooltip((on ? "Show only the files changed since your last review" : "Show the whole PR")).px(10).h(24).flex().items_center().rounded(5).cursor_pointer().text_size(12.5)
+      .bg(this.sinceOn === on ? t.selected : t.chrome).text_color(this.sinceOn === on ? t.foreground : t.muted).on_click(click).child(label);
+    const text = s.files.length ? `${s.files.length} ${s.files.length === 1 ? "file" : "files"} changed since your last review (${s.base.sha.slice(0, 7)} → ${String(s.head).slice(0, 7)})`
+      : `The PR moved since your last review (${s.base.sha.slice(0, 7)} → ${String(s.head).slice(0, 7)})`;
+    return v_flex().flex_none().px(14).py(8).gap(4).bg(t.accent + "14").border_b(1).border_color(t.border)
+      .child(h_flex().gap(10).items_center()
+        .child(div().flex_1().min_w(0).truncate().text_size(13).font_semibold().child(text))
+        .when(s.files.length > 0, (e) => e.child(h_flex().gap(2).p(2).rounded(7).border_1().border_color(t.border)
+          .child(seg(true, "Since last review", (_e, cx) => { this.sinceOn = true; this.gaps = {}; this.tab = "files"; cx.notify(); }))
+          .child(seg(false, "Full PR", (_e, cx) => { this.sinceOn = false; this.gaps = {}; cx.notify(); })))))
+      .when(Boolean(s.note), (e) => e.child(div().text_size(12).text_color(t.ansi3).whitespace_normal().child(s.note)));
+  },
+
+  overviewPage(t) {
+    const pr = this.prSel ?? {}, ai = this.ai, files = this.patch ?? [], task = ai?.task ?? {};
+    const add = files.reduce((n, f) => n + f.add, 0), del = files.reduce((n, f) => n + f.del, 0);
+    const layers = (ai?.steps ?? []).filter((s) => !s.pseudo), hues = ["accent", "ansi4", "ansi5", "ansi6", "ansi3", "ansi2"];
+    const fc = this.counts(), sev = ["high", "medium", "low"].map((k) => [k, fc[k]]);
+    const checks = this.checksNow(), blockers = this.blockersNow(checks), ok = checks.filter((c) => c.ok === true).length, bad = checks.filter((c) => c.ok === false).length;
+    const fold = (k) => (_e, cx) => { this.fold[k] = !this.fold[k]; cx.notify(); };
+    const section = (title) => div().pt(4).text_size(11.5).font_semibold().text_color(t.muted).child(title);
+    const sevPills = h_flex().flex_wrap().gap(6).children(sev.filter(([, n]) => n).map(([k, n]) => chip(t, `${n} ${k}`, t[SEVERITY_COLOR[k]], true, `rv-sevp-${k}`, `${n} unresolved findings of ${k} severity`)));
+    const ctx = this.ctx, related = [...(ctx?.open ?? []).map((p) => ({ ...p, state: "open" })), ...(ctx?.merged ?? []).map((p) => ({ ...p, state: "merged" }))];
+    return v_flex().gap(14).max_w(1100)
+      .child(div().text_size(12).text_color(t.muted).child(`Updated ${ago(ai?.generated ?? pr.updatedAt ?? new Date().toISOString())}`))
+      .child(h_flex().gap(10).items_start().child(div().flex_1().min_w(0).text_size(22).font_semibold().line_height(1.3).whitespace_normal().child(pr.title ?? `#${pr.number}`))
+        .when(Boolean(pr.state), (e) => e.child(badge(t, `PR ${pr.state}`, t[{ open: "ansi2", draft: "dim", merged: "ansi5", closed: "ansi1" }[pr.state]] ?? t.dim).id("rv-ov-state").tooltip("The PR's state on GitHub"))))
+      .when(Boolean(ai?.mergeRisk || ai?.effort), (e) => e.child(this.riskBadges(t, ai, "rv-ob")))
+      .when(Boolean(this.since), (e) => e.child(div().rounded(8).overflow_hidden().border_1().border_color(t.border).child(this.sinceBanner(t))))
+      .when(!ai && !this.aiBusy, (e) => e.child(this.startCards(t)))
+      .child(h_flex().gap(12)
+        .child(statCard(t, "rv-st-layers", "Layers", ai ? `${layers.length} ${layers.length === 1 ? "layer" : "layers"}` : "—",
+          segBar(t, layers.map((s, k) => ({ weight: 1, color: t[hues[k % hues.length]] }))), layers.map((s) => plain(s.title)).join(" · ") || "Not analyzed yet").tooltip("How many layers the analysis found, one colour each"))
+        .child(statCard(t, "rv-st-files", "Files changed", `${files.length} ${files.length === 1 ? "file" : "files"}`,
+          segBar(t, [{ weight: add, color: t.ansi2 }, { weight: del, color: t.ansi1 }]), `+${add} −${del}`).tooltip("Files changed, with lines added (green) and removed (red)"))
+        .child(statCard(t, "rv-st-find", "Findings", `${fc.unresolved} unresolved`,
+          segBar(t, sev.map(([k, n]) => ({ weight: n, color: t[SEVERITY_COLOR[k]] }))), fc.total ? countLine(fc).replace(/^\d+ unresolved:? ?/, "") || "None unresolved" : "No findings").tooltip("Unresolved findings by severity; a finding with a fix sent stays unresolved until it is verified")))
+      .child(foldCard(t, "rv-checks", "Pre-merge checks", [div().text_color(t.ansi2).font_semibold().child(`✓ ${ok}`), div().text_color(bad ? t.ansi1 : t.muted).font_semibold().child(`✗ ${bad}`)],
+        this.fold.checks, fold("checks"), () => v_flex().gap(4).children(checks.map((c, k) => h_flex().id(`rv-ck-${k}`).tooltip(`${c.ok === true ? "Passed" : c.ok === false ? "Failed" : "Not decided yet"}${c.where ? ": click to jump to the code" : ""}`).gap(8).items_start().text_size(13)
+          .when(Boolean(c.where), (e) => e.cursor_pointer().on_click((_e, cx) => this.jumpTo(c.where, cx)))
+          .child(div().w(14).flex_none().text_color(c.ok === true ? t.ansi2 : c.ok === false ? t.ansi1 : t.ansi3).child(c.ok === true ? "✓" : c.ok === false ? "✗" : "…"))
+          .child(div().flex_1().min_w(0).whitespace_normal().child(`${c.name}${c.why && c.ok !== true ? ` — ${c.why}` : ""}`))))
+          .when(!ctx, (e) => e.child(div().text_size(12).text_color(t.muted).child("CI checks and mergeability load in the background…")))))
+      .child(foldCard(t, "rv-summary", "Summary", [sevPills], this.fold.summary, fold("summary"), () => v_flex().gap(10)
+        .child(section("WHAT CHANGED"))
+        .child(v_flex().gap(4).child(div().text_size(12).font_semibold().text_color(t.muted).child("Intent"))
+          .child(h_flex().flex_wrap().gap(6).items_center().child(div().text_size(13.5).child(task.title ?? pr.title ?? ""))
+            .when(Boolean(task.jira), (e) => e.child(chip(t, `Linked issue ${task.jira}`, t.accent, false, "rv-jira", "The issue this PR links to"))))
+          .when(Boolean(task.note), (e) => e.child(div().text_size(12).text_color(t.ansi3).whitespace_normal().child(task.note)))
+          .when(ai?.intent?.length > 0, (e) => e.child(this.statements(t, ai.intent, "rv-int"))))
+        .when(Boolean(ai?.behavior) || ai?.behaviorPoints?.length > 0, (e) => e.child(v_flex().gap(4).child(div().text_size(12).font_semibold().text_color(t.muted).child("Behavior"))
+          .child(ai.behaviorPoints?.length ? this.statements(t, ai.behaviorPoints, "rv-bp") : div().text_size(13.5).line_height(1.5).child(TextView.markdown(`rv-beh-${ai.generated}`, ai.behavior)))))
+        .when(Boolean(ai?.summary), (e) => e.child(div().text_size(13.5).line_height(1.5).child(TextView.markdown(`rv-sum-${ai.generated}`, ai.summary))))
+        .when(!ai, (e) => e.child(div().text_size(13).text_color(t.muted).child("No analysis yet: Analyze in the left column.")))
+        .when(Boolean(ai), (e) => e.child(this.asksPane(t)))))
+      .child(foldCard(t, "rv-blockers", `${blockers.length} merge ${blockers.length === 1 ? "blocker" : "blockers"} to act on`,
+        blockers.length ? [chip(t, blockers[0].severity, t[SEVERITY_COLOR[blockers[0].severity]], true, "rv-bl-sev", "Severity of the top merge blocker")] : [], this.fold.blockers, fold("blockers"),
+        () => v_flex().gap(8).when(!blockers.length, (e) => e.child(div().text_size(13).text_color(t.muted).child("Nothing blocks the merge that this review knows of.")))
+          .children(blockers.map((b, k) => v_flex().id(`rv-bl-${k}`).tooltip("Open the related PR, code or finding behind this blocker").gap(2).p(8).rounded(7).border_1().border_l(3).border_color(t[SEVERITY_COLOR[b.severity]]).cursor_pointer().hover((s) => s.bg(t.hover))
+            .on_click((_e, cx) => { if (b.url) this.openRelated(b, cx); else if (b.where) this.jumpTo(b.where, cx); else if (b.finding) { const f = this.findingById(b.finding); if (f) { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); } } cx.notify(); })
+            .child(div().text_size(13.5).font_semibold().child(b.title)).child(div().text_size(12.5).text_color(t.muted).whitespace_normal().child(b.why))))))
+      .when(Boolean(ai?.rules.length), (e) => e.child(v_flex().gap(6).child(section(`REPO RULES · ${ai.rules.filter((r) => r.status === "fail").length} failed`))
+        .children(ai.rules.map((r, k) => h_flex().id(`rv-rule-${k}`).tooltip((r.where ? "A repo rule checked by the analysis: click to jump to the code" : "A repo rule checked by the analysis")).gap(8).items_start().p(6).rounded(6).hover((s) => s.bg(t.hover))
+          .when(Boolean(r.where), (x) => x.cursor_pointer().on_click((_e, cx) => this.jumpTo(r.where, cx)))
+          .child(chip(t, r.status === "pass" ? "✓ pass" : r.status === "fail" ? "✗ fail" : "n/a", t[{ pass: "ansi2", fail: "ansi1" }[r.status] ?? "muted"], false, `rv-rulest-${k}`, "Whether this PR follows the rule"))
+          .child(v_flex().flex_1().min_w(0).gap(2).child(div().text_size(13.5).font_semibold().whitespace_normal().child(r.rule))
+            .child(div().text_size(12).text_color(t.muted).whitespace_normal().child(`${r.source}${r.where ? ` · ${r.where}` : ""}${r.why ? ` — ${r.why}` : ""}`)))))))
+      .child(v_flex().gap(6).child(section(`RELATED PRS${ctx ? ` · ${related.length}` : ""}`))
+        .when(!ctx, (e) => e.child(div().text_size(12.5).text_color(t.muted).child("Looking for PRs that touch the same files…")))
+        .when(Boolean(ctx) && !related.length, (e) => e.child(div().text_size(12.5).text_color(t.muted).child("No other open PR and no PR merged in the last 90 days touches these files.")))
+        .children(related.map((p) => h_flex().id(`rv-rel-${p.number}`).tooltip("Open this related PR in its own review").gap(8).items_center().p(6).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
+          .on_click((_e, cx) => this.openRelated(p, cx))
+          .child(chip(t, p.state, p.state === "open" ? t.ansi2 : t.ansi5, false, `rv-relst-${p.number}`, "Whether that PR is still open or already merged"))
+          .child(div().flex_none().text_size(13).text_color(t.muted).child(`#${p.number}`))
+          .child(div().flex_1().min_w(0).truncate().text_size(13.5).child(p.title))
+          .child(div().id(`rv-relf-${p.number}`).flex_none().text_size(12).text_color(t.muted).tooltip((p.files ?? []).join("\n") || "-").child(`${p.overlap} ${p.overlap === 1 ? "file" : "files"} overlap`)))));
+  },
+
+  // A related PR in the review layout (the resume contract): prs.json's entry, else one built from gh pr view on this
+  // review's context; the browser when gh can't read it.
+  openRelated(p, cx) {
+    cx.spawn(async () => {
+      const prs = JSON.parse(await readTextFile(`${appHome()}/pr-data/prs.json`).catch(() => null) ?? "{}").prs ?? [];
+      const known = prs.find((x) => x.url === p.url);
+      if (known) return startReview(known);
+      const r = p.url ? await exec("gh", ["pr", "view", p.url, "--json", "number,title,author,headRefName,headRefOid,baseRefName,updatedAt,isDraft,state,url,additions,deletions,reviewDecision"], { timeout: 30000 }).catch(() => null) : null;
+      if (r?.code === 0) startReview(ghTarget(JSON.parse(r.stdout), { context: this.ctxId(), source: "related", cwd: this.prSel?.cwd ?? null }));
+      else if (p.url) openUrl(p.url);
+    });
+  },
+
   // The picture's highlight (hovered badge or legend row), focus (clicked card; Esc or a second click clears it) and
   // hover (a lighter focus) for the architecture page ("arch").
   archOpts(k) {
