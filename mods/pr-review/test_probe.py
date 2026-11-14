@@ -60,6 +60,12 @@ assert r["base"]["verdict"] == "already_on_base", r
 assert probe.strength_of("import threading\nb = threading.Barrier(2)\n") == "forced_schedule"
 assert probe.strength_of('MODELS_ENV = "SQS redelivers the whole batch"\nimport threading\nthreading.Barrier(2)\n') == "models_env"
 assert probe.strength_of("print('strength: forced_schedule')\n# MODELS_ENV = 'x' in a comment\n") == "runs_pr_code"
+assert probe.strength_of('"""Probe.\nMODELS_ENV = "a scheduler"\n"""\nprint(1)\n') == "runs_pr_code", "a docstring that mentions it is no assignment"
+assert probe.strength_of('def f():\n    MODELS_ENV = "x"\n') == "runs_pr_code", "only at module level"
+assert probe.strength_of('MODELS_ENV = ""\n') == "runs_pr_code", "an empty one says nothing"
+assert probe.strength_of('from threading import Barrier\nb = Barrier(2)\n') == "forced_schedule"
+assert probe.strength_of('s = "threading.Barrier(2)"\n') == "runs_pr_code", "a Barrier in a string is no Barrier"
+assert probe.strength_of("def broken(:\n") == "runs_pr_code"
 code, r = run("barrier", HEADER + "import threading\nb = threading.Barrier(1)\nb.wait()\nprint('reproduced', lib.mails(1))\n")
 assert r["strength"] == "forced_schedule", r
 # The base: the code it tests is not there (new in this PR), a signature that does not fit (unknown), not there.

@@ -28,6 +28,7 @@ The result is printed as JSON and written to <checkout>/.pr-review-probe/<id>.re
 {id, status, strength, line, exit, ms, head, base: {rev, status, line, exit, ms, verdict} | null, pre_existing,
 network_barrier, sandbox, output, at}. Exit 2 when the call is refused. Standard library only.
 """
+import ast
 import datetime as dt
 import io
 import json
@@ -255,13 +256,19 @@ def kill(p):
 
 
 def strength_of(script):
-    """How strong a probe's evidence is, from its source: it says it models the platform (a top-level assignment
-    MODELS_ENV = "…", for example a redelivery it plays itself) → models_env; it forces an interleaving
-    (threading.Barrier) → forced_schedule; else it runs the PR's code as it is → runs_pr_code. What it prints does not
-    count."""
-    if re.search(r"(?m)^MODELS_ENV\s*=\s*['\"].+['\"]", script):
+    """How strong a probe's evidence is, from its source as Python (ast), never from what it prints or from text in a
+    docstring or comment: a module-level assignment MODELS_ENV = "<what it plays>" (it models part of the platform,
+    for example a redelivery) → models_env; a call of threading.Barrier (it forces an interleaving) → forced_schedule;
+    else it runs the PR's code as it is → runs_pr_code. A script that does not parse: runs_pr_code (it will fail)."""
+    try:
+        tree = ast.parse(script)
+    except (SyntaxError, ValueError):
+        return "runs_pr_code"
+    if any(isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "MODELS_ENV" for t in n.targets)
+           and isinstance(n.value, ast.Constant) and isinstance(n.value.value, str) and n.value.value.strip() for n in tree.body):
         return "models_env"
-    if re.search(r"\bBarrier\s*\(", script):
+    if any(isinstance(n, ast.Call) and ((isinstance(n.func, ast.Attribute) and n.func.attr == "Barrier") or (isinstance(n.func, ast.Name) and n.func.id == "Barrier"))
+           for n in ast.walk(tree)):
         return "forced_schedule"
     return "runs_pr_code"
 
