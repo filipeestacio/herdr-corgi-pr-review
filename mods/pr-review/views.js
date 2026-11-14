@@ -358,7 +358,7 @@ export function extraWays(asks, entries) {
 // What a component in a zone with a way in may do: the access rows whose principal is the zone or one of its cards
 // (by name). [{zone, rights: [{resource, actions, used}]}] for each zone that holds a way in's card, in zone order.
 export function zoneRights(zones, nodes, entries, access) {
-  const norm = (s) => String(s ?? "").trim().toLowerCase(), cards = nodes ?? [];
+  const norm = (s) => String(s ?? "").replace(/\s+/g, "").toLowerCase(), cards = nodes ?? []; // "FrontDesk function" is the zone "Front desk function"
   const zoneOf = (id) => cards.find((n) => n.id === id)?.zone;
   const held = new Set((entries ?? []).map((x) => zoneOf(x.node)).filter(Boolean));
   return (zones ?? []).filter((z) => held.has(z.id)).map((z) => {

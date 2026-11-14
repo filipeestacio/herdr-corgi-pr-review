@@ -965,7 +965,8 @@ export const ReviewMode = {
     const w = this.worktree, head = w?.head ?? this.head, t = this.ctx?.security_trigger, r = this.find.runs.security;
     const mine = this.find.loaded === this.prSel?.url; // the findings file of this PR, not the one before
     this.ai = withSecurity(this.ai, mine ? this.find.security : null, this.ctx, head);
-    if (!t?.run || this.aiBusy || !w || w.local || this.ctx.head !== head || !mine || r?.head === head || r?.state === "running") return;
+    // ponytail: only a trusted PR starts it by itself; a stranger's PR waits for the button (its text could steer the agent).
+    if (!t?.run || !this.trustedPr() || this.aiBusy || !w || w.local || this.ctx.head !== head || !mine || r?.head === head || r?.state === "running") return;
     this.runReviewer("security", cx, (t.reasons ?? []).slice(0, 3).map((x) => x.text).join("; "));
   },
 
