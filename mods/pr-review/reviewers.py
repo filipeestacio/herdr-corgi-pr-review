@@ -641,7 +641,8 @@ def main(arg):
         review.introduced(f, changed)
     security, blocks = None, {}
     if req["kind"] == "resilience":
-        blocks["resilience"] = {"head": req["head"], "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "model": meta.get("model_id"), "picture": made,
+        # edge_ids: the prompt listed the picture's edges with their ids (before, runs counted them, mostly from 1)
+        blocks["resilience"] = {"head": req["head"], "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "model": meta.get("model_id"), "picture": made, "edge_ids": True,
                                 "hints_used": {"architecture": bool((pic.get("architecture") or {}).get("nodes")), "security": bool(doc.get("security")), "findings": bool(known)},
                                 **resilience.view(answer, findings, pic, [f["id"] for f in known], changed)}
         findings += resilience.complexity_findings(blocks["resilience"]["additions"])  # an unjustified part becomes a finding, never a blocker
