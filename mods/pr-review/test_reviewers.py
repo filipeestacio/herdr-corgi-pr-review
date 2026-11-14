@@ -55,6 +55,8 @@ pic, made = reviewers.picture(home / "findings" / "123.json")
 assert pic["architecture"]["nodes"] == [{"id": "new"}] and made == "g2", (pic, made)
 assert reviewers.picture(home / "findings" / "7.json") == ({}, None)
 assert "- new: " in reviewers.picture_text(pic) and "no architecture picture" in reviewers.picture_text({})
+# the edges carry the ids the runs name them by (e0, e1 …: the order of the picture, as pr.js and view() count)
+assert "- e1: b -> c: x, new" in reviewers.picture_text({"architecture": {"nodes": [{"id": "a"}], "edges": [{"from": "a", "to": "b"}, {"from": "b", "to": "c", "label": "x", "status": "new"}]}})
 
 # The view: zones over the picture's nodes, the calls between zones of different trust, access rows with their place
 # in the diff, and from where each finding is reached (the access rows in its lines, at its node, or at its callers).
