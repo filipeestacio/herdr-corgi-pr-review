@@ -35,7 +35,7 @@ import { pairRows, pairSide, HALF_GUTTER, diffModeOf, oneSided, stackOf, chipAt,
 import { plainText } from "./pr.js";
 import { hasSources, archLayout, archBands } from "./arch.js";
 import { archMarks, transitionText } from "./arch.js";
-import { transitionMarks, effectiveZones, crossingsOf, crossingChanged, secSentence, TRUST_ORDER } from "./views.js";
+import { transitionMarks, effectiveZones, effectiveFrom, crossingsOf, crossingChanged, secSentence, TRUST_ORDER } from "./views.js";
 import { trustLegend, hasTrust } from "./stack.js";
 import { scopeTable, scopeConflicts, runSummary, AREA_NAME, areaFindings, surfaceOf, exposureNow, EXPOSURE, reachLevel, secOrder, extraWays, zoneRights, blastLine } from "./views.js";
 import * as TH from "./threads.js";
@@ -471,7 +471,7 @@ export const ReviewMode = {
     else if (name === "arch-fit") { this.archFit = !this.archFitOn(); this.hsOf("rv-arch-canvas").x = 0; }
     else if (name === "arch-wrap") this.setArchWrap(!this.archWrapOn());
     else if (name === "sec-card") { this.page = "blast"; this.tab = "steps"; this.secCard(arg || null, cx); } // a click on a card of the Security page's picture ("": unlight)
-    else if (name === "cross") { this.page = "blast"; this.tab = "steps"; this.crossOpen = this.crossOpen === arg ? null : arg || null; } // a click on a row of "Trust boundary crossings" (its key: a:<access id> | e:<edge index>)
+    else if (name === "cross") { this.page = "blast"; this.tab = "steps"; if (arg === "quiet") this.crossQuiet = !this.crossQuiet; else if (arg === "unchanged") this.crossAll = !this.crossAll; else this.crossOpen = this.crossOpen === arg ? null : arg || null; } // a click on a row of "Trust boundary crossings" (its key: a:<access id> | e:<edge index>)
     else if (name === "vis") { this.toggleVis(arg); } // a click on a folded or open state diagram over a layer's code (vis|<layer>|<k>)
     else if (name === "run-model") { const [kind, tier] = String(arg).split(":"); if (["sonnet", "opus"].includes(tier)) this.updateDeep(cx, (d) => ({ ...d, runModels: { ...(d.runModels ?? {}), [`${this.deepKey()}|${kind}`]: tier === this.runTier(kind).tier ? null : tier } })); else this.offerMenu = this.offerMenu === kind ? null : kind; } // run-model:<kind> opens Change model, run-model:<kind>:<tier> picks one
     else if (name === "scope-row") { this.page = "blast"; this.scopeRow = this.scopeRow === arg ? null : arg || null; } // a click on a row of "What each run checked" (<area> or run:<kind>)
@@ -3015,7 +3015,7 @@ export const ReviewMode = {
       ...(this.ai?.visuals?.length > 0 ? [["views", div().max_w(760).child(more())]] : [])]);
     const groups = new Set(a.nodes.map((n) => n.group)).size, L = this.archL(), fit = this.archFitOn(), marks = this.archMarksNow();
     // The frames are the systems; a card's trust zone is a dot on it, ringed when it is really reachable from further out.
-    const opts = { ...this.archOpts("arch"), marks, zoom: settings().zoom || 1, zones: a.zones ?? [], effective: effectiveZones(a, this.ai?.access) }, count = (...st) => L.nodes.filter((n) => st.includes(n.status)).length; // of the cards shown (Before hides the added ones)
+    const opts = { ...this.archOpts("arch"), marks, zoom: settings().zoom || 1, zones: a.zones ?? [], effective: this.effZones(a) }, count = (...st) => L.nodes.filter((n) => st.includes(n.status)).length; // of the cards shown (Before hides the added ones)
     return out([
       ["head", h_flex().gap(12).items_center().flex_wrap().child(div().text_size(20).font_semibold().child("Architecture impact")).child(this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams"))
         .when(this.drawerState() !== "open", (e) => e.child(pill("rv-ask-open", t, "Ask", (_e, cx) => this.setDrawer("open", cx, null)).tooltip("Ask one model question about the architecture picture")))],
@@ -3735,7 +3735,7 @@ export const ReviewMode = {
     // (a call into the finding's card that crosses one; null when the analysis names no zones), then severity.
     const zoned = (a?.zones ?? []).length > 0;
     // The crossings, with the unresolved findings of every source (the map's marks come from the same list).
-    const crossings = crossingsOf({ arch: a, access: this.ai?.access ?? [], threats: this.ai?.threats ?? [], findings: this.openFindings() }), changed = crossings.filter(crossingChanged);
+    const crossings = crossingsOf({ arch: a, access: this.ai?.access ?? [], threats: this.ai?.threats ?? [], gates: this.ai?.gates ?? [], findings: this.openFindings() }), changed = crossings.filter(crossingChanged);
     const order = secOrder(open.map((f) => ({ f, level: reachLevel(f, waysOf(f).ways), crosses: zoned ? (a.edges ?? []).some((e) => e.crosses && e.to === cardOf.get(f.id)) : null })));
     const ctx = { open, marks, surface, cardOf, entriesOf, waysOf, crossings, why: new Map(order.map((r) => [r.f.id, r.why])), focus: this.blastFocus ?? null, name: (id) => a?.nodes.find((n) => n.id === id)?.label ?? id,
       // A finding's link to its crossing: that row open in the table above.
@@ -3775,7 +3775,7 @@ export const ReviewMode = {
   // an inner zone back out (then it is a stub); an operator or CI way is a column before public until the data names
   // operator lanes.
   secMap(t, a, ctx, rows) {
-    const marksAll = this.archMarksNow(), eff = effectiveZones(a, this.ai?.access), key = `${JSON.stringify(rows.map((r) => [r.key, r.result, r.check]))}|${[...marksAll.nodes.keys()]}|${[...eff.keys()]}`;
+    const marksAll = this.archMarksNow(), eff = this.effZones(a), key = `${JSON.stringify(rows.map((r) => [r.key, r.result, r.check]))}|${[...marksAll.nodes.keys()]}|${[...eff.keys()]}`;
     if (this.secMemo?.key !== key) {
       const nodes = new Map(), edges = [], card = (id) => a.nodes.find((n) => n.id === id);
       const lane = (r, side) => (r.access?.principal_kind === "operator" || r.access?.principal_kind === "ci") && side === "from" ? "operator" : (side === "from" ? r.from.trust : r.to.trust) ?? "unknown";
@@ -3799,12 +3799,17 @@ export const ReviewMode = {
         .child("Only the crossings, numbered as in the table; a dashed line is not assessed.").when(hasTrust(L), (e) => e.child(trustLegend(L, t))))
       .child(this.archCanvas(t, L, opts, { id: "rv-sec-canvas", pic: "rv-sec-pic", decorate: deco, notes: false }));
   },
+  // Where a card is really reachable from: the security run's effective zones (derived from its gates), else derived
+  // here from the access rows (views.js effectiveZones) for an older cache.
+  effZones(a) { return this.ai?.effectiveZones?.length ? effectiveFrom(this.ai.effectiveZones, a) : effectiveZones(a, this.ai?.access); },
   // The trust boundary crossings as a table: the changed ones (new, widened, narrowed, removed, or not said), the
   // unchanged ones folded to a line. A row: its number, from zone → to zone and what crosses, who, the check and where,
   // what it holds on, the change, the result (finding, mitigated, not assessed in grey) and its findings. A click opens
   // the way as a strip (entry → gate → target, what an attacker controls and reaches, the threats with STRIDE).
   secCrossings(t, title, rows) {
-    const shown = this.crossAll ? rows : rows.filter(crossingChanged), hidden = rows.length - rows.filter(crossingChanged).length;
+    // Folded to a line each: the unchanged ones, and the not assessed ones (most crossings, where no threat was named).
+    const now = rows.filter(crossingChanged), quiet = now.filter((r) => r.result === "not_assessed"), hidden = rows.length - now.length;
+    const shown = [...now.filter((r) => r.result !== "not_assessed"), ...(this.crossQuiet ? quiet : []), ...(this.crossAll ? rows.filter((r) => !crossingChanged(r)) : [])];
     const RES = { finding: ["Finding", t.ansi1, true], mitigated: ["Mitigated", t.ansi2, false], not_assessed: ["Not assessed", t.muted, false] };
     const W = [["#", 26], ["Crossing", null], ["Who", 150], ["Check", 210], ["Holds only if", 180], ["Change", 84], ["Result", 104], ["Findings", 150]];
     const cell = ([, w], el) => (w ? div().flex_none().w(w) : div().flex_1().min_w(0)).whitespace_normal().child(el);
@@ -3839,6 +3844,9 @@ export const ReviewMode = {
       .child(rows.length ? v_flex().w_full().text_size(12.5).line_height(1.45)
         .child(h_flex().gap(10).px(6).pb(4).text_size(11.5).font_semibold().text_color(t.muted).children(W.map((c) => cell(c, c[0]))))
         .children(shown.map(line))
+        .when(quiet.length > 0, (e) => e.child(div().id("rv-sec-cr-na").px(6).pt(6).text_size(12.5).text_color(t.muted).cursor_pointer().hover((x) => x.text_color(t.foreground))
+          .tooltip("Crossings no threat names and no finding sits at: nothing says whether they hold").on_click((_e, cx) => { this.crossQuiet = !this.crossQuiet; cx.notify(); })
+          .child(this.crossQuiet ? `Hide the ${quiet.length} not assessed ${quiet.length === 1 ? "crossing" : "crossings"} ▴` : `${quiet.length} ${quiet.length === 1 ? "crossing" : "crossings"} not assessed ▸`)))
         .when(hidden > 0, (e) => e.child(div().id("rv-sec-cr-all").px(6).pt(6).text_size(12.5).text_color(t.muted).cursor_pointer().hover((x) => x.text_color(t.foreground))
           .on_click((_e, cx) => { this.crossAll = !this.crossAll; cx.notify(); }).child(this.crossAll ? `Hide the ${hidden} unchanged ${hidden === 1 ? "crossing" : "crossings"} ▴` : `${hidden} ${hidden === 1 ? "crossing is" : "crossings are"} unchanged by this PR ▸`)))
         : div().text_size(12.5).text_color(t.muted).whitespace_normal().child("The data names no crossing: no zones, no way in and no right into another zone. Run the security review for them."))

@@ -560,11 +560,25 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   const findings = [{ id: "f1", ids: ["f1"], reachable_from: ["acc1"] }, { id: "f9", ids: ["f9"] }];
   const rows = crossingsOf({ arch, access, threats, findings });
   assert.deepEqual(rows.map((r) => [r.kind, r.from.name, r.to.name, r.change, r.result]),
-    [["entry", "Internet", "Front desk", "added", "finding"], ["right", "Front desk", "Queue", "added", "mitigated"], ["call", "Front desk", "Queue", "added", "finding"], ["call", "Queue", "Front desk", "unchanged", "not_assessed"]],
+    [["entry", "anyone", "Front desk", "added", "finding"], ["right", "Front desk", "Queue", "added", "mitigated"], ["call", "Front desk", "Queue", "added", "finding"], ["call", "Queue", "Front desk", "unchanged", "not_assessed"]],
     "a right inside one zone and a call inside one zone are no crossing; a threat or a finding gives the result, else not assessed");
   assert.deepEqual([rows[0].findings.map((f) => f.id), rows[2].findings.map((f) => f.id), rows[2].goal, rows[1].stride, rows[2].check, rows[2].holds_if], [["f1"], ["f9"], "any event in the queue", "E", "IAM role", "the role stays scoped"]);
   assert.deepEqual(rows.map(crossingChanged), [true, true, true, false]);
   assert.equal(secSentence(rows, 2), "This PR opens 1 way in from the public side (Api, checked in the code), grants 1 right into another zone and adds or changes 1 call over a trust boundary. Of these 3 crossings, 2 have findings, 1 is mitigated. 2 security findings are unresolved.");
   assert.equal(secSentence([], 0), "This PR opens, widens or adds no way in, right or call over a trust boundary that the data names. No security finding is unresolved.");
   assert.deepEqual(crossingsOf({}), []);
+}
+
+// ---- the security run's gates and effective zones
+{
+  const { crossingsOf, effectiveFrom } = await import("./views.js");
+  const arch = { zones: [{ id: "z1", name: "Internet", trust: "public" }, { id: "z2", name: "Front desk", trust: "authenticated" }, { id: "z3", name: "Store", trust: "data" }],
+    nodes: [{ id: "fd", zone: "z2" }, { id: "st", zone: "z3" }], edges: [{ from: "fd", to: "st", crosses: true }] };
+  const rows = crossingsOf({ arch, access: [{ id: "acc1", public: true, principal: "anyone", auth: "bearer token", node: "fd", change: "added" }],
+    gates: [{ where: { access: "acc1" }, check: "token", source: "code", at: "library/handler.py:16", holds_if: "TOKEN is set", carries: ["body.id"] }, { where: { from: "fd", to: "st", edge: "e0" }, check: "iam", source: "config" }],
+    threats: [{ where: { edge: "e0" }, result: "not_assessed", derived: true, threat: "No threat was named for this crossing." }] });
+  assert.deepEqual(rows.map((r) => [r.check, r.at, r.holds_if, r.result, r.threats.length]), [["token, in the code", "library/handler.py:16", "TOKEN is set", "not_assessed", 0], ["iam, in the config", null, null, "not_assessed", 0]]);
+  assert.deepEqual(rows[0].carries, ["body.id"]);
+  const e = effectiveFrom([{ node: "fd", drawn: "authenticated", effective: "public", where: "library/handler.py:16" }, { node: "st", drawn: "data", effective: "data" }], arch);
+  assert.deepEqual([...e.keys()], ["fd"]); assert.equal(e.get("fd").why, "its first check is at library/handler.py:16"); assert.equal(effectiveFrom(null, arch).size, 0);
 }

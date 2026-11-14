@@ -620,8 +620,13 @@ export function effectiveZones(arch, access) {
 // finding | mitigated | not_assessed, findings (unresolved, at it), threats (from threats[]), stride, goal, ends:
 // {from, to} (card ids, null for the outside), access?, edge?}. A row says "not assessed" when nothing names a result.
 export const TRUST_ORDER = ["public", "authenticated", "internal", "data"];
+// A gate's check in words: its kind and where it sits ("token, in the code"); null without a check.
+const checkText = (g) => (g?.check ? `${g.check}${g.source ? `, in the ${g.source === "code" ? "code" : "config"}` : ""}` : null);
 const CHANGED = ["added", "widened", "narrowed", "changed", "removed"];
-export function crossingsOf({ arch = null, access = [], threats = [], findings = [] } = {}) {
+// gates: the security run's checks per crossing ({where: {access} | {from, to, edge}, principal, check, at, source,
+// holds_if, carries}); a gate on the row itself (x.gate, e.gate) is the older place. A threat with `derived` is a
+// placeholder ("no threat was named") and names no result.
+export function crossingsOf({ arch = null, access = [], threats = [], findings = [], gates = [] } = {}) {
   const zones = arch?.zones ?? [], nodes = arch?.nodes ?? [], norm = (s) => String(s ?? "").trim().toLowerCase().replace(/\s+/g, "");
   const zone = (id) => zones.find((z) => z.id === id) ?? null, zoneOfNode = (nid) => zone(nodes.find((n) => n.id === nid)?.zone);
   const label = (nid) => nodes.find((n) => n.id === nid)?.label ?? nid;
@@ -632,26 +637,28 @@ export function crossingsOf({ arch = null, access = [], threats = [], findings =
   const row = (base, match) => {
     const ts = (threats ?? []).filter(match.threat), at = (findings ?? []).filter(match.finding);
     const ids = new Set(ts.flatMap((t) => t.findings ?? [])), fs = [...at, ...(findings ?? []).filter((f) => !at.includes(f) && (f.ids ?? [f.id]).some((i) => ids.has(i)))];
-    const named = ts.map((t) => RESULT[t.result]).filter(Boolean);
+    const named = ts.filter((t) => !t.derived).map((t) => RESULT[t.result]).filter(Boolean);
     const result = fs.length || named.includes("finding") ? "finding" : named.includes("mitigated") ? "mitigated" : "not_assessed";
-    return { ...base, result, findings: fs, threats: ts, stride: [...new Set(ts.map((t) => t.stride).filter(Boolean))].join(""), goal: ts.map((t) => t.goal).find(Boolean) ?? null };
+    return { ...base, result, findings: fs, threats: ts.filter((t) => !t.derived), stride: [...new Set(ts.map((t) => t.stride).filter(Boolean))].join(""), goal: ts.map((t) => t.goal).find(Boolean) ?? null };
   };
   const changeOf = (x) => x.change ?? (x.opened_by_pr === true ? "added" : x.opened_by_pr === false ? "unchanged" : null);
   const rows = [];
   for (const x of access ?? []) {
-    const to = zoneOfNode(x.node), gate = x.gate ?? {};
+    const to = zoneOfNode(x.node), gate = (gates ?? []).find((g) => g.where?.access === x.id) ?? x.gate ?? {};
+    // A way in starts outside: its caller (the principal) on the public side; a right starts in its principal's zone.
     const from = x.public ? outside : zoneOfPrincipal(x.principal);
     if (!x.public && from && to && from.id === to.id) continue; // a right inside one zone crosses nothing
-    rows.push(row({ key: `a:${x.id ?? x.resource}`, kind: x.public ? "entry" : "right", from: z(from), to: z(to), identity: gate.principal ?? x.principal ?? null,
-      check: gate.check ?? x.auth ?? null, at: gate.at ?? x.at ?? null, holds_if: gate.holds_if ?? null, carries: gate.carries ?? null, change: changeOf(x),
+    const start = x.public ? { name: x.principal || outside.name || "Internet", trust: "public" } : from ? z(from) : { name: `${x.principal ?? "unnamed"} (no zone named)`, trust: null };
+    rows.push(row({ key: `a:${x.id ?? x.resource}`, kind: x.public ? "entry" : "right", from: start, to: z(to), identity: gate.principal ?? x.principal ?? null,
+      check: checkText(gate) ?? x.auth ?? null, at: gate.at ?? x.at ?? null, holds_if: gate.holds_if ?? null, carries: gate.carries ?? null, change: changeOf(x),
       ends: { from: null, to: x.node ?? null }, access: x, what: x.resource ?? "", actions: x.actions ?? [] },
     { threat: (t) => t.where?.access === x.id, finding: (f) => (f.reachable_from ?? []).includes(x.id) }));
   }
   (arch?.edges ?? []).forEach((e, i) => {
     const a = zoneOfNode(e.from), b = zoneOfNode(e.to);
     if (!e.crosses && !(a && b && a.id !== b.id)) return;
-    const gate = e.gate ?? {}, st = e.status === "new" ? "added" : e.status === "changed" || e.changed ? "changed" : e.status === "unchanged" ? "unchanged" : null;
-    rows.push(row({ key: `e:${i}`, kind: "call", from: z(a), to: z(b), identity: gate.principal ?? label(e.from), check: gate.check ?? null, at: gate.at ?? null,
+    const gate = (gates ?? []).find((g) => g.where?.edge === `e${i}` || (g.where?.from === e.from && g.where?.to === e.to)) ?? e.gate ?? {}, st = e.status === "new" ? "added" : e.status === "changed" || e.changed ? "changed" : e.status === "unchanged" ? "unchanged" : null;
+    rows.push(row({ key: `e:${i}`, kind: "call", from: z(a), to: z(b), identity: gate.principal ?? label(e.from), check: checkText(gate), at: gate.at ?? null,
       holds_if: gate.holds_if ?? null, carries: gate.carries ?? null, change: st, ends: { from: e.from, to: e.to }, edge: i, what: e.label ?? "" },
     { threat: (t) => t.where?.edge === `e${i}` || (t.where?.from === e.from && t.where?.to === e.to),
       finding: (f) => f.breaks?.edge === `e${i}` || (f.breaks?.from === e.from && f.breaks?.to === e.to) }));
@@ -674,4 +681,12 @@ export function secSentence(rows, openSecurity = 0) {
   const first = parts.length ? `This PR ${parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}` : parts[0]}.` : "This PR opens, widens or adds no way in, right or call over a trust boundary that the data names.";
   const second = now.length ? ` Of these ${many(now.length, "crossing", "crossings")}, ${[res("finding") && `${res("finding")} ${res("finding") === 1 ? "has a finding" : "have findings"}`, res("mitigated") && `${res("mitigated")} ${res("mitigated") === 1 ? "is" : "are"} mitigated`, res("not_assessed") && `${res("not_assessed")} ${res("not_assessed") === 1 ? "is" : "are"} not assessed`].filter(Boolean).join(", ")}.` : "";
   return `${first}${second} ${openSecurity ? `${many(openSecurity, "security finding is", "security findings are")} unresolved.` : "No security finding is unresolved."}`;
+}
+
+// The security run's effective zones ([{node, drawn, effective, where}], derived from its gates) in the shape of
+// effectiveZones: Map(node id -> {trust, drawn, zone, why}); empty list: none.
+export function effectiveFrom(list, arch) {
+  const zones = arch?.zones ?? [], zoneOf = (nid) => zones.find((z) => z.id === (arch?.nodes ?? []).find((n) => n.id === nid)?.zone) ?? null, out = new Map();
+  for (const x of list ?? []) if (x?.node && x.effective && x.effective !== x.drawn) out.set(x.node, { trust: x.effective, drawn: x.drawn, zone: zoneOf(x.node) ?? { name: x.drawn, trust: x.drawn }, why: x.where ? `its first check is at ${x.where}` : "its first check is in its own code" });
+  return out;
 }
