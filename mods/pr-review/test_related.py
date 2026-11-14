@@ -15,4 +15,9 @@ got = {p["number"]: p for p in related.merged_from_log(log)}
 assert sorted(got) == [12, 15]
 assert got[12]["title"] == "feat: add x" and got[12]["files"] == ["src/a.py", "src/b.py"]
 assert got[15]["title"] == "fix: guard null" and got[15]["files"] == ["src/a.py"]
+
+# A stacked PR: the base branch is another open PR's head branch (not a fork's branch of the same name).
+others = [{"number": 1, "title": "base work", "url": "u1", "branch": "feat/a", "fork": False}, {"number": 7, "title": "fork", "url": "u7", "branch": "main", "fork": True}]
+assert related.stacked_on("feat/a", others) == {"number": 1, "title": "base work", "url": "u1"}
+assert related.stacked_on("main", others) is None and related.stacked_on(None, others) is None
 print("ok")

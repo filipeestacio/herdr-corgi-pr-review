@@ -194,5 +194,85 @@ assert sorted(placed) == sorted(h["alias"] for h in big), "every alias accounted
 assert r["answer"]["steps"][-1]["skimmed"] and r["answer"]["steps"][-1]["hunks"] == ["h10"]
 assert r["scope"]["passes"] == len(co) + 1 and r["scope"]["skimmed"] == 1 and r["cut"] == []
 assert [x["pass"] for x in statuses if "pass" in x][0] == 1 and statuses[-1]["passes"] == len(co) + 1, "progress: Pass k of n"
+assert r["usage"] == {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}  # the stub reports none
 assert r["answer"]["title"] == "T" and r["cost"] == round(0.1 * (len(co) + 1), 10) or abs(r["cost"] - 0.1 * (len(co) + 1)) < 1e-9
 print("ok scope")
+
+# After the model (finish): requirements, findings and the picture linked; severity by the fixed scale; the id is the UI's.
+assert review.fnv("structure|library/handler.py|Front desk calls the consumer directly") == "d2b4cdf9"  # pr.js hash() of the same text
+assert review.fnv("test|a/ü.py|Täst 😀") == "2c51ed76"  # UTF-16 code units, as charCodeAt
+assert [review.SCALE[k] for k in ("breaks_requirement", "dead_path", "unauthorized_access", "data_exposure", "degraded_operation", "unrequested")] == ["high"] * 4 + ["medium", "low"]
+assert review.judge({"impact": "dead_path", "severity": "low"})["severity"] == "high", "the impact sets the severity"
+assert review.judge({"impact": "nonsense", "severity": "low", "category": "x"}) == {"severity": "low"}, "no impact: its own severity; unknown values go"
+assert review.judge({"impact": "edge_case"}, True) == {"impact": "breaks_requirement", "severity": "high"}
+assert review.judge({"impact": "breaks_requirement", "category": "test"}, True)["severity"] == "medium", "a test gap leaves a requirement unguarded, it does not break it"
+wt = pathlib.Path(tempfile.mkdtemp())
+(wt / ".github").mkdir(); (wt / ".github/CODEOWNERS").write_text("# owners\n*.yaml @ops\n/library/ @lib-team @lead\nlibrary/tests/ \n")
+(wt / "library").mkdir(); (wt / "library/loans.py").write_text("x")
+fin = lambda **kw: {"file": "library/s.py", "line": 3, "title": "t", "detail": "d", "suggestion": "s", "category": "bug", "impact": "edge_case",  # noqa: E731
+                    "effect": "e", "preconditions": [], "certainty": "derived", "criteria": [], **kw}
+ans = review.finish({
+    "asks": [{"id": "c1", "text": "one event per change", "acceptance": True, "state": "met", "why": "w", "hunks": ["h1"]},
+             {"id": "c2", "text": "only the consumer mails", "acceptance": True, "state": "broken", "why": "w", "hunks": []},
+             {"id": "c3", "text": "a new route", "acceptance": False, "state": "extra", "why": "w", "hunks": []}],
+    "architecture": {"nodes": [{"id": "status"}, {"id": "mailer"}, {"id": "reminders"}], "edges": [{"from": "status", "to": "mailer"}, {"from": "reminders", "to": "mailer"}]},
+    "components": [{"name": "LoanEvents", "kind": "queue", "status": "new", "at": "template.yaml:11", "node": "gone", "operate": ["no dead-letter queue"]},
+                   {"name": "transition()", "kind": "function", "status": "changed", "at": "library/status.py:43", "node": "status", "operate": []},
+                   {"name": "tests", "kind": "module", "status": "new", "at": "library/tests/test_x.py:1", "operate": []}],
+    "access": [{"resource": "LoanEvents", "kind": "queue", "principal": "FrontDesk", "actions": ["sqs:SendMessage"], "public": False, "auth": "IAM", "used": False, "at": "template.yaml:22", "node": "nope"}],
+    "steps": [{"check_questions": ["q1", "q2", "q3"], "question_files": ["./library/loans.py", "library/s.py", "made/up.py"], "findings": [
+        fin(title="Status set outside transition()", criteria=["c1", "c2", "c1"]),
+        fin(title="Mailed twice", criteria=["c2"], impact="breaks_requirement", breaks={"from": "reminders", "to": "mailer"}),
+        fin(title="Unasked route", criteria=["c3"], category="scope", impact="unrequested", breaks={"node": "status"}),
+        fin(title="No DLQ", criteria=["c9"], category="availability", impact="degraded_operation", breaks={"node": "nowhere"})]}]}, str(wt), {"h1": "library/s.py"})
+c1, c2, c3 = ans["asks"]
+f1, f2, f3, f4 = ans["steps"][0]["findings"]
+assert f1["id"] == "a" + review.fnv("bug|library/s.py|Status set outside transition()") and f1["criteria"] == ["c1", "c2"], "a finding may break several requirements"
+assert c1["findings"] == [f1["id"]] and c2["findings"] == [f1["id"], f2["id"]]
+assert (f1["severity"], f1["impact"]) == ("high", "breaks_requirement"), "a finding that breaks a requirement is high"
+assert (c1["state"], c1["coverage"]) == ("partly", "partly"), "met with a finding that breaks it is partly"
+assert (c2["state"], c2["coverage"]) == ("broken", "absent") and (c3["state"], c3["coverage"]) == ("extra", "extra")
+assert ans["unlinked"] == [], "every broken or partly requirement here has a finding"
+assert f3["severity"] == "low" and f3["criteria"] == ["c3"] and c3["findings"] == [f3["id"]], "an extra change does not raise the severity"
+assert f4["criteria"] == [] and f4["severity"] == "medium" and "breaks" not in f4, "unknown requirement and node dropped"
+assert f2["breaks"] == {"from": "reminders", "to": "mailer", "edge": "e1"} and f3["breaks"] == {"node": "status"}
+assert ans["steps"][0]["question_files"] == ["library/loans.py", "library/s.py", ""], ans["steps"][0]["question_files"]
+assert [c["owner"] for c in ans["components"]] == ["@ops", "@lib-team @lead", None], [c["owner"] for c in ans["components"]]
+assert ans["component_counts"] == {"new": 2, "changed": 1, "no_owner": 1, "codeowners": True}
+assert "node" not in ans["components"][0] and ans["components"][1]["node"] == "status" and "node" not in ans["access"][0]
+assert review.code_owners(None) is None and review.owner_of("a/b.py", [("docs/", "@d"), ("*.py", "@py")]) == "@py"
+assert review.checked([{"area": "secrets", "result": "clean", "note": "none in the diff"}, {"area": "tests", "result": "bogus"}], ["secrets", "tests", "state"]) == \
+    [{"area": "secrets", "result": "clean", "note": "none in the diff"}, {"area": "tests", "result": "not_checked", "note": ""}, {"area": "state", "result": "not_checked", "note": ""}]
+
+# An analysis cached before these fields loads: coverage becomes the state, findings keep their severity.
+old = review.finish({"asks": [{"text": "a", "coverage": "absent", "hunks": []}, {"text": "b", "coverage": "seen", "hunks": []}],
+                     "steps": [{"check_questions": ["q"], "findings": [{"file": "a.py", "line": 1, "severity": "medium", "category": "structure", "title": "f", "detail": "", "suggestion": ""}]}]})
+assert [(a["id"], a["state"], a["coverage"], a["findings"]) for a in old["asks"]] == [("c1", "not_done", "absent", []), ("c2", "met", "seen", [])]
+assert old["unlinked"] == ["c1"], "not_done without a finding that names it is reported, a met one is not"
+assert old["steps"][0]["findings"][0]["severity"] == "medium" and old["steps"][0]["findings"][0]["criteria"] == [] and old["steps"][0]["question_files"] == [""] and "component_counts" not in old
+
+# The prompt asks for all of it; a state diagram is not optional where the diff touches a state machine (also on a diagram refresh).
+p = review.prompt([], [], "PR: x", True)
+for part in ("state (met:", "not_done", "acceptance (true", "criteria (the ids", "is named by at least one finding", "breaks (where it breaks", "question_files", "category (as for findings)",
+             "breaks_requirement (breaks an acceptance criterion", "certainty (confirmed", "preconditions (what must hold", "test: changed behavior",
+             "titled \"Tests\"", "one finding per defect", "with impact untested", "components: the inventory", "access: who may do what", "checked: your own report", "without an authorizer"):
+    assert part in p, part
+assert "This one is not optional" in p and "This one is not optional" in review.picture_guide("English")
+assert "coverage" not in p and "severity (high|medium|low)," not in p, "a finding's severity comes from its impact"
+assert "ids so far: old" in review.diagrams_prompt([], {"answer": {"architecture": {"nodes": [{"id": "old"}]}}}, None, False)
+moved = review.merge_diagrams({"answer": {"steps": [{"findings": [{"title": "f", "breaks": {"node": "old"}}, {"title": "g", "breaks": {"node": "kept"}}]}]}},
+                              {"architecture": {"groups": [], "nodes": [{"id": "kept"}], "edges": []}}, "h", {})
+assert [f.get("breaks") for f in moved["answer"]["steps"][0]["findings"]] == [None, {"node": "kept"}], "a refreshed picture drops places it no longer has"
+
+# A state diagram sits in the layer that changes the state machine, wherever the model put it (the whole PR, another layer).
+sm = lambda **kw: {"kind": "state_machine", "title": "Loan", "nodes": [{"id": "b", "label": "borrowed", "at": "lib/status.py:8"}, {"id": "o", "label": "overdue", "at": "./lib/status.py:10"}],  # noqa: E731
+                   "edges": [], "transitions": [{"from": "o", "to": "o", "evidence": "lib/reminders.py:33"}], **kw}
+seated = review.finish({"visuals": [sm(), {"kind": "sequence", "title": "s", "nodes": [], "edges": []}],
+                        "steps": [{"title": "reminders", "hunks": ["h1"]}, {"title": "state machine", "hunks": ["h2", "h3"]}, {"title": "tests", "hunks": ["h4"], "visuals": [sm(title="Again")]}]},
+                       None, {"h1": "lib/reminders.py", "h2": "lib/status.py", "h3": "lib/events.py", "h4": "lib/test_status.py"})
+assert [v["title"] for v in seated["steps"][1]["visuals"]] == ["Loan", "Again"] and [v["kind"] for v in seated["visuals"]] == ["sequence"]
+assert not seated["steps"][0].get("visuals") and seated["steps"][2]["visuals"] == []
+stays = review.finish({"visuals": [{"kind": "state_machine", "title": "No evidence", "nodes": [{"id": "a"}], "edges": []}], "steps": [{"title": "x", "hunks": ["h1"]}]}, None, {"h1": "a.py"})
+assert [v["title"] for v in stays["visuals"]] == ["No evidence"], "nothing to go by: it stays where it is"
+assert "except for the state diagram" in p and "a state diagram goes into the layer" in p
+print("ok finish")

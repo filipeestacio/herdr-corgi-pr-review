@@ -11,7 +11,7 @@ calls = []
 
 def fake_run(args, **kw):
     calls.append((args, kw))
-    out = {"result": "hi", "structured_output": {"x": 1}, "total_cost_usd": 0.0123, "usage": {"input_tokens": 10, "output_tokens": 5},
+    out = {"result": "hi", "structured_output": {"answer": {"x": 1}}, "total_cost_usd": 0.0123, "usage": {"input_tokens": 10, "output_tokens": 5},
            "modelUsage": {"claude-haiku-x": {}}}
     return subprocess.CompletedProcess(args, 0, json.dumps(out), "")
 
@@ -29,8 +29,10 @@ try:
         assert got == {"x": 1}, got
         args, kw = calls[-1]
         assert args[:4] == ["claude", "-p", "--model", "haiku"] and "--json-schema" in args and kw["input"] == "prompt"
+        assert json.loads(args[args.index("--json-schema") + 1]) == {"type": "object", "required": ["answer"], "properties": {"answer": {"type": "object"}}}, "one top-level property"
         assert kw["env"]["CLAUDE_CONFIG_DIR"] == "/x/.claude-red" and "GONE" not in kw["env"]
         assert meta["cost"] == 0.0123 and meta["tokens"] == 15 and meta["model_id"] == "claude-haiku-x"
+        assert meta["usage"] == {"input": 10, "output": 5, "cache_read": 0, "cache_write": 0}
         assert llm.language() == "English" and llm.ledger_dir() is None
         assert not list(pathlib.Path(d).rglob("usage-*.jsonl"))
 
@@ -62,6 +64,53 @@ try:
     import reviewers
     assert reviewers.missing_command("Unknown skill: code-review") and reviewers.missing_command("Unknown slash command /x")
     assert not reviewers.missing_command("3 findings")
+
+    # A slash command that runs as a fork: the result line says only "Command completed", the answer is the fork's
+    # StructuredOutput call in the stream. It must not read as "no findings".
+    line = lambda **kw: json.dumps(kw)  # noqa: E731
+    said = lambda parent, *content: line(type="assistant", parent_tool_use_id=parent, message={"content": list(content)})  # noqa: E731
+    finding = {"file": "./.github/a.py", "line": 2, "title": "always raises", "detail": "d", "category": "bug", "impact": "dead_path",
+               "effect": "no event is published", "preconditions": [], "certainty": "derived"}
+    report = {"findings": [finding], "scope": {"read": ["./a.py"], "checked": [{"area": "tests", "result": "finding"}], "skipped": ["vendored code"]}}
+    done = {"type": "result", "result": "Command completed", "local_command": "code_review", "total_cost_usd": 0.07, "modelUsage": {"claude-sonnet-x": {}}}
+    fork = "\n".join([line(type="system", subtype="init"), said("forked-command-code-review", {"type": "text", "text": "Looking at the diff."}),
+                      said("forked-command-code-review", {"type": "tool_use", "name": "StructuredOutput", "input": {"answer": report}}),
+                      said(None, {"type": "text", "text": "Command completed"}), line(**done)])
+    got = llm.parse(fork)
+    assert got["structured_output"] == {"answer": report} and got["text"] == "Looking at the diff." and got["total_cost_usd"] == 0.07
+    assert llm.parse(json.dumps({"result": "hi", "structured_output": {"x": 1}}))["structured_output"] == {"x": 1}  # plain json as before
+    assert llm.parse("not json") == {}
+
+    outs = []
+    subprocess.run = lambda args, **kw: (calls.append((args, kw)), subprocess.CompletedProcess(args, 0, outs.pop(0), ""))[1]
+    req = {"kind": "claude", "model": "sonnet", "context": None, "worktree": d, "base": "feat/below", "number": 12, "level": "medium"}
+    outs.append(fork)
+    answer, meta = reviewers.claude_review(req, reviewers.code_review_command(req))
+    args, kw = calls[-1]
+    assert kw["input"] == "/code-review medium origin/feat/below...HEAD", "the PR's own range, and nothing after it: the command would review that text"
+    assert "stream-json" in args and "--verbose" in args and "--disable-slash-commands" not in args
+    assert "certainty" in json.loads(args[args.index("--json-schema") + 1])["properties"]["answer"]["description"], "the fork learns the fields from the schema"
+    found = reviewers.normalize(answer["findings"], "claude", d)
+    assert len(found) == 1 and found[0]["severity"] == "high" and found[0]["impact"] == "dead_path" and found[0]["certainty"] == "derived"
+    assert found[0]["file"] == ".github/a.py", "a leading ./ goes, a dot folder stays"
+    assert reviewers.scope(answer["scope"], "claude") == {"read": ["a.py"], "skipped": ["vendored code"], "checked": [
+        {"area": a, "result": "finding" if a == "tests" else "not_checked", "note": ""} for a in reviewers.AREAS["claude"]]}
+    assert reviewers.scope(None, "claude") is None and reviewers.scope({}, "codex") is None
+
+    # The fork wrote its review as text: a Haiku pass turns it into findings, and the run says so.
+    outs += ["\n".join([said("forked-command-code-review", {"type": "text", "text": "a.py:2 always raises"}), line(**done)]),
+             json.dumps({"structured_output": {"answer": {"findings": [{"file": "a.py", "line": 2, "severity": "high", "title": "always raises", "detail": "d"}]}}, "total_cost_usd": 0.01})]
+    answer, meta = reviewers.claude_review(req, reviewers.code_review_command(req))
+    assert meta["converted"] and abs(meta["cost"] - 0.08) < 1e-9 and "a.py:2 always raises" in calls[-1][1]["input"]
+    assert reviewers.normalize(answer["findings"], "claude", d)[0]["severity"] == "high"
+
+    # No answer anywhere: the run fails with a reason instead of counting 0 findings.
+    outs.append("\n".join([said(None, {"type": "text", "text": "Command completed"}), line(**done)]))
+    try:
+        reviewers.claude_review(req, reviewers.code_review_command(req))
+        raise AssertionError("an empty run passed as a review")
+    except RuntimeError as e:
+        assert "gave no findings answer" in str(e) and "Command completed" in str(e)
 finally:
     subprocess.run = real
 print("ok")
