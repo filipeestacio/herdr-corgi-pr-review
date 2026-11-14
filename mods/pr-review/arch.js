@@ -253,6 +253,10 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
     let n = 0;
     for (const a of nexts) for (const b of nexts) if (col.get(a.from) === col.get(b.from) && row.get(a.from) < row.get(b.from) && row.get(a.to) > row.get(b.to)) n++;
     for (const a of longE) for (const b of nexts) if (col.get(a.from) === col.get(b.from) && row.get(a.from) < row.get(b.from)) n++;
+    // Two long lines from one column cross unless the upper one ends no further right than the lower one (they nest:
+    // the upper one on the upper channel, the lower one under it and out past it). Their crossing sits under the
+    // picture, which reads easier than one among the cards: it counts half, so a tie keeps it down there.
+    for (const a of longE) for (const b of longE) if (a !== b && col.get(a.from) === col.get(b.from) && row.get(a.from) < row.get(b.from) && col.get(a.to) > col.get(b.to)) n += 0.5;
     return n;
   };
   for (let c = 0; c < ncol; c++) {
@@ -461,7 +465,11 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
   // A long line: out of its card, down its lane to a channel under the picture, along it, up the lane before its
   // target and in from the left, like every other call.
   const bottom = Math.max(0, ...frames.map((f) => f.y + f.h));
-  longP.forEach((p, j) => {
+  // Channels under the picture: the line that starts furthest right on the top one, then by where it ends, so the
+  // lines nest instead of crossing on their way down or up.
+  const chan = [...longP].sort((a, b) => lane.get(`${b.key}:out`) - lane.get(`${a.key}:out`) || lane.get(`${a.key}:in`) - lane.get(`${b.key}:in`));
+  longP.forEach((p) => {
+    const j = chan.indexOf(p);
     const f = at.get(p.from[0]), T = at.get(p.to), sx = f.x + W, sy = PY(p, "from", f.id), ty = PY(p, "to", p.to), x1 = lane.get(`${p.key}:out`), x2 = lane.get(`${p.key}:in`), cy = bottom + 14 + j * LANE;
     p.segments = [{ x1: sx, y1: sy, x2: x1, y2: sy }, { x1, y1: sy, x2: x1, y2: cy }, { x1, y1: cy, x2, y2: cy }, { x1: x2, y1: cy, x2, y2: ty }, { x1: x2, y1: ty, x2: T.x, y2: ty }];
     p.arrow = { x: T.x, y: ty, left: false };
