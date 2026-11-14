@@ -1393,7 +1393,8 @@ export function blockerOf(path, ladder, budget, effects = [], deps = []) {
   // Reading state another process holds is a finding, not a blocker: what it breaks (a poison message, a lost mail)
   // blocks in its own path. (A race and such a read exclude each other; neither is double counted.)
   if (path.result !== "finding" || path.failing.includes("reads_foreign_state")) return null;
-  const at = path.steps.find((s) => /:\d+$/.test(s)) ?? path.limited_by ?? null, seen = visibleOn(path, effects);
+  // where: the path's first line, else what limits it, else the ladder's place (a path named only by cards and calls)
+  const at = path.steps.find((s) => /:\d+$/.test(s)) ?? path.limited_by ?? (ladder?.factors.find((f) => f.n === null) ?? ladder?.factors[0])?.at ?? null, seen = visibleOn(path, effects);
   const mine = depsOf(path, deps), consumers = (mine.length ? mine : deps).filter((d) => d.trigger);
   const bounded = consumers.length > 0 && consumers.every((d) => d.trigger.dlq === true || d.trigger.max_receive > 0) && !(ladder?.factors.some((f) => f.n === null));
   const redelivered = Boolean(budget) || mine.some((d) => d.trigger && d.mode === "async");

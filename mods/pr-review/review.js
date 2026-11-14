@@ -5397,6 +5397,7 @@ export const ReviewMode = {
   // else starts; probe:<id>:no drops the question.
   probeCmd(arg, cx) {
     const [id, answer] = String(arg ?? "").split(":"), p = this.probeList().find((x) => x.id === id);
+    try { TH.probeId(id); } catch (e) { this.note = e.message; return cx.notify(); } // the id goes into a file name, a branch and write rules
     if (answer === "no") { this.probeAsk = null; return cx.notify(); }
     if (!p || !this.prSel) { this.note = `No probe ${id} in the resilience run of this PR.`; return cx.notify(); }
     if (this.deep.probes?.[this.probeKey(id)]?.state === "running") return;
@@ -5451,6 +5452,7 @@ export const ReviewMode = {
         continue;
       }
       const id = key.slice(key.lastIndexOf("|") + 1);
+      if (!TH.PROBE_ID.test(id)) continue; // never into a path or the runner's argv
       cx.spawn(async (cx) => {
         const read = (f) => readTextFile(`${p.path}/${f}`).catch(() => "");
         const answer = TH.parseProbeAnswer(await read(TH.VERIFY_FILE), id);

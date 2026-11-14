@@ -150,8 +150,10 @@ assert r["status"] == "reproduced" and "ada@" not in json.dumps(r) and "ghp_" no
 assert probe.redact("password: hunter2 and x" + "@" + "y.io") == "password: [redacted] and [redacted]"
 
 # Refused calls: a bad id, a script that is a link, a result path that is a link, the folder as a link, no checkout.
-r = subprocess.run([sys.executable, ME, str(repo), "../x"], capture_output=True, text=True)
-assert r.returncode == 2 and "refused" in r.stderr
+for bad in ["../x", "a/b", "*", "a b", "", "x" * 41]:  # the id is the script's file name: 1 to 40 letters, digits, - and _
+    r = subprocess.run([sys.executable, ME, str(repo), bad], capture_output=True, text=True)
+    assert r.returncode == 2 and "refused" in r.stderr, bad
+assert probe.ID.fullmatch("ok_1-" + "y" * 35)
 (outside / "evil.py").write_text("print('reproduced from outside')\n")
 os.symlink(outside / "evil.py", repo / probe.PROBE_DIR / "linked.py")
 r = subprocess.run([sys.executable, ME, str(repo), "linked"], capture_output=True, text=True)

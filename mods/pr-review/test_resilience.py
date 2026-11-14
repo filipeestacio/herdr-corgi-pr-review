@@ -59,6 +59,13 @@ assert p[3]["probe"] is None and p[3]["limited_by"] == "library/x.py:4"
 assert [(c["check"], c["result"]) for c in v["checks"]] == [("cors", "clean"), ("rollback", "not_checkable")]
 assert [(x["id"], x["status"]) for x in v["probes"]] == [("r1", "proposed")] and v["not_checked"] == ["load under real traffic"]
 assert "ref" not in new[0], "the ref is the model's, the id stays"
+# A probe id names a file, a branch and a write rule: 1 to 40 letters, digits, - and _. Another one is dropped, and
+# not_checked says so; a path's link to it goes too.
+bad = ["../x", "a/b", "*", "a b", "", "x" * 41]
+w = resilience.view({**answer, "probes": [{"id": b, "claim": "c", "of": "p1", "kind": "race", "strength": "runs_pr_code"} for b in bad] + [{"id": "ok_1-" + "y" * 35, "claim": "c", "of": "p1"}],
+                     "paths": [{**answer["paths"][0], "probe": "../x"}]}, new, pic, ["a1"])
+assert [x["id"] for x in w["probes"]] == ["ok_1-" + "y" * 35], w["probes"]
+assert sum("A probe was dropped" in x for x in w["not_checked"]) == len(bad) and w["paths"][0]["probe"] is None
 # The base rule (wave R2, D5): a new finding is the PR's only in lines the diff adds; one whose lines stand unchanged
 # in the base was there before, also on a path through a new node; without the diff: unknown (None).
 base = [{"id": "m1", "ref": "r_f1", "file": "library/mailer.py", "line": 14, "introduced_here": True},
@@ -122,15 +129,26 @@ under = lambda adds: resilience.view({"deps": [trig, {"node": "consumer", "edge"
 got = under([{"what": "Mailer retry loop", "kind": "retry layer", "at": "library/mailer.py:13", "result": "questionable"}])
 assert [(a["what"], a["result"], a["next"]) for a in got] == [("Mailer retry loop", "unjustified", "Drop the retry on the queue path; the queue already delivers the message again")], got
 got = under([])
+assert set(got[0]) >= {"works_today", "broken_by", "purpose", "next"}, "an added part has every field a run's part has"
 assert [(a["what"], a["at"], a["result"], a["derived"]) for a in got] == [("mailer retry under the queue's redelivery", "library/mailer.py:13", "unjustified", True)], \
     "added when the run left it out; the handler's retry has no queue under it"
 assert resilience.complexity_findings(got)[0]["file"] == "library/mailer.py" and got[0]["findings"]
+# A failure that raises out of a function is at least platform_only; none stays for a swallow, a false 2xx, a missing call.
+sig = lambda **p: resilience.signal_of(p)  # noqa: E731
+assert [sig(raises=True, signal="none", seen_as="Nothing")["signal"], sig(failing=["poison_message"], signal="none")["signal"], sig(raises=True, signal="alarm")["signal"],
+        sig(raises=False, failing=["swallowed_retry"], signal="none")["signal"], sig(failing=["dishonest_response"], signal="none")["visible"]] == ["platform_only", "platform_only", "alarm", "none", False]
+up = sig(raises=True, signal="none", seen_as="Nothing")
+assert (up["signal_said"], up["visible"], up["seen_as"].startswith("The function's error metric")) == ("none", True, True), up
+assert "signal_said" not in sig(raises=True, signal="log")
+# A part is judged by its purpose; a bug that keeps it from working today is works_today and broken_by.
+q = resilience.view({"additions": [{"what": "LoanEvents queue", "kind": "queue", "result": "justified", "works_today": False, "broken_by": "nothing publishes"}]}, [], pic, [])["additions"][0]
+assert (q["result"], q["works_today"], q["broken_by"]) == ("justified", False, "nothing publishes")
 sch = reviewers.findings_schema("resilience")
 assert "node" in sch["properties"]["deps"]["items"]["required"] and {"signal", "seen_as"} <= set(sch["properties"]["paths"]["items"]["required"])
 pr2 = reviewers.PLAIN["resilience"].format(base="b", number=2)
 for part in ("every public route's request, always", "answers 202 while the mail is lost", "per field or row that two or more places write", "a retry layer under another one",
              "measured by its purpose, not by a bug in it"):
     assert part in pr2, part
-for part in ("for a queue trigger the consumer", "only when a protection stands behind it", "not possible today, see p6", "seen_as (one sentence", "oncall (one sentence", "next (one sentence with a verb"):
+for part in ("raises (true when the failure ends in an exception", "never result)", "never cannot_happen because of a bug in the part", "for a queue trigger the consumer", "only when a protection stands behind it", "not possible today, see p6", "seen_as (one sentence", "oncall (one sentence", "next (one sentence with a verb"):
     assert part in resilience.ASK, part
 print("ok")
