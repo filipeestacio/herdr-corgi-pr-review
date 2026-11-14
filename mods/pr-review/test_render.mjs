@@ -39,6 +39,7 @@ const STUBS = {
   "gpui-base": `const S = globalThis.__rv, f = () => S.el(), n = { new: () => S.handle() };
     export const v_flex = f, h_flex = f, v_virtual_list = S.vlist, Scrollbar = { vertical: f, horizontal: f }, TextView = { markdown: f };
     export const Input = Object.assign(f, { new: f }), Textarea = Object.assign(() => S.el(), { new: f }), Editor = Object.assign(() => S.el(), { new: f });
+    export const HoverCard = { new: f };
     export const VirtualListScrollHandle = n, ScrollHandle = n, TextareaState = n, InputState = n, EditorState = n;`,
   herdr: `const S = globalThis.__rv, no = async () => { throw new Error("stub"); }, never = () => new Promise(() => {});
     export const exec = no, hc = no, readTextFile = no, pickFolder = no, writeTextFile = async () => {}, run = () => null;
@@ -192,21 +193,28 @@ for (const n of [0, 3, 310]) {
   assert.deepEqual(v.attention().map((a) => [a.label, a.security, a.at]), [["Open door", true, "f1.ts:3"], ["Wrong sum", false, "f0.ts:1"], ["Rule not met: Conventional Commit title", false, ""]],
     "the blockers by severity, security first among equals; no layers and no medium finding");
   v.tab = "steps"; v.page = "arch";
-  ok("Layers tab beside a page: the attention box open", () => v.render(cx));
+  ok("Analysis tab beside a page: the pages on top, the attention box open", () => v.render(cx));
+  const list = v.attention();
+  assert.equal(v.attFolded(list), false, "on a page in a tall column (or one not measured yet) the box is open");
+  v.paneH = 500; assert.equal(v.attFolded(list), true, "under the pages in a short column it starts folded");
+  v.attFold = false; assert.equal(v.attFolded(list), false, "a click on its heading opens it");
+  v.attFold = null; v.paneH = 900; v.page = null; assert.equal(v.attFolded(list), true, "a layer open: folded");
+  v.command("files", cx); v.command("analysis", cx); assert.equal(v.tab, "steps", "pr-review.analysis is the Analysis tab");
+  v.page = "arch";
   v.page = null; v.cur = 0;
-  ok("Layers tab with a layer open: the box folded, the layer's files with their ticks", () => v.render(cx));
+  ok("Analysis tab with a layer open: the box folded, the layer's files with their ticks", () => v.render(cx));
   v.attFold = false;
-  ok("Layers tab with a layer open: the box unfolded by a click", () => v.render(cx));
+  ok("Analysis tab with a layer open: the box unfolded by a click", () => v.render(cx));
   v.tab = "files";
   ok("Files tab: findings in words, the security mark, the ticks", () => v.render(cx));
   v.find = { ...v.find, status: { a2: { s: "progress", fixHead: "h0", at: "2024-01-01" } } };
   assert.deepEqual(v.attention().map((a) => a.sent), [false, true, false], "a fix sent stays a blocker and says so");
   v.tab = "steps"; v.attFold = false;
-  ok("Layers tab: a blocker with a fix sent", () => v.render(cx));
+  ok("Analysis tab: a blocker with a fix sent", () => v.render(cx));
   v.dismiss(v.findingById("s9"), cx); v.dismiss(v.findingById("a2"), cx);
   assert.deepEqual(v.attention().map((a) => a.severity), ["medium"], "the findings settled: the title rule is left");
   v.tab = "steps"; v.prSel = { ...v.prSel, title: "feat: t" };
-  ok("Layers tab without blockers", () => v.render(cx));
+  ok("Analysis tab without blockers", () => v.render(cx));
   assert.deepEqual(v.attention(), []);
   console.log("left column ok");
 }
