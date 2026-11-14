@@ -436,3 +436,56 @@ console.log("ok");
   assert.deepEqual(runsOf(undefined), {});
   console.log("ok analysis fields");
 }
+
+{
+  // The Overview: the task check as one list, the verdict line, the copied review state, a stacked PR.
+  const { taskList, taskHead, verdictParts, reviewState, certaintyLine, severityTip, componentLine, mergeBlockers, triageOf } = await import("./pr.js");
+  const f = (id, severity, extra = {}) => ({ id, ids: [id], severity, title: `T ${id}`, file: "a.py", line: 3, security: false, criteria: [], preconditions: [], certainty: null, impact: null, ...extra });
+  const asks = [{ id: "c1", text: "one", state: "broken", why: "w1", acceptance: true, findings: ["f1"] }, { id: "c2", text: "two", state: "partly", why: "w2", acceptance: true, findings: [] },
+    { id: "c3", text: "three", state: "met", why: "", acceptance: false, findings: [] }, { id: "x1", text: "more", state: "extra", why: "", acceptance: false, findings: [] }];
+  const all = [f("s1", "high", { security: true, certainty: "assumed", preconditions: ["no token set", "no authorizer"], impact: "unauthorized_access" }), f("f1", "high"), f("f2", "medium", { ids: ["f2", "r9"], criteria: ["c2"] }),
+    f("f3", "medium"), f("f4", "low", { criteria: ["c1"] }), f("s2", "medium", { security: true })];
+  const st = { f4: "dismissed", s2: "fixed", f3: "progress" }, statusOf = (x) => st[x.id] ?? "open";
+  const list = taskList(asks, all, ["c2", "c9"], statusOf);
+  assert.deepEqual(list.security.map((x) => x.id), ["s1"], "the Security group has the unresolved security findings");
+  assert.deepEqual(list.rows.map((r) => [r.ask.id, r.findings.map((x) => x.id), r.unlinked]), [["c1", ["f1", "f4"], false], ["c2", ["f2"], false], ["c3", [], false]], "an ask's findings come from its own list and from the findings' criteria");
+  assert.deepEqual(list.extra.map((r) => r.ask.id), ["x1"]);
+  assert.deepEqual(list.other.map((x) => x.id), ["f3"], "not in the task: unresolved, no security, linked to no ask");
+  assert.equal(taskHead(list), "0 of 2 acceptance criteria met, 1 extra");
+  assert.equal(taskList([{ ...asks[1], findings: [] }], [], ["c2"], statusOf).rows[0].unlinked, true, "partly without a finding: nothing backs it");
+  // An older analysis says nothing about acceptance: every ask that is not extra counts.
+  const old = taskList(asks.map((a) => ({ ...a, acceptance: null })), [], [], statusOf);
+  assert.equal(taskHead(old), "1 of 3 criteria met, 1 extra");
+  assert.equal(taskHead(taskList([], [], [], statusOf)), "");
+  const counts = { unresolved: 4, high: 2, medium: 2, low: 0, security: 1 };
+  assert.deepEqual(verdictParts(list, counts).map((p) => [p.text, p.tone]), [["1 security finding (high)", "high"], ["0 of 2 acceptance criteria met", "high"], ["2 high findings", "high"]]);
+  assert.deepEqual(verdictParts(taskList(asks, [f("a", "high", { security: true }), f("b", "low", { security: true })], [], statusOf), { unresolved: 2, high: 1, low: 1, security: 2 })[0].text, "2 security findings, 1 high");
+  assert.deepEqual(verdictParts(taskList([asks[2]], [], [], statusOf), { unresolved: 0, security: 0 }).map((p) => [p.text, p.tone]), [["1 of 1 criteria met", "ok"], ["No unresolved findings", "ok"]]);
+  assert.deepEqual(verdictParts(list, counts, { failed: 1, toVerify: 2 }).slice(3).map((p) => [p.key, p.text, p.tone]), [["checks", "1 check failed", "high"], ["verify", "2 fixes to verify", "medium"]]);
+  assert.equal(certaintyLine(all[0]), "Assumed, not checked · only if no token set (and 1 more)");
+  assert.equal(certaintyLine(f("x", "low", { certainty: "derived" })), "Derived from the code");
+  assert.deepEqual([["The caller passes auth"], ["SQS redelivery"]].map((preconditions) => certaintyLine(f("x", "low", { preconditions }))), ["only if the caller passes auth", "only if SQS redelivery"]);
+  assert.equal(certaintyLine(f("x", "low")), "", "an older finding says nothing about it");
+  assert.match(severityTip(all[0]), /^High severity: .*unauthorized access.*Here: unauthorized access\.$/);
+  assert.doesNotMatch(severityTip(f("x", "low")), /Here:/);
+  assert.equal(componentLine({ new: 8, changed: 0, no_owner: 7, codeowners: true }), "8 new components, 7 without an owner");
+  assert.equal(componentLine({ new: 1, changed: 2, no_owner: 0, codeowners: true }), "1 new and 2 changed components, each with an owner");
+  assert.equal(componentLine({ new: 0, changed: 1, no_owner: 1, codeowners: false }), "1 changed component; the repository has no CODEOWNERS file");
+  assert.equal(componentLine({ new: 0, changed: 0 }), null);
+  assert.equal(componentLine(null), null);
+  // The copied state: a security finding with its title only (no file, no line, no facts), the others with their place.
+  const text = reviewState({ pr: { repo: "o/r", number: 2, title: "feat: x", url: "https://example.test/pull/2" }, head: "abcdef1234", list, counts, findings: all, statusOf, progress: "1 of 9 files viewed" });
+  assert.match(text, /^Review state of o\/r#2: feat: x\nhttps:\/\/example\.test\/pull\/2 at abcdef1\n/);
+  assert.match(text, /\n1 security finding \(high\) · 0 of 2 acceptance criteria met · 2 high findings\n/);
+  assert.match(text, /\n- broken: one \(acceptance criterion\). w1\n- partly: two \(acceptance criterion\). w2\n- met: three\n- extra: more\n/);
+  assert.match(text, /\nUnresolved \(3\):\n- high, security: T s1\n- high: T f1 \(a\.py:3\)\n- medium: T f2 \(a\.py:3\)\n/);
+  assert.match(text, /\nFix sent \(1\):\n- medium: T f3 \(a\.py:3\)\n/);
+  assert.match(text, /\nFixed \(1\):\n- medium, security: T s2\n/);
+  assert.match(text, /\n1 of 9 files viewed\n/);
+  assert.doesNotMatch(text, /no token set|T s1 \(/, "nothing of a security finding but its title");
+  // A stacked PR is the base of this one: no blocker, and no reason to review early.
+  const related = { open: [{ number: 1, overlap: 4, files: ["a"], stacked: true }, { number: 5, overlap: 1, files: ["b"] }] };
+  assert.deepEqual(mergeBlockers({ related }).map((b) => b.title), ["Overlaps with open PR #5"]);
+  assert.equal(triageOf({ pr: { title: "x" }, related: { open: [related.open[0]] } }).priority, 3);
+  console.log("ok overview");
+}

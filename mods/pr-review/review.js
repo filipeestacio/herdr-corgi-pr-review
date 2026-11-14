@@ -15,13 +15,14 @@ import { exec, hc, run, spaces, agents, terminals, focused, pickFolder, theme, s
 import { parseReports, findingStatus, mergeFindings, findingCounts, countLine, runsOf, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
 import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig } from "./setup-view.js";
+import { taskList, taskHead, verdictParts, reviewState, certaintyLine, severityTip, componentLine } from "./pr.js"; // the Overview page
 import { highlightJob, highlightStep, highlightLines, langOf, colors, renderLine, refAt } from "./syntax.js";
 import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js";
 import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf, priceOf, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch } from "./pr.js";
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState, codeOf, isStale } from "./pr.js";
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible, pastTop } from "./views.js";
-import { archView, archModel, archLegend, visualsCard, visualCard, statCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
+import { archView, archModel, archLegend, visualsCard, visualCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
 import { hasSources, archLayout, archBands } from "./arch.js";
 import * as TH from "./threads.js";
 import { leftWidth, rowClick, CHIP_W, ASK_W, keyRoute, scopeLine, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf, rangeLabel, pinAnchor, pinAdd, pinDrop, pinsOf, pinsOn, codePins, drillPush, drillTo, crumbs, drillKey, cachePut, mapDrill, exploreId, exploreIndex, exploreAi, pathOf, lineOf, repoOfRemote, exploreTrust, layersForNode } from "./explore.js";
@@ -286,6 +287,7 @@ export const ReviewMode = {
     // Handles are made here only: creating one later (in a task) throws, which broke the definition view.
     this.lists = { steps: VirtualListScrollHandle.new(), files: VirtualListScrollHandle.new(), def: VirtualListScrollHandle.new() };
     this.leftScroll = ScrollHandle.new(); // the Layers tab's left column
+    this.pageScroll = ScrollHandle.new(); this.pageAnchors = {}; this.askOpen = new Set(); // the right pane's pages (pageView) and the open rows of the task check
     this.order = "reading"; this.flowSel = null;
     this.page = "overview"; this.archMode = "diff"; this.fold = { summary: true, blockers: true, checks: false }; this.blastOpen = false;
     this.ctx = null; this.since = null; this.sinceOn = false; this.lastReviewed = null; this.verifyBusy = false;
@@ -374,6 +376,11 @@ export const ReviewMode = {
       this.applyExploreTrust();
     }
     else if (name === "copy-link") copyText(this.prSel?.url ?? "");
+    else if (name === "copy-state") this.copyState();
+    // For scripts: what the wheel does in the right pane's page (scroll:top | bottom | <a section of the page>), and a
+    // click on a row of the task check (ask:<ask id>, ask:other).
+    else if (name === "scroll") this.scrollPage(arg, cx);
+    else if (name === "ask") this.toggleAsk(arg);
     else if (name === "open-gh") { if (this.prSel?.url) openUrl(this.prSel.url); }
     else if (name === "model") { if (arg) setShared("review.model", arg); }
     // For keys and scripted demos: a card's panel on the Architecture page (card:<node id>), the layers' order
@@ -581,7 +588,8 @@ export const ReviewMode = {
           for (const k of Object.keys(doc).sort((a, b) => (doc[b].at ?? 0) - (doc[a].at ?? 0)).slice(MAX_PROGRESS)) delete doc[k];
           try { await writeTextFile(progressFile(), JSON.stringify(doc, null, 1), before); break; } catch (e) { if (attempt) throw e; }
         }
-      } catch (e) { this.note = `Could not save progress: ${e}`; cx.notify(); }
+        if (this.saveErr) { this.saveErr = null; this.note = "Your progress is saved again."; cx.notify(); }
+      } catch (e) { this.saveErr = String(e).replace(/^Error: /, "").replace(/^`[^`]+`: /, ""); cx.notify(); } // saveErrBar: said with what is kept, and Save again
     });
     this.registerReview(cx);
   },
@@ -2238,10 +2246,11 @@ export const ReviewMode = {
         .child("▾"));
   },
 
-  // Row 2, at the top of the review: the facts as plain text with separators (risk, effort, checks), then the model as
-  // one dropdown, Values, help and ⋯ (Mark done, Copy link, Open on GitHub). Narrow: it wraps.
+  // Row 2, at the top of the review: the facts as plain text with separators (risk, the rules and checks by name),
+  // then the model as one dropdown, Example values, help and ⋯ (Mark done, Copy link, Copy review state, Open on
+  // GitHub). Narrow: it wraps.
   metaRow(t) {
-    const ai = this.ai, m = model(), checks = this.prSel ? this.checksNow() : [], ok = checks.filter((c) => c.ok === true).length, bad = checks.filter((c) => c.ok === false).length;
+    const ai = this.ai, m = model(), ck = this.checkFacts();
     const sep = () => div().flex_none().text_color(t.dim).child("·"), cap = (x) => x[0].toUpperCase() + x.slice(1);
     const link = (id, child, click) => h_flex().id(id).flex_none().gap(4).items_center().px(6).h(26).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground)).on_click(click).child(child);
     const menu = (id, items, w = 230) => (_e, cx) => { openOverlay({ mod: "pr-review", props: { part: "cmenu", key: id, items }, kind: "popup", width: w, height: 12 + 30 * items.length }); cx.stop_propagation(); };
@@ -2251,9 +2260,8 @@ export const ReviewMode = {
       ai?.mergeRisk && div().id("rv-mr").flex_none().tooltip(ai.mergeRisk.why || "").child(h_flex().gap(4).child("Merge risk:").child(div().text_color(t[SEVERITY_COLOR[ai.mergeRisk.level]] ?? t.muted).child(cap(ai.mergeRisk.level)))),
       !ai?.mergeRisk && top && link("rv-mr", h_flex().gap(4).child("Risk from findings:").child(div().text_color(t[SEVERITY_COLOR[top]] ?? t.muted).child(cap(top))).child(`(${fc[top]} ${top}, no analysis)`),
         (_e, cx) => { this.tab = "findings"; cx.notify(); }).tooltip("No analysis has rated the merge risk; this is the highest severity among the unresolved findings. Click for the Findings tab"),
-      ai?.effort && div().id("rv-ef").flex_none().tooltip(ai.effort.why || "").child(`Review effort ${ai.effort.score}/5`),
-      ok + bad > 0 && link("rv-ck", h_flex().gap(4).child("Pre-merge checks").child(div().text_color(t.ansi2).child(`✓${ok}`)).child(div().text_color(bad ? t.ansi1 : t.muted).child(`✗${bad}`)),
-        (_e, cx) => { this.tab = "steps"; this.page = "overview"; cx.notify(); }).tooltip("Pre-merge checks passed and failed; click for the Overview page"),
+      ck && link("rv-ck", h_flex().gap(4).children(ck.parts.map(([text, bad]) => div().when(bad, (e) => e.text_color(t.ansi1)).child(text))),
+        (_e, cx) => { this.tab = "steps"; this.page = "overview"; this.scrollPage("checks", cx); cx.notify(); }).tooltip(ck.tip),
     ].filter(Boolean);
     const modelText = this.aiBusy ? `${modelLabel(this.aiBusy.model)} analyzing…` : `${modelLabel(m)}${ai?.cost != null && ai.model === m ? ` · $${Number(ai.cost).toFixed(2)}` : ""}`;
     return h_flex().id("rv-meta").flex_none().flex_wrap().min_h(40).px(16).py(6).gap(10).items_center().border_b(1).border_color(t.border).bg(t.chrome).text_size(12.5).text_color(t.muted)
@@ -2265,9 +2273,9 @@ export const ReviewMode = {
       .child(link("rv-model", h_flex().gap(4).child(this.aiBusy ? div().child(SPIN[0]).frames(SPIN, 90) : div()).child(modelText).child("▾"),
         menu("models", modelChoices(this.ctxId()).map((c) => [`${c.value === m ? "✓ " : ""}${c.label} · ${priceText(c.value)} · ${this.estimate(c.value)}`, false, `model:${c.value}`]), 470)).tooltip("Pick the model for the AI analysis; each option shows its cost estimate").accessibility_label("Model"))
       .child(sep())
-      .child(link("rv-values", div().text_color(valuesOn() ? t.foreground : t.muted).child(`Values ${valuesOn() ? "on" : "off"}`), () => setShared("review.values", !valuesOn())).tooltip("Example values from the flow traces, shown inline in the diff: click to switch"))
+      .child(link("rv-values", div().text_color(valuesOn() ? t.foreground : t.muted).child(`Example values ${valuesOn() ? "on" : "off"}`), () => setShared("review.values", !valuesOn())).tooltip("Example values from the flow traces, shown inline in the diff: click to switch"))
       .child(link("rv-keys", div().child("?"), () => openOverlay({ mod: "pr-review", props: { part: "keys" }, kind: "popup", ...KEYS_POP })).tooltip("Keyboard shortcuts").accessibility_label("Keyboard shortcuts"))
-      .child(link("rv-more", div().child("⋯"), menu("more", [["Explore a topic…", false, "explore"], ["Mark done", false, "done"], ["Copy link", false, "copy-link"], ...(this.prSel?.url?.startsWith("https://github.com") ? [["Open on GitHub", false, "open-gh"]] : [])])).tooltip("Explore a topic, mark done, copy the link, open on GitHub").accessibility_label("More actions"));
+      .child(link("rv-more", div().child("⋯"), menu("more", [["Explore a topic…", false, "explore"], ["Mark done", false, "done"], ["Copy link", false, "copy-link"], ["Copy review state", false, "copy-state"], ...(this.prSel?.url?.startsWith("https://github.com") ? [["Open on GitHub", false, "open-gh"]] : [])])).tooltip("Explore a topic, mark done, copy the link or the review's state as text, open on GitHub").accessibility_label("More actions"));
   },
 
   // ---- render: the left column
@@ -2444,8 +2452,10 @@ export const ReviewMode = {
   // The page beside the Layers nav (instead of the diff).
   pageView(t) {
     const body = { overview: () => this.overviewPage(t), arch: () => this.archPage(t), blast: () => this.blastPage(t) }[this.page];
+    const kids = [].concat(body ? body() : div()); // a page may return its sections: scrollPage reaches each
+    this.pageLen = kids.length;
     return div().flex_1().min_h(0).relative()
-      .child(v_flex().id(`rv-page-${this.page}`).absolute().inset_0().overflow_y_scroll().px(24).py(18).gap(14).child(body ? body() : div()))
+      .child(v_flex().id(`rv-page-${this.page}`).absolute().inset_0().overflow_y_scroll().track_scroll(this.pageScroll).px(24).py(18).gap(14).children(kids))
       .child(Scrollbar.vertical(`rv-page-${this.page}`).absolute().inset_0());
   },
 
@@ -2466,69 +2476,72 @@ export const ReviewMode = {
       .when(Boolean(s.note), (e) => e.child(div().text_size(12).text_color(t.ansi3).whitespace_normal().child(s.note)));
   },
 
+  // The Overview, top to bottom: the title, the verdict in the title's size (security first), what this PR sits on and
+  // adds, the task check as one list (asksPane), what changed and the behavior as running text of about 85 characters
+  // a line, the rules and checks by name, related PRs. Each fact once: the PR's state and the merge risk are in the
+  // bar. It returns its sections, so scrollPage reaches each by name (pageAnchors).
   overviewPage(t) {
-    const pr = this.prSel ?? {}, ai = this.ai, files = this.patch ?? [], task = ai?.task ?? {};
-    const add = files.reduce((n, f) => n + f.add, 0), del = files.reduce((n, f) => n + f.del, 0);
-    const layers = (ai?.steps ?? []).filter((s) => !s.pseudo), hues = ["accent", "ansi4", "ansi5", "ansi6", "ansi3", "ansi2"];
-    const fc = this.counts(), sev = ["high", "medium", "low"].map((k) => [k, fc[k]]);
-    const checks = this.checksNow(), blockers = this.blockersNow(checks), ok = checks.filter((c) => c.ok === true).length, bad = checks.filter((c) => c.ok === false).length;
-    const fold = (k) => (_e, cx) => { this.fold[k] = !this.fold[k]; cx.notify(); };
-    const section = (title) => div().pt(4).text_size(11.5).font_semibold().text_color(t.muted).child(title);
-    const sevPills = h_flex().flex_wrap().gap(6).children(sev.filter(([, n]) => n).map(([k, n]) => chip(t, `${n} ${k}`, t[SEVERITY_COLOR[k]], true, `rv-sevp-${k}`, `${n} unresolved findings of ${k} severity`)));
-    const ctx = this.ctx, related = [...(ctx?.open ?? []).map((p) => ({ ...p, state: "open" })), ...(ctx?.merged ?? []).map((p) => ({ ...p, state: "merged" }))];
-    return v_flex().gap(14).max_w(1100)
-      .child(div().text_size(12).text_color(t.muted).child(`Updated ${ago(ai?.generated ?? pr.updatedAt ?? new Date().toISOString())}`))
-      .child(h_flex().gap(10).items_start().child(div().flex_1().min_w(0).text_size(22).font_semibold().line_height(1.3).whitespace_normal().child(pr.title ?? `#${pr.number}`))
-        .when(Boolean(pr.state), (e) => e.child(badge(t, `PR ${pr.state}`, t[{ open: "ansi2", draft: "dim", merged: "ansi5", closed: "ansi1" }[pr.state]] ?? t.dim).id("rv-ov-state").tooltip("The PR's state on GitHub"))))
-      .when(Boolean(ai?.mergeRisk || ai?.effort), (e) => e.child(this.riskBadges(t, ai, "rv-ob")))
+    const pr = this.prSel ?? {}, ai = this.ai, task = ai?.task ?? {}, ctx = this.ctx, fc = this.counts(), list = this.taskNow(), W = 560;
+    const checks = this.checksNow(), TONE = { high: t.ansi1, medium: t.ansi3, low: t.ansi4, ok: t.ansi2 };
+    const section = (title) => div().pt(4).text_size(11.5).font_semibold().text_color(t.muted).child(title), dot = () => div().flex_none().text_color(t.dim).child("·");
+    const related = [...(ctx?.open ?? []).map((p) => ({ ...p, state: "open" })), ...(ctx?.merged ?? []).map((p) => ({ ...p, state: "merged" }))];
+    const verdict = ai || fc.total ? verdictParts(list, fc, { failed: checks.filter((c) => c.ok === false).length, toVerify: this.verifyList().length }) : [];
+    const go = { security: [(_e, cx) => { this.page = "blast"; cx.notify(); }, "Unresolved security findings: click for the Security page"],
+      criteria: [null, "How many of the task's criteria this PR meets: the list is below"],
+      findings: [(_e, cx) => { this.tab = "findings"; cx.notify(); }, "Unresolved findings of the highest severity there is: click for the Findings tab"],
+      checks: [(_e, cx) => this.scrollPage("checks", cx), "Rules or checks that failed: click for the list"],
+      verify: [(_e, cx) => { this.tab = "findings"; cx.notify(); }, "Fixes sent before the last push, not verified on the new head: click for the Findings tab"] };
+    const part = (p) => div().id(`rv-vd-${p.key}`).tooltip(go[p.key][1]).text_color(TONE[p.tone]).when(Boolean(go[p.key][0]), (e) => e.cursor_pointer().hover((s) => s.underline()).on_click(go[p.key][0]))
+      .child(p.key === "security" ? `⛨ ${p.text}` : p.text);
+    const fact = (id, text, tip, click) => div().id(id).tooltip(tip).cursor_pointer().hover((s) => s.text_color(t.foreground)).on_click(click).child(text);
+    const facts = [ctx?.stacked_on && fact("rv-ov-stacked", `Stacked on #${ctx.stacked_on.number} ${ctx.stacked_on.title ?? ""}`, `This PR's base is the branch of #${ctx.stacked_on.number}, so it merges after it. Click to open #${ctx.stacked_on.number} in its own review.`, (_e, cx) => this.openRelated(ctx.stacked_on, cx)),
+      componentLine(ai?.componentCounts) && fact("rv-ov-comp", componentLine(ai.componentCounts), "Components this PR adds or changes, as the analysis counts them: click for the Architecture impact page", (_e, cx) => { this.page = "arch"; cx.notify(); })].filter(Boolean);
+    const head = v_flex().flex_none().gap(8).max_w(1100)
+      .child(div().text_size(22).font_semibold().line_height(1.3).whitespace_normal().child(pr.title ?? `#${pr.number}`))
+      .when(verdict.length > 0, (e) => e.child(h_flex().id("rv-verdict").flex_wrap().gap(10).items_center().text_size(22).font_semibold().line_height(1.3)
+        .children(verdict.flatMap((p, k) => (k ? [dot(), part(p)] : [part(p)])))))
+      .when(facts.length > 0, (e) => e.child(h_flex().flex_wrap().gap(8).items_center().text_size(12.5).text_color(t.muted).children(facts.flatMap((f, k) => (k ? [dot(), f] : [f])))))
       .when(Boolean(this.since), (e) => e.child(div().rounded(8).overflow_hidden().border_1().border_color(t.border).child(this.sinceBanner(t))))
-      .when(!ai && !this.aiBusy, (e) => e.child(this.startCards(t)))
-      .child(h_flex().gap(12)
-        .child(statCard(t, "rv-st-layers", "Layers", ai ? `${layers.length} ${layers.length === 1 ? "layer" : "layers"}` : "—",
-          segBar(t, layers.map((s, k) => ({ weight: 1, color: t[hues[k % hues.length]] }))), layers.map((s) => plain(s.title)).join(" · ") || "Not analyzed yet").tooltip("How many layers the analysis found, one colour each"))
-        .child(statCard(t, "rv-st-files", "Files changed", `${files.length} ${files.length === 1 ? "file" : "files"}`,
-          segBar(t, [{ weight: add, color: t.ansi2 }, { weight: del, color: t.ansi1 }]), `+${add} −${del}`).tooltip("Files changed, with lines added (green) and removed (red)"))
-        .child(statCard(t, "rv-st-find", "Findings", `${fc.unresolved} unresolved`,
-          segBar(t, sev.map(([k, n]) => ({ weight: n, color: t[SEVERITY_COLOR[k]] }))), fc.total ? countLine(fc).replace(/^\d+ unresolved:? ?/, "") || "None unresolved" : "No findings").tooltip("Unresolved findings by severity; a finding with a fix sent stays unresolved until it is verified")))
-      .child(foldCard(t, "rv-checks", "Pre-merge checks", [div().text_color(t.ansi2).font_semibold().child(`✓ ${ok}`), div().text_color(bad ? t.ansi1 : t.muted).font_semibold().child(`✗ ${bad}`)],
-        this.fold.checks, fold("checks"), () => v_flex().gap(4).children(checks.map((c, k) => h_flex().id(`rv-ck-${k}`).tooltip(`${c.ok === true ? "Passed" : c.ok === false ? "Failed" : "Not decided yet"}${c.where ? ": click to jump to the code" : ""}`).gap(8).items_start().text_size(13)
-          .when(Boolean(c.where), (e) => e.cursor_pointer().on_click((_e, cx) => this.jumpTo(c.where, cx)))
-          .child(div().w(14).flex_none().text_color(c.ok === true ? t.ansi2 : c.ok === false ? t.ansi1 : t.ansi3).child(c.ok === true ? "✓" : c.ok === false ? "✗" : "…"))
-          .child(div().flex_1().min_w(0).whitespace_normal().child(`${c.name}${c.why && c.ok !== true ? ` — ${c.why}` : ""}`))))
-          .when(!ctx, (e) => e.child(div().text_size(12).text_color(t.muted).child("CI checks and mergeability load in the background…")))))
-      .child(foldCard(t, "rv-summary", "Summary", [sevPills], this.fold.summary, fold("summary"), () => v_flex().gap(10)
-        .child(section("WHAT CHANGED"))
-        .child(v_flex().gap(4).child(div().text_size(12).font_semibold().text_color(t.muted).child("Intent"))
-          .child(h_flex().flex_wrap().gap(6).items_center().child(div().text_size(13.5).child(task.title ?? pr.title ?? ""))
-            .when(Boolean(task.jira), (e) => e.child(chip(t, `Linked issue ${task.jira}`, t.accent, false, "rv-jira", "The issue this PR links to"))))
-          .when(Boolean(task.note), (e) => e.child(div().text_size(12).text_color(t.ansi3).whitespace_normal().child(task.note)))
-          .when(ai?.intent?.length > 0, (e) => e.child(this.statements(t, ai.intent, "rv-int"))))
-        .when(Boolean(ai?.behavior) || ai?.behaviorPoints?.length > 0, (e) => e.child(v_flex().gap(4).child(div().text_size(12).font_semibold().text_color(t.muted).child("Behavior"))
-          .child(ai.behaviorPoints?.length ? this.statements(t, ai.behaviorPoints, "rv-bp") : div().text_size(13.5).line_height(1.5).child(TextView.markdown(`rv-beh-${ai.generated}`, ai.behavior)))))
-        .when(Boolean(ai?.summary), (e) => e.child(div().text_size(13.5).line_height(1.5).child(TextView.markdown(`rv-sum-${ai.generated}`, ai.summary))))
-        .when(!ai, (e) => e.child(div().text_size(13).text_color(t.muted).child("No analysis yet: Analyze in the left column.")))
-        .when(Boolean(ai), (e) => e.child(this.asksPane(t)))))
-      .child(foldCard(t, "rv-blockers", `${blockers.length} merge ${blockers.length === 1 ? "blocker" : "blockers"} to act on`,
-        blockers.length ? [chip(t, blockers[0].severity, t[SEVERITY_COLOR[blockers[0].severity]], true, "rv-bl-sev", "Severity of the top merge blocker")] : [], this.fold.blockers, fold("blockers"),
-        () => v_flex().gap(8).when(!blockers.length, (e) => e.child(div().text_size(13).text_color(t.muted).child("Nothing blocks the merge that this review knows of.")))
-          .children(blockers.map((b, k) => v_flex().id(`rv-bl-${k}`).tooltip("Open the related PR, code or finding behind this blocker").gap(2).p(8).rounded(7).border_1().border_l(3).border_color(t[SEVERITY_COLOR[b.severity]]).cursor_pointer().hover((s) => s.bg(t.hover))
-            .on_click((_e, cx) => { if (b.url) this.openRelated(b, cx); else if (b.where) this.jumpTo(b.where, cx); else if (b.finding) { const f = this.findingById(b.finding); if (f) { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); } } cx.notify(); })
-            .child(div().text_size(13.5).font_semibold().child(b.title)).child(div().text_size(12.5).text_color(t.muted).whitespace_normal().child(b.why))))))
-      .when(Boolean(ai?.rules.length), (e) => e.child(v_flex().gap(6).child(section(`REPO RULES · ${ai.rules.filter((r) => r.status === "fail").length} failed`))
-        .children(ai.rules.map((r, k) => h_flex().id(`rv-rule-${k}`).tooltip((r.where ? "A repo rule checked by the analysis: click to jump to the code" : "A repo rule checked by the analysis")).gap(8).items_start().p(6).rounded(6).hover((s) => s.bg(t.hover))
-          .when(Boolean(r.where), (x) => x.cursor_pointer().on_click((_e, cx) => this.jumpTo(r.where, cx)))
-          .child(chip(t, r.status === "pass" ? "✓ pass" : r.status === "fail" ? "✗ fail" : "n/a", t[{ pass: "ansi2", fail: "ansi1" }[r.status] ?? "muted"], false, `rv-rulest-${k}`, "Whether this PR follows the rule"))
-          .child(v_flex().flex_1().min_w(0).gap(2).child(div().text_size(13.5).font_semibold().whitespace_normal().child(r.rule))
-            .child(div().text_size(12).text_color(t.muted).whitespace_normal().child(`${r.source}${r.where ? ` · ${r.where}` : ""}${r.why ? ` — ${r.why}` : ""}`)))))))
-      .child(v_flex().gap(6).child(section(`RELATED PRS${ctx ? ` · ${related.length}` : ""}`))
-        .when(!ctx, (e) => e.child(div().text_size(12.5).text_color(t.muted).child("Looking for PRs that touch the same files…")))
-        .when(Boolean(ctx) && !related.length, (e) => e.child(div().text_size(12.5).text_color(t.muted).child("No other open PR and no PR merged in the last 90 days touches these files.")))
-        .children(related.map((p) => h_flex().id(`rv-rel-${p.number}`).tooltip("Open this related PR in its own review").gap(8).items_center().p(6).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
-          .on_click((_e, cx) => this.openRelated(p, cx))
-          .child(chip(t, p.state, p.state === "open" ? t.ansi2 : t.ansi5, false, `rv-relst-${p.number}`, "Whether that PR is still open or already merged"))
-          .child(div().flex_none().text_size(13).text_color(t.muted).child(`#${p.number}`))
-          .child(div().flex_1().min_w(0).truncate().text_size(13.5).child(p.title))
-          .child(div().id(`rv-relf-${p.number}`).flex_none().text_size(12).text_color(t.muted).tooltip((p.files ?? []).join("\n") || "-").child(`${p.overlap} ${p.overlap === 1 ? "file" : "files"} overlap`)))));
+      .when(!ai && !this.aiBusy, (e) => e.child(this.startCards(t)));
+    const intent = Boolean(task.jira || task.note || ai?.intent?.length || (task.title && task.title !== pr.title));
+    const changed = () => v_flex().flex_none().gap(8).max_w(W).text_size(13.5).line_height(1.5)
+      .child(section("WHAT CHANGED"))
+      .when(intent, (e) => e.child(v_flex().gap(4)
+        .child(h_flex().flex_wrap().gap(6).items_center().when(Boolean(task.title) && task.title !== pr.title, (x) => x.child(div().whitespace_normal().child(task.title)))
+          .when(Boolean(task.jira), (x) => x.child(chip(t, `Linked issue ${task.jira}`, t.accent, false, "rv-jira", "The issue this PR links to"))))
+        .when(Boolean(task.note), (x) => x.child(div().text_size(12).text_color(t.ansi3).whitespace_normal().child(task.note)))
+        .when(ai.intent?.length > 0, (x) => x.child(this.statements(t, ai.intent, "rv-int")))))
+      .when(Boolean(ai.summary), (e) => e.child(div().child(TextView.markdown(`rv-sum-${ai.generated}`, ai.summary))))
+      .when(Boolean(ai.behavior) || ai.behaviorPoints?.length > 0, (e) => e.child(section("BEHAVIOR"))
+        .child(ai.behaviorPoints?.length ? this.statements(t, ai.behaviorPoints, "rv-bp") : div().child(TextView.markdown(`rv-beh-${ai.generated}`, ai.behavior))));
+    // The checks that are no repo rule (the title's form, CI, conflicts), then the analysis' repo rules with where they
+    // come from; what failed first.
+    const rank = (r) => [false, null, true, "n/a"].indexOf(r.ok);
+    const rows = [...checks.filter((c) => !c.rule).map((c) => ({ ok: c.ok, name: c.name, sub: c.ok === true ? "" : c.why ?? "", where: c.where })),
+      ...(ai?.rules ?? []).map((r) => ({ ok: r.status === "pass" ? true : r.status === "fail" ? false : "n/a", name: r.rule, sub: `${r.source}${r.where ? ` · ${r.where}` : ""}${r.why ? ` — ${r.why}` : ""}`, where: r.where }))]
+      .sort((a, b) => rank(a) - rank(b));
+    const decided = rows.filter((r) => r.ok !== "n/a");
+    const MARK = { true: ["✓", "ansi2", "Passed"], false: ["✗", "ansi1", "Failed"], null: ["…", "ansi3", "Not decided yet"], "n/a": ["n/a", "muted", "Does not apply to this PR"] };
+    const checksEl = () => v_flex().flex_none().gap(2).max_w(W + 98)
+      .child(section(`REPO RULES AND CHECKS · ${decided.filter((r) => r.ok === true).length} of ${decided.length} passed`))
+      .children(rows.map((r, k) => h_flex().id(`rv-ck-${k}`).tooltip(`${MARK[r.ok][2]}${r.where ? ": click to jump to the code" : ""}`).gap(10).items_start().px(6).py(3).rounded(6).text_size(13.5)
+        .when(Boolean(r.where), (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.jumpTo(r.where, cx)))
+        .child(div().w(28).flex_none().font_semibold().text_color(t[MARK[r.ok][1]]).child(MARK[r.ok][0]))
+        .child(v_flex().flex_1().min_w(0).child(div().whitespace_normal().child(r.name))
+          .when(Boolean(r.sub), (e) => e.child(div().text_size(12).text_color(t.muted).whitespace_normal().child(r.sub))))))
+      .when(!ctx, (e) => e.child(div().px(6).text_size(12).text_color(t.muted).child("CI checks and mergeability load in the background…")));
+    const relatedEl = v_flex().flex_none().gap(6).max_w(W + 240).child(section(`RELATED PRS${ctx ? ` · ${related.length}` : ""}`))
+      .when(!ctx, (e) => e.child(div().text_size(12.5).text_color(t.muted).child("Looking for PRs that touch the same files…")))
+      .when(Boolean(ctx) && !related.length, (e) => e.child(div().text_size(12.5).text_color(t.muted).child("No other open PR and no PR merged in the last 90 days touches these files.")))
+      .children(related.map((p) => h_flex().id(`rv-rel-${p.number}`).tooltip("Open this related PR in its own review").gap(8).items_center().p(6).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
+        .on_click((_e, cx) => this.openRelated(p, cx))
+        .child(chip(t, p.stacked ? "base" : p.state, p.stacked ? t.accent : p.state === "open" ? t.ansi2 : t.ansi5, false, `rv-relst-${p.number}`, p.stacked ? "This PR is stacked on that one: its branch is this PR's base" : "Whether that PR is still open or already merged"))
+        .child(div().flex_none().text_size(13).text_color(t.muted).child(`#${p.number}`))
+        .child(div().flex_1().min_w(0).truncate().text_size(13.5).child(p.title))
+        .child(div().id(`rv-relf-${p.number}`).flex_none().text_size(12).text_color(t.muted).tooltip((p.files ?? []).join("\n") || "-").child(p.stacked ? "this PR builds on it" : `${p.overlap} ${p.overlap === 1 ? "file" : "files"} overlap`))));
+    const out = [["top", head], (ai || fc.total > 0) && ["task", this.asksPane(t, list, W)], ai && ["changed", changed()], rows.length > 0 && ["checks", checksEl()], ["related", relatedEl]].filter(Boolean);
+    this.pageAnchors = Object.fromEntries(out.map(([k], i) => [k, i]));
+    return out.map(([, el]) => el);
   },
 
   // A related PR in the review layout (the resume contract): prs.json's entry, else one built from gh pr view on this
@@ -3256,21 +3269,64 @@ export const ReviewMode = {
     cx.notify();
   },
 
-  asksPane(t) {
-    const task = this.ai.task ?? {}, specs = specElements(this.ai);
-    return v_flex().flex_none().mt(14).pt(12).px(10).gap(8).border_t(1).border_color(t.border).text_size(13.5)
-      .child(div().font_semibold().text_size(14.5).child("Check against the task"))
-      .child(div().text_size(12).text_color(t.muted).child(`PR description${task.jira ? ` + Jira ${task.jira}` : ""}`))
-      .when(Boolean(task.note), (e) => e.child(div().text_size(12).text_color(t.ansi3).whitespace_normal().child(task.note)))
-      .when(!this.ai.asks.length, (e) => e.child(div().text_color(t.muted).child("No task found.")))
-      .children(this.ai.asks.map((a, i) => h_flex().id(`rv-ask-${i}`).tooltip("Show the code in the diff behind this check").gap(8).items_start().p(4).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
-        .on_click((_e, cx) => { const id = a.hunks.find((x) => this.byId.has(x)); if (id) { this.tab = "files"; this.unfold(this.byId.get(id).path); this.visit(id, cx); this.scrollTo("files", id); } cx.notify(); })
-        .child(div().id(`rv-ask-${i}-cv`).tooltip(COVER_TIP[a.coverage] ?? "").w(78).flex_none().text_size(12).font_semibold().text_color(t[COVER[a.coverage][1]]).child(COVER[a.coverage][0]))
-        .child(div().flex_1().min_w(0).line_height(1.5).child(TextView.markdown(`rv-ask-${this.ai.generated}-${i}`, a.text)))
-        .children(a.elements.filter((x) => specs.has(x)).map((x, k) => div().id(`rv-ask-${i}-sp${k}`).flex_none().px(5).rounded(4).border_1().border_dashed().border_color(t.ansi5)
-          .text_size(11).text_color(t.ansi5).cursor_pointer().tooltip("Spec only: in the picture, not found in the diff").child(`spec: ${specs.get(x).label} ↗`)
-          .on_click((_e, cx) => { this.openSpec(specs.get(x), cx); cx.stop_propagation(); })))
-        .when(a.hunks.length > 0, (e) => e.child(div().id(`rv-ask-${i}-n`).tooltip("How many hunks of the diff relate to this").flex_none().text_size(11.5).text_color(t.muted).child(`${a.hunks.length} ↗`)))));
+  // The task check as one list (pr.js taskList): the unresolved security findings, then each ask with its state as a
+  // chip with a symbol, why, and on a click of the row the findings that break it (file and line, a click jumps
+  // there); the acceptance criteria as a group of their own; then what is not in the task: the extras and the findings
+  // that belong to no ask. An analysis from before the newer fields shows the rows without why and findings.
+  asksPane(t, list, W) {
+    const ai = this.ai, task = ai?.task ?? {}, specs = ai ? specElements(ai) : new Map(), n = (k, one) => `${k} ${k === 1 ? one : `${one}s`}`;
+    const STATE = { met: ["✓", "met", "ansi2", "The diff does what this asks"], partly: ["◐", "partly", "ansi3", "The diff does only part of what this asks"],
+      broken: ["✗", "broken", "ansi1", "The code for this is there and breaks what this asks"], not_done: ["○", "not done", "ansi1", "Nothing in the diff does this"],
+      extra: ["+", "extra", "ansi4", "The diff does this, but the task did not ask for it"] };
+    const label = (text) => div().pt(8).px(6).text_size(11.5).font_semibold().text_color(t.muted).child(text);
+    // A finding: its severity (the scale as tooltip), title, place, and how sure it is with what it hangs on.
+    const finding = (f, id, w, nested = false) => {
+      const st = this.fstatus(f), settled = st === "fixed" || st === "dismissed";
+      return h_flex().id(id).tooltip("Open this finding and show its line in the diff").gap(10).items_start().px(nested ? 0 : 6).py(3).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
+        .on_click((_e, cx) => { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); cx.stop_propagation(); })
+        .child(div().w(w).flex_none().pt(1).child(h_flex().child(chip(t, f.severity, t[SEVERITY_COLOR[f.severity]] ?? t.muted, !settled, `${id}-sv`, severityTip(f)))))
+        .child(v_flex().flex_1().min_w(0).max_w(W)
+          .child(div().whitespace_normal().text_color(settled ? t.dim : t.foreground).child(f.title))
+          .child(div().text_size(12).text_color(t.muted).whitespace_normal().child([nested && f.security && "⛨ Security", `${f.file}:${f.line}`, certaintyLine(f), st !== "open" && FSTATUS[st]?.[0]].filter(Boolean).join(" · "))));
+    };
+    const ask = (r) => {
+      const a = r.ask, [sym, word, col, tip] = STATE[a.state], open = this.askOpen.has(a.id), fs = r.findings, hunk = a.hunks.find((x) => this.byId.has(x));
+      return h_flex().id(`rv-ask-${a.id}`).gap(10).items_start().px(6).py(5).rounded(6)
+        .when(fs.length > 0 || Boolean(hunk), (e) => e.cursor_pointer().hover((s) => s.bg(t.hover))
+          .tooltip(fs.length ? (open ? "Hide the findings" : "Show the findings that break this, each with its file and line") : "No finding is linked to this: show the code it is about in the diff")
+          .on_click((_e, cx) => { if (fs.length) this.toggleAsk(a.id); else { this.tab = "files"; this.unfold(this.byId.get(hunk).path); this.visit(hunk, cx); this.scrollTo("files", hunk); } cx.notify(); }))
+        .child(div().w(88).flex_none().pt(1).child(h_flex().child(chip(t, `${sym} ${word}`, t[col], true, `rv-ask-${a.id}-st`, tip))))
+        .child(v_flex().flex_1().min_w(0).max_w(W).gap(2)
+          .child(div().line_height(1.5).child(TextView.markdown(`rv-ask-${ai.generated}-${a.id}`, a.text)))
+          .when(Boolean(a.why), (e) => e.child(div().text_size(12.5).line_height(1.45).text_color(t.muted).whitespace_normal().child(a.why)))
+          .when(r.unlinked, (e) => e.child(div().text_size(12).text_color(t.ansi3).child("No finding backs this state.")))
+          .when(a.elements.some((x) => specs.has(x)), (e) => e.child(h_flex().flex_wrap().gap(6).children(a.elements.filter((x) => specs.has(x)).map((x, k) => div().id(`rv-ask-${a.id}-sp${k}`).flex_none().px(5).rounded(4).border_1().border_dashed().border_color(t.ansi5)
+            .text_size(11).text_color(t.ansi5).cursor_pointer().tooltip("Spec only: in the picture, not found in the diff").child(`spec: ${specs.get(x).label} ↗`)
+            .on_click((_e, cx) => { this.openSpec(specs.get(x), cx); cx.stop_propagation(); })))))
+          .when(open, (e) => e.child(v_flex().pt(4).gap(2).children(fs.map((f) => finding(f, `rv-ask-${a.id}-f-${f.id}`, 60, true))))))
+        .child(div().w(96).flex_none().pt(2).text_size(12).text_color(t.muted).child(fs.length ? `${n(fs.length, "finding")} ${open ? "▾" : "▸"}` : hunk ? "Show in diff ↗" : ""));
+    };
+    const marked = list.rows.filter((r) => list.marked && r.ask.acceptance), rest = list.rows.filter((r) => !marked.includes(r)), hasTask = list.rows.length + list.extra.length > 0;
+    const otherOpen = this.askOpen.has("other") || !hasTask; // no task to fold them under: the findings are the list
+    const sev = ["high", "medium", "low"].map((k) => [k, list.other.filter((f) => f.severity === k).length]).filter(([, c]) => c).map(([k, c]) => `${c} ${k}`).join(", ");
+    return v_flex().flex_none().gap(2).max_w(W + 240).text_size(13.5)
+      .child(h_flex().flex_wrap().gap(10).items_center().px(6)
+        .child(div().font_semibold().text_size(14.5).child(ai ? "Check against the task" : "Unresolved findings"))
+        .when(Boolean(taskHead(list)), (e) => e.child(div().id("rv-ask-head").tooltip("The criteria this PR meets; a row's chip says how each one stands").child(taskHead(list))))
+        .when(Boolean(ai), (e) => e.child(div().text_size(12).text_color(t.muted).child(`From the PR description${task.jira ? ` and Jira ${task.jira}` : ""}`))))
+      .when(Boolean(task.note), (e) => e.child(div().px(6).text_size(12).text_color(t.ansi3).whitespace_normal().child(task.note)))
+      .when(Boolean(ai) && !hasTask, (e) => e.child(div().px(6).text_color(t.muted).child("The analysis found no task in the PR description.")))
+      .when(list.security.length > 0, (e) => e.child(h_flex().pt(8).px(6).child(chip(t, "⛨ Security", t.ansi1, true, "rv-ask-sec", "Unresolved security findings; they stand before the task's criteria")))
+        .children(list.security.map((f) => finding(f, `rv-ask-s-${f.id}`, 88))))
+      .when(marked.length > 0, (e) => e.child(label("ACCEPTANCE CRITERIA")).children(marked.map(ask)))
+      .when(rest.length > 0, (e) => e.child(label(list.marked ? "ALSO IN THE DESCRIPTION" : "CRITERIA")).children(rest.map(ask)))
+      .when(list.extra.length + list.other.length > 0, (e) => e.when(hasTask || list.security.length > 0, (x) => x.child(label(hasTask ? "NOT IN THE TASK" : "OTHER FINDINGS"))).children(list.extra.map(ask))
+        .when(list.other.length > 0 && hasTask, (x) => x.child(h_flex().id("rv-ask-other").tooltip(otherOpen ? "Hide these findings" : "Show these findings, each with its file and line").gap(10).items_start().px(6).py(5).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
+          .on_click((_e, cx) => { this.toggleAsk("other"); cx.notify(); })
+          .child(div().w(88).flex_none())
+          .child(div().flex_1().min_w(0).max_w(W).whitespace_normal().child(`${n(list.other.length, "unresolved finding")} ${list.other.length === 1 ? "belongs" : "belong"} to no criterion: ${sev}`))
+          .child(div().w(96).flex_none().pt(2).text_size(12).text_color(t.muted).child(otherOpen ? "▾" : "▸"))))
+        .when(otherOpen, (x) => x.child(v_flex().pl(hasTask ? 98 : 0).gap(2).children(list.other.map((f) => finding(f, `rv-ask-o-${f.id}`, hasTask ? 60 : 88, hasTask))))));
   },
 
   // The Findings tab: every finding once, one line each, in sections by state (pr.js findingStatus): the unresolved
@@ -3700,6 +3756,7 @@ export const ReviewMode = {
                 ? h_flex().gap(8).child(div().child(SPIN[0]).frames(SPIN, 90)).child("Loading…") : "No diff")))
             .child(Scrollbar.vertical(listId).absolute().inset_0())))
           .when(Boolean(this.note), (e) => e.child(div().flex_none().px(14).py(8).border_t(1).border_color(t.border).text_size(12.5).text_color(/Could not|Not sent|Not posted|Select a line/.test(this.note ?? "") ? t.ansi1 : t.muted).child(this.note)))
+          .when(Boolean(this.saveErr), (e) => e.child(this.saveErrBar(t)))
           .when(Boolean(this.replyTo), (e) => e.child(this.replyBar(t)))
           .when(this.selected().length > 0, (e) => e.child(this.selectionBar(t)))
           .when(Boolean(this.applyBlocked), (e) => e.child(h_flex().flex_none().px(14).py(8).gap(8).items_center().border_t(1).border_color(t.border).bg(t.ansi3 + "1c").text_size(12.5)
@@ -3711,5 +3768,49 @@ export const ReviewMode = {
           .when(!this.drawerSqueezes() && this.drawerState() === "open", (e) => e.child(div().absolute().top(0).right(0).bottom(0).child(this.askDrawer(t))))
           .when(this.drawerState() === "collapsed", (e) => e.child(div().absolute().top(0).right(0).bottom(0).child(this.drawerStrip(t)))))
         .when(this.drawerSqueezes(), (e) => e.child(this.askDrawer(t))));
+  },
+
+  // ---- the Overview page's helpers
+
+  taskNow() { return taskList(this.ai?.asks ?? [], this.findings(), this.ai?.unlinked ?? [], (f) => this.fstatus(f)); },
+  toggleAsk(id) { if (!this.askOpen.delete(id)) this.askOpen.add(id); },
+
+  // The bar's "Repo rules 2/2": the rules this PR is checked against (the title's form and the analysis' repo rules)
+  // by name in the tooltip; CI and conflicts only when GitHub reports some. null: nothing to say yet.
+  checkFacts() {
+    if (!this.prSel) return null;
+    const checks = this.checksNow(), ci = checks.filter((c) => c.ci), rules = checks.filter((c) => !c.ci && c.name !== "No merge conflicts"), ok = (l) => l.filter((c) => c.ok === true).length;
+    const parts = [rules.length > 0 && [`Repo rules ${ok(rules)}/${rules.length}`, rules.some((c) => c.ok === false)], ci.length > 0 && [`CI ${ok(ci)}/${ci.length}`, ci.some((c) => c.ok === false)],
+      checks.some((c) => c.name === "No merge conflicts" && c.ok === false) && ["Merge conflicts", true]].filter(Boolean);
+    if (!parts.length) return null;
+    return { parts, tip: `${rules.length ? `Rules this PR is checked against: ${rules.map((c) => `${c.name} (${c.ok ? "met" : "not met"})`).join(", ")}. ` : ""}${this.ctx && !ci.length ? "GitHub reports no CI checks for this PR. " : ""}Click for the list on the Overview page.` };
+  },
+
+  // The right pane's page to its top, its bottom or one of its sections (pageAnchors: name → child), as the wheel
+  // would. A plain scroll area only reveals a child at its near edge, so the bottom first, then the section: it is
+  // above the view then and lands at the top.
+  scrollPage(key, cx) {
+    cx.timer.after(30, (cx) => { // after the render that shows the page
+      this.pageScroll.scroll_to_item((this.pageLen ?? 1) - 1); cx.notify();
+      if (key !== "bottom") cx.timer.after(60, (cx) => { const i = key === "top" ? 0 : this.pageAnchors[key]; if (i !== undefined) this.pageScroll.scroll_to_item(i); cx.notify(); });
+    });
+  },
+
+  // "Copy review state" (the ⋯ menu): the verdict, the task check and the findings by state as text for a colleague.
+  copyState() {
+    if (!this.prSel) return;
+    const p = this.progressNow();
+    const text = reviewState({ pr: this.prSel, head: this.worktree?.head ?? this.prSel.headSha ?? "", list: this.taskNow(), counts: this.counts(), findings: this.findings(), statusOf: (f) => this.fstatus(f),
+      progress: `Reviewer's progress: ${p.filesViewed} of ${p.files} files viewed, ${p.comments} pending ${p.comments === 1 ? "comment" : "comments"}.` });
+    copyText(text);
+    this.note = `Review state copied as text (${text.trim().split("\n").length} lines), nothing was posted.${this.findings().some((f) => f.security) ? " Security findings are in it with their title only." : ""}`;
+  },
+
+  // Progress that could not be saved: what that means, and the one thing to do about it.
+  saveErrBar(t) {
+    const why = /changed outside/i.test(this.saveErr) ? "the progress file changed while it was written" : this.saveErr;
+    return h_flex().id("rv-save-err").flex_none().px(14).py(8).gap(10).items_center().border_t(1).border_color(t.border).bg(t.ansi1 + "26").text_size(12.5)
+      .child(div().flex_1().min_w(0).whitespace_normal().child(`Could not save your progress (viewed files, checked layers, your place): ${why}. It is kept in this window; it is lost if you close the review before it is saved.`))
+      .child(pill("rv-save-again", t, "Save again", (_e, cx) => this.saveProgress(cx), false, t.foreground).tooltip("Write your progress to disk again"));
   },
 };

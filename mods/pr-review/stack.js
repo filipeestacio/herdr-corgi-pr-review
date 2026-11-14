@@ -1,5 +1,5 @@
 // The review layout's "change stack" pieces drawn natively (no libraries): the architecture picture, a layer's
-// picture (flow, sequence, state machine, steps), stat cards, segmented bars, collapsible cards, the PR triage card.
+// picture (flow, sequence, state machine, steps), segmented bars, collapsible cards, the PR triage card.
 // Pure layout lives in arch.js (archLayout) and pr.js (levels, blastArch); these only draw. UI text is English.
 import { div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
@@ -29,18 +29,10 @@ const TRIAGE_TIP = { "High security risk": "Unresolved high-severity security fi
 export const triageTip = (c) => TRIAGE_TIP[c] ?? "Kind of change, from the PR title prefix";
 export const PRIORITY_TIP = "Review priority: P1 is the most urgent, P3 the least";
 
-// A bar of segments [{weight, color}] in one row (CodeRabbit's stat cards).
+// A bar of segments [{weight, color}] in one row.
 export const segBar = (t, parts, h = 6) => h_flex().w_full().h(h).gap(2).children(parts.filter((p) => p.weight > 0)
   .map((p) => div().flex_grow(p.weight).flex_basis(0).h_full().rounded(3).bg(p.color)))
   .when(!parts.some((p) => p.weight > 0), (e) => e.child(div().w_full().h_full().rounded(3).bg(t.raised)));
-
-export function statCard(t, id, label, big, bar, foot) {
-  return v_flex().id(id).flex_1().min_w(0).p(12).gap(8).rounded(10).border_1().border_color(t.border).bg(t.surface)
-    .child(div().text_size(12).font_semibold().text_color(t.muted).child(label))
-    .child(div().text_size(22).font_semibold().child(big))
-    .child(bar)
-    .child(div().text_size(12).text_color(t.muted).truncate().child(foot));
-}
 
 // A card with a header that folds it; open/toggle come from the view.
 export function foldCard(t, id, title, right, open, toggle, body) {
