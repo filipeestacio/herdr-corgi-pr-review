@@ -3858,7 +3858,7 @@ export const ReviewMode = {
     }
     const { L, marks } = this.secMemo;
     const opts = { ...this.archOpts("blast"), marks, numbers: false, zoom: settings().zoom || 1, onFocus: (id, cx) => { this.fh.focus(); this.secCard(id, cx); } };
-    const deco = (n) => (eff.has(n.id) ? [h_flex().flex_none().h(15).child(chip(t, `Reachable as ${eff.get(n.id).trust}${eff.get(n.id).cond ? `, ${eff.get(n.id).cond}` : ""}`, t.ansi3, false, `rv-sec-eff-${n.id}`, `Drawn in ${eff.get(n.id).zone.name ?? eff.get(n.id).drawn} (${eff.get(n.id).drawn}), but ${eff.get(n.id).why}.`))] : []);
+    const deco = (n) => (eff.has(n.id) ? [h_flex().flex_none().h(15).child(chip(t, eff.get(n.id).cond ? `${eff.get(n.id).trust[0].toUpperCase()}${eff.get(n.id).trust.slice(1)} if ${eff.get(n.id).cond.replace(/^if crossing /, "")}` : `Reachable as ${eff.get(n.id).trust}`, t.ansi3, false, `rv-sec-eff-${n.id}`, `Drawn in ${eff.get(n.id).zone.name ?? eff.get(n.id).drawn} (${eff.get(n.id).drawn}), but ${eff.get(n.id).why}${eff.get(n.id).cond ? `: reachable as ${eff.get(n.id).trust} ${eff.get(n.id).cond}` : ""}.`))] : []);
     return v_flex().id("rv-sec-map").gap(6)
       .child(h_flex().gap(10).items_center().flex_wrap().text_size(11.5).text_color(t.muted)
         .child("Only the crossings, numbered as in the table, with what goes over them; a dashed line is not assessed.").when(hasTrust(L), (e) => e.child(trustLegend(L, t))))
