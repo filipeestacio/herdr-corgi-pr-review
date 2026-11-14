@@ -451,33 +451,33 @@ export function sameClaim(a, b) {
 }
 const NEAR = 3; // lines between two findings of one defect at most (PR #2: 19/20, 21/23, 33/35)
 
-// Findings (the reviewers' and the analysis') and AI suggestions on the same file and new-side line are one finding:
-// the highest severity leads (its title and text show), every source stays in `sources` with its own severity, and
-// `security` is true when any source says so (the security reviewer, or a category). A suggestion alone on its line
-// is a note (not a finding, not counted), unless it is high or about security or availability: then it is a finding
-// of its own. So are lines at most NEAR apart in one file whose titles make the same claim (sameClaim); being in the
-// same function is not enough: on PR #2 that would join "reads from a store the front desk does not share" with "sets
-// reminded_on directly". line..end spans all sources, the anchor in the diff is the first line. The id is the source's that already has a status (so "Fix sent" and its report survive a run that adds
-// a source to the line), else the leading one's; `ids` has them all.
+// Findings (the reviewers' and the analysis') and AI suggestions in one file, at most NEAR lines apart (the same line
+// too) and with titles that make the same claim (sameClaim), are one finding: the highest severity leads (its title
+// and text show), every source stays in `sources` with its own severity, and `security` is true when any source says
+// so (the security reviewer, or a category). Being on the same line or in the same function is not enough: on PR #2
+// consumer.py:19 has a store finding and a KeyError suggestion, and 20 and 23 of one function say different things.
+// Suggestions that end up without a finding are notes (not findings, not counted), unless one of them is high or
+// about security or availability: then they are a finding of their own. line..end spans all sources, the anchor in
+// the diff is the first line. The id is the source's that already has a status (so "Fix sent" and its report survive
+// a run that adds a source to the line), else the leading one's; `ids` has them all.
 // → {findings: [{...the leading source, id, ids, severity, security, step, sources: [{id, reviewer, severity, title,
 // detail, suggestion}]}], notes: [suspect]}, findings by severity, then file and line. The facts of a finding
 // (findingFacts) are the leading source's; one it does not have comes from the first source that does.
 export function mergeFindings(findings, suspects = [], status = {}) {
-  const groups = new Map(), notes = [], raised = new Set();
-  const put = (key, x) => { if (!groups.has(key)) groups.set(key, []); groups.get(key).push(x); };
-  const at = (s) => `${s.path}:${s.line}`;
-  const own = (s) => { const [title, detail] = titled(s.reason); return { id: `s${hash(s.key)}`, reviewer: "ai", file: s.path, line: s.line, end: s.line, severity: s.severity, category: s.category ?? "bug", title, detail, suggestion: "" }; };
-  for (const f of findings) put(f.line ? `${f.file}:${f.line}` : `id:${f.id}`, f);
+  const notes = [], from = new Map();
+  const own = (s) => { const [title, detail] = titled(s.reason); const x = { id: `s${hash(s.key)}`, reviewer: "ai", file: s.path, line: s.line, end: s.line, severity: s.severity, category: s.category ?? "bug", title, detail, suggestion: "" }; from.set(x, s); return x; };
   // ponytail: a suggestion on a removed line stays a note (findings sit on new-side lines).
-  for (const s of suspects) if (!s.old && !groups.has(at(s)) && (s.severity === "high" || RAISE.has(s.category))) { put(at(s), own(s)); raised.add(s); }
-  for (const s of suspects) { if (raised.has(s)) continue; if (!s.old && groups.has(at(s))) put(at(s), own(s)); else notes.push(s); }
-  // Neighbouring lines with the same claim join, in line order, so 19, 20 and 22 can become one.
+  for (const s of suspects) if (s.old) notes.push(s);
+  // In line order, so 19, 20 and 22 can become one; a finding without a line stays alone.
   const joined = [];
-  for (const g of [...groups.values()].sort((a, b) => a[0].line - b[0].line)) {
-    const near = g[0].line > 0 && joined.find((j) => j[0].file === g[0].file && j[0].line > 0 && j.some((x) => Math.abs(x.line - g[0].line) <= NEAR && g.some((y) => sameClaim(x.title, y.title))));
-    if (near) near.push(...g); else joined.push([...g]);
+  for (const x of [...findings, ...suspects.filter((s) => !s.old).map(own)].sort((a, b) => (a.line || 0) - (b.line || 0))) {
+    const near = x.line > 0 && joined.find((j) => j[0].file === x.file && j[0].line > 0 && j.some((y) => Math.abs(y.line - x.line) <= NEAR && sameClaim(x.title, y.title)));
+    if (near) near.push(x); else joined.push([x]);
   }
-  const out = joined.map((g) => {
+  const kept = joined.filter((g) => g.some((x) => !from.has(x) || x.severity === "high" || RAISE.has(x.category)));
+  for (const g of joined) if (!kept.includes(g)) notes.push(...g.map((x) => from.get(x)));
+  notes.sort((a, b) => suspects.indexOf(a) - suspects.indexOf(b));
+  const out = kept.map((g) => {
     const whole = (n) => (Number.isInteger(n) && n > 0 ? n : 0), lines = g.map((x) => whole(x.line)).filter(Boolean), line = lines.length ? Math.min(...lines) : 0;
     const lead = [...g].sort((a, b) => rank(a) - rank(b))[0], coded = g.find((x) => x.head && whole(x.line) === line), all = [lead, ...g].map(findingFacts);
     const has = (v) => (Array.isArray(v) ? v.length > 0 : v !== null && v !== ""), fact = (k) => (all.find((x) => has(x[k])) ?? all[0])[k];

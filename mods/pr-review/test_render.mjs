@@ -113,13 +113,13 @@ for (const n of [0, 3, 310]) {
   v.tab = "findings";
   ok(`${n} files: the Findings tab with an analysis finding`, () => v.render(cx));
   if (n === 3) {
-    // One finding per defect: the security reviewer's finding and an AI suggestion on the same line merge into it,
+    // One finding per defect: the security reviewer's finding and an AI suggestion on its line with the same claim merge into it,
     // a suggestion alone on its line stays a note. Sent to Fix with a "fixed" report it is still unresolved: counted,
     // a blocker, a card in the diff; the layer lists it although the reviewer, not the analysis, leads it.
-    v.find = { ...v.find, list: [{ id: "s1", reviewer: "security", file: "src/f0.ts", line: 2, end: 2, severity: "high", title: "Open door", detail: "d", suggestion: "" }],
+    v.find = { ...v.find, list: [{ id: "s1", reviewer: "security", file: "src/f0.ts", line: 2, end: 2, severity: "high", title: "Unrelated change", detail: "d", suggestion: "" }],
       status: { a1: { s: "progress", fixHead: "h0", at: "2024-01-01" } }, reports: { a1: { id: "a1", status: "fixed", commit: "22e31c88f2", note: "done" } } };
     const sug = (line, severity, reason) => ({ key: `src/f0.ts:+${line}:${reason}`, hunk: v.hunks[0].id, path: "src/f0.ts", line, old: false, severity, reason });
-    v.ai = { ...v.ai, suspects: [sug(2, "medium", "same line"), sug(4, "low", "a nit")] };
+    v.ai = { ...v.ai, suspects: [sug(2, "medium", "Unrelated change"), sug(4, "low", "a nit")] };
     const [f] = v.findings();
     assert.deepEqual([v.findings().length, f.id, f.ids, f.security, v.sourcesOf(f)], [1, "a1", ["s1", "a1", f.ids[2]], true, "Security review: high · Analysis: high · AI suggestion: medium"]);
     assert.deepEqual(v.openSugs().map((s) => s.reason), ["a nit"]);

@@ -205,8 +205,8 @@ assert.equal(findingStatus(fb, { b: { s: "dismissed" } }, reps, "h2", "y(1)"), "
   const A = (id, file, line, severity, extra = {}) => ({ id, reviewer: "analysis", step: "k1", file, line, end: line, severity, category: "structure", title: `T ${id}`, detail: `D ${id}`, suggestion: "", ...extra });
   const S = (path, line, severity, reason, extra = {}) => ({ key: `${path}:+${line}:${reason}`, hunk: "h", path, line, old: false, severity, reason, approx: false, ...extra });
   const sec = { id: "sec1", reviewer: "security", file: "t.yaml", line: 18, end: 20, severity: "high", title: "Token unset", detail: "Fails open", suggestion: "Fail closed", code: "x", head: "h1" };
-  const list = [sec, A("a1", "t.yaml", 18, "medium", { category: "security", suggestion: "Set it" }), A("a2", "e.py", 9, "high"), A("a3", "e.py", 30, "medium")];
-  const sugs = [S("e.py", 9, "high", "No id. Dedupe is impossible."), S("t.yaml", 18, "medium", "Token is empty"), S("e.py", 12, "low", "Nit"), S("e.py", 40, "high", "Import couples the two. Split it."),
+  const list = [sec, A("a1", "t.yaml", 18, "medium", { category: "security", suggestion: "Set it", title: "Token unset in the template" }), A("a2", "e.py", 9, "high", { title: "No id, so dedupe is impossible" }), A("a3", "e.py", 30, "medium")];
+  const sugs = [S("e.py", 9, "high", "No id. Dedupe is impossible."), S("t.yaml", 18, "medium", "Token is unset"), S("e.py", 12, "low", "Nit"), S("e.py", 40, "high", "Import couples the two. Split it."),
     S("e.py", 50, "medium", "Open bucket", { category: "security" }), S("e.py", 9, "low", "old side", { old: true })];
   const m = mergeFindings(list, sugs);
   assert.deepEqual(m.findings.map((f) => [f.file, f.line, f.severity, f.sources.map((x) => `${x.reviewer}:${x.severity}`).join(" ")]), [
@@ -427,7 +427,7 @@ console.log("ok");
   assert.equal(now.suspects[0].category, "availability");
   // Merged: a low suggestion about availability is a finding of its own; the facts come from the leading source,
   // and what that one lacks (a reviewer has no criteria and no breaks) from the first source that has it.
-  const sec = { id: "s1", reviewer: "security", file: "a.py", line: 9, end: 9, severity: "high", title: "Sec", detail: "d", impact: "unauthorized_access", effect: "Anyone reads it.", certainty: "confirmed" };
+  const sec = { id: "s1", reviewer: "security", file: "a.py", line: 9, end: 9, severity: "high", title: "No id on the event", detail: "d", impact: "unauthorized_access", effect: "Anyone reads it.", certainty: "confirmed" };
   const m = mergeFindings([sec, { ...nf, severity: "medium" }], now.suspects);
   assert.deepEqual(m.findings.map((f) => [f.file, f.line, f.severity, f.reviewer, f.category]), [["a.py", 9, "high", "security", undefined], ["a.py", 2, "low", "ai", "availability"]]);
   assert.deepEqual(m.notes, []);
@@ -546,9 +546,9 @@ console.log("ok");
   const sh = findingSteps({}, { s: "fixed" });
   assert.equal(show(sh), "+reported -evidence -sent +verified >in_pr"); assert.equal(sh[4].missing, "Marked fixed by hand: no check has read the PR head.");
   // The funnel: reported per source, merged, unresolved, of those on security, of those confirmed.
-  const A = (id, line, extra = {}) => ({ id, reviewer: "analysis", file: "a.py", line, end: line, severity: "medium", category: "bug", title: id, detail: "", ...extra });
+  const A = (id, line, extra = {}) => ({ id, reviewer: "analysis", file: "a.py", line, end: line, severity: "medium", category: "bug", title: `T${line}`, detail: "", ...extra });
   const m = mergeFindings([{ ...A("s1", 3), reviewer: "security", severity: "high", certainty: "confirmed" }, { ...A("c1", 7), reviewer: "claude" }, A("a1", 3), A("a2", 7), A("a3", 9, { effort: "heavy" }), A("a4", 11, { effort: "quick" })],
-    [{ key: "k", path: "a.py", line: 9, old: false, severity: "low", reason: "same line" }]);
+    [{ key: "k", path: "a.py", line: 9, old: false, severity: "low", reason: "T9" }]);
   const st = { a4: "dismissed" }, x = funnel(m.findings, (f) => st[f.id] ?? "open");
   assert.deepEqual(x, { by: [["analysis", 4], ["claude", 1], ["security", 1], ["ai", 1]], reported: 7, merged: 4, unresolved: 3, security: 1, confirmed: 1 });
   const names = { analysis: "Analysis", claude: "Claude code review", security: "Security review", ai: "AI suggestion" };
@@ -602,5 +602,13 @@ console.log("ok");
   assert.equal(mergeFindings([{ ...pr2[6], line: 0 }, { ...pr2[7], line: 0 }]).findings.length, 2);
   // The measure: the pairs above score 0.40 and more when they are one claim, 0.27 and less when they are two.
   assert.deepEqual([sameClaim(pr2[0].title, pr2[1].title), sameClaim(pr2[1].title, pr2[2].title), sameClaim(pr2[8].title, pr2[10].title)], [true, false, false]);
+  // The same line with a different claim stays apart too (consumer.py:19): the KeyError suggestion is a note, or a
+  // finding of its own when it is high or about security or availability.
+  const keyErr = { key: "k19", hunk: "h1", path: "library/consumer.py", line: 19, old: false, severity: "medium", category: "bug", reason: "A missing loan raises KeyError and fails the whole batch; handle unknown ids explicitly." };
+  const same = mergeFindings(pr2.slice(0, 2), [keyErr]);
+  assert.deepEqual([same.findings.map((f) => f.ids.length), same.notes], [[2], [keyErr]]);
+  assert.deepEqual(mergeFindings(pr2.slice(0, 2), [{ ...keyErr, category: "availability" }]).findings.map((f) => `${f.line} ${f.sources.map((y) => y.reviewer).join("+")}`), ["19 analysis+claude", "19 ai"]);
+  // A suggestion that says the same as the finding on its line still joins it.
+  assert.deepEqual(mergeFindings(pr2.slice(0, 1), [{ ...keyErr, reason: "Consumer reads loans from an in-memory store per process." }]).findings.map((f) => f.ids.length), [2]);
   console.log("ok neighbouring lines");
 }
