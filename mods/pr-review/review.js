@@ -2610,7 +2610,7 @@ export const ReviewMode = {
         // Its unresolved findings, whoever found them: the highest severity with its count, security with its own mark.
         .when(Boolean(w?.security), (e) => e.child(div().id(`rv-sec-${i}`).tooltip(`${w.security} of them ${w.security === 1 ? "is a security finding" : "are security findings"}`).flex_none().text_size(13).text_color(t.ansi1).child("⛨")))
         .when(Boolean(w), (e) => e.child(badge(t, w.label, t[SEV[w.severity]] ?? t.ansi1).id(`rv-risk-${i}`).tooltip(`${n(w.total)} in this layer: ${w.words}`))))
-      .when(!list, (e) => e.child(div().pl(26).text_size(12).text_color(t.muted).child(`${seen} of ${files.length} ${files.length === 1 ? "file" : "files"} viewed`)))
+      .when(!list && files.length > 0, (e) => e.child(div().pl(26).text_size(12).text_color(t.muted).child(`${seen} of ${files.length} ${files.length === 1 ? "file" : "files"} viewed`)))
       // The open layer: its files, each with the same "Viewed" tick as in the Files tab (a long list: its first ones).
       .when(list, (e) => e.child(v_flex().pl(22).children(files.slice(0, LAYER_FILES).map((p, k) => h_flex().id(`rv-lfile-${i}-${k}`).tooltip("Tick this file as viewed; the layer is ticked once all its files are").accessibility_label("Viewed")
         .h(26).px(4).gap(8).items_center().rounded(5).cursor_pointer().hover((st) => st.bg(t.hover))
