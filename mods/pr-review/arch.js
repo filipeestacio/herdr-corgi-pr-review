@@ -281,7 +281,7 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
     const key = kind === "stub" || kind === "long" ? `${kind}:${e.i}` : fan ? `fan:${fanKey(e)}:${e.i}` : e.anchor !== undefined ? `rows:${e.from}>${e.to}` : `next:${e.to}:${norm(e.label)}:${e.source ?? ""}`;
     if (!byKey.has(key)) {
       const p = { key, kind: fan ? "fan" : kind, to: e.to, from: [], edges: [], label: e.label ?? "", dashed: Boolean(e.dashed) || e.source === "spec", source: e.source ?? null,
-        evidence: e.evidence ?? null, status: e.status ?? (e.changed ? "changed" : null), crosses: null };
+        evidence: e.evidence ?? null, status: e.status ?? (e.changed ? "changed" : null), crosses: null, tip: e.tip ?? null };
       byKey.set(key, p); paths.push(p);
       if (fan) {
         const tk = `fan:${fanKey(e)}`;
