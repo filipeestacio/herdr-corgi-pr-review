@@ -465,6 +465,10 @@ console.log("ok");
   assert.deepEqual(list.extra.map((r) => r.ask.id), ["x1"]);
   assert.deepEqual(list.other.map((x) => x.id), ["f3"], "not in the task: unresolved, no security, linked to no ask");
   assert.equal(taskHead(list), "0 of 2 acceptance criteria met, 1 extra");
+  // The groups of criteria: the acceptance criteria and the rest; a group all met folds to one line.
+  const { criteriaGroups } = await import("./pr.js");
+  assert.deepEqual(criteriaGroups(list).map((g) => [g.key, g.rows.map((r) => r.ask.id), g.met]), [["head", ["c1", "c2"], false], ["rest", ["c3"], true]]);
+  assert.deepEqual(criteriaGroups(taskList([], [], [], statusOf)), []);
   assert.equal(taskList([{ ...asks[1], findings: [] }], [], ["c2"], statusOf).rows[0].unlinked, true, "partly without a finding: nothing backs it");
   // An older analysis says nothing about acceptance: every ask that is not extra counts.
   const old = taskList(asks.map((a) => ({ ...a, acceptance: null })), [], [], statusOf);
