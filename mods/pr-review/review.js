@@ -2958,11 +2958,14 @@ export const ReviewMode = {
       verify: [(_e, cx) => { this.tab = "findings"; cx.notify(); }, "Fixes sent before the last push, not verified on the new head: click for the Findings tab"] };
     const part = (p) => div().id(`rv-vd-${p.key}`).tooltip(go[p.key][1]).text_color(p.tone === "security" ? t.ansi1 : t.foreground)
       .when(Boolean(go[p.key][0]), (e) => e.cursor_pointer().hover((s) => s.underline()).on_click(go[p.key][0])).child(p.key === "security" ? `⛨ ${p.text}` : p.text);
-    const action = verdictAction(rows), state = [`PR ${pr.state ?? "open"}`, ctx?.stacked_on && `stacked on #${ctx.stacked_on.number}`].filter(Boolean).join(" · ");
+    // The stack: the base this PR builds on, and the PRs that build on this one (related.py stacked_above).
+    const action = verdictAction(rows), above = ctx?.stacked_above ?? [];
+    const state = [`PR ${pr.state ?? "open"}`, ctx?.stacked_on && `stacked on #${ctx.stacked_on.number}`, above.length > 0 && `${above.map((p) => `#${p.number}`).join(", ")} ${above.length === 1 ? "builds" : "build"} on this PR`].filter(Boolean).join(" · ");
     // The title with the PR's state; the verdict: the suggested action, then the numbers it rests on (only ⛨ red).
     const head = v_flex().flex_none().gap(6).max_w(1100)
       .child(h_flex().flex_wrap().gap(12).items_baseline().child(div().min_w(0).text_size(22).font_semibold().line_height(1.3).whitespace_normal().child(pr.title ?? `#${pr.number}`))
-        .child(div().id("rv-ov-state").flex_none().text_size(12.5).text_color(t.muted).tooltip(ctx?.stacked_on ? `This PR's base is the branch of #${ctx.stacked_on.number} ${ctx.stacked_on.title ?? ""}, so it merges after it. Click to open it in its own review.` : "The PR's state on GitHub")
+        .child(div().id("rv-ov-state").flex_none().text_size(12.5).text_color(t.muted).tooltip([ctx?.stacked_on ? `This PR's base is the branch of #${ctx.stacked_on.number} ${ctx.stacked_on.title ?? ""}, so it merges after it. Click to open it in its own review.` : "The PR's state on GitHub",
+            ...above.map((p) => `#${p.number} ${p.title ?? ""} builds on this PR: it merges after this one.`)].join("\n"))
           .when(Boolean(ctx?.stacked_on), (e) => e.cursor_pointer().hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => this.openRelated(ctx.stacked_on, cx))).child(state)))
       .when(verdict.length > 0 || Boolean(ai), (e) => e.child(h_flex().id("rv-verdict").flex_wrap().gap(8).items_center().text_size(15).font_semibold().line_height(1.35)
         .child(div().id("rv-vd-action").tooltip("The action this review suggests; Finish your review leaves the choice to you").text_color(action === "Approve" ? t.ansi2 : t.foreground).child(`${action}${verdict.length ? ":" : ""}`))
@@ -4777,7 +4780,8 @@ export const ReviewMode = {
     const MARK = { true: ["✓", "ansi2", "Passed"], false: ["✗", "foreground", "Failed"], null: ["…", "ansi3", "Not decided yet"], "n/a": ["n/a", "muted", "Does not apply to this PR"] }; // red is the security part's
     const failed = all.some((r) => r.ok === false), open = this.rulesOpen ?? failed, passed = rules.filter((c) => c.ok === true).length, ci = checkGroups(checks).ci;
     const ruleText = `${passed} of ${rules.length} passed${ci.length ? ` · CI ${ci.filter((c) => c.ok === true).length} of ${ci.length}` : ""} ${open ? "▾" : "▸"}`;
-    const related = [...(ctx?.open ?? []).filter((p) => !p.stacked).map((p) => ({ ...p, state: "open" })), ...(ctx?.merged ?? []).map((p) => ({ ...p, state: "merged" }))];
+    // The base is in the title's state; a PR that builds on this one stays here as "on top".
+    const related = [...(ctx?.open ?? []).filter((p) => !p.stacked || p.above).map((p) => ({ ...p, state: p.above ? "on top" : "open" })), ...(ctx?.merged ?? []).map((p) => ({ ...p, state: "merged" }))];
     // A flow picture only when a path in it is broken or doubled: an unresolved finding breaks one of its calls.
     const flow = (ai?.visuals ?? []).find((v) => v.kind === "flow" && this.openFindings().some((f) => f.breaks));
     const surface = ai ? surfaceLine(ai.access, [...(ai.scope?.checked ?? []), ...(this.find.runs?.security?.scope?.checked ?? [])]) : null;
@@ -4803,14 +4807,14 @@ export const ReviewMode = {
         .child(div().w(22).flex_none().font_semibold().text_color(t[MARK[r.ok][1]]).child(MARK[r.ok][0]))
         .child(div().flex_1().min_w(0).truncate().child(r.name))))
         .when(!ctx, (x) => x.child(div().pl(100).text_size(12).text_color(t.muted).child("CI checks and mergeability load in the background…"))))
-      .when(related.length > 0, (e) => e.child(line("rv-ov-related", "Related PRs", div().child(`${related.length} touch the same files ${this.relOpen ? "▾" : "▸"}`), "Other PRs that change the same files: click to show them",
+      .when(related.length > 0, (e) => e.child(line("rv-ov-related", "Related PRs", div().child(`${[related.some((p) => p.above) && `${related.filter((p) => p.above).length} on top of this PR`, related.some((p) => !p.above) && `${related.filter((p) => !p.above).length} touch the same files`].filter(Boolean).join(" · ")} ${this.relOpen ? "▾" : "▸"}`), "Other PRs that change the same files, and the ones that build on this PR: click to show them",
         (_e, cx) => { this.relOpen = !this.relOpen; cx.notify(); }))
         .when(Boolean(this.relOpen), (x) => x.children(related.map((p) => h_flex().id(`rv-rel-${p.number}`).tooltip("Open this related PR in its own review").gap(8).items_center().pl(100).pr(6).py(2).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
           .on_click((_e, cx) => this.openRelated(p, cx))
-          .child(div().flex_none().text_size(12).text_color(p.state === "open" ? t.ansi2 : t.ansi5).child(p.state))
+          .child(div().flex_none().text_size(12).text_color(p.state === "open" ? t.ansi2 : p.above ? t.accent : t.ansi5).child(p.state))
           .child(div().flex_none().text_size(12.5).text_color(t.muted).child(`#${p.number}`))
           .child(div().flex_1().min_w(0).truncate().text_size(12.5).child(p.title))
-          .child(div().id(`rv-relf-${p.number}`).flex_none().text_size(12).text_color(t.muted).tooltip((p.files ?? []).join("\n") || "-").child(`${p.overlap} ${p.overlap === 1 ? "file" : "files"} overlap`))))));
+          .child(div().id(`rv-relf-${p.number}`).flex_none().text_size(12).text_color(t.muted).tooltip((p.files ?? []).join("\n") || "-").child(p.above ? "it builds on this PR" : `${p.overlap} ${p.overlap === 1 ? "file" : "files"} overlap`))))));
   },
 
   // The bar's "Repo rules 2/2": the rules this PR is checked against (the title's form and the analysis' repo rules)
