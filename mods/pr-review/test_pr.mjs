@@ -155,6 +155,9 @@ assert.deepEqual([capped.req.hunks.map((h) => h.alias), capped.req.cut], [["h2",
 const { tierOf } = await import("./pr.js");
 assert.deepEqual(["haiku", "claude-haiku-4-5-20251001", "sonnet", "claude-sonnet-5", "opus", "fable", "claude-fable-5-1[1m]", undefined].map(tierOf),
   ["haiku", "haiku", "sonnet", "sonnet", "opus", "opus", "opus", "opus"]);
+// Code is read and judged by at least Sonnet: a stored haiku (an old pick) becomes sonnet.
+assert.deepEqual(["haiku", "claude-haiku-4-5-20251001", undefined, "sonnet", "opus", "claude-fable-5-1"].map((await import("./pr.js")).codeModel),
+  ["sonnet", "sonnet", "sonnet", "sonnet", "opus", "claude-fable-5-1"]);
 MODELS0.haiku.chars = 100;
 const byId = reviewRequest({ url: "u", files: rq, model: "claude-haiku-4-5[1m]", context: { id: "default", env: null }, dir: "/d" });
 MODELS0.haiku.chars = was;

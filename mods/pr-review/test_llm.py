@@ -28,7 +28,7 @@ try:
                          schema={"type": "object"}, meta=meta)
         assert got == {"x": 1}, got
         args, kw = calls[-1]
-        assert args[:4] == ["claude", "-p", "--model", "haiku"] and "--json-schema" in args and kw["input"] == "prompt"
+        assert args[:4] == ["claude", "-p", "--model", "sonnet"] and "--json-schema" in args and kw["input"] == "prompt"
         assert json.loads(args[args.index("--json-schema") + 1]) == {"type": "object", "required": ["answer"], "properties": {"answer": {"type": "object"}}}, "one top-level property"
         assert kw["env"]["CLAUDE_CONFIG_DIR"] == "/x/.claude-red" and "GONE" not in kw["env"]
         assert meta["cost"] == 0.0123 and meta["tokens"] == 15 and meta["model_id"] == "claude-haiku-x"
@@ -105,6 +105,7 @@ try:
              json.dumps({"structured_output": {"answer": {"findings": [{"file": "a.py", "line": 2, "severity": "high", "title": "always raises", "detail": "d"}]}}, "total_cost_usd": 0.01})]
     answer, meta = reviewers.claude_review(req, reviewers.code_review_command(req))
     assert meta["converted"] and abs(meta["cost"] - 0.08) < 1e-9 and "a.py:2 always raises" in calls[-1][1]["input"]
+    assert calls[-1][0][:4] == ["claude", "-p", "--model", "haiku"], "reshaping prose stays on haiku"
     assert reviewers.normalize(answer["findings"], "claude", d)[0]["severity"] == "high"
 
     # No answer anywhere: the run fails with a reason instead of counting 0 findings.
@@ -116,4 +117,7 @@ try:
         assert "gave no findings answer" in str(e) and "Command completed" in str(e)
 finally:
     subprocess.run = real
+# Code is read and judged by at least sonnet: an old caller's haiku is lifted, the rest passes through.
+assert [llm.code_model(m) for m in ["haiku", "claude-haiku-4-5-20251001", None, "", "sonnet", "opus", "claude-fable-5-1"]] == \
+    ["sonnet", "sonnet", "sonnet", "sonnet", "sonnet", "opus", "claude-fable-5-1"]
 print("ok")

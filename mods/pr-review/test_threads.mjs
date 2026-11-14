@@ -97,7 +97,9 @@ assert.equal(TH.fixFor(TH.setFix(fx, "pr", "j1", { state: "applied" }, 7), "pr",
 assert.equal(TH.fixCommit(job, {}, {}), null);
 assert.equal(TH.fixCommit(job, { c1: [{ status: "answered" }, { status: "fixed", commit: "beef" }] }, {}), "beef", "a comment reply with the commit");
 assert.equal(TH.fixCommit(job, {}, { f1: { status: "fixed", commit: "cafe" } }), "cafe", "a finding report with the commit");
-const args = TH.subAgentArgs({ parent: "t3", cwd: "/w", name: "fix-j1", env: ["env", "CLAUDE_CONFIG_DIR=/c"], task: "Fix it", job: "j1", auto: true });
+const args = TH.subAgentArgs({ parent: "t3", cwd: "/w", name: "fix-j1", env: ["env", "CLAUDE_CONFIG_DIR=/c"], task: "Fix it", job: "j1", auto: true, model: "opus" });
+assert.equal(args[args.indexOf("--model") + 1], "opus", "the review's model, said outright");
+assert.equal((a => a[a.indexOf("--model") + 1])(TH.subAgentArgs({ parent: null, cwd: "/w", name: "n", task: "x", job: "j" })), "sonnet", "never the account's default");
 assert.deepEqual(args.slice(0, 2), ["run", "--bg"]);
 assert.ok(args.includes("--no-notify"), "nothing typed into the parent");
 assert.equal(args[args.indexOf("--parent") + 1], "t3", "a sub-agent of the PR's agent");
@@ -143,7 +145,7 @@ assert.match(off.reason, /on feat\/other.*abcdef0.*git cherry-pick abcdef0\.\.fi
   assert.equal(TH.checkText(null, true), "not verified");
 }
 // A fix agent cannot push: deny rules before the permission mode, the task last.
-assert.deepEqual(args.slice(args.indexOf("claude") + 1, args.indexOf("--permission-mode")), ["--disallowedTools", ...TH.NO_PUSH]);
+assert.deepEqual(args.slice(args.indexOf("claude") + 1, args.indexOf("--permission-mode")), ["--model", "opus", "--disallowedTools", ...TH.NO_PUSH]);
 assert.ok(TH.NO_PUSH.includes("Bash(hc send *)"), "no hand-over to another session by itself");
 assert.ok(TH.NO_PUSH.includes("Bash(git push *)") && untrusted.includes("Bash(git push *)") && untrusted.at(-1) === "x");
 // The target choice: the sub-agent's text names its worktree, the main agent's doesn't; the preview sends that text.
@@ -205,6 +207,7 @@ console.log("threads ok");
 {
   const sub = Object.fromEntries(TH.sendFacts({ kind: "sub", account: "Claude Code (Anthropic) · account in ~/.claude", trusted: true, branch: "fix/7-f1" }));
   assert.equal(sub["Runs as"], "Claude Code (Anthropic) · account in ~/.claude");
+  assert.equal(Object.fromEntries(TH.sendFacts({ kind: "new", account: "acct", model: "Sonnet" }))["Runs as"], "acct · Sonnet", "the model a new agent runs on");
   assert.match(sub.May, /auto mode/); assert.match(sub.Push, /^Never/); assert.match(sub.Result, /fix\/7-f1.*Nothing reaches the PR until you apply it/);
   assert.equal(sub.Starts, undefined, "the choice above says where it starts");
   assert.match(Object.fromEntries(TH.sendFacts({ kind: "sub", account: "a", trusted: false })).May, /someone else's PR.*asks before every edit/);
