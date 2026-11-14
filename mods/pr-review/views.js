@@ -638,7 +638,9 @@ const CONFIG = /\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b|\bsecret|\benv(?:ironment)?\b|\bco
 // gates: the security run's checks per crossing ({where: {access} | {from, to, edge}, principal, check, at, source,
 // holds_if, carries}); a gate on the row itself (x.gate, e.gate) is the older place. A threat with `derived` is a
 // placeholder ("no threat was named") and names no result.
-export function crossingsOf({ arch = null, access = [], threats = [], findings = [], gates = [] } = {}) {
+// bypasses: the security run's calls in one process that bypass a boundary ({from, to, edge}); without them (an
+// older run), a call in one process bypasses one when the code it reaches also gets calls from another frame.
+export function crossingsOf({ arch = null, access = [], threats = [], findings = [], gates = [], bypasses = [] } = {}) {
   const zones = arch?.zones ?? [], nodes = arch?.nodes ?? [], groups = arch?.groups ?? [], edges = arch?.edges ?? [];
   const zone = (id) => zones.find((z) => z.id === id) ?? null, node = (id) => nodes.find((n) => n.id === id);
   // A card's zone: the zone of what it runs in (runs_in), else its own. A frame's zone: the one its cards share.
@@ -659,7 +661,10 @@ export function crossingsOf({ arch = null, access = [], threats = [], findings =
     const own = f.reachable_from ?? [], clash = byThreat.length && own.length && !own.some((a) => byThreat.includes(a));
     const all = [...new Set([...byThreat, ...own])], outer = all.filter((a) => byId.get(a)?.public);
     homeOf.set(f, clash ? (outer.length ? outer : byThreat) : all);
-    if (clash || f.reach_conflict) conflicts.set(f.id, { finding: own, threat: byThreat, conflict: f.reach_conflict ?? null });
+    // The run's own reach_conflict ({finding: {reachable_from}, threat: {where}}) says the same in its words.
+    const rc = f.reach_conflict, where = rc?.threat?.where;
+    if (rc) conflicts.set(f.id, { finding: rc.finding?.reachable_from ?? own, threat: [where?.access ?? where?.edge ?? (where?.from ? `${where.from} → ${where.to}` : null)].filter(Boolean), conflict: rc });
+    else if (clash) conflicts.set(f.id, { finding: own, threat: byThreat, conflict: null });
   }
   const RESULT = { finding: "finding", mitigated: "mitigated", checked_clean: "mitigated", not_assessed: "not_assessed", not_checked: "not_assessed" };
   const row = (base, match) => {
@@ -682,7 +687,7 @@ export function crossingsOf({ arch = null, access = [], threats = [], findings =
     rows.push(row({ key: `a:${x.id ?? x.resource}`, kind: op ? "operator" : x.public ? "entry" : "right", from: x.public ? { name: x.principal || "Internet", trust: "public" } : pn ? z(from) : { name: x.principal ?? "unnamed", trust: null },
       to: z(to), identity: x.principal ?? null, expects: gate.principal ?? null, check: checkText(gate) ?? x.auth ?? null, at: gate.at ?? x.at ?? null, holds_if: gate.holds_if ?? null,
       carries: gate.carries ?? null, change: changeOf(x), ends: { from: pn ? cardOf(pn) : null, to: x.node ?? null }, access: x, what: x.resource ?? "", actions: x.actions ?? [],
-      unmapped: !x.public && !op && !pn, unused: x.used === false },
+      unmapped: !x.public && !op && !pn, unused: x.used === false, ...(op ? { valueFrom: x.value_from ?? null, derived: Boolean(x.derived) } : {}) },
     { threat: (t) => t.where?.access === x.id, finding: (f) => (homeOf.get(f) ?? []).includes(x.id) }));
   }
   edges.forEach((e, i) => {
@@ -695,7 +700,8 @@ export function crossingsOf({ arch = null, access = [], threats = [], findings =
     // (a consumer written for a queue, here called directly), or the data marks it as a crossing.
     if (inProcess(e) || (node(e.from)?.group && node(e.from)?.group === node(e.to)?.group)) {
       const other = edges.some((x, j) => j !== i && x.to === e.to && node(x.from)?.group !== node(e.to)?.group && !inProcess(x));
-      if (inProcess(e) && (e.crosses || other)) rows.push(row({ ...base, kind: "bypass", check: null, what: `${e.label ?? "a direct call"}: bypasses the boundary of ${label(e.to)}` }, match));
+      const named = (bypasses ?? []).length ? bypasses.some((x) => x.edge === `e${i}` || (x.from === e.from && x.to === e.to)) : inProcess(e) && (e.crosses || other);
+      if (named) rows.push(row({ ...base, kind: "bypass", check: null, what: `${e.label ?? "a direct call"}: bypasses the boundary of ${label(e.to)}` }, match));
       return;
     }
     if (!e.crosses && !(a && b && a.id !== b.id)) return;
@@ -712,7 +718,8 @@ export function crossingsOf({ arch = null, access = [], threats = [], findings =
   return rows;
 }
 // Whether a crossing is new or changed in this PR (not said counts as such: better shown than hidden).
-export const crossingChanged = (r) => r.change === null || CHANGED.includes(r.change);
+// An operator's way derived from a gate's condition belongs to that gate, so it shows with it whatever its own change.
+export const crossingChanged = (r) => r.change === null || CHANGED.includes(r.change) || (r.kind === "operator" && Boolean(r.derived));
 
 // The sentence over the Security page, from the data: the door and its check, the condition it holds on and whether a
 // finding says it breaks, what lies behind it, the other changes, and how many crossings are assessed. "Security · 0"
@@ -750,14 +757,15 @@ export function effectiveFrom(list, arch) {
 // marked it as a crossing, `bypass`; a caller from outside is a card "Internet" (the outermost principal) with a call
 // to each public way in, the "‖" on it. The calls keep their indexes (the new ones come last).
 const SHARED = /librar|shared|common|module|package|util/i;
-export function mapArch(arch, access = []) {
+export function mapArch(arch, access = [], bypasses = []) {
   if (!arch) return arch;
   const nodes = arch.nodes ?? [], node = (id) => nodes.find((n) => n.id === id), frame = (id) => (arch.groups ?? []).find((g) => g.id === node(id)?.group);
   // runs_in names a card or a frame (a deployment): a frame's zone is the one its own cards carry.
   const frameZone = (gid) => nodes.find((n) => n.group === gid && n.zone && !n.runs_in)?.zone;
   const zoneOf = (n, k = 0) => (n?.runs_in && k < 4 ? (node(n.runs_in) ? zoneOf(node(n.runs_in), k + 1) : frameZone(n.runs_in)) ?? n.zone : SHARED.test(frame(n?.id)?.label ?? "") && k === 0 ? undefined : n?.zone);
   const feeds = (e, i) => (arch.edges ?? []).some((x, j) => j !== i && x.to === e.to && node(x.from)?.group !== node(e.to)?.group && !inProcess(x));
-  const edges = (arch.edges ?? []).map((e, i) => (inProcess(e) ? { ...e, crosses: false, bypass: Boolean(e.crosses || feeds(e, i)) } : e));
+  const named = (e, i) => ((bypasses ?? []).length ? bypasses.some((x) => x.edge === `e${i}` || (x.from === e.from && x.to === e.to)) : Boolean(e.crosses || feeds(e, i)));
+  const edges = (arch.edges ?? []).map((e, i) => (inProcess(e) ? { ...e, crosses: false, bypass: named(e, i) } : e));
   // A way in the analysis already draws a caller from outside for (an external card that calls it) needs no other.
   const doors = (access ?? []).filter((x) => x.public && node(x.node) && !(arch.edges ?? []).some((e) => e.to === x.node && node(e.from)?.type === "external"));
   const out = { ...arch, nodes: nodes.map((n) => ({ ...n, zone: zoneOf(n) })), edges };

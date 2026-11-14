@@ -583,6 +583,14 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.equal(secSentence(rows, 1), "The way in is Api, open to anyone on the internet; its check (token, in the code) holds only if FRONT_DESK_TOKEN is set, and an unresolved high finding says it does not: Token never set. Behind it: mail any member. It also adds or changes 1 right into another zone, 1 call over a trust boundary, 1 call that bypasses a boundary and 1 operator way. 1 of 5 crossings is assessed, 4 not assessed. 1 security finding is unresolved.");
   assert.equal(secSentence([], 0), "This PR opens no way in from the public side that the data names. No security finding is unresolved.");
   assert.deepEqual(crossingsOf({}), []);
+  // The run's bypasses decide which call in one process is a row; its reach_conflict is shown in its own words.
+  const byRun = crossingsOf({ arch, access, threats, gates, findings, bypasses: [{ edge: "e3" }] });
+  assert.deepEqual(byRun.filter((r) => r.kind === "bypass").map((r) => r.key), [], "e0 is not in the run's list, e3 is no call in one process");
+  const rc = crossingsOf({ arch, access, threats: [{ where: { access: "acc1" }, result: "finding", findings: ["tok"] }], gates, findings: [{ ...findings[0], reachable_from: ["acc1"], reach_conflict: { finding: { reachable_from: ["acc2"] }, threat: { id: "t1", where: { access: "acc1" } } } }] });
+  assert.deepEqual(rc[0].conflicts.map((c) => [c.finding, c.threat]), [[["acc2"], ["acc1"]]]);
+  const op = crossingsOf({ arch, access: [{ id: "acc4", principal: "operator", principal_kind: "operator", derived: true, value_from: null, node: "fd", resource: "FRONT_DESK_TOKEN" }] });
+  assert.ok(crossingChanged({ kind: "operator", derived: true, change: "unchanged" }), "a derived operator way shows with its gate");
+  assert.deepEqual(op.filter((r) => r.kind === "operator").map((r) => [r.kind, r.valueFrom, r.derived]), [["operator", null, true]], "the run's operator way, no derived one beside it");
   // A caller from outside drawn as a card: its call to the way in is that way in's row, not a second one.
   const ext = { ...arch, nodes: [...arch.nodes, { id: "cl", type: "external", zone: "z0" }], zones: [...arch.zones, { id: "z0", name: "Clients", trust: "public" }], edges: [...arch.edges, { from: "cl", to: "fd", crosses: true }] };
   assert.equal(crossingsOf({ arch: ext, access, threats, gates, findings }).filter((r) => r.ends.from === "cl").length, 0);
