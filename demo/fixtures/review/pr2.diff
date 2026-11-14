@@ -1,0 +1,296 @@
+diff --git a/library/consumer.py b/library/consumer.py
+new file mode 100644
+index 0000000..192e9c8
+--- /dev/null
++++ b/library/consumer.py
+@@ -0,0 +1,26 @@
++"""Reminder consumer Lambda: reads loan events from the queue and mails the member."""
++import json
++
++from library import api
++from library.dates import format_day, today
++from library.mailer import Mailer
++
++mailer = Mailer()
++
++
++def handler(event, context):
++    records = event.get("Records", [])
++    for record in records:
++        handle(json.loads(record["body"]))
++    return {"handled": len(records)}
++
++
++def handle(message):
++    loan = api.store.get(message["loan_id"])
++    if message["type"] == "loan.reminded":
++        mailer.send(loan.email, f"Please return {loan.book}",
++                    f"Hi {loan.member}, {loan.book} is due on {format_day(loan.due_on)}.")
++        loan.reminded_on = today()
++    elif message["type"] == "loan.overdue":
++        mailer.send(loan.email, f"{loan.book} is overdue",
++                    f"Hi {loan.member}, {loan.book} was due on {format_day(loan.due_on)}.")
+diff --git a/library/events.py b/library/events.py
+new file mode 100644
+index 0000000..d0f0300
+--- /dev/null
++++ b/library/events.py
+@@ -0,0 +1,20 @@
++"""Loan events: what happened to a loan, for anything that reacts to it."""
++from dataclasses import asdict, dataclass
++import json
++
++
++@dataclass(frozen=True)
++class LoanEvent:
++    type: str  # "loan.reminded", "loan.overdue" or "loan.returned"
++    loan_id: int
++    on: str  # the day it happened, as an ISO date
++
++
++class Queue:
++    """The loan-events queue (a list in tests, SQS in production)."""
++
++    def __init__(self, messages=None):
++        self.messages = messages if messages is not None else []
++
++    def publish(self, event):
++        self.messages.append(json.dumps(asdict(event)))
+diff --git a/library/handler.py b/library/handler.py
+index 832818c..9e4c564 100644
+--- a/library/handler.py
++++ b/library/handler.py
+@@ -1,9 +1,10 @@
+-"""AWS Lambda entry for the front desk: GET /late, with a bearer token."""
++"""AWS Lambda entry for the front desk: GET /late and POST /remind, with a bearer token."""
+ import hmac
+ import json
+ import os
+ 
+-from library import api
++from library import api, consumer
++from library.dates import today
+ 
+ TOKEN = os.environ.get("FRONT_DESK_TOKEN", "")
+ 
+@@ -14,6 +15,11 @@ def handler(event, context):
+         return {"statusCode": 401, "body": "missing token"}
+     if not hmac.compare_digest(auth[len("Bearer "):], TOKEN):
+         return {"statusCode": 403, "body": "wrong token"}
++    if event.get("rawPath") == "/remind":
++        # The front desk wants the mail out at once, so skip the queue for this one loan.
++        loan_id = json.loads(event.get("body") or "{}")["id"]
++        consumer.handle({"type": "loan.reminded", "loan_id": loan_id, "on": today().isoformat()})
++        return {"statusCode": 202, "body": json.dumps({"id": loan_id, "reminded": True})}
+     if event.get("rawPath") != "/late":
+         return {"statusCode": 404, "body": "not found"}
+     status, body = api.late({})
+diff --git a/library/reminders.py b/library/reminders.py
+index 9d2409c..64611de 100644
+--- a/library/reminders.py
++++ b/library/reminders.py
+@@ -2,6 +2,7 @@
+ import datetime as dt
+ 
+ from library.dates import format_day, today
++from library.status import Status, transition
+ 
+ REMIND_DAYS = 2
+ 
+@@ -12,17 +13,27 @@ def due_soon(loans, on=None):
+     return [l for l in loans if l.open and l.due_on == day and l.reminded_on is None]
+ 
+ 
+-def send_reminders(store, mailer, on=None):
+-    """Mails each member whose loan is due soon and marks the loan as reminded. Returns how many were sent."""
++def send_reminders(store, mailer, queue, on=None):
++    """Mails each member whose loan is due soon and moves the loan to reminded. Returns how many were sent."""
++    day = on or today()
+     sent = 0
+-    for loan in due_soon(store.open_loans(), on):
++    for loan in due_soon(store.open_loans(), day):
+         mailer.send(loan.email, f"Please return {loan.book}",
+                     f"Hi {loan.member}, {loan.book} is due on {format_day(loan.due_on)}.")
+-        loan.reminded_on = on or today()
++        transition(loan, Status.REMINDED, queue, day)
+         sent += 1
+     return sent
+ 
+ 
++def publish_overdue(store, queue, on=None):
++    """Publishes loan.overdue for each open loan that passed its due date yesterday. Returns how many."""
++    day = on or today()
++    late = [l for l in store.open_loans() if l.due_on == day - dt.timedelta(days=1)]
++    for loan in late:
++        transition(loan, Status.OVERDUE, queue, day)
++    return len(late)
++
++
+ def overdue(loans, on=None):
+     """Open loans past their due date, the longest overdue first."""
+     day = on or today()
+diff --git a/library/status.py b/library/status.py
+index a6aab31..b59df9b 100644
+--- a/library/status.py
++++ b/library/status.py
+@@ -1,6 +1,8 @@
+-"""A loan's status and the moves allowed between them."""
++"""A loan's status, the moves allowed between them, and the event each move publishes."""
+ from enum import Enum
+ 
++from library.events import LoanEvent
++
+ 
+ class Status(str, Enum):
+     BORROWED = "borrowed"
+@@ -33,3 +35,17 @@ def status_of(loan, on):
+     if loan.reminded_on is not None:
+         return Status.REMINDED
+     return Status.BORROWED
++
++
++EVENTS = {Status.REMINDED: "loan.reminded", Status.OVERDUE: "loan.overdue", Status.RETURNED: "loan.returned"}
++
++
++def transition(loan, new, queue, on):
++    """Moves a loan to a new status and publishes the event for it. The only place a status changes."""
++    move(status_of(loan, on), new)
++    if new is Status.REMINDED:
++        loan.reminded_on = on
++    if new is Status.RETURNED:
++        loan.returned_on = on
++    queue.publish(LoanEvent(EVENTS[new], loan.id, on.isoformat()))
++    return new
+diff --git a/library/tests/test_consumer.py b/library/tests/test_consumer.py
+new file mode 100644
+index 0000000..a86cba7
+--- /dev/null
++++ b/library/tests/test_consumer.py
+@@ -0,0 +1,21 @@
++import datetime as dt
++import json
++import unittest
++
++from library import api, consumer
++from library.loans import Loan
++
++
++class ConsumerTest(unittest.TestCase):
++    def setUp(self):
++        api.store.add(Loan(id=7, member="ada", book="SICP", email="member", borrowed_on=dt.date(2026, 3, 1)))
++        consumer.mailer.outbox.clear()
++
++    def test_a_reminded_event_mails_the_member(self):
++        body = json.dumps({"type": "loan.reminded", "loan_id": 7, "on": "2026-03-20"})
++        self.assertEqual(consumer.handler({"Records": [{"body": body}]}, None), {"handled": 1})
++        self.assertEqual(consumer.mailer.outbox[0]["to"], "member")
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/library/tests/test_events.py b/library/tests/test_events.py
+new file mode 100644
+index 0000000..405d0a0
+--- /dev/null
++++ b/library/tests/test_events.py
+@@ -0,0 +1,30 @@
++import datetime as dt
++import json
++import unittest
++
++from library.events import Queue
++from library.loans import Loan
++from library.status import Status, transition
++
++MARCH_1 = dt.date(2026, 3, 1)
++
++
++class EventTest(unittest.TestCase):
++    def setUp(self):
++        self.loan = Loan(id=1, member="ada", book="SICP", email="member", borrowed_on=MARCH_1)
++        self.queue = Queue()
++
++    def test_a_reminded_loan_publishes_one_event(self):
++        transition(self.loan, Status.REMINDED, self.queue, dt.date(2026, 3, 20))
++        self.assertEqual([json.loads(m) for m in self.queue.messages],
++                         [{"type": "loan.reminded", "loan_id": 1, "on": "2026-03-20"}])
++
++    def test_a_returned_loan_publishes_nothing_more(self):
++        transition(self.loan, Status.RETURNED, self.queue, dt.date(2026, 3, 10))
++        with self.assertRaises(ValueError):
++            transition(self.loan, Status.REMINDED, self.queue, dt.date(2026, 3, 20))
++        self.assertEqual(len(self.queue.messages), 1)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/library/tests/test_reminders.py b/library/tests/test_reminders.py
+index 1f86fda..d1fce61 100644
+--- a/library/tests/test_reminders.py
++++ b/library/tests/test_reminders.py
+@@ -1,6 +1,7 @@
+ import datetime as dt
+ import unittest
+ 
++from library.events import Queue
+ from library.loans import Loan, LoanStore
+ from library.mailer import Mailer
+ from library.reminders import overdue, send_reminders
+@@ -15,11 +16,11 @@ def setUp(self):
+         self.store.add(Loan(id=2, member="alan", book="TAOCP", email="member", borrowed_on=MARCH_1 - dt.timedelta(days=30)))
+ 
+     def test_reminds_two_days_before_due_once(self):
+-        mailer = Mailer()
++        mailer, queue = Mailer(), Queue()
+         on = dt.date(2026, 3, 20)  # loan 1 is due on 22 March
+-        self.assertEqual(send_reminders(self.store, mailer, on), 1)
++        self.assertEqual(send_reminders(self.store, mailer, queue, on), 1)
+         self.assertEqual(mailer.outbox[0]["to"], "member")
+-        self.assertEqual(send_reminders(self.store, mailer, on), 0)
++        self.assertEqual(send_reminders(self.store, mailer, queue, on), 0)
+ 
+     def test_overdue_lists_the_late_loan(self):
+         self.assertEqual([l.id for l in overdue(self.store.open_loans(), dt.date(2026, 3, 20))], [2])
+diff --git a/template.yaml b/template.yaml
+new file mode 100644
+index 0000000..5f5d70c
+--- /dev/null
++++ b/template.yaml
+@@ -0,0 +1,37 @@
++AWSTemplateFormatVersion: "2010-09-09"
++Transform: AWS::Serverless-2016-10-31
++Description: The library service, two Lambdas and the loan-events queue between them.
++
++Globals:
++  Function:
++    Runtime: python3.13
++    Timeout: 10
++
++Resources:
++  LoanEvents:
++    Type: AWS::SQS::Queue
++
++  FrontDesk:
++    Type: AWS::Serverless::Function
++    Properties:
++      Handler: library.handler.handler
++      Environment:
++        Variables:
++          LOAN_EVENTS_URL: !Ref LoanEvents
++      Policies:
++        - SQSSendMessagePolicy:
++            QueueName: !GetAtt LoanEvents.QueueName
++      Events:
++        Api:
++          Type: HttpApi
++
++  ReminderConsumer:
++    Type: AWS::Serverless::Function
++    Properties:
++      Handler: library.consumer.handler
++      Events:
++        Loans:
++          Type: SQS
++          Properties:
++            Queue: !GetAtt LoanEvents.Arn
++            BatchSize: 10

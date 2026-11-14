@@ -1,0 +1,600 @@
+{
+ "runs": {
+  "claude": {
+   "state": "done",
+   "cost": 0.08900259999999999,
+   "ms": 40814,
+   "model": "claude-sonnet-5-5",
+   "at": "2026-11-14T10:45:22+0100",
+   "count": 10,
+   "head": "ccddf9524aec9c46d338d296bacce38d994af5fb",
+   "scope": {
+    "read": [
+     "git diff origin/feat/due-reminders...HEAD",
+     "library/status.py",
+     "library/api.py",
+     "library/mailer.py",
+     "library/loans.py (grep)"
+    ],
+    "checked": [
+     {
+      "area": "correctness",
+      "result": "finding",
+      "note": ""
+     },
+     {
+      "area": "error_handling",
+      "result": "finding",
+      "note": ""
+     },
+     {
+      "area": "concurrency",
+      "result": "finding",
+      "note": "SQS redelivery and batch retries"
+     },
+     {
+      "area": "state",
+      "result": "finding",
+      "note": ""
+     },
+     {
+      "area": "contracts",
+      "result": "finding",
+      "note": ""
+     },
+     {
+      "area": "tests",
+      "result": "finding",
+      "note": ""
+     }
+    ],
+    "skipped": [
+     "no CLAUDE.md in the repo was found, only the user-level one, which has no applicable rules"
+    ]
+   }
+  },
+  "security": {
+   "state": "done",
+   "cost": 0.14642,
+   "ms": 73327,
+   "model": "claude-sonnet-5-5",
+   "at": "2026-11-14T14:42:52+0100",
+   "count": 5,
+   "head": "ccddf9524aec9c46d338d296bacce38d994af5fb",
+   "scope": {
+    "read": [
+     "library/handler.py",
+     "library/consumer.py",
+     "library/events.py",
+     "library/status.py",
+     "library/reminders.py",
+     "library/mailer.py",
+     "library/api.py",
+     "template.yaml"
+    ],
+    "checked": [
+     {
+      "area": "authentication",
+      "result": "finding",
+      "note": "empty token default"
+     },
+     {
+      "area": "authorization",
+      "result": "finding",
+      "note": "no authorizer on HttpApi; /remind bypasses state checks"
+     },
+     {
+      "area": "input_validation",
+      "result": "finding",
+      "note": "id in /remind unvalidated"
+     },
+     {
+      "area": "secrets",
+      "result": "clean",
+      "note": "token compared in constant time, no hardcoded secrets"
+     },
+     {
+      "area": "permissions",
+      "result": "finding",
+      "note": "unused SQS send grant"
+     },
+     {
+      "area": "personal_data",
+      "result": "clean",
+      "note": "mail logs lowered to debug; events carry ids only"
+     },
+     {
+      "area": "dependencies",
+      "result": "not_checked",
+      "note": "out of scope"
+     }
+    ],
+    "skipped": [
+     "tests",
+     "requirements.txt version issues (excluded)"
+    ]
+   }
+  },
+  "codex": {
+   "state": "failed",
+   "error": "Codex review: the review could not be turned into findings",
+   "at": "2026-11-14T10:30:00+0100"
+  }
+ },
+ "findings": [
+  {
+   "id": "29c173706fda",
+   "reviewer": "claude",
+   "file": "library/reminders.py",
+   "line": 23,
+   "end": 23,
+   "severity": "high",
+   "title": "Reminder mailed twice: directly and again by the consumer",
+   "detail": "send_reminders mails the member itself and then transition() publishes loan.reminded. The consumer mails again on every loan.reminded event.",
+   "suggestion": "Make the event the only trigger: send_reminders should only transition and publish, and the consumer should do the mailing.",
+   "code": "        transition(loan, Status.REMINDED, queue, day)",
+   "category": "bug",
+   "impact": "breaks_requirement",
+   "effect": "Each member gets two reminder emails per due loan.",
+   "preconditions": [
+    "the queue is consumed by library.consumer"
+   ],
+   "certainty": "derived",
+   "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
+  },
+  {
+   "id": "36f9a6ea72b7",
+   "reviewer": "claude",
+   "file": "library/reminders.py",
+   "line": 35,
+   "end": 35,
+   "severity": "high",
+   "title": "publish_overdue always raises ValueError",
+   "detail": "It selects loans with due_on == day - 1 and calls transition(loan, OVERDUE, ...). status_of(loan, day) already returns OVERDUE for those loans because due_on < day. move(OVERDUE, OVERDUE) is not in MOVES, so it raises. It also never marks the loan, so a second run would try again.",
+   "suggestion": "Allow the derived-OVERDUE to OVERDUE move, or persist the status or an overdue_on field and check it. Add a test.",
+   "code": "",
+   "category": "bug",
+   "impact": "dead_path",
+   "effect": "No loan.overdue event is ever published, and the first late loan aborts the whole batch.",
+   "certainty": "derived",
+   "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
+  },
+  {
+   "id": "95eaa36fceeb",
+   "reviewer": "claude",
+   "file": "library/handler.py",
+   "line": 18,
+   "end": 18,
+   "severity": "medium",
+   "title": "/remind bypasses the state machine and has no input or error handling",
+   "detail": "It calls consumer.handle directly. That mails without transition() or move(), so it ignores the state machine: a returned loan is mailed anyway, and repeat calls re-mail. It also publishes no event. It ignores the HTTP method. A missing 'id' (KeyError), invalid JSON, or an unknown loan id (KeyError in store.get) raises an unhandled exception. The route returns 202 although the work was done synchronously. It also contradicts transition()'s docstring, 'the only place a status changes'.",
+   "suggestion": "Validate the input, return 400 or 404, and call transition(loan, REMINDED, queue, today()) so the event is published and the consumer does the mailing.",
+   "code": "    if event.get(\"rawPath\") == \"/remind\":",
+   "category": "bug",
+   "impact": "edge_case",
+   "effect": "A front-desk caller gets a 500 or a duplicate mail to a member whose loan is already returned. Loan state diverges from the events.",
+   "preconditions": [
+    "an authenticated caller posts /remind with a bad, unknown or returned loan id"
+   ],
+   "certainty": "derived",
+   "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
+  },
+  {
+   "id": "741d3e364325",
+   "reviewer": "claude",
+   "file": "library/consumer.py",
+   "line": 20,
+   "end": 20,
+   "severity": "high",
+   "title": "Consumer reads from an in-memory store the front desk does not share",
+   "detail": "The consumer looks the loan up in api.store, an in-process LoanStore. The consumer and the front desk are separate Lambdas, so the consumer's store is empty. The lookup raises KeyError, and every message fails and is retried. The consumer's loan.reminded_on = today() also changes a copy nobody else sees.",
+   "suggestion": "Back the store with a shared database, or put the recipient and book in the event payload.",
+   "code": "    if message[\"type\"] == \"loan.reminded\":",
+   "category": "bug",
+   "impact": "dead_path",
+   "effect": "In the deployed consumer Lambda no reminder or overdue mail is ever sent.",
+   "preconditions": [
+    "the consumer is deployed as its own Lambda per template.yaml"
+   ],
+   "certainty": "derived",
+   "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
+  },
+  {
+   "id": "0ecf9c8f5fff",
+   "reviewer": "claude",
+   "file": "library/events.py",
+   "line": 20,
+   "end": 20,
+   "severity": "high",
+   "title": "No SQS publisher: the production queue is never written",
+   "detail": "Queue only appends to a list, though its docstring says SQS in production. template.yaml passes LOAN_EVENTS_URL and the SQS policy, but no code reads the variable or calls SQS. The handler never passes a queue to transition either.",
+   "suggestion": "Add an SQS-backed Queue that reads LOAN_EVENTS_URL, and wire it in at the entry points.",
+   "code": "        self.messages.append(json.dumps(asdict(event)))",
+   "category": "requirement",
+   "impact": "dead_path",
+   "effect": "In production events never reach the SQS queue, so the consumer never runs.",
+   "certainty": "derived",
+   "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
+  },
+  {
+   "id": "ded9bfd83acb",
+   "reviewer": "claude",
+   "file": "library/consumer.py",
+   "line": 13,
+   "end": 13,
+   "severity": "medium",
+   "title": "Non-idempotent consumer, and one failing record retries the whole batch",
+   "detail": "handle() has no dedupe, such as checking reminded_on or the loan status. SQS delivers at least once, so a redelivery mails again. Any exception in the loop fails the whole batch of 10, and the records already mailed are retried. template.yaml sets no ReportBatchItemFailures and no dead-letter queue. The loan.returned event type is silently ignored.",
+   "suggestion": "Skip already-handled events, return batchItemFailures per record, and add a redrive policy.",
+   "code": "    for record in records:",
+   "category": "bug",
+   "impact": "edge_case",
+   "effect": "Members get duplicate emails, and a poison message blocks its batch indefinitely.",
+   "preconditions": [
+    "SQS redelivery, or one bad record in a batch"
+   ],
+   "certainty": "derived",
+   "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
+  },
+  {
+   "id": "de01aae2cbb7",
+   "reviewer": "claude",
+   "file": "library/status.py",
+   "line": 39,
+   "end": 39,
+   "severity": "high",
+   "title": "transition is not the only place status changes; loan.returned is never published",
+   "detail": "LoanStore.give_back (loans.py:41) and api.give_back set returned_on directly and never call transition(RETURNED). The loan.returned event is defined but nothing publishes it, and the move guard is skipped. The docstring claim 'The only place a status changes' is false.",
+   "suggestion": "Route give_back through transition, with the queue injected.",
+   "code": "",
+   "category": "bug",
+   "impact": "breaks_requirement",
+   "effect": "Returns publish no event and are not checked against the state machine.",
+   "certainty": "derived",
+   "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
+  },
+  {
+   "id": "43e895797954",
+   "reviewer": "claude",
+   "file": "library/reminders.py",
+   "line": 22,
+   "end": 22,
+   "severity": "medium",
+   "title": "Mail is sent before the state change and event, with no atomicity",
+   "detail": "mailer.send runs before transition. If transition raises (an invalid move) or publish fails, the mail has gone out but reminded_on may be unset or the event lost. The next run re-mails. transition also mutates the loan before publish, so a publish failure leaves the loan changed with no event. Mailer.send also swallows failures: after 3 retries it returns without raising.",
+   "suggestion": "Publish first, or make the order explicit and idempotent. Have Mailer.send raise after the final retry.",
+   "code": "                    f\"Hi {loan.member}, {loan.book} is due on {format_day(loan.due_on)}.\")",
+   "category": "bug",
+   "impact": "edge_case",
+   "effect": "Duplicate mails, or a loan marked reminded without an event or mail.",
+   "preconditions": [
+    "publish or mail failure"
+   ],
+   "certainty": "derived",
+   "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
+  },
+  {
+   "id": "767d77392b43",
+   "reviewer": "claude",
+   "file": "template.yaml",
+   "line": 9,
+   "end": 9,
+   "severity": "medium",
+   "title": "Function timeout and queue visibility timeout are mismatched",
+   "detail": "Timeout is 10s for the consumer, which processes batches of 10 with Mailer retries that sleep 1+2+4s. The SQS queue uses the default 30s visibility timeout. SAM requires the queue's visibility timeout to be at least the function timeout, and it sets no dead-letter queue. The FrontDesk also has no CodeUri, and the HttpApi has no explicit routes.",
+   "suggestion": "Raise the consumer's timeout, set VisibilityTimeout to at least 6 times the timeout, and add a DLQ.",
+   "code": "",
+   "category": "availability",
+   "impact": "degraded_operation",
+   "effect": "Batches time out mid-way and are redelivered, which sends duplicate mails.",
+   "preconditions": [
+    "mail retries trigger"
+   ],
+   "certainty": "assumed",
+   "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
+  },
+  {
+   "id": "839c474693f4",
+   "reviewer": "claude",
+   "file": "library/tests/test_reminders.py",
+   "line": 1,
+   "end": 1,
+   "severity": "medium",
+   "title": "New behavior is untested",
+   "detail": "There is no test for publish_overdue, which would have exposed the ValueError. There is no test for /remind in handler.py. There is no test for the consumer's overdue branch. The reminder test does not check that an event is published or that exactly one mail is sent end to end.",
+   "suggestion": "Add tests for publish_overdue, /remind, the consumer overdue path, and a combined send_reminders plus consumer flow.",
+   "code": "import datetime as dt",
+   "category": "test",
+   "impact": "untested",
+   "effect": "The double-mail and overdue bugs ship without any failing test.",
+   "certainty": "derived",
+   "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
+  },
+  {
+   "id": "8579aa502cd3",
+   "reviewer": "security",
+   "file": "library/handler.py",
+   "line": 9,
+   "end": 16,
+   "severity": "high",
+   "title": "Empty default token lets a blank bearer token pass authentication",
+   "detail": "`TOKEN` defaults to `\"\"`, and the `FrontDesk` function in `template.yaml` sets no `FRONT_DESK_TOKEN`. A request with `Authorization: Bearer ` gives `hmac.compare_digest(\"\", \"\")`, which is true. The HttpApi route has no authorizer, so this check is the only access control.",
+   "suggestion": "Fail closed when the token is empty, or reject an empty presented token.\n\n```python\nif not TOKEN or not hmac.compare_digest(auth[len(\"Bearer \"):], TOKEN):\n    return {\"statusCode\": 403, \"body\": \"wrong token\"}\n```",
+   "code": "TOKEN = os.environ.get(\"FRONT_DESK_TOKEN\", \"\")",
+   "category": "security",
+   "impact": "unauthorized_access",
+   "effect": "Anyone on the internet could list overdue loans (member names, books) and trigger reminder mails to members.",
+   "preconditions": [
+    "FRONT_DESK_TOKEN is unset in the deployment (template.yaml does not define it for FrontDesk)",
+    "the HTTP API passes an Authorization header of 'Bearer ' with an empty token through to the Lambda"
+   ],
+   "certainty": "derived",
+   "effort": "quick",
+   "introduced_here": true,
+   "path_certainty": "assumed",
+   "path_why": "assumed: depends on the gateway not trimming the trailing space of the header value, and on the variable really being unset at deploy time",
+   "reachability": "public",
+   "reachable_from": [
+    "acc1"
+   ],
+   "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
+  },
+  {
+   "id": "c72397b73d50",
+   "reviewer": "security",
+   "file": "library/handler.py",
+   "line": 18,
+   "end": 22,
+   "severity": "medium",
+   "title": "POST /remind bypasses the status machine and can mail a member repeatedly",
+   "detail": "The handler calls `consumer.handle` directly with a caller-chosen `id`. It skips `transition()`, so the once-per-loan rule and the status checks do not apply. `reminded_on` is overwritten but never checked. A missing or non-integer `id`, or an unknown loan, raises an unhandled `KeyError`.",
+   "suggestion": "Route the request through `transition()` or check that the loan is open and not yet reminded before mailing.",
+   "code": "    if event.get(\"rawPath\") == \"/remind\":",
+   "category": "security",
+   "impact": "edge_case",
+   "effect": "Whoever holds the token (or bypasses it via f1) can send unlimited reminder mails to any member's address, including for returned loans.",
+   "preconditions": [
+    "caller holds a valid front desk token or exploits f1"
+   ],
+   "certainty": "derived",
+   "effort": "moderate",
+   "introduced_here": true,
+   "reachable_from": [
+    "acc1"
+   ],
+   "reachability": "authenticated",
+   "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
+  },
+  {
+   "id": "e5276a6baba4",
+   "reviewer": "security",
+   "file": "library/consumer.py",
+   "line": 9,
+   "end": 19,
+   "severity": "high",
+   "title": "Consumer Lambda reads loans from an in-memory store it never shares with the publisher",
+   "detail": "`api.store` is a process-local `LoanStore`. The consumer's copy is empty, so `api.store.get` fails. `events.Queue` is also just a list: nothing sends to SQS, so `LOAN_EVENTS_URL` and the SQS send policy are unused.",
+   "suggestion": "Back the loan store with shared storage, or carry the needed fields in the event.",
+   "code": "",
+   "category": "bug",
+   "impact": "dead_path",
+   "effect": "In production every queue message raises a lookup error and no member is mailed from queued events; SQS retries the batch.",
+   "preconditions": [
+    "FrontDesk and ReminderConsumer run as separate Lambdas, as template.yaml defines"
+   ],
+   "certainty": "derived",
+   "effort": "heavy",
+   "introduced_here": true,
+   "reachable_from": [
+    "acc1",
+    "acc2"
+   ],
+   "reachability": "authenticated",
+   "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
+  },
+  {
+   "id": "8a93d51affe2",
+   "reviewer": "security",
+   "file": "template.yaml",
+   "line": 21,
+   "end": 23,
+   "severity": "low",
+   "title": "SQS send permission and queue URL granted but never used",
+   "detail": "`library/events.py` only appends to a Python list; no boto3 call exists.",
+   "suggestion": "Remove the grant until a real SQS publisher exists, or implement it.",
+   "code": "      Policies:",
+   "category": "scope",
+   "impact": "maintainability",
+   "effect": "FrontDesk holds sqs:SendMessage on the queue although no code sends to it.",
+   "certainty": "derived",
+   "effort": "quick",
+   "introduced_here": true,
+   "reachable_from": [
+    "acc2"
+   ],
+   "reachability": "internal_only",
+   "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
+  },
+  {
+   "id": "c45091f62b1c",
+   "reviewer": "security",
+   "file": "library/mailer.py",
+   "line": 14,
+   "end": 20,
+   "severity": "medium",
+   "title": "Mailer swallows failure after retries",
+   "detail": "After `RETRIES` attempts the loop ends and returns `None` without raising or logging. `send_reminders` then marks the loan as reminded.",
+   "suggestion": "Re-raise the last error after the final attempt.",
+   "code": "        for attempt in range(RETRIES):",
+   "category": "availability",
+   "impact": "degraded_operation",
+   "effect": "If sends fail, the member silently gets no mail and callers still treat it as sent.",
+   "preconditions": [
+    "send raises OSError on every attempt"
+   ],
+   "certainty": "derived",
+   "effort": "quick",
+   "introduced_here": true,
+   "reachable_from": [],
+   "reachability": "unknown",
+   "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
+  }
+ ],
+ "status": {
+  "ad2b4cdf9": {
+   "s": "progress",
+   "at": "2026-11-13T23:54:19.042Z",
+   "fixHead": "ccddf9524aec9c46d338d296bacce38d994af5fb"
+  }
+ },
+ "security": {
+  "head": "ccddf9524aec9c46d338d296bacce38d994af5fb",
+  "at": "2026-11-14T14:42:52+0100",
+  "picture": "2026-11-14T14:40:21.159675+01:00",
+  "zones": [
+   {
+    "id": "z1",
+    "name": "Internet",
+    "trust": "public",
+    "evidence": "template.yaml:26",
+    "nodes": [
+     "client"
+    ]
+   },
+   {
+    "id": "z2",
+    "name": "FrontDesk function",
+    "trust": "authenticated",
+    "evidence": "library/handler.py:12",
+    "nodes": [
+     "handler",
+     "reminders",
+     "status",
+     "events",
+     "mailer"
+    ]
+   },
+   {
+    "id": "z3",
+    "name": "LoanEvents queue",
+    "trust": "data",
+    "evidence": "template.yaml:11",
+    "nodes": [
+     "sqs"
+    ]
+   },
+   {
+    "id": "z4",
+    "name": "ReminderConsumer function",
+    "trust": "internal",
+    "evidence": "template.yaml:29",
+    "nodes": [
+     "consumer"
+    ]
+   }
+  ],
+  "access": [
+   {
+    "id": "acc1",
+    "resource": "FrontDesk Api",
+    "kind": "route",
+    "principal": "anyone on the internet",
+    "actions": [
+     "call GET /late",
+     "call POST /remind"
+    ],
+    "public": true,
+    "auth": "bearer token checked in handler.py",
+    "auth_kind": "code",
+    "used": true,
+    "at": "template.yaml:24",
+    "node": "handler",
+    "opened_by_pr": true
+   },
+   {
+    "id": "acc2",
+    "resource": "FrontDesk SQSSendMessagePolicy",
+    "kind": "queue",
+    "principal": "FrontDesk function",
+    "actions": [
+     "sqs:SendMessage"
+    ],
+    "public": false,
+    "auth": "IAM",
+    "auth_kind": "iam",
+    "used": false,
+    "at": "template.yaml:21",
+    "node": "sqs",
+    "opened_by_pr": true
+   }
+  ],
+  "crossing": [
+   {
+    "from": "client",
+    "to": "handler",
+    "edge": "e0"
+   },
+   {
+    "from": "handler",
+    "to": "consumer",
+    "edge": "e1"
+   },
+   {
+    "from": "events",
+    "to": "sqs",
+    "edge": "e5"
+   },
+   {
+    "from": "sqs",
+    "to": "consumer",
+    "edge": "e6"
+   },
+   {
+    "from": "consumer",
+    "to": "mailer",
+    "edge": "e7"
+   }
+  ],
+  "threats": [
+   {
+    "id": "t1",
+    "where": {
+     "access": "acc1"
+    },
+    "boundary": "Internet → Front desk function",
+    "threat": "An unauthenticated caller sends an empty bearer token that matches the empty default TOKEN at handler.py:16.",
+    "findings": [
+     "8579aa502cd3"
+    ],
+    "result": "finding",
+    "note": ""
+   },
+   {
+    "id": "t2",
+    "where": {
+     "access": "acc1"
+    },
+    "boundary": "Internet → Front desk function",
+    "threat": "A caller posts arbitrary ids to /remind to spam members, skipping the state machine.",
+    "findings": [
+     "c72397b73d50"
+    ],
+    "result": "finding",
+    "note": ""
+   },
+   {
+    "id": "t3",
+    "where": {
+     "from": "sqs",
+     "to": "consumer",
+     "edge": "e6"
+    },
+    "boundary": "Queue → Consumer function",
+    "threat": "A forged queue message drives mail to loan emails.",
+    "findings": [],
+    "result": "checked_clean",
+    "note": "message only selects a loan by id; recipient comes from the store; sending to the queue is IAM-restricted"
+   }
+  ]
+ }
+}

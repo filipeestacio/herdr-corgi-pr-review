@@ -1,0 +1,274 @@
+{
+ "runs": {
+  "claude": {
+   "state": "done",
+   "cost": 0.0703637,
+   "ms": 29887,
+   "model": "claude-sonnet-5-5",
+   "at": "2026-11-14T11:32:48+0100",
+   "count": 7,
+   "head": "ccddf9524aec9c46d338d296bacce38d994af5fb",
+   "scope": {
+    "read": [
+     "library/status.py",
+     "library/api.py",
+     "library/consumer.py",
+     "library/handler.py",
+     "library/reminders.py",
+     "template.yaml"
+    ],
+    "checked": [
+     {
+      "area": "correctness",
+      "result": "finding",
+      "note": ""
+     },
+     {
+      "area": "error_handling",
+      "result": "finding",
+      "note": ""
+     },
+     {
+      "area": "concurrency",
+      "result": "not_checked",
+      "note": ""
+     },
+     {
+      "area": "state",
+      "result": "finding",
+      "note": ""
+     },
+     {
+      "area": "contracts",
+      "result": "finding",
+      "note": ""
+     },
+     {
+      "area": "tests",
+      "result": "finding",
+      "note": ""
+     }
+    ],
+    "skipped": [
+     "CLAUDE.md: none found in repo"
+    ]
+   }
+  },
+  "security": {
+   "state": "done",
+   "cost": 0.114494,
+   "ms": 22668,
+   "model": "claude-sonnet-5-5",
+   "at": "2026-11-14T11:33:14+0100",
+   "count": 1,
+   "head": "ccddf9524aec9c46d338d296bacce38d994af5fb",
+   "scope": {
+    "read": [
+     "diff of PR #2 (all files)"
+    ],
+    "checked": [
+     {
+      "area": "authentication",
+      "result": "finding",
+      "note": "empty-token fail-open in handler.py"
+     },
+     {
+      "area": "authorization",
+      "result": "clean",
+      "note": "single shared token, no per-role checks introduced"
+     },
+     {
+      "area": "input_validation",
+      "result": "clean",
+      "note": "no injection sinks; JSON body only used as a loan id lookup"
+     },
+     {
+      "area": "secrets",
+      "result": "finding",
+      "note": "token not provisioned in template"
+     },
+     {
+      "area": "permissions",
+      "result": "clean",
+      "note": "SQS send policy scoped to the queue"
+     },
+     {
+      "area": "personal_data",
+      "result": "clean",
+      "note": "mail log lowered to debug"
+     },
+     {
+      "area": "dependencies",
+      "result": "not_checked",
+      "note": "outdated libraries are out of scope"
+     }
+    ],
+    "skipped": [
+     "tests (excluded)",
+     "denial of service and retry behaviour (excluded)",
+     "sub-task fan-out (small diff reviewed directly)"
+    ]
+   }
+  }
+ },
+ "findings": [
+  {
+   "id": "43fb9b71218d",
+   "reviewer": "claude",
+   "file": "library/handler.py",
+   "line": 20,
+   "end": 20,
+   "severity": "medium",
+   "title": "POST /remind bypasses the state machine and the queue",
+   "detail": "The handler calls `consumer.handle` directly. It skips `transition`, so no status check runs and no event is published. It also doesn't check that the loan is open or already reminded. A returned loan, or one reminded earlier, gets mailed again.",
+   "suggestion": "Call `transition(loan, Status.REMINDED, queue, today())` so the queue's consumer sends the mail.",
+   "code": "        loan_id = json.loads(event.get(\"body\") or \"{}\")[\"id\"]",
+   "category": "bug",
+   "impact": "edge_case",
+   "effect": "Members get duplicate or wrong reminders, including for returned loans.",
+   "preconditions": [
+    "Front desk calls POST /remind for a returned or already-reminded loan"
+   ],
+   "certainty": "derived",
+   "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
+  },
+  {
+   "id": "2cd169651450",
+   "reviewer": "claude",
+   "file": "library/consumer.py",
+   "line": 23,
+   "end": 23,
+   "severity": "medium",
+   "title": "Consumer mutates reminded_on and double-mails",
+   "detail": "`send_reminders` already sends the mail and calls `transition`, which publishes `loan.reminded`. The consumer then mails the member again on that event. Each reminder is sent twice. The consumer also sets `reminded_on` itself, so status changes happen outside `transition`.",
+   "suggestion": "Mail in only one place, and drop the mailer call from `send_reminders` or from the consumer.",
+   "code": "        loan.reminded_on = today()",
+   "category": "bug",
+   "impact": "edge_case",
+   "effect": "Members receive duplicate reminder emails. SQS redelivery adds more duplicates.",
+   "preconditions": [
+    "send_reminders runs with a queue consumed by the consumer Lambda"
+   ],
+   "certainty": "derived",
+   "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
+  },
+  {
+   "id": "37c08f8573d3",
+   "reviewer": "claude",
+   "file": "library/consumer.py",
+   "line": 16,
+   "end": 16,
+   "severity": "medium",
+   "title": "No handling of missing loan or partial batch failure",
+   "detail": "`api.store.get` may raise or return None for an unknown loan. Any exception fails the whole SQS batch, and the successfully mailed records are redelivered and mailed again. In Lambda, `api.store` is also a separate in-memory store from the front desk Lambda's, so the loan will not be found.",
+   "suggestion": "Return `batchItemFailures` per record and use a shared persistent store.",
+   "code": "",
+   "category": "availability",
+   "impact": "degraded_operation",
+   "effect": "Batches of up to 10 retry repeatedly, with duplicate mails, until they reach the DLQ or expire.",
+   "preconditions": [
+    "Event references a loan the consumer's store does not hold, or one record fails"
+   ],
+   "certainty": "derived",
+   "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
+  },
+  {
+   "id": "ac79f1d1eea6",
+   "reviewer": "claude",
+   "file": "library/handler.py",
+   "line": 20,
+   "end": 20,
+   "severity": "medium",
+   "title": "Unvalidated body gives 500 on bad input",
+   "detail": "`json.loads(...)[\"id\"]` raises KeyError or JSONDecodeError for a bad body. An unknown id raises from the store. A `ValueError` from the state machine also becomes a 500. The `\"reminded\": True` response is returned even though the mail went through a path that was never confirmed.",
+   "suggestion": "",
+   "code": "        loan_id = json.loads(event.get(\"body\") or \"{}\")[\"id\"]",
+   "category": "bug",
+   "impact": "edge_case",
+   "effect": "The front desk gets an unhandled Lambda error instead of a 400 or 404.",
+   "preconditions": [
+    "Missing id, malformed JSON, or unknown loan id"
+   ],
+   "certainty": "derived",
+   "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
+  },
+  {
+   "id": "9356ba9f1faa",
+   "reviewer": "claude",
+   "file": "library/status.py",
+   "line": 42,
+   "end": 42,
+   "severity": "medium",
+   "title": "transition does not set the status it reports for OVERDUE",
+   "detail": "`transition` publishes the event for `new`, but it only records REMINDED and RETURNED. `publish_overdue` selects loans due yesterday, but a loan returned earlier is excluded only by `open_loans`. Calling `publish_overdue` twice on the same day publishes `loan.overdue` twice, since nothing records it. A loan that is overdue by date cannot go from OVERDUE to OVERDUE, so the second call raises `ValueError` after earlier events are already published. This aborts the rest of the batch.",
+   "suggestion": "Check the state machine for OVERDUE in `publish_overdue`. `status_of(loan, day)` is already OVERDUE when `due_on < day`, so `move` raises on every call. Compute the status as of the due date, or allow OVERDUE to repeat.",
+   "code": "",
+   "category": "bug",
+   "impact": "edge_case",
+   "effect": "The overdue job fails midway on re-run and leaves later loans unnotified.",
+   "preconditions": [
+    "publish_overdue is run for a day on which a loan's status_of is already OVERDUE"
+   ],
+   "certainty": "derived",
+   "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
+  },
+  {
+   "id": "fe46ca0456cb",
+   "reviewer": "claude",
+   "file": "library/status.py",
+   "line": 47,
+   "end": 47,
+   "severity": "high",
+   "title": "Queue.publish is a list append, not SQS",
+   "detail": "The template sets `LOAN_EVENTS_URL` and grants SQS send permission, but no code reads the variable or sends to SQS. `Queue` only appends to an in-memory list. In production no events reach the consumer. The handler `/remind` is the only live path.",
+   "suggestion": "Implement an SQS-backed Queue that uses `LOAN_EVENTS_URL` and `boto3`.",
+   "code": "        loan.reminded_on = on",
+   "category": "requirement",
+   "impact": "dead_path",
+   "effect": "Events published by status changes are lost in Lambda, so the consumer never runs.",
+   "preconditions": [
+    "Deployed with the template.yaml infrastructure"
+   ],
+   "certainty": "derived",
+   "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
+  },
+  {
+   "id": "bd813b53c49f",
+   "reviewer": "claude",
+   "file": "library/tests/test_consumer.py",
+   "line": 1,
+   "end": 1,
+   "severity": "medium",
+   "title": "Missing tests for overdue, /remind and publish_overdue",
+   "detail": "Tests cover only the `loan.reminded` consumer path and transition. `publish_overdue`, the overdue consumer branch, the `/remind` route and the `send_reminders` publish are untested. The tests would have caught the double-send and the OVERDUE `ValueError`.",
+   "suggestion": "",
+   "code": "import datetime as dt",
+   "category": "test",
+   "impact": "untested",
+   "effect": "Regressions in these new paths go unnoticed.",
+   "certainty": "derived",
+   "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
+  },
+  {
+   "id": "c0571b3cb606",
+   "reviewer": "security",
+   "file": "library/handler.py",
+   "line": 9,
+   "end": 16,
+   "severity": "high",
+   "title": "Front-desk auth fails open with an empty token, and the template never sets one",
+   "detail": "`TOKEN` defaults to `\"\"`. With no token configured, `hmac.compare_digest(\"\", \"\")` is true, so a request whose bearer value is empty passes the check.\n\n`template.yaml` defines the FrontDesk `Environment` with only `LOAN_EVENTS_URL`, so a deployment from this PR has no token. The HttpApi event also has no authorizer, so this check is the only access control.\n\nIt depends on the gateway or client keeping the trailing space in the header value. I could not check that.",
+   "suggestion": "Refuse every request when the token is unset, and set `FRONT_DESK_TOKEN` in `template.yaml` from a secret.\n\n```python\nTOKEN = os.environ[\"FRONT_DESK_TOKEN\"]  # fail at cold start if missing\nif not TOKEN or not hmac.compare_digest(...):\n    return {\"statusCode\": 403, \"body\": \"wrong token\"}\n```",
+   "code": "TOKEN = os.environ.get(\"FRONT_DESK_TOKEN\", \"\")",
+   "category": "security",
+   "impact": "unauthorized_access",
+   "effect": "Someone who sends the header `Authorization: Bearer ` with nothing after it can call `/late` and `/remind` without a secret, which exposes member names and books and lets them trigger mail to members.",
+   "preconditions": [
+    "`FRONT_DESK_TOKEN` is not set on the FrontDesk function, as in `template.yaml` in this PR",
+    "The API gateway passes an `authorization` header value of exactly `Bearer ` (with the trailing space) through to the Lambda"
+   ],
+   "certainty": "assumed",
+   "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
+  }
+ ]
+}

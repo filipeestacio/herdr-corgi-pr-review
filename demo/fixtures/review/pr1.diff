@@ -1,0 +1,250 @@
+diff --git a/library/api.py b/library/api.py
+index 80d2c3b..4e81033 100644
+--- a/library/api.py
++++ b/library/api.py
+@@ -1,15 +1,21 @@
+ """HTTP handlers (framework-free: each takes a dict and returns status and body)."""
+-from library.dates import fmt_date
++from library.dates import format_day
+ from library.loans import Loan, LoanStore
++from library.reminders import overdue
+ 
+ store = LoanStore()
+ 
+ 
+ def borrow(req):
+     loan = store.add(Loan(id=req["id"], member=req["member"], book=req["book"], email=req["email"]))
+-    return 201, {"id": loan.id, "due": fmt_date(loan.due_on)}
++    return 201, {"id": loan.id, "due": format_day(loan.due_on)}
+ 
+ 
+ def give_back(req):
+     store.give_back(req["id"])
+     return 200, {"id": req["id"], "returned": True}
++
++
++def late(req):
++    """The front desk's list of overdue loans."""
++    return 200, [{"id": l.id, "member": l.member, "book": l.book, "due": format_day(l.due_on)} for l in overdue(store.open_loans())]
+diff --git a/library/dates.py b/library/dates.py
+index 6bc8d44..3ec03c0 100644
+--- a/library/dates.py
++++ b/library/dates.py
+@@ -8,6 +8,6 @@ def today():
+     return dt.date.today()
+ 
+ 
+-def fmt_date(day):
++def format_day(day):
+     """A date as members see it, e.g. 'Mon 12 Mar'."""
+     return day.strftime("%a %d %b")
+diff --git a/library/handler.py b/library/handler.py
+new file mode 100644
+index 0000000..832818c
+--- /dev/null
++++ b/library/handler.py
+@@ -0,0 +1,20 @@
++"""AWS Lambda entry for the front desk: GET /late, with a bearer token."""
++import hmac
++import json
++import os
++
++from library import api
++
++TOKEN = os.environ.get("FRONT_DESK_TOKEN", "")
++
++
++def handler(event, context):
++    auth = (event.get("headers") or {}).get("authorization", "")
++    if not auth.startswith("Bearer "):
++        return {"statusCode": 401, "body": "missing token"}
++    if not hmac.compare_digest(auth[len("Bearer "):], TOKEN):
++        return {"statusCode": 403, "body": "wrong token"}
++    if event.get("rawPath") != "/late":
++        return {"statusCode": 404, "body": "not found"}
++    status, body = api.late({})
++    return {"statusCode": status, "body": json.dumps(body)}
+diff --git a/library/loans.py b/library/loans.py
+index f52d74d..c4a5dac 100644
+--- a/library/loans.py
++++ b/library/loans.py
+@@ -13,6 +13,7 @@ class Loan:
+     email: str
+     borrowed_on: dt.date = field(default_factory=today)
+     returned_on: dt.date | None = None
++    reminded_on: dt.date | None = None
+ 
+     @property
+     def due_on(self):
+diff --git a/library/mailer.py b/library/mailer.py
+index ba5360c..1bc20fc 100644
+--- a/library/mailer.py
++++ b/library/mailer.py
+@@ -1,7 +1,9 @@
+ """Sends mail through the outbox (a list in tests, SMTP in production)."""
+ import logging
++import time
+ 
+ log = logging.getLogger(__name__)
++RETRIES = 3
+ 
+ 
+ class Mailer:
+@@ -9,5 +11,10 @@ def __init__(self, outbox=None):
+         self.outbox = outbox if outbox is not None else []
+ 
+     def send(self, to, subject, body):
+-        self.outbox.append({"to": to, "subject": subject, "body": body})
+-        log.info("mail to %s: %s", to, subject)
++        for attempt in range(RETRIES):
++            try:
++                self.outbox.append({"to": to, "subject": subject, "body": body})
++                log.debug("mail to %s: %s", to, subject)
++                return
++            except OSError:
++                time.sleep(2 ** attempt)
+diff --git a/library/reminders.py b/library/reminders.py
+new file mode 100644
+index 0000000..9d2409c
+--- /dev/null
++++ b/library/reminders.py
+@@ -0,0 +1,29 @@
++"""Reminder mails: two days before a loan is due, once per loan."""
++import datetime as dt
++
++from library.dates import format_day, today
++
++REMIND_DAYS = 2
++
++
++def due_soon(loans, on=None):
++    """Open loans due in exactly REMIND_DAYS days that got no reminder yet."""
++    day = (on or today()) + dt.timedelta(days=REMIND_DAYS)
++    return [l for l in loans if l.open and l.due_on == day and l.reminded_on is None]
++
++
++def send_reminders(store, mailer, on=None):
++    """Mails each member whose loan is due soon and marks the loan as reminded. Returns how many were sent."""
++    sent = 0
++    for loan in due_soon(store.open_loans(), on):
++        mailer.send(loan.email, f"Please return {loan.book}",
++                    f"Hi {loan.member}, {loan.book} is due on {format_day(loan.due_on)}.")
++        loan.reminded_on = on or today()
++        sent += 1
++    return sent
++
++
++def overdue(loans, on=None):
++    """Open loans past their due date, the longest overdue first."""
++    day = on or today()
++    return sorted((l for l in loans if l.open and l.due_on < day), key=lambda l: l.due_on)
+diff --git a/library/status.py b/library/status.py
+new file mode 100644
+index 0000000..a6aab31
+--- /dev/null
++++ b/library/status.py
+@@ -0,0 +1,35 @@
++"""A loan's status and the moves allowed between them."""
++from enum import Enum
++
++
++class Status(str, Enum):
++    BORROWED = "borrowed"
++    REMINDED = "reminded"
++    OVERDUE = "overdue"
++    RETURNED = "returned"
++
++
++MOVES = {
++    Status.BORROWED: {Status.REMINDED, Status.OVERDUE, Status.RETURNED},
++    Status.REMINDED: {Status.OVERDUE, Status.RETURNED},
++    Status.OVERDUE: {Status.RETURNED},
++    Status.RETURNED: set(),
++}
++
++
++def move(current, new):
++    """The new status, if a loan may go there from the current one."""
++    if new not in MOVES[current]:
++        raise ValueError(f"a loan can't go from {current.value} to {new.value}")
++    return new
++
++
++def status_of(loan, on):
++    """Where a loan stands on a given day."""
++    if loan.returned_on is not None:
++        return Status.RETURNED
++    if loan.due_on < on:
++        return Status.OVERDUE
++    if loan.reminded_on is not None:
++        return Status.REMINDED
++    return Status.BORROWED
+diff --git a/library/tests/test_reminders.py b/library/tests/test_reminders.py
+new file mode 100644
+index 0000000..1f86fda
+--- /dev/null
++++ b/library/tests/test_reminders.py
+@@ -0,0 +1,29 @@
++import datetime as dt
++import unittest
++
++from library.loans import Loan, LoanStore
++from library.mailer import Mailer
++from library.reminders import overdue, send_reminders
++
++MARCH_1 = dt.date(2026, 3, 1)
++
++
++class ReminderTest(unittest.TestCase):
++    def setUp(self):
++        self.store = LoanStore()
++        self.store.add(Loan(id=1, member="ada", book="SICP", email="member", borrowed_on=MARCH_1))
++        self.store.add(Loan(id=2, member="alan", book="TAOCP", email="member", borrowed_on=MARCH_1 - dt.timedelta(days=30)))
++
++    def test_reminds_two_days_before_due_once(self):
++        mailer = Mailer()
++        on = dt.date(2026, 3, 20)  # loan 1 is due on 22 March
++        self.assertEqual(send_reminders(self.store, mailer, on), 1)
++        self.assertEqual(mailer.outbox[0]["to"], "member")
++        self.assertEqual(send_reminders(self.store, mailer, on), 0)
++
++    def test_overdue_lists_the_late_loan(self):
++        self.assertEqual([l.id for l in overdue(self.store.open_loans(), dt.date(2026, 3, 20))], [2])
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/library/tests/test_status.py b/library/tests/test_status.py
+new file mode 100644
+index 0000000..d57dbbc
+--- /dev/null
++++ b/library/tests/test_status.py
+@@ -0,0 +1,21 @@
++import datetime as dt
++import unittest
++
++from library.loans import Loan
++from library.status import Status, move, status_of
++
++MARCH_1 = dt.date(2026, 3, 1)
++
++
++class StatusTest(unittest.TestCase):
++    def test_a_returned_loan_stays_returned(self):
++        with self.assertRaises(ValueError):
++            move(Status.RETURNED, Status.BORROWED)
++
++    def test_status_of_a_late_loan(self):
++        loan = Loan(id=1, member="ada", book="SICP", email="member", borrowed_on=MARCH_1)
++        self.assertEqual(status_of(loan, dt.date(2026, 3, 30)), Status.OVERDUE)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/requirements.txt b/requirements.txt
+new file mode 100644
+index 0000000..d80d9fc
+--- /dev/null
++++ b/requirements.txt
+@@ -0,0 +1 @@
++requests==2.32.3

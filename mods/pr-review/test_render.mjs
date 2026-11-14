@@ -3,61 +3,12 @@
 // open, folded and squeezing, a layer's findings and the Findings tab. An exception, a null or non-finite number given to an element, a bad virtual-list size
 // or key fails it; a ReferenceError here once showed in Herdr as "This view could not be re-rendered — Null".)
 import assert from "node:assert/strict";
-import { registerHooks } from "node:module";
-
-const S = (globalThis.__rv = { errs: [], lists: [], store: new Map() });
-const where = () => new Error().stack.split("\n").slice(3, 6).map((s) => s.trim()).join(" | ");
-const bad = (v) => v === null || v === undefined || (typeof v === "number" && !Number.isFinite(v));
-S.el = () => {
-  const p = new Proxy(function () {}, {
-    get(_, k) {
-      if (k === "then") return undefined;
-      return (...a) => {
-        if (k === "when") return a[0] ? a[1](p) : p;
-        if (k === "map") return a[0](p);
-        if (k === "children") { for (const c of a[0]) if (bad(c)) S.errs.push(`children: ${c} at ${where()}`); return p; }
-        a.forEach((v, i) => { if (bad(v)) S.errs.push(`${String(k)}(arg ${i} = ${v}) at ${where()}`); });
-        return p;
-      };
-    },
-  });
-  return p;
-};
-S.handle = () => new Proxy({}, { get: (_, k) => (k === "then" ? undefined : (...a) => {
-  if (k === "scroll_to_item" && !(Number.isInteger(a[0]) && a[0] >= 0)) S.errs.push(`scroll_to_item(${a[0]}) at ${where()}`);
-  return k === "value" ? "" : k === "is_focused" ? false : undefined;
-}) });
-S.vlist = (id, n, sizes, key, render) => {
-  S.lists.push({ id, n, render });
-  if (n > 10000) S.errs.push(`${id}: ${n} items`);
-  if (Array.isArray(sizes)) { if (sizes.length !== n) S.errs.push(`${id}: ${sizes.length} sizes for ${n} items`); sizes.forEach((s, i) => { if (bad(s)) S.errs.push(`${id}: size ${i} = ${s}`); }); }
-  for (let i = 0; i < n; i++) if (typeof key(i) !== "string") { S.errs.push(`${id}: key ${i}`); break; }
-  return S.el();
-};
-const STUBS = {
-  "gpui-kit": "const S = globalThis.__rv, B = new Proxy({}, { get: () => () => B }); globalThis.window ??= { paint_path: () => S.el() }; export class View {} export const div = S.el, svg = S.el, image = S.el, PathBuilder = { stroke: () => B, fill: () => B };",
-  "gpui-base": `const S = globalThis.__rv, f = () => S.el(), n = { new: () => S.handle() };
-    export const v_flex = f, h_flex = f, v_virtual_list = S.vlist, Scrollbar = { vertical: f, horizontal: f }, TextView = { markdown: f };
-    export const Input = Object.assign(f, { new: f }), Textarea = Object.assign(() => S.el(), { new: f }), Editor = Object.assign(() => S.el(), { new: f });
-    export const HoverCard = { new: f };
-    export const VirtualListScrollHandle = n, ScrollHandle = n, TextareaState = n, InputState = n, EditorState = n;`,
-  herdr: `const S = globalThis.__rv, no = async () => { throw new Error("stub"); }, never = () => new Promise(() => {});
-    export const exec = no, hc = no, readTextFile = no, pickFolder = no, writeTextFile = async () => {}, run = () => null;
-    export const spaces = () => [], panes = () => [], agents = () => [], terminals = () => [], focused = () => null, layout = () => null;
-    export const theme = () => new Proxy({}, { get: () => "#808080" }), settings = () => ({}), props = () => ({ part: "review" });
-    export const shared = (k) => S.store.get(k), setShared = (k, v) => S.store.set(k, v), appHome = () => "/h", home = () => "/h";
-    export const nextCommand = never, watchFolder = never, openOverlay = () => {}, closeOverlay = () => {};`,
-};
-registerHooks({
-  resolve: (spec, ctx, next) => (STUBS[spec] ? { url: `stub:${spec}`, shortCircuit: true } : next(spec, ctx)),
-  load: (url, ctx, next) => (url.startsWith("stub:") ? { format: "module", source: STUBS[url.slice(5)], shortCircuit: true } : next(url, ctx)),
-});
+import { S, cx, ok } from "./render_stub.mjs";
 
 const { default: PrReview } = await import("./main.js");
 const { splitPatch, hunksOf, diffRows, stepKey } = await import("./pr.js");
 const { foldOnOpen } = await import("./views.js");
 const { renderMini } = await import("./review.js");
-const cx = { notify() {}, timer: { after() {}, every() {} }, spawn() {}, focus_handle: () => ({ focus() {}, is_focused: () => false }), stop_propagation() {}, new() {} };
 
 function review(files) {
   const target = { url: "https://github.com/o/r/pull/1", repo: "o/r", number: 1, title: "t" };
@@ -75,7 +26,6 @@ function review(files) {
   v.collapsed = new Set(foldOnOpen(v.patch));
   return v;
 }
-const ok = (what, f) => { S.errs.length = 0; S.lists.length = 0; try { f(); } catch (e) { S.errs.push(`threw ${e?.stack ?? e}`); } assert.deepEqual(S.errs, [], what); };
 const files = () => S.lists.find((l) => l.id === "rv-list-files");
 const layout = (at) => { const l = files(); if (l) { const s = Math.floor(l.n * at); l.render({ start: s, end: Math.min(l.n, s + 40) }, cx); } };
 

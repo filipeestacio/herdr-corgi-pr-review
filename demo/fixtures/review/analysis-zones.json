@@ -1,0 +1,1392 @@
+{
+ "source": "https://github.com/saefty/corgi-demo/pull/2",
+ "model": "sonnet",
+ "model_id": "claude-sonnet-5-5",
+ "hunks": [
+  {
+   "alias": "h1",
+   "id": "library/consumer.py:4d306559"
+  },
+  {
+   "alias": "h2",
+   "id": "library/events.py:733b7354"
+  },
+  {
+   "alias": "h3",
+   "id": "library/handler.py:3ae78fb0"
+  },
+  {
+   "alias": "h4",
+   "id": "library/handler.py:af1678e4"
+  },
+  {
+   "alias": "h5",
+   "id": "library/reminders.py:a9137777"
+  },
+  {
+   "alias": "h6",
+   "id": "library/reminders.py:a17d7d37"
+  },
+  {
+   "alias": "h7",
+   "id": "library/status.py:646839c9"
+  },
+  {
+   "alias": "h8",
+   "id": "library/status.py:4e50aca8"
+  },
+  {
+   "alias": "h9",
+   "id": "library/tests/test_consumer.py:9c9dba6f"
+  },
+  {
+   "alias": "h10",
+   "id": "library/tests/test_events.py:d313fd84"
+  },
+  {
+   "alias": "h11",
+   "id": "library/tests/test_reminders.py:21464b30"
+  },
+  {
+   "alias": "h12",
+   "id": "library/tests/test_reminders.py:13dcde99"
+  },
+  {
+   "alias": "h13",
+   "id": "template.yaml:fe5fcdf6"
+  }
+ ],
+ "answer": {
+  "title": "Loan events and a reminder consumer Lambda (mail path only half moved)",
+  "summary": "Adds `transition()` in `status.py` that applies the move table and publishes a `LoanEvent`, an in-memory `Queue`, a `consumer.py` Lambda that mails from events, and a SAM template with an SQS queue between two Lambdas. The old synchronous mail in `send_reminders` is kept and a new `POST /remind` calls the consumer in-process, so reminders are mailed from several places and can go out twice. Event ids, deduplication, an SQS publisher and a working overdue publisher are missing.",
+  "behavior": "After a reminder run a member would get two reminder mails: one from `send_reminders` and one from the consumer for the published event. The front desk gets a `POST /remind` that mails at once with no status check and no event. Overdue publishing raises on its first loan.",
+  "merge_risk": {
+   "level": "high",
+   "why": "It breaks the 'exactly one reminder' and 'only the consumer mails' criteria, mails members twice, and `publish_overdue` always raises."
+  },
+  "effort": {
+   "score": 4,
+   "why": "The mail path, state machine, two Lambda boundaries and idempotency interact, and most criteria need cross-file tracing."
+  },
+  "rule_checks": [
+   {
+    "rule": "Status changes only through status.py transition",
+    "source": "PR acceptance criteria",
+    "status": "fail",
+    "where": "library/consumer.py:23",
+    "why": "The consumer sets `reminded_on` directly and `LoanStore.give_back` sets `returned_on` directly."
+   },
+   {
+    "rule": "Only the consumer sends reminder/overdue mail",
+    "source": "PR acceptance criteria",
+    "status": "fail",
+    "where": "library/reminders.py:21",
+    "why": "`send_reminders` and the `/remind` handler both mail directly."
+   },
+   {
+    "rule": "Lambdas share only the events module",
+    "source": "PR acceptance criteria",
+    "status": "fail",
+    "where": "library/handler.py:6",
+    "why": "The handler imports `consumer`, and the consumer imports `api`, which pulls in the store and reminders."
+   },
+   {
+    "rule": "Events carry an id; consumer skips handled ones",
+    "source": "PR acceptance criteria",
+    "status": "fail",
+    "where": "library/events.py:7",
+    "why": "`LoanEvent` has no id and the consumer keeps no record of handled events."
+   },
+   {
+    "rule": "One event per status change",
+    "source": "PR acceptance criteria",
+    "status": "fail",
+    "where": "library/reminders.py:33",
+    "why": "`publish_overdue` raises before publishing anything, and `give_back` publishes no `loan.returned`."
+   }
+  ],
+  "architecture": {
+   "groups": [
+    {
+     "id": "g_client",
+     "label": "Caller",
+     "kind": "Client"
+    },
+    {
+     "id": "g_fd",
+     "label": "Front desk Lambda",
+     "kind": "Lambda"
+    },
+    {
+     "id": "g_cons",
+     "label": "Reminder consumer Lambda",
+     "kind": "Lambda"
+    },
+    {
+     "id": "g_q",
+     "label": "Messaging",
+     "kind": "Queue"
+    }
+   ],
+   "zones": [
+    {
+     "id": "z_net",
+     "name": "Internet",
+     "trust": "public",
+     "evidence": "template.yaml:26"
+    },
+    {
+     "id": "z_fd",
+     "name": "FrontDesk function",
+     "trust": "authenticated",
+     "evidence": "library/handler.py:17"
+    },
+    {
+     "id": "z_cons",
+     "name": "ReminderConsumer function",
+     "trust": "internal",
+     "evidence": "template.yaml:32"
+    },
+    {
+     "id": "z_q",
+     "name": "LoanEvents queue",
+     "trust": "data",
+     "evidence": "template.yaml:11"
+    }
+   ],
+   "nodes": [
+    {
+     "id": "caller",
+     "group": "g_client",
+     "label": "Front desk client",
+     "description": "Calls GET /late and POST /remind with a bearer token.",
+     "type": "external",
+     "status": "unchanged",
+     "zone": "z_net",
+     "source": "spec"
+    },
+    {
+     "id": "handler",
+     "group": "g_fd",
+     "label": "handler.handler (handler.py)",
+     "description": "Front desk entry; checks the token, serves /late and the new /remind.",
+     "details": "Front desk entry point.\n- **New `/remind` route** calls `consumer.handle` in-process and mails directly\n- **Imports `consumer`** in `handler.py`",
+     "type": "component",
+     "status": "changed",
+     "at": "library/handler.py:18",
+     "zone": "z_fd",
+     "source": "implemented",
+     "evidence": "library/handler.py:18"
+    },
+    {
+     "id": "reminders",
+     "group": "g_fd",
+     "label": "send_reminders / publish_overdue (reminders.py)",
+     "description": "Mails due-soon members and moves loans to reminded or overdue.",
+     "details": "Reminder runner.\n- **Still mails** in `send_reminders`\n- **New `transition` call** publishes the event\n- **New `publish_overdue`** always raises",
+     "type": "component",
+     "status": "changed",
+     "at": "library/reminders.py:16",
+     "zone": "z_fd",
+     "source": "implemented",
+     "evidence": "library/reminders.py:16"
+    },
+    {
+     "id": "status",
+     "group": "g_fd",
+     "label": "transition (status.py)",
+     "description": "Applies the move table and publishes the event.",
+     "details": "State machine.\n- **New `transition()`** and `EVENTS` map\n- Imports `LoanEvent`",
+     "type": "component",
+     "status": "changed",
+     "at": "library/status.py:43",
+     "zone": "z_fd",
+     "source": "implemented",
+     "evidence": "library/status.py:43"
+    },
+    {
+     "id": "events",
+     "group": "g_fd",
+     "label": "LoanEvent, Queue (events.py)",
+     "description": "Event dataclass and an in-memory queue.",
+     "details": "Shared events module.\n- **New** `LoanEvent` without id\n- **New** list-backed `Queue`, no SQS publisher",
+     "type": "data",
+     "status": "new",
+     "at": "library/events.py:6",
+     "source": "implemented",
+     "evidence": "library/events.py:6"
+    },
+    {
+     "id": "queue",
+     "group": "g_q",
+     "label": "LoanEvents (template.yaml)",
+     "description": "SQS queue between the Lambdas.",
+     "details": "SQS queue.\n- **New**, no DLQ, no redrive",
+     "type": "data",
+     "status": "new",
+     "at": "template.yaml:11",
+     "zone": "z_q",
+     "source": "implemented",
+     "evidence": "template.yaml:11"
+    },
+    {
+     "id": "consumer",
+     "group": "g_cons",
+     "label": "handler / handle (consumer.py)",
+     "description": "Mails members from loan events.",
+     "details": "SQS consumer.\n- **New** `handler` and `handle`\n- Reads `api.store`, sets `reminded_on`, no dedup",
+     "type": "function",
+     "status": "new",
+     "at": "library/consumer.py:11",
+     "zone": "z_cons",
+     "source": "implemented",
+     "evidence": "library/consumer.py:11"
+    },
+    {
+     "id": "store",
+     "group": "g_cons",
+     "label": "api.store (api.py)",
+     "description": "In-memory LoanStore.",
+     "type": "data",
+     "status": "unchanged",
+     "at": "library/api.py:6",
+     "source": "existing",
+     "evidence": "library/api.py:6"
+    },
+    {
+     "id": "mailer",
+     "group": "g_cons",
+     "label": "Mailer (mailer.py)",
+     "description": "Sends mail.",
+     "type": "component",
+     "status": "unchanged",
+     "source": "existing",
+     "evidence": "library/mailer.py:10"
+    }
+   ],
+   "edges": [
+    {
+     "from": "caller",
+     "to": "handler",
+     "label": "POST /remind, GET /late",
+     "source": "implemented",
+     "status": "changed",
+     "evidence": "template.yaml:24",
+     "crosses": true
+    },
+    {
+     "from": "handler",
+     "to": "consumer",
+     "label": "Direct call, mails at once",
+     "source": "implemented",
+     "status": "new",
+     "evidence": "library/handler.py:21",
+     "crosses": true
+    },
+    {
+     "from": "reminders",
+     "to": "status",
+     "label": "transition(loan, REMINDED)",
+     "source": "implemented",
+     "status": "new",
+     "evidence": "library/reminders.py:23"
+    },
+    {
+     "from": "status",
+     "to": "events",
+     "label": "queue.publish(LoanEvent)",
+     "source": "implemented",
+     "status": "new",
+     "evidence": "library/status.py:50"
+    },
+    {
+     "from": "events",
+     "to": "queue",
+     "label": "Should publish to SQS (no code)",
+     "source": "spec",
+     "status": "new"
+    },
+    {
+     "from": "queue",
+     "to": "consumer",
+     "label": "SQS batch of 10",
+     "source": "implemented",
+     "status": "new",
+     "evidence": "template.yaml:34",
+     "crosses": true
+    },
+    {
+     "from": "consumer",
+     "to": "store",
+     "label": "store.get(loan_id)",
+     "source": "implemented",
+     "status": "new",
+     "evidence": "library/consumer.py:19"
+    },
+    {
+     "from": "consumer",
+     "to": "mailer",
+     "label": "mailer.send",
+     "source": "implemented",
+     "status": "new",
+     "evidence": "library/consumer.py:21"
+    },
+    {
+     "from": "reminders",
+     "to": "mailer",
+     "label": "Direct mail (still there)",
+     "source": "existing",
+     "status": "unchanged",
+     "evidence": "library/reminders.py:21"
+    }
+   ]
+  },
+  "blast_radius": {
+   "units": [
+    {
+     "id": "u_consumer",
+     "label": "Reminder consumer",
+     "type": "function",
+     "status": "added",
+     "files": [
+      "library/consumer.py"
+     ],
+     "spots": 1
+    },
+    {
+     "id": "u_status",
+     "label": "Status machine and events",
+     "type": "module",
+     "status": "changed",
+     "files": [
+      "library/status.py",
+      "library/events.py"
+     ],
+     "spots": 3
+    },
+    {
+     "id": "u_rem",
+     "label": "Reminders",
+     "type": "module",
+     "status": "changed",
+     "files": [
+      "library/reminders.py"
+     ],
+     "spots": 2
+    },
+    {
+     "id": "u_handler",
+     "label": "Front desk handler",
+     "type": "function",
+     "status": "changed",
+     "files": [
+      "library/handler.py"
+     ],
+     "spots": 2
+    },
+    {
+     "id": "u_tpl",
+     "label": "SAM template",
+     "type": "config",
+     "status": "added",
+     "files": [
+      "template.yaml"
+     ],
+     "spots": 1
+    }
+   ],
+   "context": [
+    {
+     "id": "x1",
+     "file": "library/loans.py",
+     "direction": "upstream",
+     "relation": "`LoanStore.give_back` sets `returned_on` without `transition`.",
+     "links_to": "u_status"
+    },
+    {
+     "id": "x2",
+     "file": "library/api.py",
+     "direction": "downstream",
+     "relation": "Consumer reads `api.store`, which pulls in reminders and status.",
+     "links_to": "u_consumer"
+    },
+    {
+     "id": "x3",
+     "file": "library/mailer.py",
+     "direction": "downstream",
+     "relation": "Both reminders and consumer send through `Mailer`.",
+     "links_to": "u_consumer"
+    }
+   ]
+  },
+  "steps": [
+   {
+    "title": "Events and the status machine",
+    "risk": "high",
+    "why_it_matters": "Every status change and its event go through `transition`, so gaps here break the one-event-per-change and idempotency criteria.",
+    "explanation": "`LoanEvent` and a list-backed `Queue` are added, and `status.py` gets `transition()`, which checks the move, sets the date and publishes. The event has no id and `Queue` only appends to a list, with no SQS publisher.",
+    "reading_order": 1,
+    "hunks": [
+     "h2",
+     "h7",
+     "h8"
+    ],
+    "check_questions": [
+     "Does `LoanEvent` carry the id the consumer needs for deduplication?",
+     "Can `transition` to OVERDUE ever succeed, given that `status_of` derives OVERDUE from the date?",
+     "Does anything in production publish to the SQS queue?"
+    ],
+    "question_files": [
+     "library/events.py",
+     "library/status.py",
+     "library/events.py"
+    ],
+    "suggestions": [],
+    "findings": [
+     {
+      "file": "library/events.py",
+      "line": 7,
+      "title": "LoanEvent has no id, so nothing can be deduplicated",
+      "detail": "`LoanEvent` has only `type`, `loan_id` and `on`. The acceptance criteria require each event to carry an id so the consumer can skip one already handled. SQS delivers at least once, so redelivery would repeat the mail.",
+      "suggestion": "Add an `id` field generated in `transition` and have the consumer record handled ids.",
+      "category": "requirement",
+      "impact": "breaks_requirement",
+      "effect": "Redelivered or retried events cannot be recognised and members get repeat mails.",
+      "preconditions": [],
+      "certainty": "derived",
+      "criteria": [
+       "c4"
+      ],
+      "severity": "high",
+      "id": "a53dd3af6",
+      "breaks": {
+       "from": "status",
+       "to": "events",
+       "edge": "e3"
+      }
+     },
+     {
+      "file": "library/events.py",
+      "line": 19,
+      "title": "Queue never publishes to SQS",
+      "detail": "`Queue.publish` appends to `self.messages`. The docstring says SQS in production, but no class sends to SQS, and `LOAN_EVENTS_URL` in `template.yaml` is read by no code. In deployment the events never reach `ReminderConsumer`.",
+      "suggestion": "Add an SQS-backed publisher using `LOAN_EVENTS_URL` and wire it into the code that calls `transition`.",
+      "category": "requirement",
+      "impact": "dead_path",
+      "effect": "In production the event path from the front desk to the consumer does nothing.",
+      "preconditions": [],
+      "certainty": "derived",
+      "criteria": [
+       "c3"
+      ],
+      "severity": "high",
+      "id": "a2358d888",
+      "breaks": {
+       "from": "events",
+       "to": "queue",
+       "edge": "e4"
+      }
+     },
+     {
+      "file": "library/status.py",
+      "line": 45,
+      "title": "transition to OVERDUE always raises, so publish_overdue never works",
+      "detail": "`transition` computes the current state with `status_of(loan, on)`. For a loan due yesterday, `due_on < on`, so that is OVERDUE, and `MOVES[OVERDUE]` is only `{RETURNED}`. `move(OVERDUE, OVERDUE)` raises `ValueError`, so `publish_overdue` (`reminders.py:33`) fails on its first loan and no `loan.overdue` event is published.",
+      "suggestion": "Decide the current status from stored state instead of the date, or allow the overdue move from the state `status_of` returns on the due date.",
+      "category": "bug",
+      "impact": "dead_path",
+      "effect": "Overdue events are never published, so no overdue mail goes out.",
+      "preconditions": [
+       "`publish_overdue` is run with a loan due the previous day"
+      ],
+      "certainty": "derived",
+      "criteria": [
+       "c1"
+      ],
+      "severity": "high",
+      "id": "ab65b190a",
+      "breaks": {
+       "node": "status"
+      }
+     },
+     {
+      "file": "library/loans.py",
+      "line": 41,
+      "title": "give_back changes status without transition and publishes no loan.returned",
+      "detail": "`LoanStore.give_back` sets `returned_on` directly, and `api.give_back` calls it. The criterion says every status change goes through `status.py` and only there, and that one event is published per change. `EVENTS` defines `loan.returned`, but nothing publishes it.",
+      "suggestion": "Make `api.give_back` call `transition(loan, Status.RETURNED, queue, today())` and drop the direct write.",
+      "category": "requirement",
+      "impact": "breaks_requirement",
+      "effect": "Returns never produce an event, and status changes bypass the state machine.",
+      "preconditions": [],
+      "certainty": "derived",
+      "criteria": [
+       "c1"
+      ],
+      "severity": "high",
+      "id": "a5b020941",
+      "breaks": {
+       "node": "status"
+      }
+     }
+    ],
+    "flows": [
+     {
+      "function": "transition",
+      "at": "library/status.py:43",
+      "inputs": [
+       {
+        "name": "loan",
+        "type": "Loan",
+        "example": "Loan(id=1, borrowed_on=2026-03-01)"
+       },
+       {
+        "name": "new",
+        "type": "Status",
+        "example": "Status.OVERDUE"
+       },
+       {
+        "name": "on",
+        "type": "date",
+        "example": "2026-03-23"
+       }
+      ],
+      "output": {
+       "type": "raises ValueError",
+       "example": "a loan can't go from overdue to overdue"
+      },
+      "side_effects": [
+       "publishes one event when the move is allowed"
+      ],
+      "trace": [
+       {
+        "path": "library/status.py",
+        "line": 45,
+        "values": "status_of(loan, 2026-03-23) = OVERDUE (due_on 2026-03-22 < on), new = OVERDUE, move raises ValueError"
+       }
+      ]
+     }
+    ],
+    "visuals": [
+     {
+      "kind": "state_machine",
+      "title": "Loan",
+      "nodes": [
+       {
+        "id": "borrowed",
+        "label": "borrowed",
+        "source": "existing"
+       },
+       {
+        "id": "reminded",
+        "label": "reminded",
+        "source": "existing"
+       },
+       {
+        "id": "overdue",
+        "label": "overdue",
+        "source": "existing"
+       },
+       {
+        "id": "returned",
+        "label": "returned",
+        "source": "existing"
+       }
+      ],
+      "edges": [
+       {
+        "from": "borrowed",
+        "to": "reminded",
+        "label": "loan.reminded",
+        "event": "transition",
+        "action": "sets reminded_on, publishes",
+        "changed": true,
+        "source": "implemented",
+        "evidence": "library/status.py:46"
+       },
+       {
+        "from": "borrowed",
+        "to": "overdue",
+        "label": "loan.overdue",
+        "action": "publishes (unreachable: status_of returns overdue first)",
+        "changed": true,
+        "source": "implemented",
+        "evidence": "library/status.py:40"
+       },
+       {
+        "from": "borrowed",
+        "to": "returned",
+        "label": "loan.returned",
+        "action": "sets returned_on, publishes",
+        "changed": true,
+        "source": "implemented",
+        "evidence": "library/status.py:48"
+       },
+       {
+        "from": "reminded",
+        "to": "overdue",
+        "label": "loan.overdue",
+        "changed": true,
+        "source": "implemented",
+        "evidence": "library/status.py:40"
+       },
+       {
+        "from": "reminded",
+        "to": "returned",
+        "label": "loan.returned",
+        "changed": true,
+        "source": "implemented",
+        "evidence": "library/status.py:48"
+       },
+       {
+        "from": "overdue",
+        "to": "returned",
+        "label": "loan.returned",
+        "changed": true,
+        "source": "implemented",
+        "evidence": "library/status.py:48"
+       },
+       {
+        "from": "overdue",
+        "to": "overdue",
+        "label": "publish_overdue",
+        "action": "raises ValueError",
+        "changed": true,
+        "source": "implemented",
+        "evidence": "library/reminders.py:33"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "title": "Reminder consumer",
+    "risk": "high",
+    "why_it_matters": "The consumer is meant to be the only sender of reminder mail, deployed alone and idempotent.",
+    "explanation": "`consumer.py` parses each SQS record, loads the loan from `api.store`, mails the member and sets `reminded_on`. It handles `loan.reminded` and `loan.overdue`, and ignores the rest.",
+    "reading_order": 3,
+    "hunks": [
+     "h1"
+    ],
+    "check_questions": [
+     "Does the consumer skip an event it has already handled?",
+     "In a separate Lambda, can `api.store` hold the loan?",
+     "What happens to the other records in a batch when one fails?"
+    ],
+    "question_files": [
+     "library/consumer.py",
+     "library/consumer.py",
+     "library/consumer.py"
+    ],
+    "suggestions": [],
+    "findings": [
+     {
+      "file": "library/consumer.py",
+      "line": 18,
+      "title": "Consumer is not idempotent",
+      "detail": "`handle` mails on every call and keeps no record of handled events. SQS delivers at least once, and the consumer is a separate Lambda, so duplicates are normal. The criterion requires skipping events already handled.",
+      "suggestion": "Store handled event ids (e.g. in a table with a conditional write) and return early for a repeat.",
+      "category": "requirement",
+      "impact": "breaks_requirement",
+      "effect": "A redelivered event mails the member again.",
+      "preconditions": [],
+      "certainty": "derived",
+      "criteria": [
+       "c4",
+       "c5"
+      ],
+      "severity": "high",
+      "id": "a7bb123c3",
+      "breaks": {
+       "node": "consumer"
+      }
+     },
+     {
+      "file": "library/consumer.py",
+      "line": 19,
+      "title": "Consumer reads an in-memory store that the front desk Lambda does not share",
+      "detail": "`api.store` is a `LoanStore` dict created at import time in each Lambda. `FrontDesk` and `ReminderConsumer` are separate functions, so the consumer's store is empty and `store.get` raises `KeyError`. The tests pass only because they share one process. Importing `api` also couples the consumer to the front desk code, against the 'events module and nothing else' criterion.",
+      "suggestion": "Put the loan data in the event or in a shared database, and stop importing `api` in the consumer.",
+      "category": "requirement",
+      "impact": "dead_path",
+      "effect": "In deployment every record fails, nothing is mailed and SQS retries the batch.",
+      "preconditions": [
+       "The two functions are deployed as in `template.yaml`"
+      ],
+      "certainty": "derived",
+      "criteria": [
+       "c3"
+      ],
+      "severity": "high",
+      "id": "a5e97f80d",
+      "breaks": {
+       "from": "consumer",
+       "to": "store",
+       "edge": "e6"
+      }
+     },
+     {
+      "file": "library/consumer.py",
+      "line": 23,
+      "title": "Consumer changes status outside status.py",
+      "detail": "`loan.reminded_on = today()` is a status change written in the consumer. The criterion says status changes happen only in `status.py`. With `send_reminders` also calling `transition`, the date is set twice by two components.",
+      "suggestion": "Remove the write; the producer's `transition` already records it.",
+      "category": "requirement",
+      "impact": "breaks_requirement",
+      "effect": "Two components own the reminded state and they can disagree.",
+      "preconditions": [],
+      "certainty": "derived",
+      "criteria": [
+       "c1"
+      ],
+      "severity": "high",
+      "id": "a051f5238",
+      "breaks": {
+       "node": "consumer"
+      }
+     },
+     {
+      "file": "library/consumer.py",
+      "line": 13,
+      "title": "One failing record fails the whole batch",
+      "detail": "The loop over `records` has no per-record handling and the handler returns no `batchItemFailures`. With `BatchSize: 10` an exception on one record makes SQS redeliver all ten, so the already mailed ones are mailed again, and there is no dead-letter queue to stop a poison message.",
+      "suggestion": "Catch per record and return `batchItemFailures` (enable `ReportBatchItemFailures` on the event source).",
+      "category": "availability",
+      "impact": "breaks_requirement",
+      "effect": "One bad event causes repeat mails to other members in the batch.",
+      "preconditions": [
+       "One record in a batch raises, e.g. an unknown `loan_id`"
+      ],
+      "certainty": "derived",
+      "criteria": [
+       "c4"
+      ],
+      "severity": "high",
+      "id": "ab0766bc5",
+      "breaks": {
+       "node": "consumer"
+      }
+     }
+    ]
+   },
+   {
+    "title": "Reminder producer (reminders.py)",
+    "risk": "high",
+    "why_it_matters": "This is where the reminder mail is produced, and the criteria say it must be exactly one.",
+    "explanation": "`send_reminders` now calls `transition`, which publishes `loan.reminded`, but it still mails directly. `publish_overdue` is new and calls `transition` to OVERDUE.",
+    "reading_order": 2,
+    "hunks": [
+     "h5",
+     "h6"
+    ],
+    "check_questions": [
+     "Who sends the reminder mail now: `send_reminders`, the consumer, or both?",
+     "Does `publish_overdue` publish anything for a real overdue loan?"
+    ],
+    "question_files": [
+     "library/reminders.py",
+     "library/reminders.py"
+    ],
+    "suggestions": [
+     {
+      "hunk": "h6",
+      "line": 21,
+      "side": "new",
+      "severity": "high",
+      "category": "requirement",
+      "text": "This direct `mailer.send` should be removed; the event published two lines later already makes the consumer send the mail."
+     }
+    ],
+    "findings": [
+     {
+      "file": "library/reminders.py",
+      "line": 21,
+      "title": "Reminder mail is sent here and again by the consumer",
+      "detail": "`send_reminders` still calls `mailer.send` and then `transition(..., REMINDED, ...)`, which publishes `loan.reminded`. The consumer mails again on that event. Members get two reminders, and the producer still sends mail, against 'the consumer is the only component that sends'. The updated test only checks `send_reminders` returns 1 then 0 and the outbox of the producer's own mailer.",
+      "suggestion": "Delete the `mailer.send` call and the `mailer` parameter, and let the consumer send.",
+      "category": "requirement",
+      "impact": "breaks_requirement",
+      "effect": "Each member is mailed twice for a loan due in two days.",
+      "preconditions": [
+       "The queue reaches the consumer"
+      ],
+      "certainty": "derived",
+      "criteria": [
+       "c2",
+       "c5"
+      ],
+      "severity": "high",
+      "id": "a9e41f5e8",
+      "breaks": {
+       "from": "reminders",
+       "to": "mailer",
+       "edge": "e8"
+      }
+     }
+    ]
+   },
+   {
+    "title": "Front desk handler: POST /remind",
+    "risk": "high",
+    "why_it_matters": "This new route bypasses the queue and the state machine and ties the front desk to the consumer.",
+    "explanation": "`handler.py` imports `consumer` and, for `/remind`, calls `consumer.handle` in-process, which mails the member at once. No event is published and no status is checked.",
+    "reading_order": 4,
+    "hunks": [
+     "h3",
+     "h4"
+    ],
+    "check_questions": [
+     "Does `/remind` go through `transition` and the queue?",
+     "What happens with a missing `id` or an unknown loan?"
+    ],
+    "question_files": [
+     "library/handler.py",
+     "library/handler.py"
+    ],
+    "suggestions": [],
+    "findings": [
+     {
+      "file": "library/handler.py",
+      "line": 21,
+      "title": "/remind mails directly and bypasses transition and the queue",
+      "detail": "`consumer.handle` sends the mail inside the front desk Lambda. That makes the front desk a second sender, skips `transition` (so no event and no state check), and imports `consumer` into `handler.py`, so the two deployables share more than the events module. Calling it twice mails twice, and a loan that already got its reminder is mailed again.",
+      "suggestion": "Call `transition(loan, Status.REMINDED, queue, today())` and let the consumer send the mail from the event.",
+      "category": "requirement",
+      "impact": "breaks_requirement",
+      "effect": "Members can get extra reminder mails and the front desk sends mail itself.",
+      "preconditions": [
+       "A valid bearer token is presented"
+      ],
+      "certainty": "derived",
+      "criteria": [
+       "c1",
+       "c2",
+       "c3",
+       "c5"
+      ],
+      "severity": "high",
+      "id": "af417e9fe",
+      "breaks": {
+       "from": "handler",
+       "to": "consumer",
+       "edge": "e1"
+      }
+     },
+     {
+      "file": "library/handler.py",
+      "line": 20,
+      "title": "/remind fails with an unhandled exception on bad input",
+      "detail": "`json.loads(...)[\"id\"]` raises `KeyError` when the body has no `id` and `JSONDecodeError` on bad JSON, and `consumer.handle` raises `KeyError` for an unknown loan. None of these is caught, so the caller gets a Lambda error instead of a 4xx. The route also returns 202 `reminded: True` although the mail was sent synchronously.",
+      "suggestion": "Validate the body and return 400 or 404 for a missing id or an unknown loan.",
+      "category": "bug",
+      "impact": "edge_case",
+      "effect": "A bad request produces a 500 error response for the front desk.",
+      "preconditions": [
+       "The body lacks `id`, is not JSON, or names an unknown loan"
+      ],
+      "certainty": "derived",
+      "criteria": [],
+      "severity": "medium",
+      "id": "a7b5d4f00"
+     }
+    ]
+   },
+   {
+    "title": "SAM template",
+    "risk": "medium",
+    "why_it_matters": "It defines the two deployables, the queue and who may reach what.",
+    "explanation": "The template adds `LoanEvents`, a `FrontDesk` Lambda with an HttpApi event and send permission, and a `ReminderConsumer` on an SQS event source with batch size 10.",
+    "reading_order": 5,
+    "hunks": [
+     "h13"
+    ],
+    "check_questions": [
+     "Is `FRONT_DESK_TOKEN` set for `FrontDesk`?",
+     "Does `LoanEvents` have a dead-letter queue?"
+    ],
+    "question_files": [
+     "template.yaml",
+     "template.yaml"
+    ],
+    "suggestions": [],
+    "findings": [
+     {
+      "file": "template.yaml",
+      "line": 18,
+      "title": "FRONT_DESK_TOKEN is not set for the front desk Lambda",
+      "detail": "The handler reads `TOKEN` from `FRONT_DESK_TOKEN` with an empty default, and the HttpApi route has no authorizer. If the variable is not provided some other way, `TOKEN` is empty and a request with `Authorization: Bearer ` passes `hmac.compare_digest` on two empty strings, assuming the gateway forwards that header unchanged.",
+      "suggestion": "Set `FRONT_DESK_TOKEN` from a parameter or secret in `Environment`, and make the handler reject an empty `TOKEN`.",
+      "category": "security",
+      "impact": "unauthorized_access",
+      "effect": "Anyone on the internet could call `/late` and `/remind` without a real token.",
+      "preconditions": [
+       "`FRONT_DESK_TOKEN` is unset in the deployment",
+       "The gateway passes an empty bearer value through"
+      ],
+      "certainty": "assumed",
+      "criteria": [],
+      "reachability": "public",
+      "severity": "high",
+      "id": "a4bd13c33",
+      "reachable_from": [
+       "acc1"
+      ]
+     },
+     {
+      "file": "template.yaml",
+      "line": 11,
+      "title": "No dead-letter queue or redrive on LoanEvents",
+      "detail": "The queue has no `RedrivePolicy`, and the consumer has no partial-batch handling. A message that always fails is retried until the retention period ends, with no alarm and no place to inspect it. Repeated retries also mail other members again (see the consumer finding).",
+      "suggestion": "Add a dead-letter queue with `maxReceiveCount` and an alarm on it.",
+      "category": "availability",
+      "impact": "degraded_operation",
+      "effect": "A poison event retries silently and cannot be inspected.",
+      "preconditions": [],
+      "certainty": "derived",
+      "criteria": [],
+      "severity": "medium",
+      "id": "a2b4a76e0",
+      "breaks": {
+       "node": "queue"
+      }
+     }
+    ]
+   },
+   {
+    "title": "Tests",
+    "risk": "high",
+    "why_it_matters": "The tests pass while the double mail, the failing overdue path and the missing dedup exist.",
+    "explanation": "New tests cover `transition` publishing one event, the consumer mailing in-process, and the changed `send_reminders` signature. Nothing covers `publish_overdue`, `/remind`, idempotency, the `send_reminders` plus consumer combination, or separate stores.",
+    "reading_order": 6,
+    "hunks": [
+     "h9",
+     "h10",
+     "h11",
+     "h12"
+    ],
+    "check_questions": [
+     "Would a test fail if a reminder were mailed twice?",
+     "Is there a test for `publish_overdue` or event redelivery?"
+    ],
+    "question_files": [
+     "library/tests/test_reminders.py",
+     "library/tests/test_consumer.py"
+    ],
+    "suggestions": [],
+    "findings": [
+     {
+      "file": "library/tests/test_reminders.py",
+      "line": 23,
+      "title": "Exactly-one-reminder is not tested end to end",
+      "detail": "The test only calls `send_reminders` and checks its own mailer's outbox, then calls it again to get 0. It never feeds `queue.messages` to the consumer, so the double mail from `send_reminders` plus consumer is not caught. The second call returning 0 passes because `reminded_on` is set, which says nothing about the consumer.",
+      "suggestion": "Add a test that runs `send_reminders` and then the consumer on the queued messages and asserts one mail in total.",
+      "category": "test",
+      "impact": "untested",
+      "effect": "The main acceptance criterion can break without any test failing.",
+      "preconditions": [],
+      "certainty": "derived",
+      "criteria": [
+       "c5",
+       "c2"
+      ],
+      "severity": "medium",
+      "id": "a6c3ab509"
+     },
+     {
+      "file": "library/tests/test_consumer.py",
+      "line": 14,
+      "title": "No tests for deduplication, publish_overdue, /remind or separate stores",
+      "detail": "The only consumer test mails once from a fresh event. Nothing delivers the same event twice, calls `publish_overdue` (which always raises), exercises `POST /remind`, or checks that the consumer does not depend on the front desk's `api.store`.",
+      "suggestion": "Add tests for a redelivered event, `publish_overdue` on a loan due yesterday, and the `/remind` route.",
+      "category": "test",
+      "impact": "untested",
+      "effect": "Idempotency, overdue publishing and the front desk route can regress unnoticed.",
+      "preconditions": [],
+      "certainty": "derived",
+      "criteria": [
+       "c4",
+       "c1",
+       "c3"
+      ],
+      "severity": "medium",
+      "id": "a5c7eba2b"
+     }
+    ]
+   }
+  ],
+  "asks": [
+   {
+    "id": "c1",
+    "text": "Every status change goes through status.py's state machine only, one event per change",
+    "acceptance": true,
+    "state": "broken",
+    "why": "`consumer.py:23` and `LoanStore.give_back` write status dates directly, `publish_overdue` always raises, and `/remind` publishes nothing.",
+    "hunks": [
+     "h1",
+     "h4",
+     "h6",
+     "h8"
+    ],
+    "elements": [],
+    "findings": [
+     "ab65b190a",
+     "a5b020941",
+     "a051f5238",
+     "af417e9fe",
+     "a5c7eba2b"
+    ],
+    "coverage": "absent"
+   },
+   {
+    "id": "c2",
+    "text": "The reminder consumer is the only component that sends reminder and overdue mails",
+    "acceptance": true,
+    "state": "broken",
+    "why": "`send_reminders` (`reminders.py:21`) and `/remind` (`handler.py:21`) also send.",
+    "hunks": [
+     "h4",
+     "h6"
+    ],
+    "elements": [],
+    "findings": [
+     "a9e41f5e8",
+     "af417e9fe",
+     "a6c3ab509"
+    ],
+    "coverage": "absent"
+   },
+   {
+    "id": "c3",
+    "text": "Front desk Lambda and consumer are deployed separately and share only the events module",
+    "acceptance": true,
+    "state": "broken",
+    "why": "`handler.py` imports `consumer`, the consumer imports `api` and its in-memory store, and no SQS publisher exists.",
+    "hunks": [
+     "h1",
+     "h3",
+     "h4",
+     "h13"
+    ],
+    "elements": [],
+    "findings": [
+     "a2358d888",
+     "a5e97f80d",
+     "af417e9fe",
+     "a5c7eba2b"
+    ],
+    "coverage": "absent"
+   },
+   {
+    "id": "c4",
+    "text": "Each event carries an id and the consumer skips one it has handled",
+    "acceptance": true,
+    "state": "not_done",
+    "why": "`LoanEvent` has no id and `consumer.handle` has no dedup.",
+    "hunks": [
+     "h1",
+     "h2"
+    ],
+    "elements": [],
+    "findings": [
+     "a53dd3af6",
+     "a7bb123c3",
+     "ab0766bc5",
+     "a5c7eba2b"
+    ],
+    "coverage": "absent"
+   },
+   {
+    "id": "c5",
+    "text": "A member gets exactly one reminder mail two days before a loan is due",
+    "acceptance": true,
+    "state": "broken",
+    "why": "`send_reminders` mails and then the consumer mails again for the published event.",
+    "hunks": [
+     "h1",
+     "h6"
+    ],
+    "elements": [],
+    "findings": [
+     "a7bb123c3",
+     "a9e41f5e8",
+     "af417e9fe",
+     "a6c3ab509"
+    ],
+    "coverage": "absent"
+   },
+   {
+    "id": "c6",
+    "text": "Reminder and overdue mail move out of the request path via a queue and consumer",
+    "acceptance": false,
+    "state": "partly",
+    "why": "The consumer and template exist, but `Queue` is a list with no SQS publisher and the old direct mail remains.",
+    "hunks": [
+     "h1",
+     "h2",
+     "h13"
+    ],
+    "elements": [],
+    "findings": [],
+    "coverage": "partly"
+   },
+   {
+    "id": "x1",
+    "text": "New POST /remind route on the front desk",
+    "acceptance": false,
+    "state": "extra",
+    "why": "The task does not ask for it, and it sends mail from the front desk Lambda.",
+    "hunks": [
+     "h3",
+     "h4"
+    ],
+    "elements": [],
+    "findings": [],
+    "coverage": "extra"
+   }
+  ],
+  "components": [
+   {
+    "name": "LoanEvents",
+    "kind": "queue",
+    "status": "new",
+    "at": "template.yaml:11",
+    "node": "queue",
+    "operate": [
+     "no dead-letter queue",
+     "no alarm"
+    ],
+    "owner": null
+   },
+   {
+    "name": "FrontDesk",
+    "kind": "lambda",
+    "status": "new",
+    "at": "template.yaml:14",
+    "node": "handler",
+    "operate": [
+     "FRONT_DESK_TOKEN not set",
+     "LOAN_EVENTS_URL unused by code"
+    ],
+    "owner": null
+   },
+   {
+    "name": "ReminderConsumer",
+    "kind": "lambda",
+    "status": "new",
+    "at": "template.yaml:28",
+    "node": "consumer",
+    "operate": [
+     "no partial batch failure reporting",
+     "no dedup store",
+     "no shared loan store"
+    ],
+    "owner": null
+   },
+   {
+    "name": "consumer.handler",
+    "kind": "function",
+    "status": "new",
+    "at": "library/consumer.py:11",
+    "node": "consumer",
+    "operate": [
+     "needs a loan data source"
+    ],
+    "owner": null
+   },
+   {
+    "name": "transition",
+    "kind": "function",
+    "status": "new",
+    "at": "library/status.py:43",
+    "node": "status",
+    "operate": [],
+    "owner": null
+   },
+   {
+    "name": "Queue",
+    "kind": "module",
+    "status": "new",
+    "at": "library/events.py:13",
+    "node": "events",
+    "operate": [
+     "no SQS publisher"
+    ],
+    "owner": null
+   },
+   {
+    "name": "publish_overdue",
+    "kind": "function",
+    "status": "new",
+    "at": "library/reminders.py:28",
+    "node": "reminders",
+    "operate": [
+     "no scheduler calls it"
+    ],
+    "owner": null
+   },
+   {
+    "name": "POST /remind",
+    "kind": "endpoint",
+    "status": "new",
+    "at": "library/handler.py:18",
+    "node": "handler",
+    "operate": [
+     "no input validation"
+    ],
+    "owner": null
+   }
+  ],
+  "access": [
+   {
+    "resource": "FrontDesk HttpApi event",
+    "kind": "route",
+    "principal": "anyone on the internet",
+    "actions": [
+     "call GET /late",
+     "call POST /remind"
+    ],
+    "public": true,
+    "auth": "bearer token checked in handler.py",
+    "auth_kind": "code",
+    "used": true,
+    "at": "template.yaml:24",
+    "node": "handler",
+    "id": "acc1",
+    "opened_by_pr": true
+   },
+   {
+    "resource": "SQSSendMessagePolicy on LoanEvents",
+    "kind": "queue",
+    "principal": "FrontDesk function",
+    "actions": [
+     "sqs:SendMessage"
+    ],
+    "public": false,
+    "auth": "IAM",
+    "auth_kind": "iam",
+    "used": false,
+    "at": "template.yaml:21",
+    "node": "queue",
+    "id": "acc2",
+    "opened_by_pr": true
+   },
+   {
+    "resource": "Loans SQS event source",
+    "kind": "queue",
+    "principal": "ReminderConsumer function",
+    "actions": [
+     "sqs:ReceiveMessage",
+     "sqs:DeleteMessage"
+    ],
+    "public": false,
+    "auth": "IAM (SAM generated)",
+    "auth_kind": "iam",
+    "used": true,
+    "at": "template.yaml:33",
+    "node": "consumer",
+    "id": "acc3",
+    "opened_by_pr": true
+   }
+  ],
+  "unlinked": [
+   "c6"
+  ],
+  "component_counts": {
+   "new": 8,
+   "changed": 0,
+   "no_owner": 8,
+   "codeowners": false
+  }
+ },
+ "incremental": null,
+ "cut": [],
+ "scope": {
+  "files": 9,
+  "detailed": 9,
+  "skimmed": 0,
+  "why": "",
+  "passes": 1,
+  "checked": [
+   {
+    "area": "authentication",
+    "result": "finding",
+    "note": "token env var unset in template"
+   },
+   {
+    "area": "authorization",
+    "result": "clean",
+    "note": ""
+   },
+   {
+    "area": "input_validation",
+    "result": "finding",
+    "note": "/remind body"
+   },
+   {
+    "area": "secrets",
+    "result": "not_checked",
+    "note": ""
+   },
+   {
+    "area": "permissions",
+    "result": "finding",
+    "note": "send policy unused by code"
+   },
+   {
+    "area": "personal_data",
+    "result": "not_checked",
+    "note": ""
+   },
+   {
+    "area": "dependencies",
+    "result": "clean",
+    "note": ""
+   },
+   {
+    "area": "correctness",
+    "result": "finding",
+    "note": "double mail, overdue always raises"
+   },
+   {
+    "area": "error_handling",
+    "result": "finding",
+    "note": "batch failures"
+   },
+   {
+    "area": "concurrency",
+    "result": "finding",
+    "note": "at-least-once delivery without dedup"
+   },
+   {
+    "area": "state",
+    "result": "finding",
+    "note": "status written outside status.py"
+   },
+   {
+    "area": "contracts",
+    "result": "finding",
+    "note": "send_reminders signature changed"
+   },
+   {
+    "area": "tests",
+    "result": "finding",
+    "note": ""
+   }
+  ]
+ },
+ "cost": 0.3640509,
+ "usage": {
+  "input": 8,
+  "output": 27830,
+  "cache_read": 80029,
+  "cache_write": 19433
+ },
+ "ms": 175982,
+ "budget": 3.0,
+ "task": {
+  "title": "feat(events): loan events and a reminder consumer",
+  "jira": null,
+  "note": null
+ },
+ "generated": "2026-11-14T11:56:02.450419+01:00"
+}
