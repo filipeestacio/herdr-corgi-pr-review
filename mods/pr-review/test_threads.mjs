@@ -147,7 +147,7 @@ assert.match(off.reason, /on feat\/other.*abcdef0.*git cherry-pick abcdef0\.\.fi
   assert.equal(TH.checkText(null, true), "not verified");
 }
 // A fix agent cannot push: deny rules before the permission mode, the task last.
-assert.deepEqual(args.slice(args.indexOf("claude") + 1, args.indexOf("--permission-mode")), ["--model", "opus", "--disallowedTools", ...TH.NO_PUSH]);
+assert.deepEqual(args.slice(args.indexOf("claude") + 1, args.indexOf("--permission-mode")), ["--model", "opus", ...TH.NO_MCP, "--disallowedTools", ...TH.NO_PUSH]);
 assert.ok(TH.NO_PUSH.includes("Bash(hc send *)"), "no hand-over to another session by itself");
 assert.ok(TH.NO_PUSH.includes("Bash(git push *)") && untrusted.includes("Bash(git push *)") && untrusted.at(-1) === "x");
 // The target choice: the sub-agent's text names its worktree, the main agent's doesn't; the preview sends that text.
