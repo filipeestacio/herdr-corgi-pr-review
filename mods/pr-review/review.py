@@ -367,7 +367,8 @@ def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None,
             "examples concrete and realistic, derived from the code (types, structs, JSON bodies, DTOs, SQL rows, events), at most "
             "12 lines, invent nothing; trace: ONE example input followed through the function like in a debugger: per line path, "
             "line (new side, only lines in the diff), values (\"name = value, name2 = value2\": what parameters, locals and the "
-            "return value hold there for the example), at most 12 lines); visuals (optional, only when pictures explain more than "
+            "return value hold there for the example), at most 12 lines); visuals (pictures of this layer; optional, except for the state "
+            "diagram described below, and only when pictures explain more than "
             "text: pick every view that explains something the others don't, usually 1-3, never the same kind twice for the same "
             "thing: kind architecture (components and what changes between them), flow (data/control flow, edges with payload), "
             "sequence (who calls whom in which order; edges in order), state_machine or steps (an ordered procedure); at most 12 "
@@ -404,7 +405,8 @@ def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None,
             "of the node a task state invokes, status), each call is then drawn from that state's row), edges (from, to, label: "
             "what happens, e.g. \"Creates invitation\"; draw them in call direction, caller to callee); at most 12 nodes, empty "
             "lists when the PR touches no architecture. visuals (optional, at most 3): pictures of the whole PR the architecture "
-            "doesn't show, same form as a layer's (e.g. the state diagram of an entity whose lifecycle changed). blast_radius: units (the changed "
+            "doesn't show, same form as a layer's (e.g. a sequence across several layers; a state diagram goes into the layer "
+            "that changes the state machine, not here). blast_radius: units (the changed "
             "units: id, label, type, status added/changed/removed, files, spots = number of changed places) and context (unchanged "
             "files that call the change (upstream) or are called by it (downstream): file as an existing path, relation one "
             "sentence, links_to the unit's id); only checked paths, at most 8. " + INVENTORY_TEXT)
@@ -427,7 +429,8 @@ def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None,
                  "(ids of the architecture or visual nodes with source spec that this requirement describes, if any). Plus one "
                  "entry with state extra for each change the task doesn't ask for (text: what, why: what it adds, hunks: where, "
                  "acceptance false). Every finding that breaks a requirement names it in criteria, and every requirement with "
-                 "state partly, broken or not_done is named by at least one finding (partly: the finding for the part that "
+                 "state partly, broken or not_done, also one you derived from the prose, is named by at least one finding "
+                 "(partly: the finding for the part that "
                  "is missing or wrong; not_done: a requirement finding at the place where the missing part belongs).\n\nTask:\n" + task_text[:8000])
     else:
         text += "\n\nasks: empty list."
@@ -630,21 +633,40 @@ def place(answer):
             row.pop("node", None)
 
 
+def seat_state_diagrams(answer, path_of):
+    """A state diagram belongs to the layer that changes the state machine. One the model put at the level of the
+    whole PR or into another layer moves to the layer whose hunks hold the file most of its evidence points at
+    (nodes' at, transitions' evidence; path_of: {hunk alias: path}). Without evidence or such a layer it stays."""
+    steps = answer.get("steps") or []
+    for holder in [answer, *steps]:
+        for v in [v for v in holder.get("visuals") or [] if v.get("kind") == "state_machine"]:
+            seen = [str(x[k]).rsplit(":", 1)[0].removeprefix("./") for x in [*(v.get("nodes") or []), *(v.get("edges") or []), *(v.get("transitions") or [])]
+                    for k in ("at", "evidence") if x.get(k)]
+            top = max(dict.fromkeys(seen), key=seen.count, default=None)
+            target = next((s for s in steps if any(path_of.get(a) == top for a in s.get("hunks") or [])), None)
+            if target is not None and target is not holder:
+                holder["visuals"].remove(v)
+                target.setdefault("visuals", []).append(v)
+
+
 OLD_STATE = {"seen": "met", "partly": "partly", "absent": "not_done", "extra": "extra"}  # coverage of older analyses
 COVERAGE = {"met": "seen", "partly": "partly", "broken": "absent", "not_done": "absent", "extra": "extra"}
 
 
-def finish(answer, root=None, paths=()):
+def finish(answer, root=None, path_of=None):
     """The answer made consistent, in place. Requirements (asks): id, state (older ones: from coverage), coverage (from
     state, for readers of the older field), findings (ids of the findings that break it; a "met" one with findings is
     partly). answer.unlinked: the ids of the requirements that are partly, broken or not_done although no finding names
     them (the model owes one; the UI can say so instead of showing an empty list). Findings: id (the UI's: "a" + fnv(category|file|title)), severity by the scale (judge), criteria only
     those asks has, breaks only when the picture has it (place). Check questions: question_files as long as the
-    questions, a path only when it is a file of the diff or the checkout. Components: owner from CODEOWNERS (None:
+    questions, a path only when it is a file of the diff (path_of: {hunk alias: path}) or the checkout. State diagrams
+    sit in the layer of their state machine (seat_state_diagrams). Components: owner from CODEOWNERS (None:
     nobody), and component_counts {new, changed, no_owner, codeowners: the repo has such a file}.
     ponytail: a big PR's cohort passes don't know the requirements or the picture, so their findings carry no
     criteria and no breaks; let the merge pass assign them when big PRs need the links."""
-    asks = answer.get("asks") or []
+    asks, path_of = answer.get("asks") or [], path_of or {}
+    paths = set(path_of.values())
+    seat_state_diagrams(answer, path_of)
     for k, a in enumerate(asks, 1):
         a["id"] = str(a.get("id") or f"c{k}")
         a["state"] = a["state"] if a.get("state") in ASK_STATES else OLD_STATE.get(a.get("coverage"), "not_done")
@@ -759,7 +781,7 @@ def picture_guide(lang):
     """The full prompt's guidance on pictures and sources (sliced out of it, so both prompts say the same)."""
     full = prompt([], [], None, False, lang=lang)
     cut = lambda a, b: full[full.index(a):full.index(b, full.index(a))]  # noqa: E731
-    return "\n\n".join([cut("visuals (optional", " The steps are layers"), cut("Sources:", "\n\ntitle/summary"),
+    return "\n\n".join([cut("visuals (pictures of this layer", " The steps are layers"), cut("Sources:", "\n\ntitle/summary"),
                          cut("architecture: the picture", " blast_radius:")])
 
 
@@ -778,7 +800,7 @@ def diagrams_prompt(hunks, prev, task_text, tools, lang="English"):
             "\n\nDiff:\n" + "\n\n".join(f"### {h['alias']} {h['path']}\n" + "\n".join(numbered(h["lines"])) for h in hunks))
 
 
-def merge_diagrams(prev, answer, head, meta):
+def merge_diagrams(prev, answer, head, meta, path_of=None):
     """The saved analysis with only its pictures replaced: architecture, the PR's visuals, each layer's visuals (by
     number; a layer the answer leaves out keeps none). Text, layers, asks stay. diagrams: when, for which head."""
     a = dict(prev.get("answer") or {})
@@ -786,6 +808,7 @@ def merge_diagrams(prev, answer, head, meta):
     a["architecture"] = answer.get("architecture") or {"groups": [], "nodes": [], "edges": []}
     a["visuals"] = answer.get("visuals") or []
     a["steps"] = [{**{k: v for k, v in x.items() if k != "visual"}, "visuals": per.get(k, [])} for k, x in enumerate(a.get("steps") or [])]
+    seat_state_diagrams(a, path_of or {})
     place(a)
     return {**prev, "answer": a, "diagrams": {"generated": dt.datetime.now().astimezone().isoformat(), "head": head,
                                               "model": meta.get("model_id"), "cost": meta.get("cost")}}
@@ -805,7 +828,7 @@ def main_diagrams(req):
                         cwd=wt if tools else pathlib.Path.home(), tools="Read,Grep,Glob,Bash" if tools else "", meta=meta, extra=extra)
     if not answer:
         raise RuntimeError(f"{FEATURE_DIAGRAMS}: no answer")
-    result = merge_diagrams(prev, answer, req.get("head"), meta)
+    result = merge_diagrams(prev, answer, req.get("head"), meta, {h["alias"]: h["path"] for h in req["hunks"]})
     for path in [req["diagrams"], *(req.get("also") or [])]:  # only files that still hold this analysis
         try:
             same = json.loads(pathlib.Path(path).read_text()).get("generated") == prev.get("generated")
@@ -952,7 +975,7 @@ def main(req):
     scope["checked"] = checked(answer.pop("checked", None), AREAS_SECURITY + AREAS_CODE)
     if prev:
         out_hunks, answer = merge_incremental(prev, answer, hunks, req["full"])
-    finish(answer, wt if tools else None, paths)
+    finish(answer, wt if tools else None, {h["alias"]: h["path"] for h in (req["full"] if prev else hunks)})
     cost = sum(m.get("cost") or 0 for m in metas) if any(m.get("cost") is not None for m in metas) else None
     result = {"source": req.get("source") or req.get("pr"), "model": model, "model_id": next((m["model_id"] for m in metas if m.get("model_id")), model),
               "hunks": out_hunks, "answer": answer, "incremental": req.get("since") if prev else None, "cut": [], "scope": scope,

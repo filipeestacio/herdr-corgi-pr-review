@@ -115,7 +115,10 @@ def claude(feature, prompt, *, context=None, model="haiku", schema=None, system=
     if tools is not None:
         args += ["--tools", tools]
     if schema is not None:
-        args += ["--json-schema", json.dumps(schema)]
+        # The whole answer under one top-level property. With many of them the model mixes the tool call's own syntax
+        # into the JSON of nested objects, the call does not parse and the whole answer is sent again (seen in every
+        # watched analysis, one to three times: a third of the price and a minute each).
+        args += ["--json-schema", json.dumps({"type": "object", "required": ["answer"], "properties": {"answer": schema}})]
     if system:
         args += ["--system-prompt", system]
     started = time.monotonic()
@@ -140,4 +143,4 @@ def claude(feature, prompt, *, context=None, model="haiku", schema=None, system=
                     result=data.get("result"), text=data.get("text") or "")
     if not ok:
         raise RuntimeError(f"{feature}: {(out.stderr or out.stdout).strip()[:300]}")
-    return data.get("structured_output") if schema is not None else data.get("result")
+    return (data.get("structured_output") or {}).get("answer") if schema is not None else data.get("result")

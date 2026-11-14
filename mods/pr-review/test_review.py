@@ -224,7 +224,7 @@ ans = review.finish({
         fin(title="Status set outside transition()", criteria=["c1", "c2", "c1"]),
         fin(title="Mailed twice", criteria=["c2"], impact="breaks_requirement", breaks={"from": "reminders", "to": "mailer"}),
         fin(title="Unasked route", criteria=["c3"], category="scope", impact="unrequested", breaks={"node": "status"}),
-        fin(title="No DLQ", criteria=["c9"], category="availability", impact="degraded_operation", breaks={"node": "nowhere"})]}]}, str(wt), ["library/s.py"])
+        fin(title="No DLQ", criteria=["c9"], category="availability", impact="degraded_operation", breaks={"node": "nowhere"})]}]}, str(wt), {"h1": "library/s.py"})
 c1, c2, c3 = ans["asks"]
 f1, f2, f3, f4 = ans["steps"][0]["findings"]
 assert f1["id"] == "a" + review.fnv("bug|library/s.py|Status set outside transition()") and f1["criteria"] == ["c1", "c2"], "a finding may break several requirements"
@@ -263,4 +263,16 @@ assert "ids so far: old" in review.diagrams_prompt([], {"answer": {"architecture
 moved = review.merge_diagrams({"answer": {"steps": [{"findings": [{"title": "f", "breaks": {"node": "old"}}, {"title": "g", "breaks": {"node": "kept"}}]}]}},
                               {"architecture": {"groups": [], "nodes": [{"id": "kept"}], "edges": []}}, "h", {})
 assert [f.get("breaks") for f in moved["answer"]["steps"][0]["findings"]] == [None, {"node": "kept"}], "a refreshed picture drops places it no longer has"
+
+# A state diagram sits in the layer that changes the state machine, wherever the model put it (the whole PR, another layer).
+sm = lambda **kw: {"kind": "state_machine", "title": "Loan", "nodes": [{"id": "b", "label": "borrowed", "at": "lib/status.py:8"}, {"id": "o", "label": "overdue", "at": "./lib/status.py:10"}],  # noqa: E731
+                   "edges": [], "transitions": [{"from": "o", "to": "o", "evidence": "lib/reminders.py:33"}], **kw}
+seated = review.finish({"visuals": [sm(), {"kind": "sequence", "title": "s", "nodes": [], "edges": []}],
+                        "steps": [{"title": "reminders", "hunks": ["h1"]}, {"title": "state machine", "hunks": ["h2", "h3"]}, {"title": "tests", "hunks": ["h4"], "visuals": [sm(title="Again")]}]},
+                       None, {"h1": "lib/reminders.py", "h2": "lib/status.py", "h3": "lib/events.py", "h4": "lib/test_status.py"})
+assert [v["title"] for v in seated["steps"][1]["visuals"]] == ["Loan", "Again"] and [v["kind"] for v in seated["visuals"]] == ["sequence"]
+assert not seated["steps"][0].get("visuals") and seated["steps"][2]["visuals"] == []
+stays = review.finish({"visuals": [{"kind": "state_machine", "title": "No evidence", "nodes": [{"id": "a"}], "edges": []}], "steps": [{"title": "x", "hunks": ["h1"]}]}, None, {"h1": "a.py"})
+assert [v["title"] for v in stays["visuals"]] == ["No evidence"], "nothing to go by: it stays where it is"
+assert "except for the state diagram" in p and "a state diagram goes into the layer" in p
 print("ok finish")

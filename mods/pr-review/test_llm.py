@@ -11,7 +11,7 @@ calls = []
 
 def fake_run(args, **kw):
     calls.append((args, kw))
-    out = {"result": "hi", "structured_output": {"x": 1}, "total_cost_usd": 0.0123, "usage": {"input_tokens": 10, "output_tokens": 5},
+    out = {"result": "hi", "structured_output": {"answer": {"x": 1}}, "total_cost_usd": 0.0123, "usage": {"input_tokens": 10, "output_tokens": 5},
            "modelUsage": {"claude-haiku-x": {}}}
     return subprocess.CompletedProcess(args, 0, json.dumps(out), "")
 
@@ -29,6 +29,7 @@ try:
         assert got == {"x": 1}, got
         args, kw = calls[-1]
         assert args[:4] == ["claude", "-p", "--model", "haiku"] and "--json-schema" in args and kw["input"] == "prompt"
+        assert json.loads(args[args.index("--json-schema") + 1]) == {"type": "object", "required": ["answer"], "properties": {"answer": {"type": "object"}}}, "one top-level property"
         assert kw["env"]["CLAUDE_CONFIG_DIR"] == "/x/.claude-red" and "GONE" not in kw["env"]
         assert meta["cost"] == 0.0123 and meta["tokens"] == 15 and meta["model_id"] == "claude-haiku-x"
         assert meta["usage"] == {"input": 10, "output": 5, "cache_read": 0, "cache_write": 0}
@@ -73,10 +74,10 @@ try:
     report = {"findings": [finding], "scope": {"read": ["./a.py"], "checked": [{"area": "tests", "result": "finding"}], "skipped": ["vendored code"]}}
     done = {"type": "result", "result": "Command completed", "local_command": "code_review", "total_cost_usd": 0.07, "modelUsage": {"claude-sonnet-x": {}}}
     fork = "\n".join([line(type="system", subtype="init"), said("forked-command-code-review", {"type": "text", "text": "Looking at the diff."}),
-                      said("forked-command-code-review", {"type": "tool_use", "name": "StructuredOutput", "input": report}),
+                      said("forked-command-code-review", {"type": "tool_use", "name": "StructuredOutput", "input": {"answer": report}}),
                       said(None, {"type": "text", "text": "Command completed"}), line(**done)])
     got = llm.parse(fork)
-    assert got["structured_output"] == report and got["text"] == "Looking at the diff." and got["total_cost_usd"] == 0.07
+    assert got["structured_output"] == {"answer": report} and got["text"] == "Looking at the diff." and got["total_cost_usd"] == 0.07
     assert llm.parse(json.dumps({"result": "hi", "structured_output": {"x": 1}}))["structured_output"] == {"x": 1}  # plain json as before
     assert llm.parse("not json") == {}
 
@@ -88,7 +89,7 @@ try:
     args, kw = calls[-1]
     assert kw["input"] == "/code-review medium origin/feat/below...HEAD", "the PR's own range, and nothing after it: the command would review that text"
     assert "stream-json" in args and "--verbose" in args and "--disable-slash-commands" not in args
-    assert "certainty" in json.loads(args[args.index("--json-schema") + 1])["description"], "the fork learns the fields from the schema"
+    assert "certainty" in json.loads(args[args.index("--json-schema") + 1])["properties"]["answer"]["description"], "the fork learns the fields from the schema"
     found = reviewers.normalize(answer["findings"], "claude", d)
     assert len(found) == 1 and found[0]["severity"] == "high" and found[0]["impact"] == "dead_path" and found[0]["certainty"] == "derived"
     assert found[0]["file"] == ".github/a.py", "a leading ./ goes, a dot folder stays"
@@ -98,7 +99,7 @@ try:
 
     # The fork wrote its review as text: a Haiku pass turns it into findings, and the run says so.
     outs += ["\n".join([said("forked-command-code-review", {"type": "text", "text": "a.py:2 always raises"}), line(**done)]),
-             json.dumps({"structured_output": {"findings": [{"file": "a.py", "line": 2, "severity": "high", "title": "always raises", "detail": "d"}]}, "total_cost_usd": 0.01})]
+             json.dumps({"structured_output": {"answer": {"findings": [{"file": "a.py", "line": 2, "severity": "high", "title": "always raises", "detail": "d"}]}}, "total_cost_usd": 0.01})]
     answer, meta = reviewers.claude_review(req, reviewers.code_review_command(req))
     assert meta["converted"] and abs(meta["cost"] - 0.08) < 1e-9 and "a.py:2 always raises" in calls[-1][1]["input"]
     assert reviewers.normalize(answer["findings"], "claude", d)[0]["severity"] == "high"
