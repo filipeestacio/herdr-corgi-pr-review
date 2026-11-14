@@ -1092,6 +1092,41 @@ export const quickFirst = (list) => { const r = (f) => (EFFORTS.indexOf(f.effort
 // older, why} (null: no zones and no access anywhere). older: the security run looked at another head than `head` (why
 // "head") or at another analysis than this one (why "analysis"): say "from an older run". The security block wins over
 // the analysis' own. Pure; called again with the same ai it starts from the analysis' own picture (ai.own).
+// Where each card really stands: its drawn trust (its zone's; a card without one, the most exposed of what it runs_in:
+// cards, or a frame by its own cards' zones), made more exposed by the security run's effective zones (direct: a check
+// in the card's own code, a crossing without one) and passed on along calls in one process (in_process) that no gate
+// checks: the consumer handler that /remind calls in-process stands where the front desk stands. Returns the cards that
+// stand more exposed than drawn: [{node, drawn, effective, where (the place whose check would have to fail, from the
+// direct entry; null when the drawn zone itself is passed on), via: [edge ids e<k> it was passed along]}]. Pure.
+const TRUSTS = ["public", "authenticated", "internal", "data"];
+export function effectiveZonesOf(arch, gates = [], direct = []) {
+  const nodes = arch?.nodes ?? [], edges = arch?.edges ?? [], trustOf = new Map((arch?.zones ?? []).map((z) => [z.id, z.trust]));
+  const byId = new Map(nodes.map((n) => [n.id, n])), hosts = (n) => (Array.isArray(n?.runs_in) ? n.runs_in : n?.runs_in ? [n.runs_in] : []);
+  const outer = (ts) => ts.filter((t) => TRUSTS.includes(t)).sort((a, b) => TRUSTS.indexOf(a) - TRUSTS.indexOf(b))[0] ?? null;
+  const drawn = (id, seen = new Set()) => {
+    if (seen.has(id)) return null;
+    seen.add(id);
+    const n = byId.get(id);
+    if (!n) return outer(nodes.filter((c) => c.group === id && c.zone && !hosts(c).length).map((c) => trustOf.get(c.zone))); // a frame
+    return trustOf.get(n.zone) ?? outer(hosts(n).map((h) => drawn(h, seen)));
+  };
+  const eff = new Map(), more = (a, b) => !b || TRUSTS.indexOf(a) < TRUSTS.indexOf(b);
+  for (const n of nodes) { const t = drawn(n.id); if (t) eff.set(n.id, { trust: t, where: null, via: [] }); }
+  for (const z of direct ?? []) if (byId.has(z.node) && more(z.effective, eff.get(z.node)?.trust)) eff.set(z.node, { trust: z.effective, where: z.where ?? null, via: [] });
+  const gated = (e) => (gates ?? []).some((g) => g.where?.from === e.from && g.where?.to === e.to && g.check !== "none");
+  for (let round = 0, moved = true; moved && round <= nodes.length; round++) {
+    moved = false;
+    edges.forEach((e, k) => {
+      const a = eff.get(e.from);
+      if (!e.in_process || gated(e) || !a || !more(a.trust, eff.get(e.to)?.trust)) return;
+      eff.set(e.to, { trust: a.trust, where: a.where, via: [...a.via, `e${k}`] });
+      moved = true;
+    });
+  }
+  return nodes.map((n) => ({ n, d: drawn(n.id), e: eff.get(n.id) })).filter(({ d, e }) => d && e && more(e.trust, d))
+    .map(({ n, d, e }) => ({ node: n.id, drawn: d, effective: e.trust, where: e.where, via: e.via }));
+}
+
 export function withSecurity(ai, security = null, ctx = null, head = null) {
   if (!ai) return ai;
   const own = ai.own ?? { arch: ai.arch ?? null, access: ai.access ?? [] }, trigger = ctx?.security_trigger ?? null;
@@ -1110,7 +1145,9 @@ export function withSecurity(ai, security = null, ctx = null, head = null) {
   // gates: the check at each crossing ({where, principal, check, at, source, holds_if, carries}); effectiveZones: cards
   // that stand in a more exposed zone than drawn ({node, drawn, effective, where}), both from the security run.
   // bypasses: calls in one process between zones of different trust ({from, to, edge}): no crossing, but each needs a threat.
-  return { ...ai, own, arch, access: security.access ?? [], threats: security.threats ?? [], gates: security.gates ?? [], effectiveZones: security.effective_zones ?? [],
+  // effectiveZones: the run's direct ones passed on along unchecked in-process calls (effectiveZonesOf).
+  return { ...ai, own, arch, access: security.access ?? [], threats: security.threats ?? [], gates: security.gates ?? [],
+    effectiveZones: arch ? effectiveZonesOf(arch, security.gates ?? [], security.effective_zones ?? []) : security.effective_zones ?? [],
     bypasses: security.bypasses ?? [],
     securityTrigger: trigger,
     securityFrom: { source: "security", head: security.head ?? null, at: security.at ?? null, older: Boolean(why), why } };

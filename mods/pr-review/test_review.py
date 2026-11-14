@@ -244,12 +244,16 @@ assert f2["breaks"] == {"from": "reminders", "to": "mailer", "edge": "e1"} and f
 rp = {"architecture": {"groups": [{"id": "g_fd"}], "nodes": [{"id": "h", "runs_in": "g_fd"}, {"id": "c", "runs_in": "h"}, {"id": "x", "runs_in": "nowhere"}, {"id": "s", "runs_in": "s"}],
                        "edges": [{"from": "h", "to": "c", "in_process": True}, {"from": "c", "to": "x", "in_process": "yes"}]}, "steps": []}
 review.place(rp)
-assert [n.get("runs_in") for n in rp["architecture"]["nodes"]] == ["g_fd", "h", None, None] and [e.get("in_process") for e in rp["architecture"]["edges"]] == [True, None], \
+assert [n.get("runs_in") for n in rp["architecture"]["nodes"]] == [["g_fd"], ["h"], None, None] and [e.get("in_process") for e in rp["architecture"]["edges"]] == [True, None], \
     "runs_in names a group or another node; in_process is a bool"
 cy = {"architecture": {"groups": [], "nodes": [{"id": "a", "runs_in": "b"}, {"id": "b", "runs_in": "a"}, {"id": "c", "runs_in": "a"}, {"id": "d", "runs_in": "c"}], "edges": []}, "steps": []}
 review.place(cy)
 chain = {n["id"]: n.get("runs_in") for n in cy["architecture"]["nodes"]}
-assert sum(1 for k in ("a", "b") if chain[k]) == 1 and chain["c"] == "a" and chain["d"] == "c", ("a cycle loses one link, the rest stays", chain)
+assert sum(1 for k in ("a", "b") if chain[k]) == 1 and chain["c"] == ["a"] and chain["d"] == ["c"], ("a cycle loses one link, the rest stays", chain)
+many = {"architecture": {"groups": [{"id": "g_fd"}, {"id": "g_rc"}], "nodes": [{"id": "mailer", "runs_in": ["g_fd", "g_rc", "g_fd", "nowhere"]}, {"id": "x", "runs_in": []}], "edges": []}, "steps": []}
+review.place(many)
+assert [n.get("runs_in") for n in many["architecture"]["nodes"]] == [["g_fd", "g_rc"], None], "a library in several processes keeps each known one once"
+assert review.runs_in_of({"runs_in": "g"}) == ["g"] and review.runs_in_of({}) == [] and "several when it runs in several" in review.prompt([], [], None, True)
 
 # Files of a checkout are read only as regular files inside it: no symlink on the way, no .., no absolute path.
 top = pathlib.Path(tempfile.mkdtemp())
