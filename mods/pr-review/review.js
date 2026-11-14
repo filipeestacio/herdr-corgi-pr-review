@@ -3242,7 +3242,7 @@ export const ReviewMode = {
     const m = this.archMarksNow(), fit = this.archFitOn(), key = `${fit}|${this.archMode}|${[...m.nodes.keys()]}|${[...m.edges.keys()]}|${JSON.stringify(a)}|${JSON.stringify(this.ai?.access ?? [])}`;
     // The map as the boundary really runs (views.js mapArch): the Internet card at the way in, no zone on shared code,
     // no "‖" on a call in one process.
-    if (this.fitMemo?.key !== key) this.fitMemo = { key, L: archLayout(mapArch(a, this.ai?.access), this.archMode, (n) => (m.nodes.has(n.id) ? 1 : 0), fit, { labels: true, marked: (es) => es.some((i) => m.edges.has(i)) }) };
+    if (this.fitMemo?.key !== key) this.fitMemo = { key, L: archLayout(mapArch(a, this.ai?.access, this.ai?.bypasses ?? []), this.archMode, (n) => (m.nodes.has(n.id) ? 1 : 0), fit, { labels: true, marked: (es) => es.some((i) => m.edges.has(i)) }) };
     return this.fitMemo.L;
   },
   // ---- sideways scrollers inside the scrolling page (the architecture canvas, the flow, state-machine and blast
@@ -3747,7 +3747,7 @@ export const ReviewMode = {
     const cardOf = new Map([...[...marks.nodes].flatMap(([id, m]) => m.findings.map((f) => [f.id, id])), ...[...marks.edges].flatMap(([i, m]) => m.findings.map((f) => [f.id, a.edges[i].from]))]);
     // The crossings (views.js crossingsOf), with the unresolved findings of every source. A finding stands at one
     // crossing: the row that names it; its head ("reachable from …, over a trust boundary") is built from that row.
-    const crossings = crossingsOf({ arch: a, access: this.ai?.access ?? [], threats, gates: this.ai?.gates ?? [], findings: this.openFindings() }), changed = crossings.filter(crossingChanged);
+    const crossings = crossingsOf({ arch: a, access: this.ai?.access ?? [], threats, gates: this.ai?.gates ?? [], bypasses: this.ai?.bypasses ?? [], findings: this.openFindings() }), changed = crossings.filter(crossingChanged);
     const rowOf = (f) => crossings.find((r) => r.findings.includes(f)) ?? null;
     // Without a row: the access rows the finding names (stated), else the ways in at its card or line (derived).
     const all = [...surface.entries, ...surface.grants];
@@ -3758,7 +3758,7 @@ export const ReviewMode = {
     const LEVEL = { public: "public", authenticated: "authenticated", internal: "internal_only", data: "internal_only" }, zoned = (a?.zones ?? []).length > 0;
     const order = secOrder(open.map((f) => { const r = rowOf(f); return r ? { f, level: r.kind === "entry" ? "public" : LEVEL[r.from.trust] ?? "unknown", crosses: r.kind !== "bypass" && r.kind !== "operator" }
       : { f, level: reachLevel(f, waysOf(f).ways), crosses: zoned ? (a.edges ?? []).some((e) => e.crosses && !inProcess(e) && e.to === cardOf.get(f.id)) : null }; }));
-    const ctx = { open, marks, surface, cardOf, waysOf, rowOf, crossings, why: new Map(order.map((r) => [r.f.id, r.why])), focus: this.blastFocus ?? null, name: (id) => a?.nodes.find((n) => n.id === id)?.label ?? id,
+    const ctx = { open, marks, surface, cardOf, waysOf, rowOf, crossings, why: new Map(order.map((r) => [r.f.id, r.why])), focus: this.blastFocus ?? null, name: (id) => a?.nodes.find((n) => n.id === id)?.label ?? (a?.groups ?? []).find((g) => g.id === id)?.label ?? (id === "internet" ? "Internet" : id),
       // A finding's link to its crossing: that row open in the table above.
       show: (key, cx) => { this.crossOpen = key; this.pageScrolls.blast.scroll_to_item(this.pageParts.indexOf("crossings")); cx.notify(); },
       hover: (id) => (on, cx) => { const v = on ? id : null; if ((this.blastHover ?? null) !== v) { this.blastHover = v; cx.notify(); } } };
@@ -3839,7 +3839,8 @@ export const ReviewMode = {
     const W = [["#", 26], ["Crossing", null], ["Who", 140], ["Check", 190], ["Holds only if", 160], ["Change", 76], ["Result", 112], ["Findings", 150], ["Also here", 130]];
     const cell = ([, w], el) => (w ? div().flex_none().w(w) : div().flex_1().min_w(0)).whitespace_normal().child(el);
     const na = (x, word = "not assessed") => (x ? x : div().text_color(t.dim).child(word));
-    const arch = this.ai?.arch, nodeOf = (id) => arch?.nodes.find((n) => n.id === id), label = (id) => nodeOf(id)?.label ?? id;
+    // A path names cards, frames (a deployment) and "internet".
+    const arch = this.ai?.arch, nodeOf = (id) => arch?.nodes.find((n) => n.id === id), label = (id) => nodeOf(id)?.label ?? (arch?.groups ?? []).find((g) => g.id === id)?.label ?? (id === "internet" ? "Internet" : id);
     // ponytail: an operator's row shares its card with the way in; its "Also here" would repeat that row's.
     const marks = this.archMarksNow(), here = (r) => (r.kind === "operator" ? [] : [...new Set([...(marks.nodes.get(r.ends.to)?.findings ?? []), ...(r.edge !== undefined ? marks.edges.get(r.edge)?.findings ?? [] : [])])].filter((f) => !r.findings.includes(f)));
     // A way in this PR opens that the task does not ask for (views.js extraWays: an "extra" ask in its files).
@@ -3855,21 +3856,26 @@ export const ReviewMode = {
     const strip = (r) => {
       // The way as a chain: whoever arrives, the gate, then the threat's path to the asset (steps after the first in
       // grey: no boundary there); without a path, one step.
-      const steps = (r.path ?? [r.ends.from, r.ends.to]).filter(Boolean), start = r.kind === "entry" || r.kind === "operator" || !r.ends.from ? r.identity ?? r.from.name : null;
-      const box = (text, strong, k2) => div().id(`rv-sec-st-${r.key}-${k2}`).px(8).py(2).rounded(6).border_1().border_color(strong ? t.border : t.border + "80").text_color(strong ? t.foreground : t.muted).child(text);
+      // The chain: the threat's path (or the crossing's two ends), the gate in front of the crossing's target; with
+      // whoever arrives shown first (a way in), the steps before the door are that caller and drop out. The crossing's
+      // own ends stand out, the rest of the path is grey (no boundary there).
+      const entry = r.kind === "entry" || r.kind === "operator", all = (r.path ?? [r.ends.from, r.ends.to]).filter(Boolean), door = all.indexOf(r.ends.to);
+      const steps = entry && door > 0 ? all.slice(door) : all, at = steps.indexOf(r.ends.to), start = entry || !r.ends.from ? r.identity ?? r.from.name : null;
+      const box = (text, strong, k2) => div().id(`rv-sec-st-${r.key}-${k2}`).px(8).py(2).rounded(6).border_1().border_color(t.border).when(!strong, (x) => x.border_dashed()).text_color(strong ? t.foreground : t.muted).child(text);
       const gate = div().px(8).py(2).rounded(6).border_1().border_color(r.result === "finding" ? t.ansi1 : t.border).when(r.result === "not_assessed", (x) => x.border_dashed())
         .child(r.kind === "bypass" ? "no check: one process" : `‖ ${r.check ?? "no check named"}${r.expects ? ` · expects ${r.expects}` : ""}`);
-      const chain = [...(start ? [box(start, true, "s"), div().text_color(t.muted).child("→"), gate, div().text_color(t.muted).child("→")] : [])];
+      const arrow = () => div().text_color(t.muted).child("→"), chain = start ? [box(start, true, "s"), arrow()] : [];
       steps.forEach((id, k2) => {
-        if (k2 > 0) chain.push(div().text_color(k2 === 1 && !start ? t.muted : t.dim).child("→"));
-        if (k2 === 1 && !start) chain.push(gate, div().text_color(t.muted).child("→"));
-        chain.push(box(label(id), k2 <= 1, k2));
+        if (k2 > 0) chain.push(arrow());
+        if (k2 === Math.max(0, at) && (start || k2 > 0)) chain.push(gate, arrow());
+        chain.push(box(label(id), id === r.ends.to || id === r.ends.from, k2));
       });
+      const said = (x) => (x && String(x).trim() ? dot(x) : null);
       return v_flex().px(42).pb(10).gap(4).text_size(12.5).line_height(1.5)
         .child(h_flex().gap(8).items_center().flex_wrap().children(chain))
         .child(r.result === "not_assessed"
           ? div().whitespace_normal().child(`${dot(r.reason)}.${before(r) ? ` What crosses here: ${[].concat(before(r)).join(", ")}.` : ""}`)
-          : div().whitespace_normal().child(`Holds only if: ${dot(r.holds_if ?? "not named")}. An attacker controls: ${r.carries ? [].concat(r.carries).join(", ") : "not named"}. At the end they reach: ${dot(r.goal ?? "not named")}. Evidence: ${dot(r.evidence || "none named")}.`))
+          : div().whitespace_normal().child([r.kind !== "bypass" && `Holds only if: ${said(r.holds_if) ?? "not named"}.`, `An attacker controls: ${r.carries?.length ? [].concat(r.carries).join(", ") : "not named"}.`, `At the end they reach: ${said(r.goal) ?? "not named"}.`, `Evidence: ${said(r.evidence) ?? "none named"}.`].filter(Boolean).join(" ")))
         .children(r.conflicts.map((c, j) => div().id(`rv-sec-cr-c-${r.key}-${j}`).whitespace_normal().text_color(t.ansi3).child(`Data disagree: “${dot(c.f.title)}” names ${c.finding.join(", ") || "no way in"}, its threat ${c.threat.join(", ") || "no way in"}; the outer one counts here.`)))
         .children(r.threats.map((x, j) => div().id(`rv-sec-cr-t-${r.key}-${j}`).whitespace_normal().text_color(t.muted).child(`${x.stride ? `STRIDE ${x.stride} · ` : ""}${x.result ?? ""}: ${plain(x.threat ?? "")}${x.note ? ` (${plain(x.note)})` : ""}`)));
     };
@@ -3883,6 +3889,7 @@ export const ReviewMode = {
             .child(div().text_size(11.5).text_color(t.muted).child(`${KIND[r.kind] ?? "Call"}: ${r.what || label(r.ends.to)}${r.kind === "right" && r.actions?.length ? ` (${r.actions.join(", ")})` : ""}`))
             .when(failOpen || r.unused, (e) => e.child(h_flex().gap(4).flex_wrap().when(failOpen, (x) => x.child(chip(t, "can fail open", t.ansi1, false, `rv-sec-cr-fo-${k}`, "An unresolved finding says this way in's check can be passed")))
               .when(Boolean(r.unused), (x) => x.child(chip(t, "granted, not used", t.ansi3, false, `rv-sec-cr-un-${k}`, "The code in this PR never uses this right: least privilege says drop it")))))
+            .when(r.kind === "operator" && r.valueFrom !== undefined, (e) => e.child(div().text_size(11.5).text_color(r.valueFrom ? t.muted : t.ansi3).child(r.valueFrom ? `set at ${r.valueFrom}` : "set nowhere in the repository")))
             .when(extra.has(r.key), (e) => e.child(div().id(`rv-sec-extra-${k}`).text_size(11.5).text_color(t.ansi3).whitespace_normal().tooltip(extra.get(r.key).why || "The task check marks this as extra")
               .child(`The task does not ask for “${extra.get(r.key).text}”, and this PR opens it here.`)))))
           .child(cell(W[2], v_flex().child(r.identity ?? "not named").when(Boolean(r.unmapped), (e) => e.child(div().text_size(11.5).text_color(t.ansi3).child("principal not mapped")))))
