@@ -144,7 +144,10 @@ for (const n of [0, 3, 310]) {
     { const calls = [], go = v.goDef, wt = v.worktree, ps = v.prSel; v.goDef = (d) => calls.push([d.path, d.line]); v.worktree = { ...wt, path: "/checkout" };
       v.jumpTo("library/loans.py:41", cx); v.jumpTo("src/f0.ts:1", cx); v.worktree = null; v.prSel = { ...v.prSel, space: false }; v.jumpTo("nowhere.py:3", cx);
       assert.deepEqual([calls, v.note], [[["library/loans.py", 41]], "Could not find nowhere.py:3 in the diff"]);
-      v.jumpTo("src/f0.ts:1", cx); assert.equal(v.note, null, "the next jump clears it"); v.goDef = go; v.worktree = wt; v.prSel = ps; }
+      v.jumpTo("src/f0.ts:1", cx); assert.equal(v.note, null, "the next jump clears it");
+      v.defFile = { path: "library/loans.py", line: 41, from: 0, lines: [], spans: [] }; v.command("file:src/f0.ts", cx); assert.equal(v.defFile, null, "a jump to a file shows the diff again");
+      v.defFile = { path: "x", line: 1, from: 0, lines: [], spans: [] }; v.command("page:overview", cx); assert.equal(v.defFile, null); v.page = null; v.tab = "findings";
+      v.goDef = go; v.worktree = wt; v.prSel = ps; }
     v.tab = "files"; v.page = null; v.sug = v.openSugs()[0].key;
     ok("the diff: the finding's card and the note, opened", () => { v.render(cx); layout(0); });
     assert.deepEqual(v.items.filter((it) => ["find", "fact", "sug"].includes(it.t)).map((it) => it.t), ["find", "fact", "sug"], "a fix sent stays in the diff; one note, no buttons");

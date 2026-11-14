@@ -381,7 +381,7 @@ export const ReviewMode = {
     else if (name === "def") this.defineAt(arg, cx);
     // page:verify is the Findings tab now: fixes sent and their verification sit there, under "Fix sent".
     else if (name === "page" && arg === "verify") this.tab = "findings";
-    else if (name === "page") { this.tab = "steps"; this.page = PAGES.some(([k]) => k === arg) ? arg : "overview"; }
+    else if (name === "page") { this.tab = "steps"; this.page = PAGES.some(([k]) => k === arg) ? arg : "overview"; this.defFile = null; }
     else if (name === "finding") { const f = this.findingById(arg); if (f) { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); } } // finding:<id>: a click on its row in the Findings tab
     // The same as their clicks in the Findings tab: a step of the open finding (finding-step:sent | verified, again to
     // fold it) and the order (findings-sort:quick, findings-sort: for the usual one).
@@ -1276,7 +1276,7 @@ export const ReviewMode = {
   // Bring an item of a list (by its key in `at`, or its index) to the top of the view. The kit's scroll_to_item only
   // reveals an item at the near edge, so a target below the view would land at its bottom, under the code read
   // before. renderReview settles it in two frames (settleTop): just past the target first, then exactly to the top.
-  scrollTo(view, key) { this.top = { view, key }; },
+  scrollTo(view, key) { this.top = { view, key }; this.defFile = null; }, // a jump shows the list: a file opened read-only goes
   settleTop(view, at, sizes, cx) {
     const go = this.top, i = go?.i ?? at[go?.key];
     if (!go || go.view !== view) return;
