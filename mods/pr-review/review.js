@@ -23,6 +23,7 @@ import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview,
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible, pastTop } from "./views.js";
 import { archView, archModel, archLegend, visualsCard, visualCard, statCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
 import { hasSources, archLayout, archBands } from "./arch.js";
+import { archMarks } from "./arch.js";
 import * as TH from "./threads.js";
 import { leftWidth, rowClick, CHIP_W, ASK_W, keyRoute, scopeLine, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf, rangeLabel, pinAnchor, pinAdd, pinDrop, pinsOf, pinsOn, codePins, drillPush, drillTo, crumbs, drillKey, cachePut, mapDrill, exploreId, exploreIndex, exploreAi, pathOf, lineOf, repoOfRemote, exploreTrust, layersForNode } from "./explore.js";
 
@@ -286,6 +287,7 @@ export const ReviewMode = {
     // Handles are made here only: creating one later (in a task) throws, which broke the definition view.
     this.lists = { steps: VirtualListScrollHandle.new(), files: VirtualListScrollHandle.new(), def: VirtualListScrollHandle.new() };
     this.leftScroll = ScrollHandle.new(); // the Layers tab's left column
+    this.pageScrolls = Object.fromEntries(PAGES.map(([k]) => [k, ScrollHandle.new()])); // the right pane's pages (page-part:<name>)
     this.order = "reading"; this.flowSel = null;
     this.page = "overview"; this.archMode = "diff"; this.fold = { summary: true, blockers: true, checks: false }; this.blastOpen = false;
     this.ctx = null; this.since = null; this.sinceOn = false; this.lastReviewed = null; this.verifyBusy = false;
@@ -379,6 +381,12 @@ export const ReviewMode = {
     // For keys and scripted demos: a card's panel on the Architecture page (card:<node id>), the layers' order
     // (order:reading | order:risk) and Minimize, the same as their clicks.
     else if (name === "card") { this.page = "arch"; this.tab = "steps"; this.archFocus = arg || null; }
+    // The picture's switches, the same as their clicks: arch-view:diff | before | after, arch-fit and arch-wrap (toggles).
+    // page-part:<name> scrolls the open page until that part shows (pageView lists the names), as the wheel would.
+    else if (name === "arch-view") { if (["diff", "before", "after"].includes(arg)) this.archMode = arg; }
+    else if (name === "arch-fit") { this.archFit = !this.archFitOn(); this.hsOf("rv-arch-canvas").x = 0; }
+    else if (name === "arch-wrap") { this.archWrap = !this.archWrapOn(); this.hsOf("rv-arch-canvas").x = 0; }
+    else if (name === "page-part") { const k = (this.pageParts ?? []).indexOf(arg); if (k >= 0) this.pageScrolls[this.page]?.scroll_to_item(k); }
     // The same model calls as their buttons (a click each, never by themselves): Refresh diagrams, and a card's
     // Look inside / Explain (inside:<node id>).
     else if (name === "diagrams") this.refreshDiagrams(cx);
@@ -2441,111 +2449,19 @@ export const ReviewMode = {
       .when(Boolean(e), (x) => x.child(badge(t, `Review effort ${e.score}/5`, e.score >= 4 ? t.ansi3 : t.muted).id(`${id}-eff`).tooltip(e.why || "")));
   },
 
-  // The page beside the Layers nav (instead of the diff).
+  // The page beside the Layers nav (instead of the diff). A page made of named parts (Architecture, Security) has
+  // them as the scroll area's own children, so page-part:<name> can scroll to one.
   pageView(t) {
-    const body = { overview: () => this.overviewPage(t), arch: () => this.archPage(t), blast: () => this.blastPage(t) }[this.page];
+    const body = { overview: () => this.overviewPage(t), arch: () => this.archPage(t, true), blast: () => this.blastPage(t) }[this.page];
+    const parts = [].concat(body ? body() : div()), named = Array.isArray(parts[0]);
+    this.pageParts = named ? parts.map(([k]) => k) : [];
     return div().flex_1().min_h(0).relative()
-      .child(v_flex().id(`rv-page-${this.page}`).absolute().inset_0().overflow_y_scroll().px(24).py(18).gap(14).child(body ? body() : div()))
+      .child(v_flex().id(`rv-page-${this.page}`).absolute().inset_0().overflow_y_scroll().when(Boolean(this.pageScrolls[this.page]), (e) => e.track_scroll(this.pageScrolls[this.page])).px(24).py(18).gap(named ? 12 : 14).children(named ? parts.map(([, el]) => el) : parts))
       .child(Scrollbar.vertical(`rv-page-${this.page}`).absolute().inset_0());
   },
 
-  // "4 files changed since your last review (abc1234 → def5678)" with Since last review / Full PR.
-  sinceBanner(t) {
-    const s = this.since;
-    if (!s) return null;
-    const seg = (on, label, click) => div().id(`rv-since-${on}`).tooltip((on ? "Show only the files changed since your last review" : "Show the whole PR")).px(10).h(24).flex().items_center().rounded(5).cursor_pointer().text_size(12.5)
-      .bg(this.sinceOn === on ? t.selected : t.chrome).text_color(this.sinceOn === on ? t.foreground : t.muted).on_click(click).child(label);
-    const text = s.files.length ? `${s.files.length} ${s.files.length === 1 ? "file" : "files"} changed since your last review (${s.base.sha.slice(0, 7)} → ${String(s.head).slice(0, 7)})`
-      : `The PR moved since your last review (${s.base.sha.slice(0, 7)} → ${String(s.head).slice(0, 7)})`;
-    return v_flex().flex_none().px(14).py(8).gap(4).bg(t.accent + "14").border_b(1).border_color(t.border)
-      .child(h_flex().gap(10).items_center()
-        .child(div().flex_1().min_w(0).truncate().text_size(13).font_semibold().child(text))
-        .when(s.files.length > 0, (e) => e.child(h_flex().gap(2).p(2).rounded(7).border_1().border_color(t.border)
-          .child(seg(true, "Since last review", (_e, cx) => { this.sinceOn = true; this.gaps = {}; this.tab = "files"; cx.notify(); }))
-          .child(seg(false, "Full PR", (_e, cx) => { this.sinceOn = false; this.gaps = {}; cx.notify(); })))))
-      .when(Boolean(s.note), (e) => e.child(div().text_size(12).text_color(t.ansi3).whitespace_normal().child(s.note)));
-  },
-
-  overviewPage(t) {
-    const pr = this.prSel ?? {}, ai = this.ai, files = this.patch ?? [], task = ai?.task ?? {};
-    const add = files.reduce((n, f) => n + f.add, 0), del = files.reduce((n, f) => n + f.del, 0);
-    const layers = (ai?.steps ?? []).filter((s) => !s.pseudo), hues = ["accent", "ansi4", "ansi5", "ansi6", "ansi3", "ansi2"];
-    const fc = this.counts(), sev = ["high", "medium", "low"].map((k) => [k, fc[k]]);
-    const checks = this.checksNow(), blockers = this.blockersNow(checks), ok = checks.filter((c) => c.ok === true).length, bad = checks.filter((c) => c.ok === false).length;
-    const fold = (k) => (_e, cx) => { this.fold[k] = !this.fold[k]; cx.notify(); };
-    const section = (title) => div().pt(4).text_size(11.5).font_semibold().text_color(t.muted).child(title);
-    const sevPills = h_flex().flex_wrap().gap(6).children(sev.filter(([, n]) => n).map(([k, n]) => chip(t, `${n} ${k}`, t[SEVERITY_COLOR[k]], true, `rv-sevp-${k}`, `${n} unresolved findings of ${k} severity`)));
-    const ctx = this.ctx, related = [...(ctx?.open ?? []).map((p) => ({ ...p, state: "open" })), ...(ctx?.merged ?? []).map((p) => ({ ...p, state: "merged" }))];
-    return v_flex().gap(14).max_w(1100)
-      .child(div().text_size(12).text_color(t.muted).child(`Updated ${ago(ai?.generated ?? pr.updatedAt ?? new Date().toISOString())}`))
-      .child(h_flex().gap(10).items_start().child(div().flex_1().min_w(0).text_size(22).font_semibold().line_height(1.3).whitespace_normal().child(pr.title ?? `#${pr.number}`))
-        .when(Boolean(pr.state), (e) => e.child(badge(t, `PR ${pr.state}`, t[{ open: "ansi2", draft: "dim", merged: "ansi5", closed: "ansi1" }[pr.state]] ?? t.dim).id("rv-ov-state").tooltip("The PR's state on GitHub"))))
-      .when(Boolean(ai?.mergeRisk || ai?.effort), (e) => e.child(this.riskBadges(t, ai, "rv-ob")))
-      .when(Boolean(this.since), (e) => e.child(div().rounded(8).overflow_hidden().border_1().border_color(t.border).child(this.sinceBanner(t))))
-      .when(!ai && !this.aiBusy, (e) => e.child(this.startCards(t)))
-      .child(h_flex().gap(12)
-        .child(statCard(t, "rv-st-layers", "Layers", ai ? `${layers.length} ${layers.length === 1 ? "layer" : "layers"}` : "—",
-          segBar(t, layers.map((s, k) => ({ weight: 1, color: t[hues[k % hues.length]] }))), layers.map((s) => plain(s.title)).join(" · ") || "Not analyzed yet").tooltip("How many layers the analysis found, one colour each"))
-        .child(statCard(t, "rv-st-files", "Files changed", `${files.length} ${files.length === 1 ? "file" : "files"}`,
-          segBar(t, [{ weight: add, color: t.ansi2 }, { weight: del, color: t.ansi1 }]), `+${add} −${del}`).tooltip("Files changed, with lines added (green) and removed (red)"))
-        .child(statCard(t, "rv-st-find", "Findings", `${fc.unresolved} unresolved`,
-          segBar(t, sev.map(([k, n]) => ({ weight: n, color: t[SEVERITY_COLOR[k]] }))), fc.total ? countLine(fc).replace(/^\d+ unresolved:? ?/, "") || "None unresolved" : "No findings").tooltip("Unresolved findings by severity; a finding with a fix sent stays unresolved until it is verified")))
-      .child(foldCard(t, "rv-checks", "Pre-merge checks", [div().text_color(t.ansi2).font_semibold().child(`✓ ${ok}`), div().text_color(bad ? t.ansi1 : t.muted).font_semibold().child(`✗ ${bad}`)],
-        this.fold.checks, fold("checks"), () => v_flex().gap(4).children(checks.map((c, k) => h_flex().id(`rv-ck-${k}`).tooltip(`${c.ok === true ? "Passed" : c.ok === false ? "Failed" : "Not decided yet"}${c.where ? ": click to jump to the code" : ""}`).gap(8).items_start().text_size(13)
-          .when(Boolean(c.where), (e) => e.cursor_pointer().on_click((_e, cx) => this.jumpTo(c.where, cx)))
-          .child(div().w(14).flex_none().text_color(c.ok === true ? t.ansi2 : c.ok === false ? t.ansi1 : t.ansi3).child(c.ok === true ? "✓" : c.ok === false ? "✗" : "…"))
-          .child(div().flex_1().min_w(0).whitespace_normal().child(`${c.name}${c.why && c.ok !== true ? ` — ${c.why}` : ""}`))))
-          .when(!ctx, (e) => e.child(div().text_size(12).text_color(t.muted).child("CI checks and mergeability load in the background…")))))
-      .child(foldCard(t, "rv-summary", "Summary", [sevPills], this.fold.summary, fold("summary"), () => v_flex().gap(10)
-        .child(section("WHAT CHANGED"))
-        .child(v_flex().gap(4).child(div().text_size(12).font_semibold().text_color(t.muted).child("Intent"))
-          .child(h_flex().flex_wrap().gap(6).items_center().child(div().text_size(13.5).child(task.title ?? pr.title ?? ""))
-            .when(Boolean(task.jira), (e) => e.child(chip(t, `Linked issue ${task.jira}`, t.accent, false, "rv-jira", "The issue this PR links to"))))
-          .when(Boolean(task.note), (e) => e.child(div().text_size(12).text_color(t.ansi3).whitespace_normal().child(task.note)))
-          .when(ai?.intent?.length > 0, (e) => e.child(this.statements(t, ai.intent, "rv-int"))))
-        .when(Boolean(ai?.behavior) || ai?.behaviorPoints?.length > 0, (e) => e.child(v_flex().gap(4).child(div().text_size(12).font_semibold().text_color(t.muted).child("Behavior"))
-          .child(ai.behaviorPoints?.length ? this.statements(t, ai.behaviorPoints, "rv-bp") : div().text_size(13.5).line_height(1.5).child(TextView.markdown(`rv-beh-${ai.generated}`, ai.behavior)))))
-        .when(Boolean(ai?.summary), (e) => e.child(div().text_size(13.5).line_height(1.5).child(TextView.markdown(`rv-sum-${ai.generated}`, ai.summary))))
-        .when(!ai, (e) => e.child(div().text_size(13).text_color(t.muted).child("No analysis yet: Analyze in the left column.")))
-        .when(Boolean(ai), (e) => e.child(this.asksPane(t)))))
-      .child(foldCard(t, "rv-blockers", `${blockers.length} merge ${blockers.length === 1 ? "blocker" : "blockers"} to act on`,
-        blockers.length ? [chip(t, blockers[0].severity, t[SEVERITY_COLOR[blockers[0].severity]], true, "rv-bl-sev", "Severity of the top merge blocker")] : [], this.fold.blockers, fold("blockers"),
-        () => v_flex().gap(8).when(!blockers.length, (e) => e.child(div().text_size(13).text_color(t.muted).child("Nothing blocks the merge that this review knows of.")))
-          .children(blockers.map((b, k) => v_flex().id(`rv-bl-${k}`).tooltip("Open the related PR, code or finding behind this blocker").gap(2).p(8).rounded(7).border_1().border_l(3).border_color(t[SEVERITY_COLOR[b.severity]]).cursor_pointer().hover((s) => s.bg(t.hover))
-            .on_click((_e, cx) => { if (b.url) this.openRelated(b, cx); else if (b.where) this.jumpTo(b.where, cx); else if (b.finding) { const f = this.findingById(b.finding); if (f) { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); } } cx.notify(); })
-            .child(div().text_size(13.5).font_semibold().child(b.title)).child(div().text_size(12.5).text_color(t.muted).whitespace_normal().child(b.why))))))
-      .when(Boolean(ai?.rules.length), (e) => e.child(v_flex().gap(6).child(section(`REPO RULES · ${ai.rules.filter((r) => r.status === "fail").length} failed`))
-        .children(ai.rules.map((r, k) => h_flex().id(`rv-rule-${k}`).tooltip((r.where ? "A repo rule checked by the analysis: click to jump to the code" : "A repo rule checked by the analysis")).gap(8).items_start().p(6).rounded(6).hover((s) => s.bg(t.hover))
-          .when(Boolean(r.where), (x) => x.cursor_pointer().on_click((_e, cx) => this.jumpTo(r.where, cx)))
-          .child(chip(t, r.status === "pass" ? "✓ pass" : r.status === "fail" ? "✗ fail" : "n/a", t[{ pass: "ansi2", fail: "ansi1" }[r.status] ?? "muted"], false, `rv-rulest-${k}`, "Whether this PR follows the rule"))
-          .child(v_flex().flex_1().min_w(0).gap(2).child(div().text_size(13.5).font_semibold().whitespace_normal().child(r.rule))
-            .child(div().text_size(12).text_color(t.muted).whitespace_normal().child(`${r.source}${r.where ? ` · ${r.where}` : ""}${r.why ? ` — ${r.why}` : ""}`)))))))
-      .child(v_flex().gap(6).child(section(`RELATED PRS${ctx ? ` · ${related.length}` : ""}`))
-        .when(!ctx, (e) => e.child(div().text_size(12.5).text_color(t.muted).child("Looking for PRs that touch the same files…")))
-        .when(Boolean(ctx) && !related.length, (e) => e.child(div().text_size(12.5).text_color(t.muted).child("No other open PR and no PR merged in the last 90 days touches these files.")))
-        .children(related.map((p) => h_flex().id(`rv-rel-${p.number}`).tooltip("Open this related PR in its own review").gap(8).items_center().p(6).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
-          .on_click((_e, cx) => this.openRelated(p, cx))
-          .child(chip(t, p.state, p.state === "open" ? t.ansi2 : t.ansi5, false, `rv-relst-${p.number}`, "Whether that PR is still open or already merged"))
-          .child(div().flex_none().text_size(13).text_color(t.muted).child(`#${p.number}`))
-          .child(div().flex_1().min_w(0).truncate().text_size(13.5).child(p.title))
-          .child(div().id(`rv-relf-${p.number}`).flex_none().text_size(12).text_color(t.muted).tooltip((p.files ?? []).join("\n") || "-").child(`${p.overlap} ${p.overlap === 1 ? "file" : "files"} overlap`)))));
-  },
-
-  // A related PR in the review layout (the resume contract): prs.json's entry, else one built from gh pr view on this
-  // review's context; the browser when gh can't read it.
-  openRelated(p, cx) {
-    cx.spawn(async () => {
-      const prs = JSON.parse(await readTextFile(`${appHome()}/pr-data/prs.json`).catch(() => null) ?? "{}").prs ?? [];
-      const known = prs.find((x) => x.url === p.url);
-      if (known) return startReview(known);
-      const r = p.url ? await exec("gh", ["pr", "view", p.url, "--json", "number,title,author,headRefName,headRefOid,baseRefName,updatedAt,isDraft,state,url,additions,deletions,reviewDecision"], { timeout: 30000 }).catch(() => null) : null;
-      if (r?.code === 0) startReview(ghTarget(JSON.parse(r.stdout), { context: this.ctxId(), source: "related", cwd: this.prSel?.cwd ?? null }));
-      else if (p.url) openUrl(p.url);
-    });
-  },
-
   // The picture's highlight (hovered badge or legend row), focus (clicked card; Esc or a second click clears it) and
-  // hover (a lighter focus) for the architecture ("arch") or blast radius ("blast") page.
+  // hover (a lighter focus) for the architecture page ("arch").
   archOpts(k) {
     const set = (name, v, cx) => { if (this[name] !== v) { this[name] = v; cx.notify(); } };
     return { hl: this[`${k}Hl`] ?? (k === "arch" ? this.askHl : null), focus: this[`${k}Focus`] ?? null, hover: this[`${k}Hover`] ?? null,
@@ -2553,116 +2469,139 @@ export const ReviewMode = {
       onFocus: (v, cx) => { this.fh.focus(); set(`${k}Focus`, v, cx); }, onJump: (at, cx) => this.jumpTo(at, cx) };
   },
 
-  archPage(t) {
+  // parts: the page as [[name, element]] for pageView (page-part:<name>); else one column (Explore).
+  archPage(t, parts = false) {
     const a = this.ai?.arch;
     const seg = (k, label) => div().id(`rv-av-${k}`).tooltip((k === "diff" ? "What changed in the architecture" : k === "before" ? "The architecture before this PR" : "The architecture after this PR")).px(10).h(24).flex().items_center().rounded(5).cursor_pointer().text_size(12.5)
       .bg(this.archMode === k ? t.selected : t.chrome).text_color(this.archMode === k ? t.foreground : t.muted).on_click((_e, cx) => { this.archMode = k; cx.notify(); }).child(label);
     const more = () => visualsCard(this.ai.visuals, t, "rv-arch-vis", (at, cx) => this.jumpTo(at, cx), this.archVisTab ?? 0, (k, cx) => { this.archVisTab = k; cx.notify(); }, this.wrapX());
-    if (!a) return v_flex().gap(12).child(this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams")).child(div().text_size(13.5).text_color(t.muted).child(this.ai ? "This analysis has no architecture picture (older analysis, or the PR touches no architecture). Re-analyze for one." : "No analysis yet: Analyze in the left column."))
-      .when(this.ai?.visuals?.length > 0, (e) => e.child(div().max_w(760).child(more())));
-    const groups = new Set(a.nodes.map((n) => n.group)).size, L = this.archL(), fit = this.archFitOn();
-    const opts = this.archOpts("arch");
-    return v_flex().gap(12)
-      .child(h_flex().gap(12).items_center().flex_wrap().child(div().text_size(20).font_semibold().child("Architecture impact")).child(this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams"))
-        .when(this.drawerState() !== "open", (e) => e.child(pill("rv-ask-open", t, "Ask", (_e, cx) => this.setDrawer("open", cx, null)).tooltip("Ask one model question about the architecture picture")))
-)
-      .child(h_flex().w_full().gap(12).items_center().flex_wrap() // wraps onto two rows when narrow
+    const out = (list) => (parts ? list : v_flex().gap(12).children(list.map(([, el]) => el)));
+    if (!a) return out([["head", this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams")], ["none", div().text_size(13.5).text_color(t.muted).child(this.ai ? "This analysis has no architecture picture (older analysis, or the PR touches no architecture). Re-analyze for one." : "No analysis yet: Analyze in the left column.")],
+      ...(this.ai?.visuals?.length > 0 ? [["views", div().max_w(760).child(more())]] : [])]);
+    const groups = new Set(a.nodes.map((n) => n.group)).size, L = this.archL(), fit = this.archFitOn(), marks = this.archMarksNow();
+    const opts = { ...this.archOpts("arch"), marks, zoom: settings().zoom || 1 }, count = (...st) => L.nodes.filter((n) => st.includes(n.status)).length; // of the cards shown (Before hides the added ones)
+    return out([
+      ["head", h_flex().gap(12).items_center().flex_wrap().child(div().text_size(20).font_semibold().child("Architecture impact")).child(this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams"))
+        .when(this.drawerState() !== "open", (e) => e.child(pill("rv-ask-open", t, "Ask", (_e, cx) => this.setDrawer("open", cx, null)).tooltip("Ask one model question about the architecture picture")))],
+      ["switches", h_flex().w_full().gap(12).items_center().flex_wrap() // wraps onto two rows when narrow
         .child(div().flex_none().text_size(13).text_color(t.muted).child(`${groups} ${groups === 1 ? "system" : "systems"} | ${(a.edges ?? []).length} edges`))
-        .child(div().flex_none().child(legend(t)))
+        .child(div().flex_none().child(legend(t, { unchanged: count("unchanged"), changed: count("changed"), added: count("new", "added"), removed: count("removed") })))
         .when(hasSources(a) || (this.ai.visuals ?? []).some(hasSources), (e) => e.child(div().flex_none().child(sourceLegend(t))))
         .child(h_flex().flex_none().gap(2).p(2).rounded(7).border_1().border_color(t.border).child(seg("diff", "Structural diff")).child(seg("before", "Before")).child(seg("after", "After")))
         .child(div().id("rv-av-fit").flex_none().px(10).h(28).flex().items_center().rounded(7).border_1().border_color(fit ? t.accent : t.border).cursor_pointer().text_size(12.5)
-          .text_color(fit ? t.foreground : t.muted).tooltip("Narrow cards, so a wide picture fits the view").on_click((_e, cx) => { this.archFit = !fit; this.hsOf("rv-arch-canvas").x = 0; cx.notify(); }).child("Fit"))
+          .text_color(fit ? t.foreground : t.muted).tooltip("Narrow cards with shorter texts, so more of the picture fits a row").on_click((_e, cx) => { this.archFit = !fit; this.hsOf("rv-arch-canvas").x = 0; cx.notify(); }).child("Fit"))
         .child(div().id("rv-av-wrap").flex_none().px(10).h(28).flex().items_center().rounded(7).border_1().border_color(this.archWrapOn() ? t.accent : t.border).cursor_pointer().text_size(12.5)
-          .text_color(this.archWrapOn() ? t.foreground : t.muted).tooltip("On: a picture wider than the view in bands, top to bottom. Off: one row to scroll sideways")
-          .on_click((_e, cx) => { this.archWrap = !this.archWrapOn(); this.hsOf("rv-arch-canvas").x = 0; cx.notify(); }).child("Wrap")))
-      .child(this.archCanvas(t, L, opts))
-      .child(this.archCard(t, a))
-      .when(Boolean(this.archFocus), (e) => e.child(this.drillPanel(t, `arch:${this.archFocus}`)))
-      .child(archLegend(L, t, "rv-arch-edges", "Edges", opts))
-      .when(this.ai?.visuals?.length > 0, (e) => e.child(div().pt(6).text_size(13).font_semibold().text_color(t.muted).child("More views"))
-        .child(div().max_w(760).child(more())));
+          .text_color(this.archWrapOn() ? t.foreground : t.muted).tooltip("On: a picture wider than the view goes on in a second row. Off: one row to scroll sideways")
+          .on_click((_e, cx) => { this.archWrap = !this.archWrapOn(); this.hsOf("rv-arch-canvas").x = 0; cx.notify(); }).child("Wrap"))],
+      ["map", this.archCanvas(t, L, opts)],
+      ...(this.archFocus && a.nodes.some((x) => x.id === this.archFocus) ? [["card", this.archCard(t, a, marks)]] : []),
+      ...(this.archFocus && this.drillAt(`arch:${this.archFocus}`) ? [["inside", this.drillPanel(t, `arch:${this.archFocus}`)]] : []),
+      // Only the calls whose text is not on their line in the picture (a fan's, a stub's, a text cut short).
+      ...(L.paths.some((p) => !p.text || p.text.cut) ? [["calls", archLegend(L, t, "rv-arch-edges", "Calls without their whole text in the picture", opts)]] : []),
+      ...((this.ai.components ?? []).length ? [["components", this.componentsTable(t, a)]] : []),
+      ...(this.ai?.visuals?.length > 0 ? [["views", v_flex().gap(12).child(div().pt(6).text_size(13).font_semibold().text_color(t.muted).child("More views")).child(div().max_w(760).child(more()))]] : [])]);
   },
 
-  // The picture: wider than the view and Wrap on (archWrapOn), in bands stacked top to bottom (arch.js archBands: lines run on in the next band
-  // at the same height); else one row in the sideways scroller (40 px of room after the last column).
+  // The picture: wider than the view and Wrap on (archWrapOn, the default), in bands stacked top to bottom (arch.js
+  // archBands: lines run on in the next band at the same height); else one row in the sideways scroller (40 px of room
+  // after the last column).
   archCanvas(t, L, opts) {
-    const s = this.hsOf("rv-arch-canvas"), B = archBands(L, s.viewW && this.archWrapOn() ? hsVisible(s.viewW, this.drawerCover()) - 4 : 0); // 0: not measured yet or Wrap off, one row
+    // The view is measured in logical px, the picture is drawn in the person's zoom: its width in the picture's px.
+    const s = this.hsOf("rv-arch-canvas"), B = archBands(L, s.viewW && this.archWrapOn() ? hsVisible(s.viewW / (settings().zoom || 1), this.drawerCover()) - 4 : 0); // 0: not measured yet or Wrap off, one row
     const pic = (k) => [archView(L, t, `rv-arch${k ? `-${k}` : ""}`, (n, _e, cx) => this.jumpTo(n.at, cx), null, opts), ...this.pinNotes(t, L)];
     if (B.length < 2) return this.hscroll("rv-arch-canvas", L.width + 4 + 40, L.height + 4, pic(0), t);
     return v_flex().id("rv-arch-canvas").w_full().gap(6)
       .on_size_change((size, cx) => { if (Math.abs(s.viewW - size.width) > 2) { s.viewW = size.width; cx.notify(); } })
       .children(B.flatMap((b, k) => [
         ...(k ? [div().id(`rv-arch-cut${k}`).w_full().h(0).border_t(1).border_dashed().border_color(t.border).tooltip("The picture goes on here: lines leaving the band above on the right come in on the left at the same height")] : []),
-        div().id(`rv-arch-band${k}`).w(b.x1 - b.x0).h(L.height + 4).relative().overflow_hidden()
+        div().id(`rv-arch-band${k}`).w(b.x1 - b.x0).h(b.h + 4).relative().overflow_hidden()
           .child(div().absolute().top(0).left(-b.x0).w(L.width).h(L.height + 4).children(pic(k)))]));
   },
-  // The clicked card, under the picture: its whole description and the analysis's details (what it does overall, what
-  // the PR changes in it). An analysis without details (older ones): Explain, one model call (the drill-down below).
-  // Two tabs keep it short: Overview (the card itself) and Layer analysis (the layers on its code), picked per card.
-  archCard(t, a) {
-    const n = this.archFocus && a.nodes.find((x) => x.id === this.archFocus);
-    if (!n) return div();
+  // Where the unresolved findings sit on the picture (arch.js archMarks): on a card, or on a call they break.
+  archMarksNow() { return archMarks(this.ai?.arch, this.exMode ? [] : this.openFindings()); },
+  // What a model call for a card's inside costs, from the ones this review already paid for (deep.json).
+  // ponytail: the mean of the kept results, whatever model they ran on; no result yet: no figure.
+  insidePrice() {
+    const costs = Object.values(this.deep.drills ?? {}).map((d) => d.cost).filter((c) => c > 0);
+    return costs.length ? `about $${(costs.reduce((x, y) => x + y, 0) / costs.length).toFixed(2)}` : `one ${modelLabel(model())} call`;
+  },
+  // The clicked card, under the picture: its unresolved findings first (the ones the picture marks), then what it is
+  // (file, connections, what running it needs, who may reach it), its description and the analysis's details, and
+  // links to the layers that read its code. Look inside: one model call (the drill-down below), its price on the button.
+  archCard(t, a, marks) {
+    const n = a.nodes.find((x) => x.id === this.archFocus);
     const g = (a.groups ?? []).find((x) => x.id === n.group), at = n.at ?? n.evidence;
-    const explain = (_e, cx) => this.showDetails({ id: n.id, label: n.label ?? n.id, group: g?.label, at, kind: "node", description: n.description }, `arch:${n.id}`, cx, false, true);
-    const layers = this.cardLayerList(n);
+    const item = { id: n.id, label: n.label ?? n.id, group: g?.label, at, kind: "node", description: n.description };
+    const paid = Boolean(this.drillResult([item])), price = this.insidePrice();
+    const layers = this.cardLayerList(n), found = this.cardFindings(a, n, marks);
+    const name = (id) => a.nodes.find((x) => x.id === id)?.label ?? id;
     return v_flex().id("rv-arch-card").gap(10).p(12).rounded(10).border_1().border_color(t.border).bg(t.surface)
       .child(h_flex().gap(8).items_center().flex_wrap()
         .child(div().text_size(15).font_semibold().child(n.label ?? n.id))
         .child(div().text_size(12).text_color(t.muted).child([g?.label, n.type, n.status === "new" ? "added" : n.status].filter(Boolean).join(" · ")))
         .child(div().flex_1())
         .when(Boolean(at), (e) => e.child(pill("rv-arch-card-open", t, "Show in diff ↗", (_e, cx) => this.jumpTo(at, cx)).tooltip(`Show ${at} in the diff`)))
-        .child(pill("rv-arch-card-explain", t, n.details ? "Look inside" : "Explain", explain, false, n.details ? null : t.foreground)
-          .tooltip(`One ${modelLabel(model())} call reads the code: what this does overall, what the PR changes in it, and a picture of its inside`))
+        .child(pill("rv-arch-card-explain", t, paid ? "Look inside" : `Look inside (${price})`, (_e, cx) => this.showDetails(item, `arch:${n.id}`, cx, false, true), false, n.details ? null : t.foreground)
+          .tooltip(paid ? "Show what the model found inside this card (already paid for)" : `One ${modelLabel(model())} call reads the code: what this does overall, what the PR changes in it, and a picture of its inside`))
         .when(this.drawerState() !== "open", (e) => e.child(pill("rv-arch-card-ask", t, "Ask", (_e, cx) => this.setDrawer("open", cx, null)).tooltip("Ask one model question about this card")))
         .child(pill("rv-arch-card-x", t, "✕", (_e, cx) => { this.archFocus = null; cx.notify(); }).tooltip("Close (Esc)").accessibility_label("Close card details")))
+      .when(found.length > 0, (e) => e.child(v_flex().gap(2)
+        .child(div().text_size(11.5).font_semibold().text_color(t.muted).child(`UNRESOLVED FINDINGS · ${found.length}`))
+        .children(found.slice(0, 6).map(({ f, edge }) => h_flex().id(`rv-arch-cf-${f.id}`).gap(8).items_start().px(6).py(3).rounded(6).text_size(13).cursor_pointer().hover((x) => x.bg(t.hover))
+          .tooltip("Open this finding and show its line in the diff").on_click((_e, cx) => { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); cx.notify(); })
+          .child(badge(t, f.severity, t[SEV[f.severity]] ?? t.accent))
+          .when(Boolean(f.security), (x) => x.child(chip(t, "⛨ Security", t.ansi1, true)))
+          .child(div().flex_1().min_w(0).whitespace_normal().line_height(1.4).child(plain(f.title)))
+          .when(Boolean(edge) || f.breaks?.node === n.id, (x) => x.child(div().flex_none().text_size(12).text_color(t.muted).child(edge ? `breaks the call ${edge.from === n.id ? `to ${name(edge.to)}` : `from ${name(edge.from)}`}` : "breaks the flow here")))
+          .child(div().flex_none().text_size(12).text_color(t.muted).child(`${f.file.split("/").pop()}:${f.line}`))))
+        .when(found.length > 6, (x) => x.child(div().px(6).text_size(12).text_color(t.muted).child(`and ${found.length - 6} more in the Findings tab`)))))
       .child(this.archCardFacts(t, a, n, at))
       .when(Boolean(n.description), (e) => e.child(div().text_size(13).text_color(t.muted).whitespace_normal().line_height(1.5).child(n.description)))
       .child(n.details ? div().pt(2).text_size(13.5).line_height(1.55).child(TextView.markdown(`rv-arch-det-${this.ai?.generated}-${n.id}`, n.details))
-        : div().text_size(12.5).text_color(t.muted).whitespace_normal().child("No further details for this card in this analysis: Refresh diagrams (above) adds them for every card, Explain reads just this one."))
-      // What the layer analysis found in this card's code, in the same view: no tab to discover.
-      .when(layers.length > 0, (e) => e.child(div().pt(6).text_size(11.5).font_semibold().text_color(t.muted).child("FROM THE LAYER ANALYSIS"))
-        .child(this.archCardLayers(t, n, layers)));
+        : div().text_size(12.5).text_color(t.muted).whitespace_normal().child(`This analysis has no further details for this card. “Look inside” reads its code with one model call (${price}). “↻ Refresh diagrams” at the top adds details to every card, also with one model call.`))
+      // The layers that read this card's code: links, not copies (their text is in the Layers view).
+      .when(layers.length > 0, (e) => e.child(v_flex().gap(2)
+        .child(div().pt(4).text_size(11.5).font_semibold().text_color(t.muted).child("LAYERS ON THIS CODE"))
+        .children(layers.map((s, j) => {
+          const fs = this.layerFindings(s).filter((f) => OPEN_ST.includes(this.fstatus(f))), top = fs[0]?.severity; // findings() sorts by severity
+          return h_flex().id(`rv-acl-${j}`).gap(8).items_center().px(6).py(3).rounded(6).text_size(13).cursor_pointer().hover((x) => x.bg(t.hover)).tooltip("Go to this layer in the Layers view")
+            .on_click((_e, cx) => { this.goStep(this.steps().indexOf(s), cx); cx.notify(); })
+            .child(div().min_w(0).truncate().child(plain(s.title)))
+            .when(fs.length > 0, (x) => x.child(badge(t, `${top[0].toUpperCase()}${top.slice(1)} · ${fs.length}`, t[SEV[top]] ?? t.muted).id(`rv-acl-n${j}`).tooltip(`${fs.length} unresolved ${fs.length === 1 ? "finding" : "findings"} in this layer, the highest is ${top}`)))
+            .child(div().flex_1())
+            .child(div().flex_none().text_size(12.5).text_color(t.accent).child("Open layer →"));
+        }))));
   },
-  // The layers that look at the card's code (explore.js layersForNode). Memoized per analysis and card: filesOf walks
-  // the hunks, and the tab's count needs the list on every render.
+  // The unresolved findings at a card: the ones on the card (archMarks) and the ones that break a call into or out of
+  // it ({f, edge}), most severe first.
+  cardFindings(a, n, marks) {
+    const own = (marks.nodes.get(n.id)?.findings ?? []).map((f) => ({ f, edge: null }));
+    const calls = (a.edges ?? []).flatMap((e, i) => (e.from === n.id || e.to === n.id ? (marks.edges.get(i)?.findings ?? []).map((f) => ({ f, edge: e })) : []));
+    const rank = (x) => ["high", "medium", "low"].indexOf(x.f.severity);
+    return [...own, ...calls].sort((x, y) => rank(x) - rank(y));
+  },
+  // The layers that look at the card's code (explore.js layersForNode), the ones that hold the card's own file first.
+  // Memoized per analysis and card: filesOf walks the hunks.
   cardLayerList(n) {
     const m = this.cardLayers;
-    if (m?.ai !== this.ai || m.byId !== this.byId || m.n !== n) this.cardLayers = { ai: this.ai, byId: this.byId, n, list: layersForNode(this.ai?.steps, n, (s) => this.filesOf(s)) };
+    if (m?.ai !== this.ai || m.byId !== this.byId || m.n !== n) {
+      const path = pathOf(n.at ?? n.evidence), own = (s) => (path && this.filesOf(s).some((p) => p === path || p.endsWith(`/${path}`) || path.endsWith(`/${p}`)) ? 0 : 1);
+      const list = layersForNode(this.ai?.steps, n, (s) => this.filesOf(s));
+      this.cardLayers = { ai: this.ai, byId: this.byId, n, list: list.map((s, i) => [s, i]).sort(([x, i], [y, k]) => own(x) - own(y) || i - k).map(([s]) => s) };
+    }
     return this.cardLayers.list;
   },
-  // The Layer analysis tab: a bordered box per layer; its header opens what the Layers view shows of it, drawn inside
-  // the box so it reads as that layer's, the card's flows one click away. Open layer goes to it in the Layers view.
-  // Riskiest first; the first layer starts open, the rest closed (cardLayersOpen: key -> true/false once toggled). Each
-  // shows its highlight (the analysis' own one-line finding, whatever it is) even closed, with a bar in its risk colour.
-  archCardLayers(t, n, list) {
-    const open = (this.cardLayersOpen ??= new Map()), rank = { high: 0, medium: 1, low: 2, skim: 3 };
-    const sorted = list.map((s, i) => [s, i]).sort(([a, i], [b, k]) => (rank[a.risk] ?? 4) - (rank[b.risk] ?? 4) || i - k).map(([s]) => s);
-    return v_flex().gap(6).children(sorted.map((s, j) => {
-      const key = `${n.id}|${stepKey(s)}`, on = open.get(key) ?? j === 0, id = `rv-acl-${j}`;
-      return v_flex().rounded(8).border_1().border_color(on ? t.accent : t.border)
-        .child(h_flex().id(`${id}-show`).px(10).py(6).gap(8).items_center().rounded(8).cursor_pointer().hover((x) => x.bg(t.hover))
-          .tooltip(on ? "Hide this layer's analysis" : "Show this layer's explanation, check questions and pictures here")
-          .on_click((_e, cx) => { open.set(key, !on); cx.notify(); })
-          .child(div().flex_none().w(12).text_color(t.muted).child(on ? "▾" : "▸"))
-          .child(div().min_w(0).truncate().text_size(13.5).font_semibold().child(plain(s.title)))
-          .when(Boolean(s.risk), (e) => e.child(riskBadge(t, s).id(`${id}-risk`).tooltip(focusTip(s)))))
-        .when(Boolean(s.why), (e) => e.child(div().mx(10).mb(8).pl(10).border_l(3).border_color(focusColor(t, s))
-          .text_size(14).font_semibold().line_height(1.45).child(TextView.markdown(`${id}-why-${stepKey(s)}`, s.why))))
-        .when(on, (e) => e.child(v_flex().pl(30).pr(10).pt(8).pb(10).gap(6).border_t(1).border_color(t.border)
-          .children(this.layerParts(s, t, "rv-acl", j, `arch:${stepKey(s)}`))
-          .child(div().id(`${id}-go`).self_start().text_size(12.5).text_color(t.accent).cursor_pointer().hover((x) => x.underline()).tooltip("Go to this layer in the Layers view")
-            .on_click((_e, cx) => { this.goStep(this.steps().indexOf(s), cx); cx.notify(); }).child("Open layer →"))));
-    }));
-  },
   // What the card is, as key: value rows: its file (path:line, a click opens it; how many changed places of this PR are
-  // in it) and its links to the other cards, incoming first, one line each (a click shows that card).
+  // in it), its links to the other cards, incoming first, one line each (a click shows that card), and from the
+  // analysis' components and access lists what running it needs, who owns it and who may reach it.
   archCardFacts(t, a, n, at) {
     const path = at ? String(at).replace(/:\d+.*$/, "") : null;
     const hs = path ? [...(this.fileHunks ?? new Map())].filter(([p]) => p === path || p.endsWith(`/${path}`) || path.endsWith(`/${p}`)).flatMap(([, h]) => h) : [];
     const name = (id) => a.nodes.find((x) => x.id === id)?.label ?? id;
     const into = (e) => (e.to === n.id ? 0 : 1);
     const links = (a.edges ?? []).map((e, i) => [e, i]).filter(([e]) => e.from === n.id || e.to === n.id).sort(([x], [y]) => into(x) - into(y));
+    const comps = (this.ai?.components ?? []).filter((c) => c.node === n.id), ops = [...new Set(comps.flatMap((c) => c.operate ?? []))], owners = [...new Set(comps.map((c) => c.owner).filter(Boolean))];
+    const access = (this.ai?.access ?? []).filter((x) => x.node === n.id);
     const row = (label, body) => h_flex().gap(8).items_start().child(div().flex_none().w(84).text_color(t.muted).child(label)).child(body.flex_1().min_w(0));
     return v_flex().gap(4).text_size(12.5).line_height(1.5)
       .child(row("File", at ? h_flex().gap(8).flex_wrap()
@@ -2677,21 +2616,53 @@ export const ReviewMode = {
           .child(div().flex_none().text_color(t.muted).child(arrow))
           .child(div().flex_none().font_semibold().child(name(other)))
           .when(Boolean(x.label), (e) => e.child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(x.label)));
-      })))));
+      })))))
+      .when(ops.length > 0, (e) => e.child(row("To operate", div().whitespace_normal().child(ops.join(" · ")))))
+      .when(comps.length > 0 && this.ai?.componentCounts?.codeowners !== false, (e) => e.child(row("Owner", div().when(!owners.length, (x) => x.text_color(t.muted)).child(owners.join(", ") || "no owner named"))))
+      .when(access.length > 0, (e) => e.child(row("Access", v_flex().gap(2).children(access.map((x) => div().whitespace_normal()
+        .child(`${x.principal}: ${(x.actions ?? []).join(", ")}${x.public ? " · public" : ""}${x.used === false ? " · not used by the code" : ""}`))))));
   },
-  // Wrap: only when clicked (by itself the page would jump whenever the room changes).
-  archWrapOn() { return this.archWrap === true; },
-  // The picture shown: its layout with normal or narrow cards (Fit), memoized like stack.js archModel.
-  archFitOn() {
-    if (this.archFit !== undefined) return this.archFit;
-    const a = this.ai?.arch;
-    return Boolean(a) && archModel(a, this.archMode).width > 1.3 * (this.hs?.get("rv-arch-canvas")?.viewW || 1e9); // auto: much wider than the view
+  // Under the picture: what the PR adds or changes as components (the analysis' `components`), where each is, what
+  // running it needs and who owns it. A repo without a CODEOWNERS file gets a sentence instead of an empty column.
+  // A row of the open card is lit; a click on a name shows its card.
+  componentsTable(t, a) {
+    const list = this.ai.components ?? [], c = this.ai.componentCounts ?? {}, owners = c.codeowners !== false;
+    const n = (st) => c[st] ?? list.filter((x) => x.status === st).length, none = c.no_owner ?? list.filter((x) => !x.owner).length;
+    const has = (id) => a.nodes.some((x) => x.id === id);
+    const rows = list.map((x, k) => [
+      has(x.node) ? div().id(`rv-comp-${k}`).font_semibold().cursor_pointer().hover((s) => s.underline()).tooltip("Show this component's card in the picture").on_click((_e, cx) => { this.archFocus = x.node; cx.notify(); }).child(x.name) : div().font_semibold().child(x.name),
+      x.kind ?? "",
+      div().text_color(x.status === "new" ? t.ansi2 : t.accent).child(x.status === "new" ? "Added" : "Changed"),
+      x.at ? div().id(`rv-comp-at-${k}`).text_color(t.accent).cursor_pointer().hover((s) => s.underline()).tooltip("Show this place in the diff").on_click((_e, cx) => this.jumpTo(x.at, cx)).child(x.at) : "",
+      (x.operate ?? []).length ? x.operate.join(" · ") : div().text_color(t.muted).child("nothing named"),
+      ...(owners ? [x.owner ?? div().text_color(t.ansi3).child("no owner")] : [])]);
+    return v_flex().id("rv-arch-comps").flex_none().gap(6).p(12).rounded(10).border_1().border_color(t.border).bg(t.surface)
+      .child(h_flex().gap(10).items_center().flex_wrap()
+        .child(div().text_size(13).font_semibold().child("Components this PR adds or changes"))
+        .child(div().text_size(12.5).text_color(t.muted).child(`${n("new")} added · ${n("changed")} changed${owners ? ` · ${none} without an owner` : ""}`)))
+      .when(!owners, (e) => e.child(div().text_size(12.5).text_color(t.muted).whitespace_normal().child("This repository has no CODEOWNERS file, so no owner can be named.")))
+      .child(this.table(t, "rv-comp-t", [["Component", 190], ["Kind", 76], ["Status", 66], ["Place", 190], ["To operate", null], ...(owners ? [["Owner", 130]] : [])], rows, (k) => Boolean(this.archFocus) && list[k].node === this.archFocus));
   },
+  // A plain table for the pages: cols [[label, width in px, or null for a share of the rest]], rows [[cell]] (a cell:
+  // text or an element; long text wraps), lit(k): a highlighted row.
+  table(t, id, cols, rows, lit = () => false) {
+    const box = ([, w]) => (w ? div().flex_none().w(w) : div().flex_1().min_w(0));
+    const line = (cells) => cells.map((x, k) => box(cols[k]).whitespace_normal().child(x));
+    return v_flex().id(id).w_full().text_size(12.5).line_height(1.45)
+      .child(h_flex().gap(10).px(6).pb(4).text_size(11.5).font_semibold().text_color(t.muted).children(line(cols.map(([label]) => label))))
+      .children(rows.map((r, k) => h_flex().id(`${id}-${k}`).gap(10).px(6).py(5).items_start().border_t(1).border_color(t.border).when(lit(k), (e) => e.bg(t.selected)).children(line(r))));
+  },
+  // Wrap: on unless switched off (a wide picture goes on in a second row instead of being cut off at the right).
+  archWrapOn() { return this.archWrap !== false; },
+  // Fit (narrow cards): only when switched on; the picture wraps instead.
+  archFitOn() { return this.archFit === true; },
+  // The picture shown: its layout with the calls' texts on their lines, a row in a card and above a call for the
+  // findings there, normal or narrow cards (Fit). Memoized: the page renders often.
   archL() {
     const a = this.ai?.arch;
     if (!a) return null;
-    const fit = this.archFitOn(), key = `${fit}|${this.archMode}|${JSON.stringify(a)}`; // per render: memoized, both kinds
-    if (this.fitMemo?.key !== key) this.fitMemo = { key, L: fit ? archLayout(a, this.archMode, () => 0, true) : archModel(a, this.archMode) };
+    const m = this.archMarksNow(), fit = this.archFitOn(), key = `${fit}|${this.archMode}|${[...m.nodes.keys()]}|${[...m.edges.keys()]}|${JSON.stringify(a)}`;
+    if (this.fitMemo?.key !== key) this.fitMemo = { key, L: archLayout(a, this.archMode, (n) => (m.nodes.has(n.id) ? 1 : 0), fit, { labels: true, marked: (es) => es.some((i) => m.edges.has(i)) }) };
     return this.fitMemo.L;
   },
   // ---- sideways scrollers inside the scrolling page (the architecture canvas, the flow, state-machine and blast
@@ -2701,8 +2672,9 @@ export const ReviewMode = {
   hsOf(id) { const m = (this.hs ??= new Map()); if (!m.has(id)) m.set(id, { x: 0, viewW: 0, maxX: 0, contentW: 0 }); return m.get(id); },
   wrapX() { return (this.wrapXFn ??= (id, w, h, el) => this.hscroll(id, w, h, el)); }, // stack.js visualsCard's wrapX
   hscroll(id, contentW, h, content, t = theme()) {
-    // viewW: what shows of the picture, the part under the Ask drawer (drawerCover) left out.
-    const s = this.hsOf(id), viewW = hsVisible(s.viewW || 800, this.drawerCover()), maxX = Math.max(0, contentW - viewW), x = Math.min(s.x, maxX);
+    // viewW: what shows of the picture, the part under the Ask drawer (drawerCover) left out. The view is measured in
+    // logical px, the picture is drawn in the person's zoom: its width in the picture's px.
+    const s = this.hsOf(id), viewW = hsVisible((s.viewW || 800) / (settings().zoom || 1), this.drawerCover()), maxX = Math.max(0, contentW - viewW), x = Math.min(s.x, maxX);
     s.maxX = maxX; s.contentW = contentW; s.visW = viewW; // for the wheel and drag handlers
     return v_flex().w_full().gap(4)
       .child(div().id(id).w_full().h(h).relative().overflow_hidden().when(maxX > 0, (e) => e.cursor_grab())
@@ -3032,8 +3004,8 @@ export const ReviewMode = {
   },
 
   // ---- the Ask drawer, one for every view: open (380 px at the right), folded to a 28 px strip, or closed; kept per
-  // review. Over the Architecture page it lies on top (the picture keeps its width); beside the diff it squeezes the
-  // diff when there is room (from 1100 px), else it lies on top too.
+  // review. Beside the Architecture page it takes its width from the page (the picture wraps anew, its switches stay
+  // in reach); beside the diff it squeezes the diff when there is room (from 1100 px); else it lies on top.
   drawerState() { return this.deep.drawer?.[this.deepKey()] ?? null; },
   setDrawer(state, cx, about) {
     const key = this.deepKey();
@@ -3044,7 +3016,11 @@ export const ReviewMode = {
   },
   // Px of the right column the drawer lies on (not when it squeezes the column): open 380, folded strip 28.
   drawerCover() { const d = this.drawerState(); return d === "open" ? (this.drawerSqueezes() ? 0 : 380) : d === "collapsed" ? 28 : 0; },
-  drawerSqueezes() { return this.drawerState() === "open" && !(this.tab === "steps" && this.page) && (this.winW ?? 0) - this.leftW() - SPLIT >= 1100; },
+  drawerSqueezes() {
+    if (this.drawerState() !== "open" || this.exMode) return false; // Explore draws it on top
+    if (this.tab === "steps" && this.page) return this.page === "arch";
+    return (this.winW ?? 0) - this.leftW() - SPLIT >= 1100;
+  },
 
   askNow(cx) {
     const q = this.askIn.value().trim(), ai = this.ai, key = this.deepKey();

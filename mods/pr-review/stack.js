@@ -1,10 +1,10 @@
 // The review layout's "change stack" pieces drawn natively (no libraries): the architecture picture, a layer's
 // picture (flow, sequence, state machine, steps), stat cards, segmented bars, collapsible cards, the PR triage card.
-// Pure layout lives in arch.js (archLayout) and pr.js (levels, blastArch); these only draw. UI text is English.
+// Pure layout lives in arch.js (archLayout) and pr.js (levels); these only draw. UI text is English.
 import { div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { levels } from "./pr.js";
-import { archLayout, archFocus, stateLayout, transitionText, sourceStyle, hasSources, SPEC_TIP, ARCH } from "./arch.js";
+import { archLayout, archFocus, stateLayout, transitionText, sourceStyle, hasSources, pathMark, SPEC_TIP, ARCH, LABEL } from "./arch.js";
 import { flowArch } from "./views.js";
 
 export const STATUS_COLOR = { new: "ansi2", added: "ansi2", changed: "accent", unchanged: "muted", removed: "ansi1" };
@@ -61,21 +61,29 @@ export function archModel(arch, view = "diff", extra = () => 0) {
   return memo.get(key);
 }
 
-// The whole PR's architecture (or the blast radius) at arch.js's positions: dashed group frames, node cards with glyph,
-// title (2 lines), description (3 lines; the whole text as tooltip), states (an orchestrator's lane), type and status;
+// The whole PR's architecture (or a layer's flow) at arch.js's positions: dashed group frames, node cards with glyph,
+// title (2 lines), description (3 lines; the whole text as tooltip), states (an orchestrator's lane) and status;
 // each path on its own lane with an arrow, a hop where it crosses another, and its numbered badge; a stub with its
-// chip naming the target. Labels are in archLegend.
+// chip naming the target. A path with `text` (arch.js, the Architecture page) has its label next to its number; the
+// others are listed in archLegend.
 // onNode(node, event, cx) opens a card's place (its "Show in diff ↗" link, for cards with at or file); decorate(node) adds lines
 // to a card (findings); opts {hl: path num to highlight, onHl(num | null, cx), focus: node id, hover: node id,
-// onFocus(id | null, cx), onHover(id | null, cx)}. A focused node (clicked) keeps its paths and neighbours and dims
-// the rest to 25%; a hovered one dims them to 55%. Clicking a chip focuses its target.
+// onFocus(id | null, cx), onHover(id | null, cx), marks: arch.js archMarks, zoom}. A focused node (clicked) keeps its paths
+// and neighbours and dims the other lines to 25% (a hovered one to 55%); the other cards only to 60%, so their names
+// stay readable. Clicking a chip focuses its target. marks: where unresolved findings sit. A card shows the highest
+// severity with the count, and "flow breaks here" when one of them breaks the flow at it (the layout keeps a row:
+// extra); a call shows the same above its text, or as the colour of its number when it has no text on the line.
 export function archView(L, t, id, onNode, decorate, opts = {}) {
   const Fc = archFocus(L, opts.focus), F = Fc ?? archFocus(L, opts.hover), fade = Fc ? 0.25 : 0.55;
   const hlP = L.paths.find((p) => p.num === opts.hl), hlNodes = new Set(hlP ? [...hlP.from, hlP.to] : []);
   const dimP = (p) => Boolean(F) && !F.paths.has(p.num), dimN = (n) => Boolean(F) && !F.nodes.has(n.id);
-  const color = (p) => (opts.hl === p.num ? t.accent : sourceStyle(p.source).tone === "muted" ? t.muted : p.status === "new" || p.status === "changed" ? t.accent : t.muted);
-  const W = (p) => (opts.hl === p.num ? 2.5 : 1.5);
-  const dim = (el, on) => (on ? el.opacity(fade) : el);
+  // A spec-only call in the legend's colour for it ("Spec only").
+  const color = (p) => (opts.hl === p.num ? t.accent : p.source === "spec" ? t.ansi5 : sourceStyle(p.source).tone === "muted" ? t.muted : p.status === "new" || p.status === "changed" ? t.accent : t.muted);
+  const marks = opts.marks, sevOf = (m) => t[SEVERITY_COLOR[m.severity]] ?? t.muted;
+  const markChip = (m, cid) => chip(t, `${cap(m.severity)} · ${m.n}`, sevOf(m), true, cid, markTip(m));
+  // opts.zoom (the person's zoom): a line is at least one device pixel wide, or it is not drawn when zoomed far out.
+  const thin = Math.max(1.5, 1 / (opts.zoom || 1)), W = (p) => (opts.hl === p.num ? thin + 1 : thin);
+  const dim = (el, on, by = fade) => (on ? el.opacity(by) : el);
   const tipOf = (p) => [p.label, sourceStyle(p.source).tip, p.evidence].filter(Boolean).join("\n");
   const hop = ARCH.HOP, els = [];
   // Dimmed paths first, the highlighted one last (fans share their trunk: the brightest copy ends on top).
@@ -103,13 +111,22 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
     });
     els.push(dim(div().id(`${id}-a${i}`).absolute().left(p.arrow.left ? p.arrow.x : p.arrow.x - 9).top(p.arrow.y - 8).text_size(11).text_color(c).child(p.arrow.left ? "◀" : "▶"), faded));
   }
+  // A marked call without its text on the line: its number in the severity's colour (the legend row has the count).
+  const bare = (p) => (p.text?.mark ? null : pathMark(marks, p));
   const badges = L.paths.flatMap((p, i) => (p.badge ? [dim(div().id(`${id}-b${i}`).absolute().left(p.badge.x - ARCH.BADGE / 2).top(p.badge.y - ARCH.BADGE / 2).w(ARCH.BADGE).h(ARCH.BADGE)
-    .flex().items_center().justify_center().rounded_full().border_1().border_color(color(p)).bg(opts.hl === p.num ? t.accent + "33" : t.background)
-    .text_size(11).text_color(t.foreground).tooltip(tipOf(p)).child(String(p.num))
+    .flex().items_center().justify_center().rounded_full().border_1().border_color(bare(p) ? sevOf(bare(p)) : color(p)).bg(opts.hl === p.num ? t.accent + "33" : bare(p) ? sevOf(bare(p)) + "26" : t.background)
+    .text_size(11).text_color(t.foreground).tooltip([tipOf(p), bare(p) && markTip(bare(p))].filter(Boolean).join("\n")).child(String(p.num))
     .when(Boolean(opts.onHl), (e) => e.on_hover((on, cx) => opts.onHl(on ? p.num : null, cx)))
     .when(Boolean(p.evidence && opts.onJump), (e) => e.cursor_pointer().on_click((_e, cx) => { opts.onJump(p.evidence, cx); cx.stop_propagation(); })), dimP(p))] : []));
+  // A call's text on its line, next to its number; a mark above it. Hover lights the call, a click opens its place.
+  const texts = L.paths.flatMap((p, i) => (p.text ? [dim(v_flex().id(`${id}-t${i}`).absolute().left(p.text.x).top(p.text.y).w(p.text.w).h(p.text.h).px(3).py(2).rounded(4).bg(t.background).overflow_hidden()
+    .text_size(10.5).text_color(t.foreground).tooltip(tipOf(p))
+    .when(Boolean(opts.onHl), (e) => e.on_hover((on, cx) => opts.onHl(on ? p.num : null, cx)))
+    .when(Boolean(p.evidence && opts.onJump), (e) => e.cursor_pointer().on_click((_e, cx) => { opts.onJump(p.evidence, cx); cx.stop_propagation(); }))
+    .when(Boolean(p.text.mark && pathMark(marks, p)), (e) => e.child(h_flex().flex_none().h(LABEL.MARK).gap(4).items_center().child(markChip(pathMark(marks, p), `${id}-tm${i}`)).child(div().min_w(0).truncate().child(pathMark(marks, p).n === 1 ? "breaks here" : "break here"))))
+    .children(p.text.lines.map((l) => div().flex_none().h(LABEL.LH).line_height(LABEL.LH / 10.5).whitespace_nowrap().child(l))), dimP(p))] : []));
   const chips = L.paths.flatMap((p, i) => (p.chip ? [dim(div().id(`${id}-c${i}`).absolute().left(p.chip.x).top(p.chip.y).w(p.chip.w).h(p.chip.h).px(5)
-    .flex().items_center().gap(6).rounded(6).border_1().border_color(color(p)).when(p.dashed, (e) => e.border_dashed()).bg(opts.hl === p.num ? t.accent + "33" : t.background)
+    .flex().items_center().gap(6).rounded(6).border_1().border_color(bare(p) ? sevOf(bare(p)) : color(p)).when(p.dashed, (e) => e.border_dashed()).bg(opts.hl === p.num ? t.accent + "33" : t.background)
     .text_size(12).text_color(t.foreground).tooltip(`Call ${p.num}: ${tipOf(p)}\nNot drawn as a line, because it would skip a column or point back: the target is elsewhere in the picture. Hover to light it up, click to focus it.`)
     .child(div().w(ARCH.BADGE - 2).h(ARCH.BADGE - 2).flex_none().flex().items_center().justify_center().rounded_full().border_1().border_color(color(p)).text_size(10.5).child(String(p.num)))
     .child(div().min_w(0).truncate().child(p.chip.text))
@@ -137,12 +154,16 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
         .when(Boolean(st.chip), (e) => e.child(specTag(t, `${id}-sp${i}`))))
       .when(n.descLines > 0, (e) => e.child(div().flex_none().h(n.descLines * 15).overflow_hidden().text_size(11).line_height(1.35).whitespace_normal().text_color(t.muted).child(n.desc)))
       .children(decorate ? decorate(n) : [])
+      .when(Boolean(marks?.nodes?.get(n.id)), (e) => { const m = marks.nodes.get(n.id); return e.child(h_flex().flex_none().h(15).gap(4).items_center().child(markChip(m, `${id}-m${i}`))
+        .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.foreground).child(breakText(m, n.w < ARCH.W)))); })
       .child(div().flex_1())
+      // No type word here: it was cut off in most cards (the glyph's tooltip and the card's panel name the type). A
+      // narrow card (Fit, a layer's flow) has no room for the link either: its panel has it.
       .child(h_flex().gap(6).items_center().text_size(10.5)
-        .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(n.type ?? ""))
-        .when(open && Boolean(opts.onFocus), (e) => e.child(div().id(`${id}-o${i}`).flex_none().px(4).rounded(4).text_color(t.accent).cursor_pointer().hover((s) => s.bg(t.hover))
+        .child(div().flex_1())
+        .when(open && Boolean(opts.onFocus) && n.w >= ARCH.W, (e) => e.child(div().id(`${id}-o${i}`).flex_none().px(4).rounded(4).text_color(t.accent).cursor_pointer().hover((s) => s.bg(t.hover))
           .tooltip("Show this place in the diff").child("Show in diff ↗").on_click((ev, cx) => { onNode(n, ev, cx); cx.stop_propagation(); })))
-        .when(Boolean(n.status), (e) => e.child(chip(t, n.status === "new" ? "ADDED" : n.status.toUpperCase(), c, false, `${id}-st${i}`, `Status in this PR: ${n.status === "new" ? "added" : n.status}`)))), dimN(n));
+        .when(Boolean(n.status), (e) => e.child(chip(t, n.status === "new" ? "ADDED" : n.status.toUpperCase(), c, false, `${id}-st${i}`, `Status in this PR: ${n.status === "new" ? "added" : n.status}`)))), dimN(n), Math.max(fade, 0.6));
   });
   // An orchestrator's states: a lane down the card, one row each; a state that calls a component ends in "→" where its
   // line leaves the card.
@@ -151,11 +172,11 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
       .child(div().flex_none().w(14).text_color(s.source !== "existing" && (s.status === "new" || s.status === "changed") ? t.accent : t.muted).child(STATE_GLYPH[s.type] ?? "▭"))
       .child(div().flex_1().min_w(0).truncate().text_color(s.source === "spec" || s.source === "existing" ? t.muted : t.foreground).child(s.name))
       .when(s.source === "spec", (e) => e.child(specTag(t, `${id}-s${i}-${k}-sp`)))
-      .when(Boolean(s.calls), (e) => e.child(div().flex_none().text_color(t.muted).child("→"))))), dimN(n))]));
-  return div().id(id).relative().flex_none().w(L.width + 4).h(L.height + 4).children([...groups, ...els, ...nodes, ...states, ...badges, ...chips]);
+      .when(Boolean(s.calls), (e) => e.child(div().flex_none().text_color(t.muted).child("→"))))), dimN(n), Math.max(fade, 0.6))]));
+  return div().id(id).relative().flex_none().w(L.width + 4).h(L.height + 4).children([...groups, ...els, ...nodes, ...states, ...texts, ...badges, ...chips]);
 }
 const FLOW_FITS = 380;
-// A layer's flow laid out by archLayout with narrower cards (the column is about 420 px), memoized like archModel.
+// A layer's flow laid out by archLayout with narrower cards (the column is about 420 px), memoized.
 // ponytail: lends archLayout smaller ARCH sizes for one synchronous call; a sizes option on archLayout would replace it.
 const COMPACT = { W: 160, TITLE_CH: 19, DESC_CH: 25 }, flowMemo = new Map();
 function flowModel(v) {
@@ -168,28 +189,41 @@ function flowModel(v) {
   }
   return flowMemo.get(key);
 }
+const cap = (s) => String(s ?? "").replace(/^./, (c) => c.toUpperCase());
+// What a mark's chip says in full: the count by kind, then the titles (at most five).
+const markTip = (m) => [`${m.n} unresolved ${m.n === 1 ? "finding" : "findings"} here, the highest is ${m.severity}${m.breaks ? `; ${m.breaks === m.n ? (m.n === 1 ? "it breaks" : "all break") : `${m.breaks} of them break`} the flow at this place` : ""}.`,
+  ...m.findings.slice(0, 5).map((f) => `· ${f.title}`), ...(m.n > 5 ? [`· and ${m.n - 5} more`] : [])].join("\n");
+// Next to a card's mark: how many of its findings break the flow at the card ("High · 4" and "1 breaks the flow here").
+// A narrow card has room for two words.
+const breakText = (m, narrow) => (!m.breaks ? (narrow ? "" : m.n === 1 ? "finding in this code" : "findings in this code")
+  : `${m.breaks === m.n ? "" : `${m.breaks} `}${m.breaks === 1 ? "breaks" : "break"} ${narrow ? "flow" : "the flow here"}`);
 const STATE_GLYPH = { task: "▭", choice: "◇", parallel: "⫴", map: "⧉", wait: "⏱", pass: "↓", fail: "✕", succeed: "✓" };
 const PAD_IN = 10;
 
 // The paths' labels: "① A, B → C: label", one row each; hovering a row highlights its path (opts as in archView).
-// big: the blast radius, where the relation is the main information.
+// A path whose whole text is on its line in the picture (arch.js `text`) is left out: nothing to list, no legend.
+// big: larger text, where the relation is the main information.
 export function archLegend(L, t, id, title, opts = {}, big = false) {
   const name = new Map(L.nodes.map((n) => [n.id, n.label ?? n.id])), F = archFocus(L, opts.focus);
-  if (!L.paths.length) return div();
+  const rows = L.paths.filter((p) => !p.text || p.text.cut), mark = (p) => (p.text?.mark ? null : pathMark(opts.marks, p));
+  if (!rows.length) return div();
   return v_flex().id(id).flex_none().gap(2).p(big ? 12 : 10).rounded(10).border_1().border_color(t.border).bg(t.surface)
     .child(div().pb(4).text_size(big ? 13 : 12).font_semibold().text_color(t.muted).child(title))
-    .children(L.paths.map((p) => h_flex().id(`${id}-r${p.num}`).gap(8).items_start().px(6).py(3).rounded(6).tooltip("Hover to highlight this connection in the picture")
+    .children(rows.map((p) => h_flex().id(`${id}-r${p.num}`).gap(8).items_start().px(6).py(3).rounded(6).tooltip("Hover to highlight this connection in the picture")
       .when(opts.hl === p.num, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).when(Boolean(F) && !F.paths.has(p.num), (e) => e.opacity(0.4))
       .when(Boolean(opts.onHl), (e) => e.on_hover((on, cx) => opts.onHl(on ? p.num : null, cx)))
       .child(div().flex_none().mt(1).w(18).h(18).flex().items_center().justify_center().rounded_full().border_1()
         .border_color(opts.hl === p.num || p.status ? t.accent : t.muted).text_size(11).text_color(t.foreground).child(String(p.num)))
       .when(p.source === "spec", (e) => e.child(div().flex_none().mt(2).child(specTag(t, `${id}-sp${p.num}`))))
+      .when(Boolean(mark(p)), (e) => e.child(div().flex_none().mt(1).child(chip(t, `${cap(mark(p).severity)} · ${mark(p).n} · ${mark(p).n === 1 ? "breaks" : "break"} here`, t[SEVERITY_COLOR[mark(p).severity]] ?? t.muted, true, `${id}-m${p.num}`, markTip(mark(p))))))
       .child(div().flex_1().min_w(0).whitespace_normal().text_size(big ? 13 : 12).line_height(1.4)
         .child(`${p.from.map((f) => name.get(f)).join(", ")} → ${name.get(p.to)}${p.label ? `: ${p.label}` : ""}`))));
 }
 
-export const legend = (t) => h_flex().gap(10).text_size(11.5).text_color(t.muted).children([["Unchanged", "muted"], ["Changed", "accent"], ["New", "ansi2"], ["Removed", "ansi1"]]
-  .map(([label, c]) => h_flex().gap(4).items_center().child(div().w(10).h(10).rounded(3).border_1().border_color(t[c]).bg(t[c] + "33")).child(label)));
+// The status colours, in the cards' own words ("Added", as on a card's chip). counts {unchanged, changed, added,
+// removed}: how many cards of each the picture has, after the word (0 and missing: no number).
+export const legend = (t, counts = {}) => h_flex().gap(10).text_size(11.5).text_color(t.muted).children([["Unchanged", "muted"], ["Changed", "accent"], ["Added", "ansi2"], ["Removed", "ansi1"]]
+  .map(([label, c]) => h_flex().gap(4).items_center().child(div().w(10).h(10).rounded(3).border_1().border_color(t[c]).bg(t[c] + "33")).child(counts[label.toLowerCase()] ? `${label} ${counts[label.toLowerCase()]}` : label)));
 
 // A layer's pictures in the narrow left column (several: stacked with their kind above each, as tabs when more than
 // two). flow/architecture: Architecture impact's picture (archLayout via views.js flowArch: cards left to right, real

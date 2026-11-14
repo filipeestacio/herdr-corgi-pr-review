@@ -12,6 +12,9 @@
 // text: title up to 2 lines, description up to 3 (cut with an ellipsis; the full text is the tooltip). A node with
 // `states` (an orchestrator: Step Functions, a state machine) shows them as a vertical lane in its card, and each
 // state's `calls` leaves the card at that state's row.
+// The Architecture page's picture (opts.labels) differs in two things: a call's text sits on its line, in the gutter
+// next to its number (the legend only lists what did not fit), and a call that cannot be a line to the next column but
+// whose target already has a drawn line is a "long" line under the picture, so the calls into one card meet at it.
 
 export const ARCH = { W: 230, PAD: 12, HEAD: 30, GAP_Y: 18, GAP_G: 20, LANE: 12, GAP_MIN: 64, BADGE: 18, HOP: 8, PORT: 12,
   STUB: 16, CHIP_H: 24, CHIP_GAP: 30, CH: 6.4, FAN: 30, ROW: 18, TITLE_CH: 29, DESC_CH: 38 };
@@ -28,6 +31,21 @@ export function wrapLines(text, per) {
   }
   if (line) out.push(line);
   return out;
+}
+
+// A call's text in lines: like wrapLines, but a word longer than a line (code: "queue.publish(LoanEvent)") breaks after
+// a dot, slash, bracket, comma, colon or underscore where it has one, not in the middle of a name.
+export function labelLines(text, per) {
+  const parts = String(text ?? "").split(/\s+/).filter(Boolean).flatMap((w) => (w.length > per ? w.split(/(?<=[./(_,:])/).map((x, i) => ({ x, glue: i > 0 })) : [{ x: w, glue: false }]));
+  const out = [];
+  let line = "";
+  for (const { x, glue } of parts) {
+    const add = !line || glue ? x : ` ${x}`;
+    if (line.length + add.length <= per) line += add;
+    else { if (line) out.push(line); line = x; }
+  }
+  if (line) out.push(line);
+  return out.flatMap((l) => (l.length > per ? wrapLines(l, per) : [l])); // a piece with no such place: split as before
 }
 
 // At most `max` lines: {text, lines, cut}; a cut text ends in "…".
@@ -127,8 +145,12 @@ export function archFocus(L, id) {
 // arrow: {x, y, left}, badge: {x, y} (null for a stub), chip: {x, y, w, h, text} (stubs), trunk (fans: the trunk's
 // key; the trunk's segments are part of each of its paths), dashed, status}. trunks: [{key, segments}] for hops.
 // fit: narrow cards (160 px, two lines of description) for a picture that is much wider than the view.
+// opts {labels: the Architecture page's picture (texts on the lines, long lines), marked(edge indexes): a path that
+// carries a mark (a finding breaks the flow there) keeps a row for it above its text}. A labelled path has `text`
+// {x, y, w, h, lines: [strings], cut, mark}; one whose text did not fit next to its line has none (the legend lists it).
 export const FIT = { W: 160, TITLE_CH: 19, DESC_CH: 25, DESC_LINES: 2 };
-export function archLayout(arch, view = "diff", extra = () => 0, fit = false) {
+export const LABEL = { CH: 20, LINES: 3, CHW: 6.2, LH: 13, MARK: 20, LONG: 3 };
+export function archLayout(arch, view = "diff", extra = () => 0, fit = false, opts = {}) {
   const { PAD, HEAD, GAP_Y, GAP_G, LANE, GAP_MIN, BADGE, PORT, STUB, CHIP_H, CHIP_GAP, CH, FAN, ROW } = ARCH;
   const { W, TITLE_CH, DESC_CH } = fit ? FIT : ARCH, DESC_LINES = fit ? FIT.DESC_LINES : 3;
   const hide = view === "before" ? "new" : view === "after" ? "removed" : null;
@@ -188,7 +210,11 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false) {
   }
   if (moved) pullRight();
   const ncol = Math.max(0, ...col.values()) + 1;
-  const kindOf = (e) => (col.get(e.to) - col.get(e.from) === 1 ? "next" : "stub");
+  // ponytail: at most LABEL.LONG long lines, none into the first column (no gutter left of it) or from a state row;
+  // the rest stay stubs. More would need lanes ordered by crossings, as the next-column lines have.
+  const drawn = (e) => col.get(e.to) - col.get(e.from) === 1;
+  const longs = opts.labels ? edges.filter((e) => !drawn(e) && e.anchor === undefined && col.get(e.to) > 0 && edges.some((x) => x.to === e.to && drawn(x))).slice(0, LABEL.LONG) : [];
+  const kindOf = (e) => (drawn(e) ? "next" : longs.includes(e) ? "long" : "stub");
   const nexts = edges.filter((e) => kindOf(e) === "next");
 
   // 2. Order: groups and nodes by the mean position of their neighbours, a few sweeps (ties keep the given order),
@@ -243,7 +269,7 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false) {
   const paths = [], trunks = [], byKey = new Map(), anchorOf = new Map(); // `${pathKey}:${from}` -> [state index]
   for (const e of edges) {
     const kind = kindOf(e), fan = kind === "next" && e.anchor === undefined && fanN.get(fanKey(e)) > 2;
-    const key = kind === "stub" ? `stub:${e.i}` : fan ? `fan:${fanKey(e)}:${e.i}` : e.anchor !== undefined ? `rows:${e.from}>${e.to}` : `next:${e.to}:${norm(e.label)}:${e.source ?? ""}`;
+    const key = kind === "stub" || kind === "long" ? `${kind}:${e.i}` : fan ? `fan:${fanKey(e)}:${e.i}` : e.anchor !== undefined ? `rows:${e.from}>${e.to}` : `next:${e.to}:${norm(e.label)}:${e.source ?? ""}`;
     if (!byKey.has(key)) {
       const p = { key, kind: fan ? "fan" : kind, to: e.to, from: [], edges: [], label: e.label ?? "", dashed: Boolean(e.dashed) || e.source === "spec", source: e.source ?? null,
         evidence: e.evidence ?? null, status: e.status ?? (e.changed ? "changed" : null) };
@@ -266,6 +292,14 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false) {
   }
   paths.forEach((p, k) => { p.num = k + 1; p.mark = circled(k + 1); });
   const srcCol = (p) => col.get(p.from[0]);
+  // The text on a line: up to LABEL.LINES lines next to the number; a marked path keeps a row for its mark above it.
+  for (const p of paths) {
+    const mark = Boolean(opts.marked?.(p.edges));
+    if (!opts.labels || (p.kind !== "next" && p.kind !== "long") || !(p.label || mark)) continue;
+    const all = labelLines(p.label, LABEL.CH), cut = all.length > LABEL.LINES;
+    const lines = cut ? [...all.slice(0, LABEL.LINES - 1), `${all[LABEL.LINES - 1].slice(0, LABEL.CH - 1)}…`] : all;
+    p.text = { lines, cut, mark, w: Math.round(Math.max(mark ? LABEL.CH : 0, ...lines.map((l) => l.length)) * LABEL.CHW + 8), h: lines.length * LABEL.LH + (mark ? LABEL.MARK : 0) + 4 };
+  }
 
   // 4. Ports per card side: incoming on the left (a bus's target end, a fan branch), outgoing on the right (a bus
   // source, a fan trunk, a stub).
@@ -274,7 +308,7 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false) {
   for (const p of paths) {
     if (p.kind === "stub") addPort(p.from[0], "r", { p, end: "from", stub: true });
     else addPort(p.to, "l", { p, end: "to" });
-    if (p.kind === "next") for (const f of p.from) addPort(f, "r", { p, end: "from", from: f });
+    if (p.kind === "next" || p.kind === "long") for (const f of p.from) addPort(f, "r", { p, end: "from", from: f });
   }
   for (const tr of trunks) addPort(tr.from[0], "r", { p: tr, end: "from" });
 
@@ -284,7 +318,8 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false) {
     const n = byId.get(id), title = clampText(n.label ?? n.id, TITLE_CH, 2), desc = clampText(n.description ?? "", DESC_CH, DESC_LINES);
     const stateTop = 8 + title.lines * 17 + 3 + (desc.lines ? desc.lines * 15 + 3 : 0) + (extra(n) ?? 0) * 18 + 4;
     const content = n.states.length ? stateTop + n.states.length * ROW + 6 + 16 + 8 : 8 + title.lines * 17 + (desc.lines ? 4 + desc.lines * 15 : 0) + (extra(n) ?? 0) * 18 + 6 + 16 + 8;
-    const need = (s) => { const items = ports.get(`${id}:${s}`) ?? []; return (items.length + 1) * (items.some((it) => it.stub) ? CHIP_GAP : PORT); };
+    // A side whose lines carry their text: the ports as far apart as the tallest text.
+    const need = (s) => { const items = ports.get(`${id}:${s}`) ?? []; return (items.length + 1) * Math.max(items.some((it) => it.stub) ? CHIP_GAP : PORT, ...(s === "r" ? items.map((it) => (it.p.text?.h ?? 0) + 6) : [])); };
     size.set(id, { h: Math.max(72, content, need("l"), n.states.length ? 0 : need("r")), title, desc, stateTop });
   }
 
@@ -303,8 +338,12 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false) {
     zone[srcCol(p)] = Math.max(zone[srcCol(p)], STUB + 4 + p.chip.w + 8 - PAD);
   }
   for (const p of [...paths.filter((q) => q.kind === "next"), ...trunks]) lanesN[srcCol(p)]++;
+  // A long line has a lane in the gutter after its source and one in the gutter before its target.
+  const longP = paths.filter((p) => p.kind === "long"), textW = Array(ncol).fill(0);
+  for (const p of longP) { lanesN[srcCol(p)]++; lanesN[col.get(p.to) - 1]++; }
+  for (const p of paths) if (p.text) textW[srcCol(p)] = Math.max(textW[srcCol(p)], p.text.w + 8); // between the card and the lanes
   const cw = inset.map((i) => i + W + 2 * PAD);
-  const gw = cw.map((_, c) => (c < ncol - 1 ? Math.max(GAP_MIN, zone[c] + lanesN[c] * LANE + 28) : zone[c]));
+  const gw = cw.map((_, c) => (c < ncol - 1 ? Math.max(GAP_MIN, zone[c] + textW[c] + lanesN[c] * LANE + 28) : zone[c] + (lanesN[c] ? textW[c] + lanesN[c] * LANE + 28 : 0)));
   const colX = [];
   for (let c = 0; c < ncol; c++) colX[c] = c ? colX[c - 1] + cw[c - 1] + gw[c - 1] : 0;
 
@@ -330,7 +369,7 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false) {
 
   // Port y: a state's call at its row; the rest spread along the side (above the states), by the other end's height.
   const portY = new Map(); // `${pathKey}:${end}:${id}` -> y
-  const otherY = (it) => { const ends = it.p.kind === "trunk" ? it.p.branches.map((b) => b.to) : it.end === "to" ? it.p.from : [it.p.to]; return avg(ends.map((id) => at.get(id).y + at.get(id).h / 2)); };
+  const otherY = (it) => { if (it.p.kind === "long") return Infinity; const ends = it.p.kind === "trunk" ? it.p.branches.map((b) => b.to) : it.end === "to" ? it.p.from : [it.p.to]; return avg(ends.map((id) => at.get(id).y + at.get(id).h / 2)); };
   for (const [k, items] of ports) {
     const id = k.slice(0, k.lastIndexOf(":")), n = at.get(id), right = k.endsWith(":r");
     const fixed = (it) => (right ? anchorOf.get(`${it.p.key}:${id}`) : undefined);
@@ -365,10 +404,12 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false) {
 
   // Lane order per gutter: the permutation (small gutters) or sort with the fewest crossings inside the gutter.
   const lane = new Map();
-  for (let c = 0; c < ncol - 1; c++) {
+  for (let c = 0; c < ncol; c++) {
     const items = [...paths.filter((p) => p.kind === "next" && srcCol(p) === c), ...trunks.filter((tr) => srcCol(tr) === c)];
+    const left = colX[c] + cw[c] + zone[c] + textW[c] + 14;
+    let k = items.length; // long lines take the lanes after the others
+    for (const p of longP) { if (srcCol(p) === c) lane.set(`${p.key}:out`, left + k++ * LANE); if (col.get(p.to) - 1 === c) lane.set(`${p.key}:in`, left + k++ * LANE); }
     if (!items.length) continue;
-    const left = colX[c] + cw[c] + zone[c] + 14;
     const trialOf = (order) => new Map(order.map((p, k) => [p.key, left + k * LANE]));
     const cost = (order) => { const trial = trialOf(order); return crossings(order.map((p) => ({ key: p.key, segments: build(p, trial).segs }))).length; };
     const tyOf = (p) => (p.kind === "trunk" ? Math.min(...p.branches.map((b) => PY(b, "to", b.to))) : PY(p, "to", p.to));
@@ -393,7 +434,15 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false) {
     p.arrow = { x: sx + STUB, y: sy, left: false };
     Object.assign(p.chip, { x: sx + STUB + 4, y: sy - CHIP_H / 2 });
   }
-  const hops = crossings([...paths.filter((p) => p.kind === "next"), ...trunks]);
+  // A long line: out of its card, down its lane to a channel under the picture, along it, up the lane before its
+  // target and in from the left, like every other call.
+  const bottom = Math.max(0, ...frames.map((f) => f.y + f.h));
+  longP.forEach((p, j) => {
+    const f = at.get(p.from[0]), T = at.get(p.to), sx = f.x + W, sy = PY(p, "from", f.id), ty = PY(p, "to", p.to), x1 = lane.get(`${p.key}:out`), x2 = lane.get(`${p.key}:in`), cy = bottom + 14 + j * LANE;
+    p.segments = [{ x1: sx, y1: sy, x2: x1, y2: sy }, { x1, y1: sy, x2: x1, y2: cy }, { x1, y1: cy, x2, y2: cy }, { x1: x2, y1: cy, x2, y2: ty }, { x1: x2, y1: ty, x2: T.x, y2: ty }];
+    p.arrow = { x: T.x, y: ty, left: false };
+  });
+  const hops = crossings([...paths.filter((p) => p.kind === "next" || p.kind === "long"), ...trunks]);
 
   // Numbers in reading order: by the source's column, then where the line leaves it (top to bottom). A stub's chip
   // carries its number. ponytail: the chip keeps the width measured with its first number (same digit count up to 20).
@@ -408,42 +457,93 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false) {
   for (const p of paths) {
     if (p.kind === "stub") { p.badge = null; continue; }
     const segs = [...p.segments].sort((a, b) => (Math.abs(b.y2 - b.y1) + Math.abs(b.x2 - b.x1) * 0.5) - (Math.abs(a.y2 - a.y1) + Math.abs(a.x2 - a.x1) * 0.5));
-    const first = p.kind === "next" ? p.segments.find((g) => g.y1 === g.y2 && g.y1 === reading.get(p).y && g.x2 > g.x1) : null;
+    const first = p.kind === "next" || p.kind === "long" ? p.segments.find((g) => g.y1 === g.y2 && g.y1 === reading.get(p).y && g.x2 > g.x1) : null;
     const spots = p.kind === "fan" ? [{ x: p.arrow.x - FAN + 12, y: p.arrow.y }] : first ? [0, 1, 2].map((k) => ({ x: first.x1 + 14 + k * (BADGE + 4), y: first.y1 })) : [];
     for (const s of segs) for (const t of [0.5, 0.3, 0.7, 0.15, 0.85]) spots.push({ x: s.x1 + (s.x2 - s.x1) * t, y: s.y1 + (s.y2 - s.y1) * t });
     const box = (q) => ({ x: q.x - BADGE / 2, y: q.y - BADGE / 2, w: BADGE, h: BADGE });
     const free = spots.find((q) => !rects.some((r) => overlaps(box(q), r, 2)) && !placed.some((b) => overlaps(box(q), b, 2))) ?? spots[0] ?? { x: 0, y: 0 };
     p.badge = { x: Math.round(free.x), y: Math.round(free.y) };
     placed.push(box(p.badge));
+    // Its text right of the number, when the number sits at the start of the line and nothing is in the way.
+    if (!p.text) continue;
+    const tb = { x: p.badge.x + BADGE / 2 + 4, y: Math.round(p.badge.y - p.text.h / 2), w: p.text.w, h: p.text.h };
+    if (free !== spots[0] || !first || rects.some((r) => overlaps(tb, r, 2)) || placed.some((b) => b !== placed.at(-1) && overlaps(tb, b, 2))) { delete p.text; continue; }
+    Object.assign(p.text, tb); placed.push(tb);
   }
 
   const outGroups = frames.map((f) => ({ ...groups.find((g) => g.id === f.g), x: colX[f.lo], y: f.y, w: colX[f.hi] + cw[f.hi] - colX[f.lo], h: f.h, cols: [f.lo, f.hi] }))
     .sort((a, b) => gIds.indexOf(a.id) - gIds.indexOf(b.id));
   const width = ncol ? colX[ncol - 1] + cw[ncol - 1] + gw[ncol - 1] : 0;
-  const height = Math.max(0, ...frames.map((f) => f.y + f.h));
+  const height = bottom + (longP.length ? 14 + longP.length * LANE : 0);
   return { groups: outGroups, nodes, paths, trunks, hops, width, height };
 }
 
+// Where the unresolved findings sit on the picture. One that breaks the flow says where (`breaks`: {node}, or {from,
+// to, edge: "e<index>"} for a call); one that does not (a reviewer's, mostly) goes to the card of its file: the last
+// card that starts at or above its line, else the file's first card; no card for the file: nowhere. Returns {nodes:
+// Map(id -> mark), edges: Map(edge index -> mark)}, mark = {findings, n, breaks: how many of them break the flow
+// there, severity: the highest}. Pass the unresolved findings only.
+const SEV_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
+const placeOf = (at) => { const m = /^(.*?):(\d+)/.exec(String(at ?? "")); return { path: m?.[1] ?? (at ? String(at) : null), line: Number(m?.[2] ?? 0) }; };
+const sameFile = (a, b) => a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`);
+export function archMarks(arch, findings) {
+  const nodes = new Map(), edges = new Map(), all = arch?.nodes ?? [], calls = arch?.edges ?? [];
+  const put = (m, k, f, breaks) => {
+    const x = m.get(k) ?? { findings: [], n: 0, breaks: 0, severity: f.severity };
+    x.findings.push(f); x.n++; if (breaks) x.breaks++;
+    if ((SEV_RANK[f.severity] ?? 9) < (SEV_RANK[x.severity] ?? 9)) x.severity = f.severity;
+    m.set(k, x);
+  };
+  const places = all.map((n) => ({ id: n.id, ...placeOf(n.at ?? n.evidence) })).filter((x) => x.path);
+  for (const f of findings ?? []) {
+    const b = f.breaks ?? {}, named = /^e?(\d+)$/.exec(String(b.edge ?? ""));
+    const e = named && calls[Number(named[1])] ? Number(named[1]) : b.from && b.to ? calls.findIndex((x) => x.from === b.from && x.to === b.to) : -1;
+    if (e >= 0) { put(edges, e, f, true); continue; }
+    if (b.node && all.some((n) => n.id === b.node)) { put(nodes, b.node, f, true); continue; }
+    const mine = places.filter((x) => f.file && sameFile(x.path, f.file));
+    const card = mine.filter((x) => x.line <= (f.line ?? 0)).sort((x, y) => y.line - x.line)[0] ?? mine[0];
+    if (card) put(nodes, card.id, f, false);
+  }
+  return { nodes, edges };
+}
+// The marks of a path's calls as one (a bus merges several calls), or null.
+export function pathMark(marks, p) {
+  const ms = (p?.edges ?? []).map((i) => marks?.edges?.get(i)).filter(Boolean);
+  if (!ms.length) return null;
+  const top = ms.reduce((a, m) => ((SEV_RANK[m.severity] ?? 9) < (SEV_RANK[a.severity] ?? 9) ? m : a));
+  return { findings: ms.flatMap((m) => m.findings), n: ms.reduce((s, m) => s + m.n, 0), breaks: ms.reduce((s, m) => s + m.breaks, 0), severity: top.severity };
+}
+
 // A picture wider than the view, cut into bands stacked top to bottom instead of one long row to scroll sideways:
-// cuts go through a gap no card, badge or chip covers (the middle of it), each band as wide as fits the view. Lines
-// crossing a cut run on in the next band at the same height (their number badges tell them apart). Returns [{x0, x1}];
-// one band (the whole picture) when it fits or there is no gap to cut at.
+// cuts go through a gap no card, badge, chip or text covers, each band as wide as fits the view. Lines
+// crossing a cut run on in the next band at the same height (their number badges tell them apart). Returns [{x0, x1,
+// h}], h: how far down that band's frames and lines reach (a band is not as tall as the tallest one); one band (the
+// whole picture) when it fits or there is no gap to cut at.
 export function archBands(L, viewW) {
-  if (!(viewW > 0) || L.width <= viewW) return [{ x0: 0, x1: L.width }];
-  const boxes = [...L.nodes, ...L.paths.flatMap((p) => [p.chip, p.badge && { x: p.badge.x - 9, w: 18 }])].filter((b) => b && b.w > 0).map((b) => [b.x, b.x + b.w]).sort((a, b) => a[0] - b[0]);
-  const cuts = [];
+  if (!(viewW > 0) || L.width <= viewW) return [{ x0: 0, x1: L.width, h: L.height }];
+  const boxes = [...L.nodes, ...L.paths.flatMap((p) => [p.chip, p.text, p.badge && { x: p.badge.x - 9, w: 18 }])].filter((b) => b && b.w > 0).map((b) => [b.x, b.x + b.w]).sort((a, b) => a[0] - b[0]);
+  // A gap can be cut right after what is left of it (lo: that gutter's lanes start the next band) or right before what
+  // is right of it, a group's frame included (hi: they end this one).
+  const gaps = [];
   let end = -Infinity;
-  for (const [a, b] of boxes) { if (a > end + 8 && end > 0) cuts.push(Math.round((end + a) / 2)); end = Math.max(end, b); }
-  const bands = [];
+  for (const [a, b] of boxes) { if (a > end + 8 && end > 0) gaps.push({ lo: Math.round(end + 2), hi: Math.round(Math.min(a, ...L.groups.map((g) => g.x).filter((x) => x > end + 2 && x <= a)) - 2) }); end = Math.max(end, b); }
+  const cuts = [];
   let x0 = 0;
   while (L.width - x0 > viewW) {
-    const fit = cuts.filter((c) => c > x0 && c - x0 <= viewW);
-    const c = fit.length ? fit.at(-1) : cuts.find((c) => c > x0); // a column wider than the view: its own band
-    if (c === undefined) break;
-    bands.push({ x0, x1: c }); x0 = c;
+    const fit = gaps.filter((g) => g.lo > x0 && g.lo - x0 <= viewW);
+    const g = fit.length ? fit.at(-1) : gaps.find((c) => c.lo > x0); // a column wider than the view: its own band
+    if (g === undefined) break;
+    cuts.push(g); x0 = g.lo;
   }
-  bands.push({ x0, x1: L.width });
-  return bands;
+  const spans = [...L.groups.map((g) => [g.x, g.x + g.w, g.y + g.h]), ...L.paths.flatMap((p) => [...p.segments.map((s) => [Math.min(s.x1, s.x2), Math.max(s.x1, s.x2), Math.max(s.y1, s.y2) + 12]),
+    ...[p.chip, p.text].filter(Boolean).map((b) => [b.x, b.x + b.w, b.y + b.h])])];
+  const bandsAt = (xs) => [0, ...xs].map((a, k) => ({ x0: a, x1: xs[k] ?? L.width })).map((b) => ({ ...b, h: Math.max(0, ...spans.filter(([a, z]) => a < b.x1 && z > b.x0).map(([, , y]) => y)) }));
+  const tall = (xs) => bandsAt(xs).reduce((sum, b) => sum + b.h, 0);
+  // Each cut on the side that makes the bands less tall: a line that runs far down its gutter goes to the band that is
+  // tall anyway. hi only while the band left of it still fits the view.
+  const xs = cuts.map((g) => g.lo);
+  cuts.forEach((g, k) => { const hi = xs.map((x, i) => (i === k ? g.hi : x)); if (g.hi - (xs[k - 1] ?? 0) <= viewW && tall(hi) < tall(xs)) xs[k] = g.hi; });
+  return bandsAt(xs);
 }
 
 // ---- state diagrams (a layer's state_machine picture): top to bottom
