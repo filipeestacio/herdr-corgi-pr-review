@@ -1244,18 +1244,24 @@ const fileOf = (x) => String(x ?? "").replace(/:\d+$/, "");
 const depsOf = (path, deps, loose = false) => (deps ?? []).filter((d) => (d.edge && path.steps.includes(d.edge)) ||
   (d.at && path.steps.some((s) => s === d.at || (loose && /:\d+$/.test(s) && fileOf(s) === fileOf(d.at)))));
 
-// What the map marks on the chosen path, only there: ⏱ a timeout, ×n a retry, DLQ or "no DLQ" at a consumer,
-// "✕ silent" at its end when nothing signals it, "1 + N" for a call in a loop. at: the step (node, edge or file:line).
+// What the map marks on the chosen path, only there: ⏱ a timeout (or "⏱ no timeout" on a sync call without one),
+// ×n a retry, DLQ or "no DLQ" at a consumer, "✕ silent" at its end when nothing signals it, "1 + N" for a call in a
+// loop; from the calls (deps) and, where they say nothing, from what the path breaks (failing). at: an edge id e<k>, a
+// node id or a file:line; the view puts a place on its card (views.js resCardOf). One mark per kind and place.
 export function marksOf(path, deps) {
-  const out = [];
-  for (const d of depsOf(path, deps, true)) {
+  const out = [], add = (at, mark) => { if (at && !out.some((x) => x.at === at && x.mark === mark)) out.push({ at, mark }); };
+  const mine = depsOf(path, deps, true), place = path.steps.find((x) => /:\d+$/.test(x)) ?? path.steps[0] ?? null;
+  for (const d of mine) {
     const at = d.edge ?? d.at;
-    if (d.timeout?.s > 0) out.push({ at, mark: `⏱ ${d.timeout.s} s` });
-    if (d.retry?.attempts > 1) out.push({ at: d.retry.at || at, mark: `×${d.retry.attempts}` });
-    if (d.trigger) out.push({ at, mark: d.trigger.dlq || d.trigger.max_receive > 0 ? "DLQ" : "no DLQ" });
+    if (d.timeout?.s > 0) add(at, `⏱ ${d.timeout.s} s`);
+    else if (d.mode === "sync") add(at, "⏱ no timeout");
+    if (d.retry?.attempts > 1) add(d.retry.at || at, `×${d.retry.attempts}`);
+    if (d.trigger) add(at, d.trigger.dlq || d.trigger.max_receive > 0 ? "DLQ" : "no DLQ");
   }
-  if (path.failing.includes("n_plus_one")) out.push({ at: path.steps[0] ?? null, mark: "1 + N" });
-  if (!path.visible && path.steps.length) out.push({ at: path.steps.at(-1), mark: "✕ silent" });
+  if (path.failing.includes("no_timeout_public") && !out.some((x) => x.mark.startsWith("⏱"))) add(place, "⏱ no timeout");
+  if (["no_dlq", "poison_message"].some((k) => path.failing.includes(k)) && !out.some((x) => x.mark.endsWith("DLQ"))) add(place, "no DLQ");
+  if (path.failing.includes("n_plus_one")) add(path.steps[0] ?? null, "1 + N");
+  if ((!path.visible || path.failing.includes("silent")) && path.steps.length) add(path.steps.at(-1), "✕ silent");
   return out;
 }
 
