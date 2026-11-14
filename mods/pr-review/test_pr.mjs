@@ -208,8 +208,8 @@ assert.equal(findingStatus(fb, { b: { s: "dismissed" } }, reps, "h2", "y(1)"), "
   const A = (id, file, line, severity, extra = {}) => ({ id, reviewer: "analysis", step: "k1", file, line, end: line, severity, category: "structure", title: `T ${id}`, detail: `D ${id}`, suggestion: "", ...extra });
   const S = (path, line, severity, reason, extra = {}) => ({ key: `${path}:+${line}:${reason}`, hunk: "h", path, line, old: false, severity, reason, approx: false, ...extra });
   const sec = { id: "sec1", reviewer: "security", file: "t.yaml", line: 18, end: 20, severity: "high", title: "Token unset", detail: "Fails open", suggestion: "Fail closed", code: "x", head: "h1" };
-  const list = [sec, A("a1", "t.yaml", 18, "medium", { category: "security", suggestion: "Set it" }), A("a2", "e.py", 9, "high"), A("a3", "e.py", 30, "medium")];
-  const sugs = [S("e.py", 9, "high", "No id. Dedupe is impossible."), S("t.yaml", 18, "medium", "Token is empty"), S("e.py", 12, "low", "Nit"), S("e.py", 40, "high", "Import couples the two. Split it."),
+  const list = [sec, A("a1", "t.yaml", 18, "medium", { category: "security", suggestion: "Set it", title: "Token unset in the template" }), A("a2", "e.py", 9, "high", { title: "No id, so dedupe is impossible" }), A("a3", "e.py", 30, "medium")];
+  const sugs = [S("e.py", 9, "high", "No id. Dedupe is impossible."), S("t.yaml", 18, "medium", "Token is unset"), S("e.py", 12, "low", "Nit"), S("e.py", 40, "high", "Import couples the two. Split it."),
     S("e.py", 50, "medium", "Open bucket", { category: "security" }), S("e.py", 9, "low", "old side", { old: true })];
   const m = mergeFindings(list, sugs);
   assert.deepEqual(m.findings.map((f) => [f.file, f.line, f.severity, f.sources.map((x) => `${x.reviewer}:${x.severity}`).join(" ")]), [
@@ -434,7 +434,7 @@ console.log("ok");
   assert.equal(now.suspects[0].category, "availability");
   // Merged: a low suggestion about availability is a finding of its own; the facts come from the leading source,
   // and what that one lacks (a reviewer has no criteria and no breaks) from the first source that has it.
-  const sec = { id: "s1", reviewer: "security", file: "a.py", line: 9, end: 9, severity: "high", title: "Sec", detail: "d", impact: "unauthorized_access", effect: "Anyone reads it.", certainty: "confirmed" };
+  const sec = { id: "s1", reviewer: "security", file: "a.py", line: 9, end: 9, severity: "high", title: "No id on the event", detail: "d", impact: "unauthorized_access", effect: "Anyone reads it.", certainty: "confirmed" };
   const m = mergeFindings([sec, { ...nf, severity: "medium" }], now.suspects);
   assert.deepEqual(m.findings.map((f) => [f.file, f.line, f.severity, f.reviewer, f.category]), [["a.py", 9, "high", "security", undefined], ["a.py", 2, "low", "ai", "availability"]]);
   assert.deepEqual(m.notes, []);
@@ -554,9 +554,9 @@ console.log("ok");
   const sh = findingSteps({}, { s: "fixed" });
   assert.equal(show(sh), "+reported -evidence -sent +verified >in_pr"); assert.equal(sh[4].missing, "Marked fixed by hand: no check has read the PR head.");
   // The funnel: reported per source, merged, unresolved, of those on security, of those confirmed.
-  const A = (id, line, extra = {}) => ({ id, reviewer: "analysis", file: "a.py", line, end: line, severity: "medium", category: "bug", title: id, detail: "", ...extra });
+  const A = (id, line, extra = {}) => ({ id, reviewer: "analysis", file: "a.py", line, end: line, severity: "medium", category: "bug", title: `T${line}`, detail: "", ...extra });
   const m = mergeFindings([{ ...A("s1", 3), reviewer: "security", severity: "high", certainty: "confirmed" }, { ...A("c1", 7), reviewer: "claude" }, A("a1", 3), A("a2", 7), A("a3", 9, { effort: "heavy" }), A("a4", 11, { effort: "quick" })],
-    [{ key: "k", path: "a.py", line: 9, old: false, severity: "low", reason: "same line" }]);
+    [{ key: "k", path: "a.py", line: 9, old: false, severity: "low", reason: "T9" }]);
   const st = { a4: "dismissed" }, x = funnel(m.findings, (f) => st[f.id] ?? "open");
   assert.deepEqual(x, { by: [["analysis", 4], ["claude", 1], ["security", 1], ["ai", 1]], reported: 7, merged: 4, unresolved: 3, security: 1, confirmed: 1 });
   const names = { analysis: "Analysis", claude: "Claude code review", security: "Security review", ai: "AI suggestion" };
@@ -620,4 +620,48 @@ console.log("ok");
     { id: "e3cec57be283", reviewer: "security", file: "library/handler.py", line: 9, severity: "high", title: "Empty token", reachable_from: ["acc1"], reachability: "public", effort: "quick" }]).findings[0];
   assert.deepEqual([m.reachable_from, m.reachability, m.effort], [["acc1"], "public", "moderate"]);
   console.log("ok security view");
+}
+
+// Neighbouring lines: one defect when the titles make the same claim, two when they do not (the real pairs of PR #2).
+{
+  const { mergeFindings, sameClaim } = await import("./pr.js");
+  const F = (id, reviewer, file, line, title, extra = {}) => ({ id, reviewer, file, line, end: line, severity: "high", category: "bug", title, detail: "", suggestion: "", ...extra });
+  const pr2 = [
+    F("a477", "analysis", "library/consumer.py", 19, "Consumer reads loans from a per-process in-memory store"),
+    F("7413", "claude", "library/consumer.py", 20, "Consumer reads from an in-memory store the front desk does not share", { head: "h", code: "if message" }),
+    F("a83a", "analysis", "library/consumer.py", 23, "Consumer sets reminded_on directly"),
+    F("a9b8", "analysis", "library/reminders.py", 21, "Reminder is mailed inline and again by the consumer"),
+    F("43e8", "claude", "library/reminders.py", 22, "Mail is sent before the state change and event, with no atomicity", { severity: "medium" }),
+    F("29c1", "claude", "library/reminders.py", 23, "Reminder mailed twice: directly and again by the consumer"),
+    F("a03f", "analysis", "library/reminders.py", 33, "publish_overdue always raises ValueError"),
+    F("36f9", "claude", "library/reminders.py", 35, "publish_overdue always raises ValueError"),
+    F("95ea", "claude", "library/handler.py", 18, "/remind bypasses the state machine and has no input or error handling", { severity: "medium" }),
+    F("1cf1", "security", "library/handler.py", 19, "/remind skips the state machine and sends mail for any loan id", { severity: "medium" }),
+    F("a09f", "analysis", "library/handler.py", 21, "/remind mails inline and skips the state machine"),
+    F("a28d", "analysis", "library/handler.py", 6, "Front desk imports the consumer module"),
+    F("1a5f", "security", "library/handler.py", 8, "Front desk auth falls back to an empty token, so `Authorization: Bearer ` passes"),
+  ];
+  const m = mergeFindings(pr2).findings, at = (f) => `${f.file.split("/").pop()}:${f.line}-${f.end} ${f.ids.join("+")}`;
+  // 13 → 9: four pairs join; the different claims next to them stay apart (store vs. reminded_on, mailed twice vs. no
+  // atomicity, the review's wider /remind finding, the import vs. the token).
+  assert.deepEqual(m.map(at).sort(), ["consumer.py:19-20 a477+7413", "consumer.py:23-23 a83a", "handler.py:18-18 95ea", "handler.py:19-21 1cf1+a09f", "handler.py:6-6 a28d",
+    "handler.py:8-8 1a5f", "reminders.py:21-23 a9b8+29c1", "reminders.py:22-22 43e8", "reminders.py:33-35 a03f+36f9"]);
+  // The anchor is the first line; the line's code (for "line changed") only comes from a source on that line.
+  const store = m.find((f) => f.ids.includes("a477"));
+  assert.deepEqual([store.line, store.end, store.head, store.security, mergeFindings(pr2.slice(1, 2)).findings[0].head], [19, 20, undefined, false, "h"]);
+  assert.equal(m.find((f) => f.ids.includes("1cf1")).security, true, "the security source carries over");
+  // Four lines apart is too far, another file never joins, a finding without a line never joins.
+  assert.equal(mergeFindings([pr2[6], { ...pr2[7], line: 37, end: 37 }]).findings.length, 2);
+  assert.equal(mergeFindings([pr2[6], { ...pr2[7], file: "library/other.py" }]).findings.length, 2);
+  assert.equal(mergeFindings([{ ...pr2[6], line: 0 }, { ...pr2[7], line: 0 }]).findings.length, 2);
+  // The measure: the pairs above score 0.40 and more when they are one claim, 0.27 and less when they are two.
+  assert.deepEqual([sameClaim(pr2[0].title, pr2[1].title), sameClaim(pr2[1].title, pr2[2].title), sameClaim(pr2[8].title, pr2[10].title)], [true, false, false]);
+  // A suggestion joins the finding on its line whatever it says (consumer.py:19: the store finding and the KeyError
+  // suggestion), since it is worded as a fix; alone on its line it is a note, or a finding when it is high, about
+  // security or availability. The merged finding has the criteria of all its sources.
+  const keyErr = { key: "k19", hunk: "h1", path: "library/consumer.py", line: 19, old: false, severity: "medium", category: "bug", reason: "A missing loan raises KeyError and fails the whole batch; handle unknown ids explicitly." };
+  const same = mergeFindings(pr2.slice(0, 2), [keyErr, { ...keyErr, key: "k21", line: 21 }, { ...keyErr, key: "k22", line: 22, category: "availability" }, { ...keyErr, key: "k22b", line: 22, severity: "low" }]);
+  assert.deepEqual([same.findings.map((f) => `${f.line} ${f.sources.map((y) => y.reviewer).join("+")}`), same.notes.map((x) => x.key)], [["19 analysis+claude+ai", "22 ai+ai"], ["k21"]]);
+  assert.deepEqual(mergeFindings([{ ...pr2[0], criteria: ["c4"] }, { ...pr2[1], criteria: ["c2", "c4"] }]).findings[0].criteria, ["c4", "c2"]);
+  console.log("ok neighbouring lines");
 }

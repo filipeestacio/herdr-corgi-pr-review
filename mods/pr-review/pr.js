@@ -445,33 +445,56 @@ const titled = (text) => {
   return [plainText(s.replace(/\.$/, "")), ""];
 };
 
-// Findings (the reviewers' and the analysis') and AI suggestions on the same file and new-side line are one finding:
-// the highest severity leads (its title and text show), every source stays in `sources` with its own severity, and
-// `security` is true when any source says so (the security reviewer, or a category). A suggestion alone on its line
-// is a note (not a finding, not counted), unless it is high or about security or availability: then it is a finding
-// of its own. The id is the source's that already has a status (so "Fix sent" and its report survive a run that adds
-// a source to the line), else the leading one's; `ids` has them all.
+// Two titles say the same thing when their word sets (lower case, without filler words, a plural "s" dropped) share at
+// least 35 % of their words (Jaccard). On PR #2 the pairs that are one defect score 0.40 to 1, the different statements
+// next to each other 0 to 0.27. ponytail: a word measure, no synonyms; a model call per pair if it lets duplicates through.
+const FILLER = new Set("a an the and or of to in on is are be by for from with no not does do it its this that as at only".split(" "));
+const words = (t) => new Set((String(t).toLowerCase().match(/[a-z0-9_]+/g) ?? []).filter((w) => !FILLER.has(w)).map((w) => (w.length > 3 && w.endsWith("s") ? w.slice(0, -1) : w)));
+export function sameClaim(a, b) {
+  const x = words(a), y = words(b), both = [...x].filter((w) => y.has(w)).length;
+  return both > 0 && both / (x.size + y.size - both) >= 0.35;
+}
+const NEAR = 3; // lines between two findings of one defect at most (PR #2: 19/20, 21/23, 33/35)
+
+// Findings (the reviewers' and the analysis') in one file, at most NEAR lines apart (the same line too) and with
+// titles that make the same claim (sameClaim), are one finding: the highest severity leads (its title and text show),
+// every source stays in `sources` with its own severity, and `security` is true when any source says so (the security
+// reviewer, or a category). Being on the same line or in the same function is not enough: on PR #2 consumer.py 20
+// and 23, in one function, say different things. An AI suggestion joins a finding on its own line (it is worded as a
+// fix, so no word measure tells its claim: on PR #2 the same and the different ones both score 0 to 0.38). A
+// suggestion without one is a note (not a finding, not counted), unless it is high or about security or availability:
+// then it is a finding of its own. line..end spans all sources, the anchor in the diff is the first line; criteria are
+// those of all sources. The id is the source's that already has a status (so "Fix sent" and its report survive a run
+// that adds a source to the line), else the leading one's; `ids` has them all.
 // → {findings: [{...the leading source, id, ids, severity, security, step, sources: [{id, reviewer, severity, title,
 // detail, suggestion}]}], notes: [suspect]}, findings by severity, then file and line. The facts of a finding
 // (findingFacts) are the leading source's; one it does not have comes from the first source that does.
 export function mergeFindings(findings, suspects = [], status = {}) {
-  const groups = new Map(), notes = [], raised = new Set();
-  const put = (key, x) => { if (!groups.has(key)) groups.set(key, []); groups.get(key).push(x); };
-  const at = (s) => `${s.path}:${s.line}`;
+  const notes = [], at = (x) => `${x.file}:${x.line}`;
   const own = (s) => { const [title, detail] = titled(s.reason); return { id: `s${hash(s.key)}`, reviewer: "ai", file: s.path, line: s.line, end: s.line, severity: s.severity, category: s.category ?? "bug", title, detail, suggestion: "" }; };
-  for (const f of findings) put(f.line ? `${f.file}:${f.line}` : `id:${f.id}`, f);
+  // In line order, so 19, 20 and 22 can become one; a finding without a line stays alone.
+  const kept = [], byLine = new Map();
+  for (const x of [...findings].sort((a, b) => (a.line || 0) - (b.line || 0))) {
+    const near = x.line > 0 && kept.find((j) => j[0].file === x.file && j[0].line > 0 && j.some((y) => Math.abs(y.line - x.line) <= NEAR && sameClaim(x.title, y.title)));
+    if (near) near.push(x); else kept.push([x]);
+    if (x.line > 0 && !byLine.has(at(x))) byLine.set(at(x), near || kept.at(-1));
+  }
   // ponytail: a suggestion on a removed line stays a note (findings sit on new-side lines).
-  for (const s of suspects) if (!s.old && !groups.has(at(s)) && (s.severity === "high" || RAISE.has(s.category))) { put(at(s), own(s)); raised.add(s); }
-  for (const s of suspects) { if (raised.has(s)) continue; if (!s.old && groups.has(at(s))) put(at(s), own(s)); else notes.push(s); }
-  const out = [...groups.values()].map((g) => {
-    const lead = [...g].sort((a, b) => rank(a) - rank(b))[0], coded = g.find((x) => x.head), all = [lead, ...g].map(findingFacts);
+  const sugs = suspects.filter((s) => !s.old).map((s) => [s, own(s)]);
+  const raised = new Set(sugs.filter(([s, x]) => !byLine.has(at(x)) && (s.severity === "high" || RAISE.has(s.category))).map(([s]) => s));
+  for (const [s, x] of sugs) if (raised.has(s) && !byLine.has(at(x))) { kept.push([x]); byLine.set(at(x), kept.at(-1)); }
+  for (const [s, x] of sugs) { const g = byLine.get(at(x)); if (g && !g.includes(x)) g.push(x); else if (!g) notes.push(s); }
+  for (const s of suspects) if (s.old) notes.push(s);
+  notes.sort((a, b) => suspects.indexOf(a) - suspects.indexOf(b));
+  const out = kept.map((g) => {
+    const whole = (n) => (Number.isInteger(n) && n > 0 ? n : 0), lines = g.map((x) => whole(x.line)).filter(Boolean), line = lines.length ? Math.min(...lines) : 0;
+    const lead = [...g].sort((a, b) => rank(a) - rank(b))[0], coded = g.find((x) => x.head && whole(x.line) === line), all = [lead, ...g].map(findingFacts);
     const has = (v) => (Array.isArray(v) ? v.length > 0 : v !== null && v !== ""), fact = (k) => (all.find((x) => has(x[k])) ?? all[0])[k];
     const held = g.filter((x) => status[x.id]).sort((a, b) => String(status[b.id].at ?? "").localeCompare(String(status[a.id].at ?? "")))[0];
     // line and end come from a model's or a reviewer's answer: whole numbers with line <= end for every caller (0: no line).
-    const whole = (n) => (Number.isInteger(n) && n > 0 ? n : 0), line = whole(lead.line);
-    return { ...lead, line, id: (held ?? lead).id, ids: g.map((x) => x.id), end: Math.max(line, ...g.map((x) => whole(x.end))), step: g.find((x) => x.step)?.step ?? null,
+    return { ...lead, line, id: (held ?? lead).id, ids: g.map((x) => x.id), end: Math.max(line, ...lines, ...g.map((x) => whole(x.end))), step: g.find((x) => x.step)?.step ?? null,
       suggestion: lead.suggestion || g.find((x) => x.suggestion)?.suggestion || "", ...(coded ? { head: coded.head, code: coded.code } : {}),
-      ...Object.fromEntries(Object.keys(all[0]).map((k) => [k, fact(k)])),
+      ...Object.fromEntries(Object.keys(all[0]).map((k) => [k, fact(k)])), criteria: [...new Set(all.flatMap((x) => x.criteria))],
       security: g.some((x) => x.reviewer === "security" || x.category === "security"),
       sources: g.map((x) => ({ id: x.id, reviewer: x.reviewer, severity: x.severity, title: x.title, detail: x.detail ?? "", suggestion: x.suggestion ?? "" })) };
   });

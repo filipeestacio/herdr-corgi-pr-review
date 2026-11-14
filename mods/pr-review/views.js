@@ -211,11 +211,16 @@ export function factRows(f) {
 }
 
 // The line a finding's card sits under: the first line with code from its own line on (new side), so the card never
-// hangs under an empty line. Its own line when the next code is more than three lines past its range (line..end) or
-// not shown. rows: a file's rows ({kind, number, text}).
+// hangs under an empty line. Its own line when the next code is more than three lines past its range (line..end), not
+// shown, or in another block: a function or class starts there, or it is indented less than the code just above (a
+// finding after a function's last line or a YAML block's last key belongs to that one). rows: a file's rows ({kind,
+// number, text}).
+const DEFINES = /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:def|class|function)\b/;
 export function findingAnchor(rows, line, end = line) {
-  const r = rows.find((x) => x.kind !== "-" && x.number >= line && String(x.text ?? "").trim());
-  return r && r.number <= Math.max(line, end ?? line) + 3 ? r.number : line;
+  const code = (x) => x.kind !== "-" && Number.isInteger(x.number) && String(x.text ?? "").trim(), indent = (x) => /^\s*/.exec(x.text)[0].length;
+  const r = rows.find((x) => code(x) && x.number >= line), above = rows.filter((x) => code(x) && x.number < line).at(-1);
+  const other = r && r.number > line && (DEFINES.test(r.text) || (above && indent(r) < indent(above)));
+  return r && r.number <= Math.max(line, end ?? line) + 3 && !other ? r.number : line;
 }
 
 // The gutter marks of ranges of lines: Map(new-side line number -> mark) for the rows that are really shown. A
