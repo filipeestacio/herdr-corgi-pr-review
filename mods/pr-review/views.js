@@ -206,8 +206,11 @@ export const SEVERITY_SCALE = ["high", "medium", "low"].map((s) => `${s}: ${Obje
 // to hold for it to happen. A finding from an older analysis has none of these fields and gives no rows.
 export function factRows(f) {
   const why = IMPACT[f?.impact]?.[1], known = Boolean(f?.effect || f?.certainty);
+  // Reach: how sure the way from outside is (path_certainty, path_why), apart from the flaw itself (Certainty).
+  const pc = CERTAINTY[f?.path_certainty] ? f.path_certainty : null, pw = String(f?.path_why ?? "").trim().replace(new RegExp(`^${pc}:\\s*`, "i"), "").replace(/\.$/, "");
   return [why && ["Severity", `${f.severity ?? IMPACT[f.impact][0]}, because ${why}.`], f?.effect && ["Effect", f.effect],
     CERTAINTY[f?.certainty] && ["Certainty", CERTAINTY[f.certainty]],
+    pc && ["Reach", pw ? `${pc[0].toUpperCase()}${pc.slice(1)}: ${pw[0].toUpperCase()}${pw.slice(1)}.` : CERTAINTY[pc]],
     f?.preconditions?.length ? ["Preconditions", f.preconditions.join("; ")] : known && ["Preconditions", "None: it always happens."]].filter(Boolean);
 }
 
@@ -380,7 +383,11 @@ const SEV_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 const REACH_WHY = { public: "Reachable from the internet", authenticated: "Reachable by an authenticated caller", internal_only: "Reachable only from inside", unknown: "Not known from where it can be reached" };
 // rows [{f, level, crosses: true | false | null (the analysis names no zones)}], most exposed first, then the ones whose
 // way crosses a trust boundary, then by severity; each with `why` it stands there, in a few words.
+// A finding that is the broken check itself (impact unauthorized_access) is reached by whoever reaches the check: a
+// level of "authenticated" (behind that check) is public, as reviewers.reach() rates it, so the head agrees with its
+// effect ("an unauthenticated caller could …").
 export function secOrder(rows) {
+  rows = rows.map((r) => (r.f?.impact === "unauthorized_access" && r.level === "authenticated" ? { ...r, level: "public" } : r));
   return [...rows].sort((a, b) => REACH.indexOf(a.level) - REACH.indexOf(b.level) || Number(Boolean(b.crosses)) - Number(Boolean(a.crosses)) || (SEV_RANK[a.f.severity] ?? 9) - (SEV_RANK[b.f.severity] ?? 9))
     .map((r) => ({ ...r, why: [REACH_WHY[r.level], r.crosses === true ? "over a trust boundary" : r.crosses === false ? "no trust boundary on the way" : null, `${r.f.severity} severity`].filter(Boolean).join(", ") + "." }));
 }

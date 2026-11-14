@@ -37,6 +37,17 @@ assert reviewers.review.git_hint("/w") in reviewers.findings_schema("claude", "/
 assert reviewers.review.permissions(None, "Read")[3:5] == ("--allowedTools", "Read") and reviewers.review.git_hint(None) == "", "no checkout: no git"
 import llm  # noqa: E402
 assert llm.env_for(None)["GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS"] == "1"
+# C2 S4: a model run gets no tokens, secrets, AWS_* or GH_* of the window; the account's login stays.
+_saved = dict(os.environ)
+os.environ.update({"GH_TOKEN": "g", "GITHUB_TOKEN": "g", "AWS_SECRET_ACCESS_KEY": "a", "AWS_PROFILE": "p", "MY_SECRET": "s", "NPM_TOKEN": "n",
+                   "CLAUDE_CODE_OAUTH_TOKEN": "login", "ANTHROPIC_API_KEY": "key", "HOME_X": "keep"})
+os.environ.pop("CLAUDE_CODE_USE_BEDROCK", None)
+_e = llm.env_for(None)
+assert not {"GH_TOKEN", "GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY", "AWS_PROFILE", "MY_SECRET", "NPM_TOKEN"} & set(_e), sorted(k for k in _e if "TOKEN" in k or k.startswith(("AWS_", "GH_")))
+assert (_e["CLAUDE_CODE_OAUTH_TOKEN"], _e["ANTHROPIC_API_KEY"], _e["HOME_X"]) == ("login", "key", "keep")
+assert llm.env_for({"env": {"CLAUDE_CODE_USE_BEDROCK": "1"}})["AWS_PROFILE"] == "p", "on Bedrock the AWS login stays"
+assert llm.env_for({"env": {"GH_TOKEN": "mine"}})["GH_TOKEN"] == "mine", "what the context sets itself stays"
+os.environ.clear(); os.environ.update(_saved)
 assert json.loads(llm.LEAN[llm.LEAN.index("--settings") + 1])["permissions"] == {"blockReadsOutsideWorkingDirectories": True,
     "additionalDirectories": [str(reviewers.review.SAFEGIT.parent)]}, "built-in reads stay in the checkout and the mod's folder (for safegit.py)"
 assert {"Edit", "Write", "WebFetch", "WebSearch"} <= set(denied)

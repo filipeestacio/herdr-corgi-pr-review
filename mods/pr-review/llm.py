@@ -14,6 +14,7 @@ import datetime as dt
 import json
 import os
 import pathlib
+import re
 import subprocess
 import time
 
@@ -47,11 +48,22 @@ def ledger_dir():
     return pathlib.Path(os.path.expanduser(path)) if path else None
 
 
+# Secrets a model run never needs: tokens, secrets and cloud or GitHub credentials of the window (a model reads the
+# PR's text and can run allowed commands). Kept: the account's own login (CLAUDE_*, ANTHROPIC_*, e.g.
+# CLAUDE_CODE_OAUTH_TOKEN), AWS_* when Claude runs on Bedrock (CLAUDE_CODE_USE_BEDROCK), and whatever the context sets.
+SECRET = re.compile(r"(_TOKEN|_SECRET)$|^(AWS_|GH_)")
+LOGIN = re.compile(r"^(CLAUDE_|ANTHROPIC_)")
+
+
 def env_for(context):
-    """The process env with the context's vars applied (None unsets). git refuses abbreviated long options in every
-    run: a model's `git blame --con` would else be --contents, past a rule that denies the full name."""
-    env = {**os.environ, "GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS": "1"}
-    for k, v in ((context or {}).get("env") or {}).items():
+    """The process env without secrets (SECRET, but the login: LOGIN), with the context's vars applied (None unsets).
+    git refuses abbreviated long options in every run: a model's `git blame --con` would else be --contents, past a
+    rule that denies the full name."""
+    mine = (context or {}).get("env") or {}
+    bedrock = str(mine.get("CLAUDE_CODE_USE_BEDROCK", os.environ.get("CLAUDE_CODE_USE_BEDROCK", ""))).lower() not in ("", "0", "false")
+    keep = lambda k: not SECRET.search(k) or LOGIN.match(k) or (bedrock and k.startswith("AWS_"))  # noqa: E731
+    env = {**{k: v for k, v in os.environ.items() if keep(k)}, "GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS": "1"}
+    for k, v in mine.items():
         if v is None:
             env.pop(k, None)
         else:

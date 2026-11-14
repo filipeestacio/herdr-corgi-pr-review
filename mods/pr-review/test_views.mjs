@@ -269,6 +269,11 @@ assert.deepEqual(factRows({ severity: "high", impact: "unauthorized_access", eff
 assert.deepEqual(factRows({ severity: "medium", effect: "Two mails.", certainty: "derived", preconditions: [] }).at(-1), ["Preconditions", "None: it always happens."]);
 assert.deepEqual(factRows({ severity: "high", title: "x", detail: "y", preconditions: [] }), []);
 assert.deepEqual(factRows(null), []);
+// Reach: how sure the way from outside is, apart from the flaw (C2 D2: the card said only "Certainty: Derived").
+const tok = factRows({ severity: "high", impact: "unauthorized_access", certainty: "derived", preconditions: [], path_certainty: "assumed",
+  path_why: "assumed: depends on the HTTP API passing `Authorization: Bearer ` through." });
+assert.deepEqual(tok.find(([k]) => k === "Reach"), ["Reach", "Assumed: Depends on the HTTP API passing `Authorization: Bearer ` through."]);
+assert.deepEqual(factRows({ severity: "low", impact: "untested", path_certainty: "derived" }).find(([k]) => k === "Reach"), ["Reach", "Derived: it follows from the code that was read."]);
 // The scale names every impact under the severity it fixes.
 assert.equal(SEVERITY_SCALE.split("\n").length, 3);
 for (const [sev, why] of Object.values(IMPACT)) assert.ok(SEVERITY_SCALE.split("\n").find((l) => l.startsWith(`${sev}:`)).includes(why));
@@ -397,6 +402,8 @@ for (const w of [200, 420, 900]) assert.ok(mdHeight(long, w) >= 21 * wrapCount(l
   assert.equal(reachLevel({ reachability: "authenticated" }, [{ exposure: "open" }]), "authenticated", "the analysis' word wins");
   assert.equal(reachLevel({}, [{ exposure: "internal" }, { exposure: "public" }]), "authenticated", "derived: the most exposed way in");
   assert.equal(reachLevel({}, [{ exposure: "open" }]), "public"); assert.equal(reachLevel({ reachability: "moon" }), "unknown");
+  assert.deepEqual(secOrder([{ f: { id: "t", severity: "high", impact: "unauthorized_access" }, level: "authenticated", crosses: true }]).map((r) => [r.level, r.why]),
+    [["public", "Reachable from the internet, over a trust boundary, high severity."]], "the broken check itself: whoever reaches the check reaches it (C2 D2)");
   const f = (id, severity) => ({ id, severity });
   const o = secOrder([{ f: f("a", "high"), level: "internal_only", crosses: true }, { f: f("b", "low"), level: "public", crosses: false }, { f: f("c", "medium"), level: "public", crosses: true },
     { f: f("d", "high"), level: "public", crosses: true }, { f: f("e", "high"), level: "unknown", crosses: null }]);

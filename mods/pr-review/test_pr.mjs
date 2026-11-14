@@ -225,10 +225,40 @@ assert.equal(findingStatus(fb, { b: { s: "dismissed" } }, reps, "h2", "y(1)"), "
   // line and end come from a model: whole numbers with line <= end for every caller, whatever it wrote (0: no line).
   assert.deepEqual(mergeFindings([{ ...sec, end: 3 }, { ...sec, id: "s2", file: "b", line: 4, end: 1e9 }, { ...sec, id: "s3", file: "c", line: 2.5, end: "9" }, { ...sec, id: "s4", file: "d", line: 5, end: 7.5 }])
     .findings.map((f) => [f.file, f.line, f.end]), [["b", 4, 1e9], ["c", 0, 0], ["d", 5, 5], ["t.yaml", 18, 18]]);
+  // Wave C2: one cause, worded differently (check2/engineer.md, PR #2). In one file: first lines at most 3 apart with the
+  // same effect or a criterion in common; across files: same_cause, counted once.
+  {
+    const F = (id, file, line, end, impact, title, extra = {}) => ({ id, reviewer: "x", file, line, end, severity: "high", category: "bug", impact, title, detail: "", suggestion: "", ...extra });
+    const pr2 = mergeFindings([F("s1", "library/events.py", 19, 20, "dead_path", "Queue.publish only appends to a list, never sends to SQS"),
+      F("c1", "library/events.py", 20, 20, "dead_path", "No SQS publisher: the production queue is never written"),
+      F("a1", "library/events.py", 20, 20, "dead_path", "Queue is only a list: nothing ever publishes to SQS"),
+      F("r1", "library/consumer.py", 20, 26, "edge_case", "Consumer mails from the event type alone and never checks the loan's current state"),
+      F("a2", "library/consumer.py", 23, 23, "breaks_requirement", "Consumer changes the loan's status outside status.py"),
+      F("r2", "library/reminders.py", 13, 31, "edge_case", "Exact-day equality windows lose a loan forever if one daily run is missed"),
+      F("s2", "library/reminders.py", 21, 23, "edge_case", "send_reminders mails directly and also publishes an event the consumer mails again"),
+      F("c2", "library/reminders.py", 35, 35, "dead_path", "publish_overdue always raises ValueError"),
+      F("a3", "library/status.py", 45, 45, "dead_path", "transition to OVERDUE always raises ValueError"),
+      F("s3", "library/handler.py", 9, 16, "unauthorized_access", "Empty default token lets `Authorization: Bearer ` through",
+        { category: "security", detail: "`TOKEN` defaults to `\"\"`, and `template.yaml` never sets `FRONT_DESK_TOKEN`." }),
+      F("a4", "template.yaml", 14, 14, "unauthorized_access", "FrontDesk has no FRONT_DESK_TOKEN, so the token is empty",
+        { category: "security", detail: "`handler.py:9` defaults `TOKEN` to `\"\"`." })]).findings;
+    const at = (f) => `${f.file}:${f.line}`, by = (id) => pr2.find((f) => f.ids.includes(id));
+    assert.deepEqual(by("s1").ids, ["s1", "c1", "a1"], "events.py 19/20/20: one gap, three wordings");
+    assert.notEqual(by("r1"), by("a2"), "consumer.py 20 and 23 say different things");
+    assert.notEqual(by("r2"), by("s2"), "a range over the whole function does not swallow what is inside it");
+    assert.deepEqual([by("a4").same_cause_at, by("s3").same_cause, by("a3").same_cause_at], ["library/handler.py:9", undefined, "library/reminders.py:35"],
+      "across files: the token at its default and at its missing setting; publish_overdue and the transition it calls");
+    assert.equal(pr2.length, 9);
+    const cc = findingCounts(pr2, () => "open");
+    assert.deepEqual([cc.unresolved, cc.causes, cc.security], [9, 7, 1], "the empty token is one security cause");
+    const { taskList: tl, verdictParts: vp } = await import("./pr.js");
+    assert.equal(vp(tl([], pr2), cc)[0].text, "1 security cause, high");
+    assert.equal(findingCounts(pr2, (f) => (f.ids.includes("s3") ? "fixed" : "open")).security, 1, "the first fixed: the other place still counts");
+  }
   // One count for every view: the severities add up to the unresolved ones; a fix sent is still unresolved.
   const st = { sec1: "progress", a2: "open", a3: "dismissed" };
   const c = findingCounts(m.findings, (f) => st[f.id] ?? (f.line === 40 ? "fixed" : "recheck"));
-  assert.deepEqual(c, { total: 5, unresolved: 3, sent: 1, fixed: 1, dismissed: 1, high: 2, medium: 1, low: 0, security: 2 });
+  assert.deepEqual(c, { total: 5, unresolved: 3, causes: 3, sent: 1, fixed: 1, dismissed: 1, high: 2, medium: 1, low: 0, security: 2 });
   assert.equal(countLine(c), "3 unresolved: 2 high, 1 medium · 1 with a fix sent · 1 fixed · 1 dismissed");
   assert.equal(countLine(findingCounts([], () => "open")), "No findings");
 }
@@ -964,7 +994,7 @@ console.log("ok");
   const r = withResilience(mapReview({ steps: [] }, []), block, "h2").resilience;
   assert.deepEqual([r.paths.map((p) => p.id), r.blockers, r.older], [["p1", "p2", "p3", "p4"], ["p1"], true], "blockers first; another head is older");
   assert.equal(r.summary, "1 of 4 paths blocks the merge: a message that always fails comes back until it expires; 1 not assessed.");
-  assert.deepEqual(r.counts, { paths: 4, blockers: 1, mitigated: 1, not_assessed: 1, checks_clean: 1, not_checkable: 1, additions: { justified: 0, questionable: 0, unjustified: 0 } });
+  assert.deepEqual(r.counts, { paths: 4, blockers: 1, once_wired: 0, mitigated: 1, not_assessed: 1, checks_clean: 1, not_checkable: 1, additions: { justified: 0, questionable: 0, unjustified: 0 } });
   assert.equal(r.additionsLine, "");
   const ad = withResilience(mapReview({ steps: [] }, []), { paths: [P("p1", "retry", [], "finding", [], { findings: ["tok"] })],
     additions: [{ result: "justified" }, { result: "justified" }, { result: "questionable" }, { result: "unjustified" }] }, null, [{ id: "tok", security: true, sources: [] }]).resilience;
@@ -979,6 +1009,20 @@ console.log("ok");
   assert.deepEqual([pre.paths[0].pre_existing, pre.paths[0].blocker, pre.counts.blockers], [true, null, 0], "a path made only of flaws from before this PR blocks nothing");
   assert.deepEqual([withResilience(mapReview({ steps: [] }, []), { deps, paths: [p1] }).resilience.edgeNote, withResilience(mapReview({ steps: [] }, []), { deps, paths: [p1], edge_ids: true }).resilience.edgeNote,
     withResilience(mapReview({ steps: [] }, []), { paths: [P("p", "x", ["a.py:1"], "finding", [])] }).resilience.edgeNote], ["run predates edge ids: re-run", null, null], "an old run's edge ids are said to be unsure, not guessed");
+  // C2 D3: a path that leaves a queue nothing publishes to cannot happen today; its blocker waits ("blocks once wired"),
+  // the path that says nothing publishes still blocks; the run's possible_today false does the same.
+  {
+    const pic = mapReview({ steps: [], architecture: { nodes: [{ id: "events", label: "e", at: "library/events.py:7" }, { id: "queue", label: "q", at: "template.yaml:11" },
+      { id: "consumer", label: "c", at: "library/consumer.py:11" }, { id: "handler", label: "h", at: "library/handler.py:18" }],
+    edges: [{ from: "events", to: "queue" }, { from: "queue", to: "consumer" }, { from: "handler", to: "consumer", in_process: true }] } }, []);
+    const wire = withResilience(pic, { deps, additions: [{ what: "LoanEvents queue", kind: "queue", at: "template.yaml:11", works_today: false, broken_by: "Nothing publishes to SQS." }],
+      paths: [P("p1", "effect", ["e0", "e1", "library/consumer.py:21"], "finding", ["duplicate_effect"]), P("p4", "effect", ["e0", "library/events.py:20"], "finding", ["lost_effect"]),
+        P("p3", "request", ["e2", "library/consumer.py:21"], "finding", ["dishonest_response"]), P("p7", "race", ["library/x.py:1"], "finding", ["duplicate_effect"], { possible_today: false, note: "not possible today, see p4", findings: ["g"] })] }).resilience;
+    assert.deepEqual(wire.paths.map((p) => [p.id, Boolean(p.blocker), p.wired?.today ?? null]),
+      [["p4", true, null], ["p3", true, null], ["p1", false, "not possible today: nothing publishes to SQS"], ["p7", false, "not possible today, see p4"]]);
+    assert.deepEqual([wire.counts.blockers, wire.counts.once_wired], [2, 2]);
+    assert.match(wire.summary, /2 block once wired/);
+  }
   const unk = withResilience(mapReview({ steps: [] }, []), { deps, paths: [{ ...p1, findings: ["w"] }] }, null, [{ id: "w", introduced_here: null }]).resilience;
   assert.deepEqual([unk.paths[0].pre_existing, unk.paths[0].blocker?.unclear, unk.counts.blockers], ["unknown", true, 1], "base not comparable: the blocker stays, marked unclear");
   const two = withResilience(mapReview({ steps: [] }, []), { deps, paths: [{ ...p1, action: "Add a dead-letter queue." },
