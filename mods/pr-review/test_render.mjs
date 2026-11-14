@@ -39,7 +39,7 @@ const STUBS = {
   "gpui-base": `const S = globalThis.__rv, f = () => S.el(), n = { new: () => S.handle() };
     export const v_flex = f, h_flex = f, v_virtual_list = S.vlist, Scrollbar = { vertical: f, horizontal: f }, TextView = { markdown: f };
     export const Input = Object.assign(f, { new: f }), Textarea = Object.assign(() => S.el(), { new: f }), Editor = Object.assign(() => S.el(), { new: f });
-    export const VirtualListScrollHandle = n, TextareaState = n, InputState = n, EditorState = n;`,
+    export const VirtualListScrollHandle = n, ScrollHandle = n, TextareaState = n, InputState = n, EditorState = n;`,
   herdr: `const S = globalThis.__rv, no = async () => { throw new Error("stub"); }, never = () => new Promise(() => {});
     export const exec = no, hc = no, readTextFile = no, pickFolder = no, writeTextFile = async () => {}, run = () => null;
     export const spaces = () => [], panes = () => [], agents = () => [], terminals = () => [], focused = () => null, layout = () => null;

@@ -137,3 +137,20 @@ assert.ok(filesToDiff([{ filename: "i.png", status: "modified" }]).includes("No 
   assert.equal(hsVisible(300, 380), 100);
   console.log("hscroll ok");
 }
+
+// A jump lands at the top: the item to centre so the view sits just past the target (review.js settleTop).
+{
+  const { pastTop } = await import("./views.js");
+  const rows = Array.from({ length: 100 }, () => 20); // 20 px each: item k spans 20k..20k+20
+  // Target 10 (top 200), view 400: centring item 20 (centre 410) puts the view at 210, 10 px past the target's top.
+  assert.equal(pastTop(rows, 10, 400), 20);
+  const j = pastTop(rows, 10, 400), offset = j * 20 + 10 - 200;
+  assert.ok(offset > 200 && offset < 220, "the target's top is cut off above, by less than one item");
+  assert.equal(pastTop(rows, 0, 400), 10);
+  assert.equal(pastTop(rows, 95, 400), 99, "less than a view below the target: the list's end");
+  // A tall card where the centre would fall: the next item whose centre is past it.
+  const mixed = [20, 20, 300, 20, 20, 20, 20];
+  assert.equal(pastTop(mixed, 0, 200), 2, "centre of the card (190) is past 100");
+  assert.equal(pastTop(mixed, 1, 500), 3, "the card's centre (190) is not past 270, the row after it is");
+  console.log("jump to top ok");
+}

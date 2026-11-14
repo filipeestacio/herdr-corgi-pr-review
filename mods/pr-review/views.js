@@ -108,3 +108,17 @@ export function recenter({ heads, top, folds, start, end, center, margin }) {
 // A sideways scroller's visible width (review.js hscroll): its measured width less what the Ask drawer covers at the
 // right, so the scroll reaches the picture's last columns; never under 100 px.
 export const hsVisible = (measured, covered = 0) => Math.max(100, measured - covered);
+
+// ---- bringing a list item to the top of its view (review.js settleTop)
+
+// The kit's scroll_to_item(i, "top") reveals an item at the near edge: one below the view lands at the view's bottom.
+// To land item i at the top from anywhere, the view first goes just past it: this is the item to centre for that, the
+// first whose centre lies more than half a view below i's top, so i's top is cut off above by less than that item's
+// height. "top" on i itself then pulls it exactly to the top edge. sizes: every item's height; viewH: the list's.
+export function pastTop(sizes, i, viewH) {
+  let y = 0;
+  for (let k = 0; k < i; k++) y += sizes[k];
+  const want = y + viewH / 2;
+  for (let j = i; j < sizes.length; j++) { if (y + sizes[j] / 2 > want) return j; y += sizes[j]; }
+  return sizes.length - 1; // less than a view below it: the list's end, which is as high as it gets
+}

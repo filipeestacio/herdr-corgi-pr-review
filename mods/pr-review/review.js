@@ -10,7 +10,7 @@
 // composer under that line, pending comments show as threads there, and "Finish your review" in the bar opens the
 // submit popover: one GitHub review (gh api) or, for a PR with an agent session, the prompt to that session.
 import { div } from "gpui-kit";
-import { v_flex, h_flex, Scrollbar, TextView, v_virtual_list, VirtualListScrollHandle, Textarea, TextareaState, Input, InputState } from "gpui-base";
+import { v_flex, h_flex, Scrollbar, TextView, v_virtual_list, VirtualListScrollHandle, ScrollHandle, Textarea, TextareaState, Input, InputState } from "gpui-base";
 import { exec, hc, run, spaces, agents, terminals, focused, pickFolder, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, nextCommand, watchFolder, openOverlay, closeOverlay, props, home } from "herdr";
 import { parseReports, findingStatus, mergeFindings, findingCounts, countLine, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
 import * as C from "./context.js";
@@ -20,7 +20,7 @@ import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js
 import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf, priceOf, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch } from "./pr.js";
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState, codeOf, isStale } from "./pr.js";
-import { wheelStep, foldOnOpen, allocate, recenter, hsVisible } from "./views.js";
+import { wheelStep, foldOnOpen, allocate, recenter, hsVisible, pastTop } from "./views.js";
 import { archView, archModel, archLegend, visualsCard, visualCard, statCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
 import { hasSources, archLayout, archBands } from "./arch.js";
 import * as TH from "./threads.js";
@@ -285,6 +285,7 @@ export const ReviewMode = {
     this.full = {}; this.gaps = {}; this.whole = new Set(); this.collapsed = new Set(); this.closedDirs = new Set();
     // Handles are made here only: creating one later (in a task) throws, which broke the definition view.
     this.lists = { steps: VirtualListScrollHandle.new(), files: VirtualListScrollHandle.new(), def: VirtualListScrollHandle.new() };
+    this.leftScroll = ScrollHandle.new(); // the Layers tab's left column
     this.order = "reading"; this.flowSel = null;
     this.page = "overview"; this.archMode = "diff"; this.fold = { summary: true, blockers: true, checks: false }; this.blastOpen = false;
     this.ctx = null; this.since = null; this.sinceOn = false; this.lastReviewed = null; this.verifyBusy = false;
@@ -342,7 +343,7 @@ export const ReviewMode = {
     else if (name === "verify") this.runVerify(cx);
     else if (name === "step") this.goStep(arg === "next" ? this.cur + 1 : arg === "prev" ? this.cur - 1 : Number(arg), cx);
     else if (name === "hunk") this.goHunk(arg === "prev" ? -1 : 1, cx);
-    else if (name === "file") { this.tab = "files"; this.unfold(arg); this.scrollTo("files", arg); }
+    else if (name === "file") { this.tab = "files"; this.fileFocus = arg; this.unfold(arg); this.scrollTo("files", arg); }
     else if (name === "whole") { this.tab = "files"; this.toggleWhole(arg, cx); this.scrollTo("files", arg); }
     else if (name === "gap") { const [path, k] = arg.split("#"); this.tab = "files"; this.expand(path, Number(k), "all", cx); }
     else if (name === "analyze") this.loadAi(cx, "run");
@@ -1041,7 +1042,7 @@ export const ReviewMode = {
       const all = text.replace(/\n$/, "").split("\n"), from = Math.max(0, def.line - 3000);
       const lines = all.slice(from, from + 6000).map(expandTabs);
       this.defFile = { path: def.path, line: def.line, from, lines, spans: highlightLines(lines, langOf(def.path), `def:${def.uri ?? def.path}:${from}`) };
-      this.lists.def.scroll_to_item(Math.max(0, def.line - from - 6), "top");
+      this.lists.def.scroll_to_item(Math.max(0, def.line - from - 1), "center"); // "top" only reveals at the near edge: the line would sit under the view's bottom
       cx.notify();
     });
   },
@@ -1103,9 +1104,18 @@ export const ReviewMode = {
 
   itemsOf(view) { return view === "steps" ? this.stepsItems() : this.filesItems(); }, // the Findings tab shows the Files list
 
-  scrollTo(view, key) {
-    const { at } = this.itemsOf(view);
-    if (at[key] !== undefined) this.lists[view].scroll_to_item(at[key], "top");
+  // Bring an item of a list (by its key in `at`, or its index) to the top of the view. The kit's scroll_to_item only
+  // reveals an item at the near edge, so a target below the view would land at its bottom, under the code read
+  // before. renderReview settles it in two frames (settleTop): just past the target first, then exactly to the top.
+  scrollTo(view, key) { this.top = { view, key }; },
+  settleTop(view, at, sizes, cx) {
+    const go = this.top, i = go?.i ?? at[go?.key];
+    if (!go || go.view !== view) return;
+    if (i === undefined || i >= sizes.length) { this.top = null; return; }
+    if (go.past) { this.top = null; this.lists[view].scroll_to_item(i, "top"); return; } // cut off above now: "top" aligns it
+    // on_size_change reports logical px, item heights scale with the person's zoom: the view's height in item px.
+    go.past = true; this.lists[view].scroll_to_item(pastTop(sizes, i, (this.listH ?? 800) / (settings().zoom || 1)), "center");
+    cx.timer.after(0, (cx) => cx.notify());
   },
 
   // A flow's "path:line" to the hunk that holds it (in the AI list, else the Files view).
@@ -1119,7 +1129,8 @@ export const ReviewMode = {
     const view = this.tab === "steps" && this.itemsOf("steps").at[h.id] !== undefined ? "steps" : "files";
     if (view === "files") { if (this.tab !== "findings" && this.tab !== "comments") this.tab = "files"; this.unfold(h.path); this.sinceOn = false; } // the whole PR has every hunk
     const k = `+${line}`, { items } = this.itemsOf(view), row = items.findIndex((x) => x.t === "row" && x.path === h.path && lineKey(x.src[x.ri]) === k);
-    if (line && row >= 0) { this.fsel = { path: h.path, a: k, b: k }; this.lists[view].scroll_to_item(Math.max(0, row - 3), "top"); }
+    if (view === "files") this.fileFocus = h.path; // marked in the file tree
+    if (line && row >= 0) { this.fsel = { path: h.path, a: k, b: k }; this.top = { view, i: Math.max(0, row - 3) }; }
     else this.scrollTo(view, h.id);
     cx.notify();
   },
@@ -1130,7 +1141,7 @@ export const ReviewMode = {
     this.cur = Math.max(0, Math.min(i, steps.length - 1));
     this.visit(this.present(steps[this.cur])[0] ?? null, cx);
     this.fsel = null; this.sug = null;
-    if (scroll) { this.tab = "steps"; this.page = null; this.scrollTo("steps", `s${this.cur}`); }
+    if (scroll) { this.tab = "steps"; this.page = null; this.scrollTo("steps", `s${this.cur}`); this.leftTop = 1; } // the open layer to the top on both sides
   },
 
   // n/p: the next hunk of the step (Layers) or of the whole diff (Files).
@@ -2361,7 +2372,7 @@ export const ReviewMode = {
     return out;
   },
 
-  stepsPane(t) {
+  stepsPane(t, cx) {
     const steps = this.steps(), ai = this.ai, checked = steps.filter((s) => this.done(s)).length, m = model();
     const run = (label) => div().id("rv-run").tooltip("Starts the AI analysis: one model call, it can take several minutes").px(12).h(30).flex().items_center().rounded(8).text_size(13).bg(t.solid).text_color(t.solid_foreground)
       .cursor_pointer().on_click((_e, cx) => this.loadAi(cx, "run")).child(label);
@@ -2371,7 +2382,16 @@ export const ReviewMode = {
       .children(right.filter(Boolean));
     const sec = this.counts().security;
     const changed = (ai?.arch?.nodes ?? []).some((n) => n.status && n.status !== "unchanged");
-    const attention = ai ? this.attention() : [], pr = this.prSel ?? {};
+    const attention = ai ? this.attention() : [];
+    // goStep: the open layer to the top of this column too. A plain scroll area only reveals a child at its near edge
+    // (one below the view lands at its bottom), so the last child first, then, a frame later, the layer: it is above
+    // the view then and lands at the top. The layers come after the three pages, the attention box and the heading.
+    if (this.page !== this.leftPage) { this.leftPage = this.page; if (this.page) this.leftScroll.scroll_to_item(0); } // a page opened: its row, at the top, is in view again
+    if (this.leftTop && steps.length) {
+      const first = 3 + (attention.length ? 1 : 0) + 1;
+      if (this.leftTop === 1) { this.leftTop = 2; this.leftScroll.scroll_to_item(first + steps.length - 1); cx.timer.after(0, (cx) => cx.notify()); }
+      else { this.leftTop = 0; this.leftScroll.scroll_to_item(first + this.cur); }
+    }
     const canInc = Boolean(ai && this.aiFile && this.since?.files.length && !this.aiBusy);
     return v_flex().flex_1().min_h(0)
       .child(v_flex().flex_none().px(14).py(10).gap(8).border_b(1).border_color(t.border)
@@ -2399,7 +2419,7 @@ export const ReviewMode = {
           .when(canInc, (e) => e.child(pill("rv-reinc", t, "Only new changes", (_e, cx) => this.loadAi(cx, "run", true), false, t.accent)
             .tooltip(`Analyze only the ${this.since.files.length} files changed since your last review and merge the new layers in`)))))
       .child(div().flex_1().min_h(0).relative()
-        .child(v_flex().id("rv-steps-left").absolute().inset_0().overflow_y_scroll().p(8).gap(4)
+        .child(v_flex().id("rv-steps-left").absolute().inset_0().overflow_y_scroll().track_scroll(this.leftScroll).p(8).gap(4)
           .child(nav("overview", "Overview", []))
           .child(nav("blast", "Security blast radius", [sec > 0 && badge(t, String(sec), t.ansi1).id("rv-nav-sec").tooltip(`${sec} unresolved security findings`)]))
           .child(nav("arch", "Architecture impact", [changed && badge(t, "Changed", t.accent).id("rv-nav-arch").tooltip("The architecture picture differs before and after this PR")]))
@@ -2896,7 +2916,7 @@ export const ReviewMode = {
       if (text === null) { this.note = `Could not open ${path}`; return cx.notify(); }
       const all = text.replace(/\n$/, "").split("\n"), from = Math.max(0, line - 3000), lines = all.slice(from, from + 6000).map(expandTabs);
       this.defFile = { path, line, from, lines, spans: highlightLines(lines, langOf(path), `explore:${root}:${path}:${from}`) };
-      this.lists.def.scroll_to_item(Math.max(0, line - from - 6), "top");
+      this.lists.def.scroll_to_item(Math.max(0, line - from - 1), "center"); // as in goDef
       cx.notify();
     });
   },
@@ -3563,7 +3583,7 @@ export const ReviewMode = {
     });
     this.filesList = { heads, top, folds, keys };
     const a = this.anchor;
-    if (a) { this.anchor = null; const i = keys.indexOf(a.key); if (i >= 0 && top[i] !== a.y) this.lists.files.scroll_to_item(i, "top"); }
+    if (a) { this.anchor = null; const i = keys.indexOf(a.key); if (i >= 0 && top[i] !== a.y && !this.top) this.top = { view: "files", i }; }
   },
 
   splitter(t) {
@@ -3619,7 +3639,7 @@ export const ReviewMode = {
     if (listShown) this.traces = this.traceMap();
     const { items, at, heads } = listShown ? this.itemsOf(this.tab === "steps" ? "steps" : "files") : { items: [], at: {} };
     if (this.selected().length) items.push({ t: "pad" }); // room for the selection toolbar
-    if (this.pendingScroll && at[this.pendingScroll] !== undefined) { this.lists[this.tab === "steps" ? "steps" : "files"].scroll_to_item(at[this.pendingScroll], "top"); this.pendingScroll = null; }
+    if (this.pendingScroll && at[this.pendingScroll] !== undefined) { this.scrollTo(this.tab === "steps" ? "steps" : "files", this.pendingScroll); this.pendingScroll = null; }
     if (this.scrollCompose && at.compose !== undefined) { this.lists[this.tab === "steps" ? "steps" : "files"].scroll_to_item(at.compose, "center"); this.scrollCompose = false; }
     this.uiChanged(cx);
     this.syn = colors(t);
@@ -3639,6 +3659,7 @@ export const ReviewMode = {
     const keys = itemKeys(items), sizes = items.map((it) => this.sizeOf(it));
     if (listShown) { this.items = items; this.at = at; this.byKey = new Map(keys.map((k, i) => [k, items[i]])); }
     if (heads) this.layFiles(items, keys, sizes, heads.filter((h) => h < items.length));
+    if (listShown) this.settleTop(this.tab === "steps" ? "steps" : "files", at, sizes, cx);
     const listId = `rv-list-${this.tab === "steps" ? "steps" : "files"}`;
     const range = this.fsel && rangeOf(this.rowsFor(this.fsel.path), this.fsel.a, this.fsel.b);
     this.selKeys = range ? new Set(this.rowsFor(this.fsel.path).slice(range[0], range[1] + 1).map(lineKey)) : null;
@@ -3653,7 +3674,7 @@ export const ReviewMode = {
             .child(tabBtn("files", `Files · ${this.shown().patch.length}`)).child(tabBtn("steps", `Layers${this.ai ? ` · ${this.ai.steps.filter((s) => !s.pseudo).length}` : ""}`))
             .child(tabBtn("comments", `Comments${this.commentRowsNow().length ? ` · ${this.commentRowsNow().length}` : ""}`))
             .child(tabBtn("findings", `Findings${this.findings().length ? ` · ${this.counts().unresolved}` : ""}`)))
-          .child(this.tab === "steps" ? this.stepsPane(t) : this.tab === "findings" ? this.findingsPane(t) : this.tab === "comments" ? this.commentsPane(t) : this.filesPane(t)))
+          .child(this.tab === "steps" ? this.stepsPane(t, cx) : this.tab === "findings" ? this.findingsPane(t) : this.tab === "comments" ? this.commentsPane(t) : this.filesPane(t)))
         .child(this.splitter(t))
         .child(v_flex().flex_1().min_w(0).h_full().relative()
           .child(div().id("rv-probe").absolute().top(-100).font_family(settings().font_family ?? "JetBrains Mono").text_size(13).whitespace_nowrap()
@@ -3666,7 +3687,7 @@ export const ReviewMode = {
             .child(div().flex_1().min_w(0).whitespace_normal().child(`No local clone of ${target.repo ?? "this repo"}: reviewers, whole files, definitions and the AI analysis need one. The diff works without.`))
             .child(pill("rv-clone", t, this.cloning ? "Cloning…" : `Clone to ${this.needClone.replace(home(), "~")}`, (_e, cx) => { if (!this.cloning) { this.makeWorktree(cx, true); cx.notify(); } }, false, t.foreground).tooltip("Clone the repository once, so the PR head can be checked out for reviewers and go-to-definition"))))
 
-          .when(listShown, (e) => e.child(div().id(`${listId}-wrap`).flex_1().min_h(0).relative()
+          .when(listShown, (e) => e.child(div().id(`${listId}-wrap`).flex_1().min_h(0).relative().on_size_change((size) => { this.listH = size.height; })
 
             // The Files list: scrolling, or dragging its scrollbar, near a folded file opens the files around the view.
             .when(Boolean(heads), (e) => e.on_scroll_wheel((_e, cx) => this.autoFold(cx)).on_mouse_move((_e, cx) => this.autoFold(cx)).on_mouse_up("left", (_e, cx) => this.autoFold(cx)))
