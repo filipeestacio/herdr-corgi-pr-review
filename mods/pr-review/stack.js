@@ -1,5 +1,5 @@
 // The review layout's "change stack" pieces drawn natively (no libraries): the architecture picture, a layer's
-// picture (flow, sequence, state machine, steps), segmented bars, collapsible cards, the PR triage card.
+// picture (flow, sequence, state machine, steps), stat cards, segmented bars, collapsible cards, the PR triage card.
 // Pure layout lives in arch.js (archLayout) and pr.js (levels, blastArch); these only draw. UI text is English.
 import { div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
