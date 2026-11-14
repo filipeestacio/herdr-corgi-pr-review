@@ -49,12 +49,31 @@ def run(name, body, *extra, env=None, cli=False):
 HEADER = "import sys\nsys.path.insert(0, sys.argv[1])\nimport lib\n"
 # A harmless probe: it reproduces on the head, not on the base; the result file sits next to the script.
 code, r = run("double", HEADER + "n = lib.mails(10)\nprint('strength: forced_schedule')\nprint(f'reproduced mailer.send: {n} calls for 10 records' if n != 10 else f'not_reproduced {n} calls')\n", "--base", base, cli=True)
-assert code == 0 and r["status"] == "reproduced" and r["line"] == "mailer.send: 20 calls for 10 records" and r["strength"] == "forced_schedule", r
+assert code == 0 and r["status"] == "reproduced" and r["line"] == "mailer.send: 20 calls for 10 records" and r["strength"] == "runs_pr_code", "what the script prints about its strength does not count"
 assert r["base"]["status"] == "not_reproduced" and r["pre_existing"] is False and r["head"] and r["base"]["rev"] == base, r
 assert json.loads((repo / probe.PROBE_DIR / "double.result.json").read_text())["status"] == "reproduced"
 # The same failure on the base: there before this PR.
 code, r = run("old", HEADER + "print('reproduced it returns', lib.mails(1) >= 1)\n", "--base", base)
 assert r["status"] == "reproduced" and r["pre_existing"] is True, r
+assert r["base"]["verdict"] == "already_on_base", r
+# The strength comes from the script's source: a Barrier forces a schedule, MODELS_ENV says it models the platform.
+assert probe.strength_of("import threading\nb = threading.Barrier(2)\n") == "forced_schedule"
+assert probe.strength_of('MODELS_ENV = "SQS redelivers the whole batch"\nimport threading\nthreading.Barrier(2)\n') == "models_env"
+assert probe.strength_of("print('strength: forced_schedule')\n# MODELS_ENV = 'x' in a comment\n") == "runs_pr_code"
+code, r = run("barrier", HEADER + "import threading\nb = threading.Barrier(1)\nb.wait()\nprint('reproduced', lib.mails(1))\n")
+assert r["strength"] == "forced_schedule", r
+# The base: the code it tests is not there (new in this PR), a signature that does not fit (unknown), not there.
+(repo / "lib_new.py").write_text("def only_here():\n    return 1\n")
+git("add", "lib_new.py"), git("commit", "-qm", "new module")
+code, r = run("new", "import sys\nsys.path.insert(0, sys.argv[1])\nimport lib_new\nprint('reproduced', lib_new.only_here())\n", "--base", base)
+assert r["status"] == "reproduced" and r["base"]["verdict"] == "new_in_pr" and r["pre_existing"] is False, r
+code, r = run("sig", HEADER + "n = lib.mails(10)\nif n == 10:\n    lib.mails(1, 2)\nprint('reproduced', n)\n", "--base", base)
+assert r["base"]["verdict"] == "unknown", r
+code, r = run("caught", HEADER + "try:\n    lib.gone()\nexcept AttributeError as e:\n    print('not_reproduced not importable:', repr(e)); raise SystemExit(1)\nprint('reproduced')\n", "--base", base)
+assert r["base"]["verdict"] == "new_in_pr", "an AttributeError the script reports itself counts too"
+v = lambda status, text="": probe.base_verdict({"status": status, "text": text})  # noqa: E731
+assert [v("reproduced"), v("not_reproduced"), v("script_failed", "ModuleNotFoundError: x"), v("script_failed", "TypeError: f() takes 1"), v("script_failed", "boom")] == \
+    ["already_on_base", "not_on_base", "new_in_pr", "unknown", "unknown"]
 # A crash, no verdict line or a bad exit code is script_failed, never not_reproduced.
 for name, body in (("crash", "raise KeyError(7)\n"), ("silent", "print('hello')\n"), ("exit3", "print('reproduced x')\nraise SystemExit(3)\n")):
     code, r = run(name, body)

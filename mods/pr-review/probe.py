@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""The one way a probe agent runs code from a PR (threads.js, kind "probe"): a small script that shows a suspected
-failure, run in a sandbox. The agent may call nothing but
+"""The one way code from a PR runs for a probe: a small script that shows a suspected failure, run in a sandbox. The
+probe agent (threads.js, kind "probe") only writes the script; the review starts this runner itself:
 
     python3 <this file> <checkout> <id> [--base <rev>]
 
@@ -17,12 +17,16 @@ For the head (and the base, when given) the runner:
   either it still runs and says so
   (`network_barrier: false`: the review then asks before every probe);
 - stops it after 30 s, keeps at most 4 KB of its output and blacks out e-mail addresses and token patterns.
-The script ends with a line `reproduced <what it shows>` or `not_reproduced <what it saw>` (exit 0 or 1), optionally
-`strength: forced_schedule | models_env` (default runs_pr_code). Anything else, a crash or the time limit is
-`script_failed`: never read as a refutation.
+The script ends with a line `reproduced <what it shows>` or `not_reproduced <what it saw>` (exit 0 or 1). Anything
+else, a crash or the time limit is `script_failed`: never read as a refutation. How strong the evidence is the runner
+reads from the script, never from what it prints (strength_of): models_env when it says it models the platform
+(a top-level MODELS_ENV = "…"), forced_schedule when it forces an interleaving (threading.Barrier), else runs_pr_code.
+On the base the outcome is one of four (base_verdict): already_on_base (reproduced there too), new_in_pr (the code it
+tests is not there: ImportError or AttributeError), unknown (a signature that does not fit: TypeError, or the script
+failed otherwise), not_on_base.
 The result is printed as JSON and written to <checkout>/.pr-review-probe/<id>.result.json (only by this runner):
-{id, status, strength, line, exit, ms, head, base: {rev, status, line, exit, ms} | null, pre_existing, network_barrier,
-sandbox, output, at}. Exit 2 when the call is refused. Standard library only.
+{id, status, strength, line, exit, ms, head, base: {rev, status, line, exit, ms, verdict} | null, pre_existing,
+network_barrier, sandbox, output, at}. Exit 2 when the call is refused. Standard library only.
 """
 import datetime as dt
 import io
@@ -232,7 +236,6 @@ def run_one(script, export_dir, root, how, limit):
     if size[0] > READ_CAP:
         why = why or f"stopped: more than {READ_CAP // 1024} KB of output"
     found = [m for m in map(VERDICT.match, text.splitlines()) if m]
-    strength = next((m.group(1) for m in re.finditer(r"(?m)^\s*strength:\s*(\w+)", text) if m.group(1) in STRENGTHS), "runs_pr_code")
     if why or code not in (0, 1) or not found:
         status, line = "script_failed", why or (f"exit {code}" if code not in (0, 1) else "no line starting with reproduced or not_reproduced")
     else:
@@ -241,7 +244,7 @@ def run_one(script, export_dir, root, how, limit):
     # Cut first, then black out (the patterns run on 4 KB, not on 64 KB of one word); a secret cut in two at the edge
     # is blacked out as far as it is shown.
     out = redact(text[:OUT_CAP + 200])[:OUT_CAP] + ("\n[cut at 4 KB]" if len(text) > OUT_CAP else "")
-    return {"status": status, "strength": strength, "line": redact(line[:400])[:300], "exit": code, "ms": ms, "output": out}
+    return {"status": status, "line": redact(line[:400])[:300], "exit": code, "ms": ms, "output": out, "text": text}
 
 
 def kill(p):
@@ -249,6 +252,32 @@ def kill(p):
         os.killpg(p.pid, 9)
     except (ProcessLookupError, PermissionError):
         pass
+
+
+def strength_of(script):
+    """How strong a probe's evidence is, from its source: it says it models the platform (a top-level assignment
+    MODELS_ENV = "…", for example a redelivery it plays itself) → models_env; it forces an interleaving
+    (threading.Barrier) → forced_schedule; else it runs the PR's code as it is → runs_pr_code. What it prints does not
+    count."""
+    if re.search(r"(?m)^MODELS_ENV\s*=\s*['\"].+['\"]", script):
+        return "models_env"
+    if re.search(r"\bBarrier\s*\(", script):
+        return "forced_schedule"
+    return "runs_pr_code"
+
+
+def base_verdict(b):
+    """What the run on the base says: already_on_base (it reproduces there too), new_in_pr (the code it tests is not
+    there: an ImportError or AttributeError, raised or reported), unknown (a TypeError: a signature that does not fit,
+    or the script failed otherwise), not_on_base."""
+    if b["status"] == "reproduced":
+        return "already_on_base"
+    text = b.get("text", "")
+    if re.search(r"\b(ModuleNotFoundError|ImportError|AttributeError)\b", text):
+        return "new_in_pr"
+    if re.search(r"\bTypeError\b", text) or b["status"] == "script_failed":
+        return "unknown"
+    return "not_on_base"
 
 
 def probe(checkout, pid, base=None, limit=LIMIT_S):
@@ -284,9 +313,10 @@ def probe(checkout, pid, base=None, limit=LIMIT_S):
             shutil.rmtree(root, ignore_errors=True)
     r = on(head)
     b = on(base_sha) if base_sha else None
-    out = {"id": pid, **{k: r[k] for k in ("status", "strength", "line", "exit", "ms")}, "head": head,
-           "base": {"rev": base_sha, **{k: b[k] for k in ("status", "line", "exit", "ms")}} if b else None,
-           "pre_existing": bool(b and b["status"] == "reproduced" and r["status"] == "reproduced"),
+    verdict = base_verdict(b) if b else None
+    out = {"id": pid, **{k: r[k] for k in ("status", "line", "exit", "ms")}, "strength": strength_of(code.decode("utf-8", "replace")), "head": head,
+           "base": {"rev": base_sha, **{k: b[k] for k in ("status", "line", "exit", "ms")}, "verdict": verdict} if b else None,
+           "pre_existing": verdict == "already_on_base" and r["status"] == "reproduced",
            "network_barrier": how != "none", "sandbox": how, "output": r["output"], "at": dt.datetime.now().astimezone().isoformat(timespec="seconds")}
     # Next to the script, for the review; never through a link (the folder is the agent's).
     fd = os.open(os.path.join(folder, f"{pid}.result.json"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o644)
