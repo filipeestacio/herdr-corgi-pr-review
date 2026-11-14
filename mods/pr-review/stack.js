@@ -134,6 +134,9 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
   // A call over a trust boundary: two bars across its line, before the arrow; the tooltip names both zones (opts.zones).
   const zoneById = new Map((opts.zones ?? []).map((z) => [z.id, z])), zoneOfN = (nid) => zoneById.get(L.nodes.find((x) => x.id === nid)?.zone);
   const zoneName = (z) => (z ? `${z.name ?? z.id} (${z.trust})` : "an unnamed zone");
+  // A call in one process that bypasses a boundary: no "‖", a "⤳" in the same place.
+  const bypasses = L.paths.flatMap((p, i) => (p.bypass && !p.crosses ? [dim(div().id(`${id}-y${i}`).absolute().left(p.arrow.x - 26).top(p.arrow.y - 10).w(16).h(18).flex().items_center().justify_center()
+    .text_size(13).text_color(t.ansi3).tooltip("Bypasses the boundary: a call in the same process into code written for another way in, so it gets this caller's input without that way's check").child("⤳"), dimP(p))] : []));
   const crossings = L.paths.flatMap((p, i) => (p.crosses ? [dim(div().id(`${id}-x${i}`).absolute().left(p.arrow.x - 24).top(p.arrow.y - 9).w(12).h(18).flex().items_center().justify_center()
     .text_size(13).font_semibold().text_color(t.ansi3).tooltip(zoneById.size ? `Crosses a trust boundary: from ${zoneName(zoneOfN(p.from[0]))} to ${zoneName(zoneOfN(p.to))}` : `Crosses a trust boundary${typeof p.crosses === "string" ? `: ${p.crosses}` : ""}`).child("‖"), dimP(p))] : []));
   const nodes = L.nodes.map((n, i) => {
@@ -178,7 +181,7 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
       .child(div().flex_1().min_w(0).truncate().text_color(s.source === "spec" || s.source === "existing" ? t.muted : t.foreground).child(s.name))
       .when(s.source === "spec", (e) => e.child(specTag(t, `${id}-s${i}-${k}-sp`)))
       .when(Boolean(s.calls), (e) => e.child(div().flex_none().text_color(t.muted).child("→"))))), dimN(n), Math.max(fade, 0.6))]));
-  return div().id(id).relative().flex_none().w(L.width + 4).h(L.height + 4).children([gridBg(t, L.width + 4, L.height + 4), ...groups, ...els, ...crossings, ...nodes, ...states, ...texts, ...badges, ...chips]);
+  return div().id(id).relative().flex_none().w(L.width + 4).h(L.height + 4).children([gridBg(t, L.width + 4, L.height + 4), ...groups, ...els, ...crossings, ...bypasses, ...nodes, ...states, ...texts, ...badges, ...chips]);
 }
 const FLOW_FITS = 380;
 // A layer's flow laid out by archLayout, memoized like archModel. fit: its narrow cards (the layer column is about
