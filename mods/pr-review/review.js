@@ -376,6 +376,7 @@ export const ReviewMode = {
       this.applyExploreTrust();
     }
     else if (name === "copy-link") copyText(this.prSel?.url ?? "");
+    else if (name === "copy-state") this.copyState();
     // For scripts: what the wheel does in the right pane's page (scroll:top | bottom | <a section of the page>), and a
     // click on a row of the task check (ask:<ask id>, ask:other).
     else if (name === "scroll") this.scrollPage(arg, cx);
@@ -587,7 +588,8 @@ export const ReviewMode = {
           for (const k of Object.keys(doc).sort((a, b) => (doc[b].at ?? 0) - (doc[a].at ?? 0)).slice(MAX_PROGRESS)) delete doc[k];
           try { await writeTextFile(progressFile(), JSON.stringify(doc, null, 1), before); break; } catch (e) { if (attempt) throw e; }
         }
-      } catch (e) { this.note = `Could not save progress: ${e}`; cx.notify(); }
+        if (this.saveErr) { this.saveErr = null; this.note = "Your progress is saved again."; cx.notify(); }
+      } catch (e) { this.saveErr = String(e).replace(/^Error: /, "").replace(/^`[^`]+`: /, ""); cx.notify(); } // saveErrBar: said with what is kept, and Save again
     });
     this.registerReview(cx);
   },
@@ -2244,10 +2246,11 @@ export const ReviewMode = {
         .child("▾"));
   },
 
-  // Row 2, at the top of the review: the facts as plain text with separators (risk, effort, checks), then the model as
-  // one dropdown, Values, help and ⋯ (Mark done, Copy link, Open on GitHub). Narrow: it wraps.
+  // Row 2, at the top of the review: the facts as plain text with separators (risk, the rules and checks by name),
+  // then the model as one dropdown, Example values, help and ⋯ (Mark done, Copy link, Copy review state, Open on
+  // GitHub). Narrow: it wraps.
   metaRow(t) {
-    const ai = this.ai, m = model(), checks = this.prSel ? this.checksNow() : [], ok = checks.filter((c) => c.ok === true).length, bad = checks.filter((c) => c.ok === false).length;
+    const ai = this.ai, m = model(), ck = this.checkFacts();
     const sep = () => div().flex_none().text_color(t.dim).child("·"), cap = (x) => x[0].toUpperCase() + x.slice(1);
     const link = (id, child, click) => h_flex().id(id).flex_none().gap(4).items_center().px(6).h(26).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground)).on_click(click).child(child);
     const menu = (id, items, w = 230) => (_e, cx) => { openOverlay({ mod: "pr-review", props: { part: "cmenu", key: id, items }, kind: "popup", width: w, height: 12 + 30 * items.length }); cx.stop_propagation(); };
@@ -2257,9 +2260,8 @@ export const ReviewMode = {
       ai?.mergeRisk && div().id("rv-mr").flex_none().tooltip(ai.mergeRisk.why || "").child(h_flex().gap(4).child("Merge risk:").child(div().text_color(t[SEVERITY_COLOR[ai.mergeRisk.level]] ?? t.muted).child(cap(ai.mergeRisk.level)))),
       !ai?.mergeRisk && top && link("rv-mr", h_flex().gap(4).child("Risk from findings:").child(div().text_color(t[SEVERITY_COLOR[top]] ?? t.muted).child(cap(top))).child(`(${fc[top]} ${top}, no analysis)`),
         (_e, cx) => { this.tab = "findings"; cx.notify(); }).tooltip("No analysis has rated the merge risk; this is the highest severity among the unresolved findings. Click for the Findings tab"),
-      ai?.effort && div().id("rv-ef").flex_none().tooltip(ai.effort.why || "").child(`Review effort ${ai.effort.score}/5`),
-      ok + bad > 0 && link("rv-ck", h_flex().gap(4).child("Pre-merge checks").child(div().text_color(t.ansi2).child(`✓${ok}`)).child(div().text_color(bad ? t.ansi1 : t.muted).child(`✗${bad}`)),
-        (_e, cx) => { this.tab = "steps"; this.page = "overview"; cx.notify(); }).tooltip("Pre-merge checks passed and failed; click for the Overview page"),
+      ck && link("rv-ck", h_flex().gap(4).children(ck.parts.map(([text, bad]) => div().when(bad, (e) => e.text_color(t.ansi1)).child(text))),
+        (_e, cx) => { this.tab = "steps"; this.page = "overview"; this.scrollPage("checks", cx); cx.notify(); }).tooltip(ck.tip),
     ].filter(Boolean);
     const modelText = this.aiBusy ? `${modelLabel(this.aiBusy.model)} analyzing…` : `${modelLabel(m)}${ai?.cost != null && ai.model === m ? ` · $${Number(ai.cost).toFixed(2)}` : ""}`;
     return h_flex().id("rv-meta").flex_none().flex_wrap().min_h(40).px(16).py(6).gap(10).items_center().border_b(1).border_color(t.border).bg(t.chrome).text_size(12.5).text_color(t.muted)
@@ -2271,9 +2273,9 @@ export const ReviewMode = {
       .child(link("rv-model", h_flex().gap(4).child(this.aiBusy ? div().child(SPIN[0]).frames(SPIN, 90) : div()).child(modelText).child("▾"),
         menu("models", modelChoices(this.ctxId()).map((c) => [`${c.value === m ? "✓ " : ""}${c.label} · ${priceText(c.value)} · ${this.estimate(c.value)}`, false, `model:${c.value}`]), 470)).tooltip("Pick the model for the AI analysis; each option shows its cost estimate").accessibility_label("Model"))
       .child(sep())
-      .child(link("rv-values", div().text_color(valuesOn() ? t.foreground : t.muted).child(`Values ${valuesOn() ? "on" : "off"}`), () => setShared("review.values", !valuesOn())).tooltip("Example values from the flow traces, shown inline in the diff: click to switch"))
+      .child(link("rv-values", div().text_color(valuesOn() ? t.foreground : t.muted).child(`Example values ${valuesOn() ? "on" : "off"}`), () => setShared("review.values", !valuesOn())).tooltip("Example values from the flow traces, shown inline in the diff: click to switch"))
       .child(link("rv-keys", div().child("?"), () => openOverlay({ mod: "pr-review", props: { part: "keys" }, kind: "popup", ...KEYS_POP })).tooltip("Keyboard shortcuts").accessibility_label("Keyboard shortcuts"))
-      .child(link("rv-more", div().child("⋯"), menu("more", [["Explore a topic…", false, "explore"], ["Mark done", false, "done"], ["Copy link", false, "copy-link"], ...(this.prSel?.url?.startsWith("https://github.com") ? [["Open on GitHub", false, "open-gh"]] : [])])).tooltip("Explore a topic, mark done, copy the link, open on GitHub").accessibility_label("More actions"));
+      .child(link("rv-more", div().child("⋯"), menu("more", [["Explore a topic…", false, "explore"], ["Mark done", false, "done"], ["Copy link", false, "copy-link"], ["Copy review state", false, "copy-state"], ...(this.prSel?.url?.startsWith("https://github.com") ? [["Open on GitHub", false, "open-gh"]] : [])])).tooltip("Explore a topic, mark done, copy the link or the review's state as text, open on GitHub").accessibility_label("More actions"));
   },
 
   // ---- render: the left column
@@ -3754,6 +3756,7 @@ export const ReviewMode = {
                 ? h_flex().gap(8).child(div().child(SPIN[0]).frames(SPIN, 90)).child("Loading…") : "No diff")))
             .child(Scrollbar.vertical(listId).absolute().inset_0())))
           .when(Boolean(this.note), (e) => e.child(div().flex_none().px(14).py(8).border_t(1).border_color(t.border).text_size(12.5).text_color(/Could not|Not sent|Not posted|Select a line/.test(this.note ?? "") ? t.ansi1 : t.muted).child(this.note)))
+          .when(Boolean(this.saveErr), (e) => e.child(this.saveErrBar(t)))
           .when(Boolean(this.replyTo), (e) => e.child(this.replyBar(t)))
           .when(this.selected().length > 0, (e) => e.child(this.selectionBar(t)))
           .when(Boolean(this.applyBlocked), (e) => e.child(h_flex().flex_none().px(14).py(8).gap(8).items_center().border_t(1).border_color(t.border).bg(t.ansi3 + "1c").text_size(12.5)
@@ -3772,6 +3775,17 @@ export const ReviewMode = {
   taskNow() { return taskList(this.ai?.asks ?? [], this.findings(), this.ai?.unlinked ?? [], (f) => this.fstatus(f)); },
   toggleAsk(id) { if (!this.askOpen.delete(id)) this.askOpen.add(id); },
 
+  // The bar's "Repo rules 2/2": the rules this PR is checked against (the title's form and the analysis' repo rules)
+  // by name in the tooltip; CI and conflicts only when GitHub reports some. null: nothing to say yet.
+  checkFacts() {
+    if (!this.prSel) return null;
+    const checks = this.checksNow(), ci = checks.filter((c) => c.ci), rules = checks.filter((c) => !c.ci && c.name !== "No merge conflicts"), ok = (l) => l.filter((c) => c.ok === true).length;
+    const parts = [rules.length > 0 && [`Repo rules ${ok(rules)}/${rules.length}`, rules.some((c) => c.ok === false)], ci.length > 0 && [`CI ${ok(ci)}/${ci.length}`, ci.some((c) => c.ok === false)],
+      checks.some((c) => c.name === "No merge conflicts" && c.ok === false) && ["Merge conflicts", true]].filter(Boolean);
+    if (!parts.length) return null;
+    return { parts, tip: `${rules.length ? `Rules this PR is checked against: ${rules.map((c) => `${c.name} (${c.ok ? "met" : "not met"})`).join(", ")}. ` : ""}${this.ctx && !ci.length ? "GitHub reports no CI checks for this PR. " : ""}Click for the list on the Overview page.` };
+  },
+
   // The right pane's page to its top, its bottom or one of its sections (pageAnchors: name → child), as the wheel
   // would. A plain scroll area only reveals a child at its near edge, so the bottom first, then the section: it is
   // above the view then and lands at the top.
@@ -3780,5 +3794,23 @@ export const ReviewMode = {
       this.pageScroll.scroll_to_item((this.pageLen ?? 1) - 1); cx.notify();
       if (key !== "bottom") cx.timer.after(60, (cx) => { const i = key === "top" ? 0 : this.pageAnchors[key]; if (i !== undefined) this.pageScroll.scroll_to_item(i); cx.notify(); });
     });
+  },
+
+  // "Copy review state" (the ⋯ menu): the verdict, the task check and the findings by state as text for a colleague.
+  copyState() {
+    if (!this.prSel) return;
+    const p = this.progressNow();
+    const text = reviewState({ pr: this.prSel, head: this.worktree?.head ?? this.prSel.headSha ?? "", list: this.taskNow(), counts: this.counts(), findings: this.findings(), statusOf: (f) => this.fstatus(f),
+      progress: `Reviewer's progress: ${p.filesViewed} of ${p.files} files viewed, ${p.comments} pending ${p.comments === 1 ? "comment" : "comments"}.` });
+    copyText(text);
+    this.note = `Review state copied as text (${text.trim().split("\n").length} lines), nothing was posted.${this.findings().some((f) => f.security) ? " Security findings are in it with their title only." : ""}`;
+  },
+
+  // Progress that could not be saved: what that means, and the one thing to do about it.
+  saveErrBar(t) {
+    const why = /changed outside/i.test(this.saveErr) ? "the progress file changed while it was written" : this.saveErr;
+    return h_flex().id("rv-save-err").flex_none().px(14).py(8).gap(10).items_center().border_t(1).border_color(t.border).bg(t.ansi1 + "26").text_size(12.5)
+      .child(div().flex_1().min_w(0).whitespace_normal().child(`Could not save your progress (viewed files, checked layers, your place): ${why}. It is kept in this window; it is lost if you close the review before it is saved.`))
+      .child(pill("rv-save-again", t, "Save again", (_e, cx) => this.saveProgress(cx), false, t.foreground).tooltip("Write your progress to disk again"));
   },
 };
