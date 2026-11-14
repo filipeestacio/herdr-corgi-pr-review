@@ -24,7 +24,7 @@ import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf,
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState, codeOf, isStale } from "./pr.js";
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible, pastTop } from "./views.js";
-import { orderDiffers, worst, byUrgency } from "./views.js";
+import { worst, byUrgency, byFocus } from "./views.js";
 import { archView, archLegend, visualsCard, visualCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
 import { visualPlan } from "./stack.js";
 import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCALE } from "./views.js";
@@ -871,10 +871,21 @@ export const ReviewMode = {
       dry: Boolean(this.cfg?.dryRun), securityOffer: this.secOfferText(), findings: this.prSel ? { total: this.findings().length, analysis: this.findings().filter((f) => f.sources.some((y) => y.reviewer === "analysis")).length } : null });
   },
 
-  // The AI steps in risk order or in reading order (the toggle); without an analysis one step with every hunk.
+  // The AI steps in reading order or by focus (the toggle: views.js byFocus, by the grade each row shows); without an
+  // analysis one step with every hunk. The focus order is kept while only states change (a dismissed finding does not
+  // move the open layer away); new findings or a new analysis sort again.
   steps() {
     const all = this.ai?.steps ?? (this.hunks?.length ? [{ title: "All changes", why: "No analysis yet.", text: "", risk: "low", order: 1, questions: [], flows: [], hunks: this.hunks.map((h) => h.id), pseudo: true }] : []);
-    return this.order === "reading" ? [...all].sort((a, b) => a.order - b.order) : all;
+    const read = [...all].sort((a, b) => a.order - b.order);
+    return this.order === "reading" ? read : this.focusOrder(read).list;
+  },
+  focusOrder(read = [...(this.ai?.steps ?? [])].sort((a, b) => a.order - b.order)) {
+    const deps = [this.ai, this.find.list, this.byId, read.length];
+    if (!this.focusOf || this.focusOf.deps.some((d, i) => d !== deps[i])) {
+      const list = byFocus(read, (s) => this.layerFindings(s).filter((f) => OPEN_ST.includes(this.fstatus(f))));
+      this.focusOf = { deps, list, differs: list.some((s, i) => s !== read[i]) };
+    }
+    return this.focusOf;
   },
   present(s) { return s.hunks.filter((id) => this.byId?.has(id)); },
   // A layer is done once you ticked every file in it as "Viewed": never by opening it, and there is no tick of its own.
@@ -2786,7 +2797,7 @@ export const ReviewMode = {
         .when(Boolean(ai?.scope?.skimmed), (e) => e.child(div().text_size(12.5).text_color(t.muted).whitespace_normal().child(scopeLine(ai.scope)))) // only when something was not read in detail
         .when(Boolean(ai?.cut.length) && !ai?.scope, (e) => e.child(div().text_size(12.5).text_color(t.ansi3).whitespace_normal().child(`${ai.cut.length} hunks were too large for ${modelLabel(ai.model) ?? ai.model} and are not analyzed (an older analysis: re-analyze to read them).`)))
         .child(h_flex().flex_wrap().gap(6).items_center().text_size(12.5)
-          .when(orderDiffers(ai?.steps ?? []), (e) => e.child(h_flex().gap(2).p(2).rounded(7).border_1().border_color(t.border).children([["reading", "Layers"], ["risk", "By focus"]].map(([k, label]) =>
+          .when(Boolean(ai) && this.focusOrder().differs, (e) => e.child(h_flex().gap(2).p(2).rounded(7).border_1().border_color(t.border).children([["reading", "Layers"], ["risk", "By focus"]].map(([k, label]) =>
             div().id(`rv-order-${k}`).tooltip((k === "risk" ? "List the layers that need the closest reading first" : "List the layers in the order to read them")).px(8).h(22).flex().items_center().rounded(5).cursor_pointer().bg(this.order === k ? t.selected : t.chrome)
               .text_color(this.order === k ? t.foreground : t.muted).on_click((_e, cx) => { this.order = k; this.cur = 0; cx.notify(); }).child(label)))))
           .child(pill("rv-prev", t, "‹ Prev", (_e, cx) => { this.goStep(this.cur - 1, cx); cx.notify(); }).tooltip("Previous layer (k)"))

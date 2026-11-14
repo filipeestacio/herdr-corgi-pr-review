@@ -211,6 +211,13 @@ assert.equal(pendingText([{ file: "a.py" }, { file: "a.py" }, { file: "b.py" }])
   const bs = [{ severity: "medium", title: "rule" }, { severity: "high", title: "bug" }, { severity: "low", title: "overlap" }, { severity: "high", title: "auth", finding: "s1" }, { severity: "high", title: "bug 2" }];
   assert.deepEqual(byUrgency(bs, (b) => b.finding === "s1").map((b) => b.title), ["auth", "bug", "bug 2", "rule", "overlap"]);
   assert.deepEqual(byUrgency(bs).map((b) => b.title), ["bug", "auth", "bug 2", "rule", "overlap"]);
+  // "By focus" follows what the rows show: "Tests · 3 medium" after "SAM template · 1 high ⛨" (it came first by the
+  // hidden field risk), security first among equals, then more findings, then reading order, no findings last.
+  const { byFocus } = await import("./views.js");
+  const L = (title, order, ...fs) => ({ title, order, fs });
+  const ls = [L("events", 1, { severity: "high" }), L("tests", 2, { severity: "medium" }, { severity: "medium" }, { severity: "medium" }), L("docs", 3),
+    L("template", 4, { severity: "high", security: true }), L("handler", 5, { severity: "high" }, { severity: "high" }), L("reminders", 6, { severity: "high" })];
+  assert.deepEqual(byFocus(ls, (l) => l.fs).map((l) => l.title), ["template", "handler", "events", "reminders", "tests", "docs"]);
 }
 // ---- a finding's facts, its card's line, the rows' heights, the sequence diagram (the diff and a layer's head)
 import { factRows, findingAnchor, wrapCount, seqLayout, IMPACT, SEVERITY_SCALE, SEQ } from "./views.js";

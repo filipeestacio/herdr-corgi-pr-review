@@ -459,3 +459,13 @@ export function solidOver(base, over) {
   const a = o[3] / 255, hex = (v) => Math.round(v).toString(16).padStart(2, "0");
   return "#" + [0, 1, 2].map((k) => hex(o[k] * a + b[k] * (1 - a))).join("");
 }
+
+// "By focus": the layers by what their rows show (worst): the highest unresolved severity first, a layer with a
+// security finding first among equals, then more findings, then reading order; layers without one last.
+// open(s): a layer's unresolved findings.
+export function byFocus(steps, open) {
+  const rank = (w) => (w ? (SEVERITIES.indexOf(w.severity) + 1 || SEVERITIES.length + 1) : SEVERITIES.length + 2);
+  return steps.map((s) => ({ s, w: worst(open(s)) }))
+    .sort((a, b) => rank(a.w) - rank(b.w) || Number(Boolean(b.w?.security)) - Number(Boolean(a.w?.security)) || (b.w?.count ?? 0) - (a.w?.count ?? 0) || a.s.order - b.s.order)
+    .map((x) => x.s);
+}
