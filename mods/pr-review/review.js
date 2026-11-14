@@ -1426,10 +1426,15 @@ export const ReviewMode = {
       items.push({ t: "step", s, i }, ...(s.visuals ?? []).map((v, k) => ({ t: "vis", v, i, text: `vis|${i}|${k}` })));
       const present = this.present(s);
       if (s.stale) items.push({ t: "note", text: "Outdated: these hunks are no longer in the diff." });
+      const seen = new Set();
       for (const id of present) {
         const h = this.byId.get(id);
         at[id] = items.length;
         items.push({ t: "path", h });
+        // A file this layer shares with others: under its first path, how many of its hunks are elsewhere.
+        const more = seen.has(h.path) ? 0 : (this.hunks ?? []).filter((x) => x.path === h.path && !present.includes(x.id)).length;
+        seen.add(h.path);
+        if (more) items.push({ t: "more", path: h.path, n: more, text: `more|${i}|${h.path}` });
         this.pushRows(items, at, h.rows, h.path, () => id);
       }
     });
@@ -1589,6 +1594,7 @@ export const ReviewMode = {
       if (k >= 0) this.goStep(this.steps().indexOf(deps[k][0]), cx); else this.goStep(it.i, cx, false);
     }
     else if (it.t === "path") this.visit(it.h.id, cx);
+    else if (it.t === "more") this.command(`file:${it.path}`, cx); // the Files tab at that file, all its hunks (as pr-review.file:<path>)
     cx.notify();
   },
 
@@ -4132,7 +4138,7 @@ export const ReviewMode = {
     if (it.t === "cact" || it.t === "fact") return ACT;
     if (it.t === "def") return 190;
     if (it.t === "find") return this.findOpen(it.f) ? 48 + (this.fixLine(it.f) ? 21 : 0) + 21 * this.lines(it.f.title) + this.findRows(it.f).reduce((n, [, v]) => n + 4 + this.md(v, FIND_LABEL), 0) : FIND_FOLDED;
-    return { path: 30, file: 44, gap: 30, note: 30 }[it.t];
+    return { path: 30, file: 44, gap: 30, note: 30, more: 26 }[it.t];
   },
 
   item(it, t) {
@@ -4268,6 +4274,8 @@ export const ReviewMode = {
     if (it.t === "vis") return div().w_full().h(this.sizeOf(it)).px(16).pb(8).bg(it.i === this.cur ? t.selected : t.raised).child(visualCard(it.v, t, `rv-lvis-${it.i}-${it.text}`, null, null, (this.listW ?? 900) - 32));
     if (it.t === "def") return this.defItem(it, t);
     if (it.t === "fold") return div().h(it.h).w_full().pl(GUTTER).pt(8).text_size(12.5).text_color(t.muted).cursor_pointer().child(`${it.n} lines folded to keep the list fast · they open as you scroll here, or click`);
+    if (it.t === "more") return h_flex().h(26).w_full().px(16).items_center().gap(6).text_size(12.5).text_color(t.muted).cursor_pointer()
+      .child(div().child(`This file has more lines outside this layer: ${it.n} more ${it.n === 1 ? "hunk" : "hunks"}.`)).child(div().text_color(t.accent).child("Show the whole file in Files →"));
     if (it.t === "path") return mono(h_flex()).h(30).w_full().px(16).items_center().text_size(12.5).text_color(t.muted).truncate().child(it.h.path);
     return div().h(30).w_full().px(16).flex().items_center().text_size(12.5).text_color(t.ansi3).child(it.text);
   },
