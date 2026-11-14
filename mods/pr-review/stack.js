@@ -369,7 +369,7 @@ function seqView(Q, t, id, onJump = null) {
   const jump = (el, place) => el.when(Boolean(place && onJump), (x) => x.cursor_pointer().hover((s) => s.border_color(t.accent)).on_click((_e, cx) => { onJump(place, cx); cx.stop_propagation(); }));
   const col = (e) => (e.changed && e.source !== "existing" ? t.accent : t.muted);
   const heads = Q.cols.flatMap((n, k) => [
-    div().id(`${id}-l${k}`).absolute().left(n.x).top(Q.head).w(0).h(Q.height - Q.head).border_l(1.5).border_color(t.muted + "99"),
+    div().id(`${id}-l${k}`).absolute().left(n.x).top(Q.head).w(0).h(Q.height - Q.head).border_l(1.5).border_color(t.muted),
     jump(div().id(`${id}-p${k}`).absolute().left(n.x - n.w / 2).top(0).w(n.w).h(Q.head - 4).px(6).flex().items_center().justify_center().rounded(6).border_1()
       .border_color(n.changed && n.source !== "existing" ? t.accent : t.border).when(n.source === "spec", (e) => e.border_dashed()).bg(t.background).text_size(12).font_semibold()
       .text_color(n.source === "existing" ? t.muted : t.foreground).tooltip([n.label ?? n.id, n.note, n.source === "spec" ? SPEC_TIP : ""].filter(Boolean).join("\n"))
