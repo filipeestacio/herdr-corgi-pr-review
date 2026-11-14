@@ -2954,7 +2954,6 @@ export const ReviewMode = {
           .text_color(this.archWrapOn() ? t.foreground : t.muted).tooltip("On: a picture wider than the view goes on in a second row. Off: one row to scroll sideways")
           .on_click((_e, cx) => { this.archWrap = !this.archWrapOn(); this.hsOf("rv-arch-canvas").x = 0; cx.notify(); }).child("Wrap"))],
       ["map", this.archCanvas(t, L, opts)],
-      ["map", this.archCanvas(t, L, opts)],
       ...(this.archFocus && a.nodes.some((x) => x.id === this.archFocus) ? [["card", this.archCard(t, a, marks)]] : []),
       ...(this.archFocus && this.drillAt(`arch:${this.archFocus}`) ? [["inside", this.drillPanel(t, `arch:${this.archFocus}`)]] : []),
       // Only the calls whose text is not on their line in the picture (a fan's, a stub's, a text cut short).
@@ -2963,7 +2962,7 @@ export const ReviewMode = {
       ...(this.ai?.visuals?.length > 0 ? [["views", v_flex().gap(12).child(div().pt(6).text_size(13).font_semibold().text_color(t.muted).child("More views")).child(div().max_w(760).child(more()))]] : [])]);
   },
 
-  // The picture: wider than the view and Wrap on (archWrapOn, the default), in bands stacked top to bottom (arch.js
+  // The picture: wider than the view and Wrap on (archWrapOn, off by default), in bands stacked top to bottom (arch.js
   // archBands); else one row in the sideways scroller (40 px of room after the last column). A line that goes on in the
   // next band ends at the band's right edge in a turn with its number, and starts again at the left edge of the next
   // one with the same number, at the same height: no line goes on unnamed.
@@ -3130,7 +3129,7 @@ export const ReviewMode = {
       .children(rows.map((r, k) => h_flex().id(`${id}-${k}`).gap(10).px(6).py(5).items_start().border_t(1).border_color(t.border).when(lit(k), (e) => e.bg(t.selected)).children(line(r))));
   },
   // Wrap: on unless switched off (a wide picture goes on in a second row instead of being cut off at the right).
-  archWrapOn() { return this.archWrap !== false; },
+  archWrapOn() { return this.archWrap === true; }, // one row to scroll sideways unless the person turns Wrap on
   // Fit (narrow cards): only when switched on; the picture wraps instead.
   archFitOn() { return this.archFit === true; },
   // The picture shown: its layout with the calls' texts on their lines, a row in a card and above a call for the
