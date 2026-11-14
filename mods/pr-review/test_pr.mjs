@@ -452,7 +452,7 @@ console.log("ok");
 
 {
   // The Overview: the task check as one list, the verdict line, the copied review state, a stacked PR.
-  const { taskList, taskHead, verdictParts, reviewState, certaintyLine, severityTip, componentLine, mergeBlockers, triageOf } = await import("./pr.js");
+  const { taskList, taskHead, verdictParts, reviewState, certaintyLine, severityTip, componentLine, mergeBlockers, triageOf, doesList, checkGroups, costLine } = await import("./pr.js");
   const f = (id, severity, extra = {}) => ({ id, ids: [id], severity, title: `T ${id}`, file: "a.py", line: 3, security: false, criteria: [], preconditions: [], certainty: null, impact: null, ...extra });
   const asks = [{ id: "c1", text: "one", state: "broken", why: "w1", acceptance: true, findings: ["f1"] }, { id: "c2", text: "two", state: "partly", why: "w2", acceptance: true, findings: [] },
     { id: "c3", text: "three", state: "met", why: "", acceptance: false, findings: [] }, { id: "x1", text: "more", state: "extra", why: "", acceptance: false, findings: [] }];
@@ -471,10 +471,14 @@ console.log("ok");
   assert.equal(taskHead(old), "1 of 3 criteria met, 1 extra");
   assert.equal(taskHead(taskList([], [], [], statusOf)), "");
   const counts = { unresolved: 4, high: 2, medium: 2, low: 0, security: 1 };
-  assert.deepEqual(verdictParts(list, counts).map((p) => [p.text, p.tone]), [["1 security finding (high)", "high"], ["0 of 2 acceptance criteria met", "high"], ["2 high findings", "high"]]);
+  // Counted by what decides: security, criteria, blockers; not the high findings. Only security has a colour of its own.
+  assert.deepEqual(verdictParts(list, counts).map((p) => [p.text, p.short, p.tone]), [["1 security finding (high)", "⛨ 1 high", "security"], ["0 of 2 acceptance criteria met", "0/2 criteria", "plain"]]);
   assert.deepEqual(verdictParts(taskList(asks, [f("a", "high", { security: true }), f("b", "low", { security: true })], [], statusOf), { unresolved: 2, high: 1, low: 1, security: 2 })[0].text, "2 security findings, 1 high");
-  assert.deepEqual(verdictParts(taskList([asks[2]], [], [], statusOf), { unresolved: 0, security: 0 }).map((p) => [p.text, p.tone]), [["1 of 1 criteria met", "ok"], ["No unresolved findings", "ok"]]);
-  assert.deepEqual(verdictParts(list, counts, { failed: 1, toVerify: 2 }).slice(3).map((p) => [p.key, p.text, p.tone]), [["checks", "1 check failed", "high"], ["verify", "2 fixes to verify", "medium"]]);
+  assert.deepEqual(verdictParts(taskList([asks[2]], [], [], statusOf), { unresolved: 0, security: 0 }).map((p) => [p.text, p.tone]), [["1 of 1 criteria met", "ok"]]);
+  assert.deepEqual(verdictParts(taskList([asks[3]], [f("a", "medium")], [], statusOf), { unresolved: 1, medium: 1, security: 0 }).map((p) => [p.text, p.tone]), [["1 unresolved finding", "plain"]], "no task, no security: the findings");
+  assert.equal(verdictParts(taskList(asks, [f("a", "high", { security: true }), f("b", "low", { security: true }), f("c", "low", { security: true })], [], statusOf), {})[0].short, "⛨ 1 high");
+  assert.equal(verdictParts(taskList([], [f("a", "low", { security: true }), f("b", "low", { security: true })], [], statusOf), {})[0].short, "⛨ 2");
+  assert.deepEqual(verdictParts(list, counts, { failed: 1, toVerify: 2 }).slice(2).map((p) => [p.key, p.text, p.tone]), [["checks", "1 check failed", "plain"], ["verify", "2 fixes to verify", "plain"]]);
   assert.equal(certaintyLine(all[0]), "Assumed, not checked · only if no token set (and 1 more)");
   assert.equal(certaintyLine(f("x", "low", { certainty: "derived" })), "Derived from the code");
   assert.deepEqual([["The caller passes auth"], ["SQS redelivery"]].map((preconditions) => certaintyLine(f("x", "low", { preconditions }))), ["only if the caller passes auth", "only if SQS redelivery"]);
@@ -486,10 +490,28 @@ console.log("ok");
   assert.equal(componentLine({ new: 0, changed: 1, no_owner: 1, codeowners: false }), "1 changed component; the repository has no CODEOWNERS file");
   assert.equal(componentLine({ new: 0, changed: 0 }), null);
   assert.equal(componentLine(null), null);
+  // What the PR does: the analysis' own lists, else its paragraphs cut into sentences ("Adds…" under Adds, a dotted
+  // name does not end a sentence), the behavior points with their source under At run time.
+  assert.deepEqual(doesList({ summary: { adds: ["A queue."], changes: [], runtime: ["Mails once."] } }), [["Adds", [{ text: "A queue." }]], ["At run time", [{ text: "Mails once." }]]]);
+  assert.deepEqual(doesList({ summary: "Adds a LoanEvent, makes status.transition publish. The PR misses most criteria.  It has `x()` too.", behavior: "Members get two mails. (Sometimes three.)" }),
+    [["Adds", [{ text: "Adds a LoanEvent, makes status.transition publish." }]], ["Changes", [{ text: "The PR misses most criteria." }, { text: "It has `x()` too." }]], ["At run time", [{ text: "Members get two mails." }, { text: "(Sometimes three.)" }]]]);
+  assert.deepEqual(doesList({ summary: "", behavior: "x", behaviorPoints: [{ text: "Mails", source: "spec" }] }), [["At run time", [{ text: "Mails", source: "spec" }]]]);
+  assert.deepEqual(doesList(null), []);
+  // One count of the repo rules for the bar and the page: the title's form and the analysis' rules, not CI, not conflicts.
+  const g = checkGroups([{ name: "Conventional Commit title", ok: true }, { name: "r", ok: false, rule: true }, { name: "CI: unit", ok: true, ci: true }, { name: "No merge conflicts", ok: true }]);
+  assert.deepEqual([g.rules.map((c) => c.name), g.ci.length, g.conflict.length], [["Conventional Commit title", "r"], 1, 1]);
+  assert.equal(costLine([["Analysis", 0.2213], ["Security review", 0.31], ["Codex review", null]]), "$0.53 (Analysis $0.22, Security review $0.31)");
+  assert.equal(costLine([["Analysis", 0.2]]), "$0.20 (Analysis)");
+  assert.equal(costLine([["Analysis", undefined]]), "");
+  // The copied state with the behavior first, a fix's agent and branch, and the cost.
+  const handover = reviewState({ pr: { repo: "o/r", number: 2, title: "feat: x" }, list, counts, findings: all, statusOf, behavior: "Members get\n two mails.", fixOf: (x) => (x.id === "f3" ? "a sub-agent, fix/2-f3" : ""), cost: "$0.53 (Analysis $0.22, Security review $0.31)" });
+  assert.match(handover, /\n\nWhat it does: Members get two mails\.\n\n1 security finding/);
+  assert.match(handover, /\nFix sent \(1\):\n- medium: T f3 \(a\.py:3\)\. Fix: a sub-agent, fix\/2-f3\n/);
+  assert.match(handover, /\nAI runs on this PR: \$0\.53 \(Analysis \$0\.22, Security review \$0\.31\)\.\n/);
   // The copied state: a security finding with its title only (no file, no line, no facts), the others with their place.
   const text = reviewState({ pr: { repo: "o/r", number: 2, title: "feat: x", url: "https://example.test/pull/2" }, head: "abcdef1234", list, counts, findings: all, statusOf, progress: "1 of 9 files viewed" });
   assert.match(text, /^Review state of o\/r#2: feat: x\nhttps:\/\/example\.test\/pull\/2 at abcdef1\n/);
-  assert.match(text, /\n1 security finding \(high\) · 0 of 2 acceptance criteria met · 2 high findings\n/);
+  assert.match(text, /\n1 security finding \(high\) · 0 of 2 acceptance criteria met\n/);
   assert.match(text, /\n- broken: one \(acceptance criterion\). w1\n- partly: two \(acceptance criterion\). w2\n- met: three\n- extra: more\n/);
   assert.match(text, /\nUnresolved \(3\):\n- high, security: T s1\n- high: T f1 \(a\.py:3\)\n- medium: T f2 \(a\.py:3\)\n/);
   assert.match(text, /\nFix sent \(1\):\n- medium: T f3 \(a\.py:3\)\n/);

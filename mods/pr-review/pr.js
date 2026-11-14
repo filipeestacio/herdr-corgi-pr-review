@@ -290,7 +290,7 @@ export function mapReview(answer, hunks) {
     arch: answer.architecture?.nodes?.length ? answer.architecture : null, visuals: visualsOf(answer), blast: answer.blast_radius?.units?.length ? answer.blast_radius : null,
     asks: (answer.asks ?? []).map((a, k) => {
       const coverage = ["seen", "partly", "absent", "extra"].includes(a.coverage) ? a.coverage : "absent";
-      return { id: String(a.id ?? `c${k + 1}`), text: a.text ?? "", coverage, state: ASK_STATES.includes(a.state) ? a.state : STATE_OF[coverage], why: a.why ?? "",
+      return { id: String(a.id ?? `c${k + 1}`), text: a.text ?? "", short: a.short ? String(a.short) : "", coverage, state: ASK_STATES.includes(a.state) ? a.state : STATE_OF[coverage], why: a.why ?? "",
         acceptance: typeof a.acceptance === "boolean" ? a.acceptance : null, findings: (a.findings ?? []).map(String), hunks: ids(a.hunks), elements: (a.elements ?? []).map(String) };
     }),
     unlinked: (answer.unlinked ?? []).map(String), components: answer.components ?? [], componentCounts: answer.component_counts ?? null, access: answer.access ?? [] };
@@ -825,18 +825,41 @@ const count = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const metText = (l) => `${l.met} of ${l.criteria} ${l.marked ? "acceptance criteria" : "criteria"} met`;
 // "0 of 5 acceptance criteria met, 1 extra"; "" without a task.
 export const taskHead = (l) => (l.rows.length + l.extra.length ? `${metText(l)}${l.extra.length ? `, ${l.extra.length} extra` : ""}` : "");
-// The verdict under the PR title, security first: [{key, text, tone: high | medium | low | ok}] from the list above,
-// findingCounts and what else stands before a merge (failed rules or checks, fixes not verified on this head).
-// "1 security finding (high)", "0 of 5 acceptance criteria met", "6 high findings".
+// The verdict under the PR title, counted by what decides a merge: the unresolved security findings, the task's
+// criteria, and the blockers besides findings (failed rules or checks, fixes not verified on this head). It does not
+// count the high findings: the groups below say how severe each one is. Without a task and without a security finding:
+// the unresolved findings. → [{key, text, short, tone: security | ok | plain}]; `short` is the bar's excerpt
+// ("⛨ 2 high · 0/5 criteria"), from the same parts so the two never disagree.
 export function verdictParts(l, c, { failed = 0, toVerify = 0 } = {}) {
-  const sec = l.security, secHigh = sec.filter((f) => f.severity === "high").length, top = ["high", "medium", "low"].find((k) => c[k]);
-  const worst = l.rows.some((r) => ["broken", "not_done"].includes(r.ask.state)) ? "high" : "medium";
-  return [sec.length === 1 && { key: "security", text: `1 security finding (${sec[0].severity})`, tone: sec[0].severity },
-    sec.length > 1 && { key: "security", text: `${sec.length} security findings, ${secHigh || "none"} high`, tone: secHigh ? "high" : "medium" },
-    l.criteria > 0 && { key: "criteria", text: metText(l), tone: l.met === l.criteria ? "ok" : worst },
-    top ? { key: "findings", text: count(c[top], `${top} finding`), tone: top } : { key: "findings", text: c.unresolved ? count(c.unresolved, "unresolved finding") : "No unresolved findings", tone: c.unresolved ? "medium" : "ok" },
-    failed > 0 && { key: "checks", text: `${count(failed, "check")} failed`, tone: "high" },
-    toVerify > 0 && { key: "verify", text: `${count(toVerify, "fix", "fixes")} to verify`, tone: "medium" }].filter(Boolean);
+  const sec = l.security, secHigh = sec.filter((f) => f.severity === "high").length, open = c.unresolved ? count(c.unresolved, "unresolved finding") : "No unresolved findings";
+  return [sec.length === 1 && { key: "security", text: `1 security finding (${sec[0].severity})`, short: `⛨ 1 ${sec[0].severity}`, tone: "security" },
+    sec.length > 1 && { key: "security", text: `${sec.length} security findings, ${secHigh || "none"} high`, short: secHigh ? `⛨ ${secHigh} high` : `⛨ ${sec.length}`, tone: "security" },
+    l.criteria > 0 && { key: "criteria", text: metText(l), short: `${l.met}/${l.criteria} criteria`, tone: l.met === l.criteria ? "ok" : "plain" },
+    !sec.length && !l.criteria && { key: "findings", text: open, short: open, tone: c.unresolved ? "plain" : "ok" },
+    failed > 0 && { key: "checks", text: `${count(failed, "check")} failed`, short: `${count(failed, "check")} failed`, tone: "plain" },
+    toVerify > 0 && { key: "verify", text: `${count(toVerify, "fix", "fixes")} to verify`, short: `${count(toVerify, "fix", "fixes")} to verify`, tone: "plain" }].filter(Boolean);
+}
+
+// What the PR does, as a labeled list [[label, [{text, source?, evidence?}]]]: the analysis' summary {adds, changes,
+// runtime} when it has one; an older analysis' paragraphs cut into sentences, a summary sentence that starts with
+// "Adds" under Adds, the other ones under Changes, the behavior under At run time. Empty labels are left out.
+const sentences = (s) => (typeof s === "string" ? s.replace(/\s+/g, " ").trim().split(/(?<=[.!?])\s+(?=[A-Z`"(])/).filter(Boolean) : []);
+export function doesList(ai) {
+  const s = ai?.summary, own = s && typeof s === "object", item = (text) => ({ text: String(text) });
+  const runtime = ai?.behaviorPoints?.length ? ai.behaviorPoints : sentences(ai?.behavior).map(item), said = sentences(s), adds = said.filter((x) => /^(adds?|introduces?|creates?)\b/i.test(x));
+  const lists = own ? [s.adds, s.changes, s.runtime].map((l) => (l ?? []).map(item)) : [adds.map(item), said.filter((x) => !adds.includes(x)).map(item), runtime];
+  return [["Adds", lists[0]], ["Changes", lists[1]], ["At run time", lists[2]]].filter(([, l]) => l.length);
+}
+
+// The checks in the groups the bar and the Overview count alike: the repo rules (the title's form and the analysis'
+// rules), CI, and the merge conflicts check.
+export const checkGroups = (checks = []) => ({ rules: checks.filter((c) => !c.ci && c.name !== "No merge conflicts"), ci: checks.filter((c) => c.ci), conflict: checks.filter((c) => c.name === "No merge conflicts") });
+
+// What the AI runs on a PR cost, summed: "$0.53 (Analysis $0.22, Security review $0.31)"; "" when nothing is known.
+// runs: [[label, cost]].
+export function costLine(runs) {
+  const paid = runs.filter(([, c]) => Number(c) > 0), usd = (c) => `$${Number(c).toFixed(2)}`;
+  return paid.length ? `${usd(paid.reduce((n, [, c]) => n + Number(c), 0))} (${paid.map(([k, c]) => (paid.length > 1 ? `${k} ${usd(c)}` : k)).join(", ")})` : "";
 }
 
 // How sure a finding is and what it hangs on, instead of telling its effect as a fact: "Assumed, not checked · only
@@ -859,17 +882,20 @@ export function componentLine(cc) {
 
 // The review's state as plain text, to paste for a colleague ("Copy review state"). A security finding is in it with
 // its title only: no file, no line, nothing about how to reach it.
-export function reviewState({ pr, head = "", list, counts, findings, statusOf, progress = "" }) {
+// behavior: what the PR does at run time, first so the reader knows the PR; fixOf(f): the agent and branch of a fix sent
+// ("a sub-agent, fix/2-x"); cost: costLine's text.
+export function reviewState({ pr, head = "", list, counts, findings, statusOf, progress = "", behavior = "", fixOf = () => "", cost = "" }) {
   const word = (s) => s.replace("_", " ");
   const ask = (r) => `- ${word(r.ask.state)}: ${r.ask.text}${r.ask.acceptance ? " (acceptance criterion)" : ""}${r.ask.why ? `. ${r.ask.why}` : ""}${r.unlinked ? " No finding backs this." : ""}`;
-  const one = (f) => (f.security ? `- ${f.severity}, security: ${f.title}` : `- ${f.severity}: ${f.title} (${f.file}:${f.line})`);
+  const one = (f) => `${f.security ? `- ${f.severity}, security: ${f.title}` : `- ${f.severity}: ${f.title} (${f.file}:${f.line})`}${statusOf(f) === "progress" && fixOf(f) ? `. Fix: ${fixOf(f)}` : ""}`;
   const groups = [["Unresolved", ["open", "recheck"]], ["Fix sent", ["progress"]], ["Fixed", ["fixed"]], ["Dismissed", ["dismissed"]]]
     .map(([label, st]) => [label, findings.filter((f) => st.includes(statusOf(f)))]).filter(([, fs]) => fs.length);
   return [`Review state of ${pr.repo ?? ""}#${pr.number}: ${pr.title ?? ""}`, `${pr.url ?? ""}${head ? ` at ${String(head).slice(0, 7)}` : ""}`, "",
+    ...(behavior ? [`What it does: ${String(behavior).replace(/\s+/g, " ").trim()}`, ""] : []),
     verdictParts(list, counts).map((p) => p.text).join(" · "), "",
     ...(taskHead(list) ? [`Task check: ${taskHead(list)}`, ...[...list.rows, ...list.extra].map(ask), ""] : []),
     ...groups.flatMap(([label, fs]) => [`${label} (${fs.length}):`, ...fs.map(one), ""]),
-    ...(progress ? [progress, ""] : []), ...(findings.some((f) => f.security) ? ["Security findings are listed by title only."] : [])].join("\n").trim() + "\n";
+    ...(progress ? [progress, ""] : []), ...(cost ? [`AI runs on this PR: ${cost}.`, ""] : []), ...(findings.some((f) => f.security) ? ["Security findings are listed by title only."] : [])].join("\n").trim() + "\n";
 }
 
 // ---- Markdown texts (findings, suggestions, comments) where one plain line is shown
