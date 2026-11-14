@@ -3664,37 +3664,55 @@ export const ReviewMode = {
       .on_size_change((_s, cx) => this.loadVisibility(cx)) // once the page is laid out: is the repo public (for "Add as comment")
       .child(h_flex().gap(10).items_center().flex_wrap().child(div().flex_1().text_size(20).font_semibold().child("Security"))
         .child(chip(t, `⛨ Security · ${open.length}`, open.length ? t.ansi1 : t.muted, true, "rv-bl-secn", "Unresolved security findings, from every source"))
-        .when(!empty, (e) => e.child(pill("rv-bl-run", t, sr?.state === "running" ? "Security review running…" : sr?.state ? "Run security review again" : "Run security review", (_e, cx) => this.runReviewer("security", cx)).tooltip("Run the security reviewer on the PR head, read-only: one model call; its findings and what it checked show here"))))
+        .when(data, (e) => e.child(pill("rv-bl-run", t, sr?.state === "running" ? "Security review running…" : sr?.state ? "Run security review again" : "Run security review", (_e, cx) => this.runReviewer("security", cx)).tooltip("Run the security reviewer on the PR head, read-only: one model call; its findings and what it checked show here"))))
+    // Without security data (no security run, no zone, no access row) no picture: the offer to make it (secEmpty, which
+    // has the Run button and the reasons), then whatever the other runs found about security.
+    const data = sr?.state === "done" || (this.ai?.access ?? []).length > 0 || zoned;
       // Someone else's PR with reasons (pr.js securityStart offer): why the Run button is there, with its cap.
-      .when(!empty && Boolean(this.secOfferText()), (e) => e.child(div().id("rv-sec-offer").text_size(13).whitespace_normal().line_height(1.5).text_color(t.ansi3)
+      .when(data && Boolean(this.secOfferText()), (e) => e.child(div().id("rv-sec-offer").text_size(13).whitespace_normal().line_height(1.5).text_color(t.ansi3)
         .child(`${this.secOfferText()} Run security review: capped at $${REVIEW_CAP[tierOf(model())]}.`)));
     if (empty) return [["head", head], ["empty", this.secEmpty(t)]];
-    return [["head", head], ...(a ? [["map", this.secMap(t, a, ctx)]] : []), ["findings", this.secIntro(t, sec, open)], ...order.map(({ f }) => [`f:${f.id}`, this.secFinding(t, f, ctx)]),
+    const map = data && a ? this.secMap(t, a, ctx) : null;
+    return [["head", head], ...(data ? [] : [["empty", this.secEmpty(t)]]), ...(map ? [["map", map]] : []), ["findings", this.secIntro(t, sec, open)], ...order.map(({ f }) => [`f:${f.id}`, this.secFinding(t, f, ctx)]),
       ["surface", this.secSurface(t, title, ctx)], ["scope", this.secScope(t, title)], ...(surface.grants.length ? [["access", this.secAccess(t, title, surface.grants)]] : [])];
   },
-  // The picture: the Architecture page's, with narrow cards and no texts on the lines, so it and the first finding
-  // show together; its frames are the trust zones when the analysis names them, and a call over a boundary is marked. A card with an access row says how exposed it is; a card or call with an unresolved security
-  // finding carries its mark; every other card is dimmed, so the way from an entry to a finding stands out. A click on
-  // a card lights it and scrolls to its first row below.
+  // The picture in a security view: only the cards that matter for security (a way in or a right at it, an unresolved
+  // security finding at it or at a call of it, a caller from outside), with their name only (no sentence, no change
+  // status), in their trust zones when the analysis or the security run names them; every other card is left out and named in one line under it, so it is plainly another
+  // view than Architecture impact. A card with an access row says how exposed it is; a finding carries its mark. A
+  // click on a card lights it and scrolls to its first row below. null: no card matters.
   secMap(t, a, ctx) {
     const order = Object.keys(EXPOSURE), exposure = new Map();
     for (const x of [...ctx.surface.entries, ...ctx.surface.grants]) if (x.node && (!exposure.has(x.node) || order.indexOf(x.exposure) < order.indexOf(exposure.get(x.node)))) exposure.set(x.node, x.exposure);
     const keep = new Set([...exposure.keys(), ...ctx.marks.nodes.keys(), ...[...ctx.marks.edges.keys()].flatMap((i) => [a.edges[i].from, a.edges[i].to]), ...a.nodes.filter((n) => n.type === "external").map((n) => n.id)]);
-    const key = `${[...exposure]}|${[...ctx.marks.nodes.keys()]}|${[...ctx.marks.edges.keys()]}|${JSON.stringify(a)}`;
-    // With trust zones (a newer analysis) the zones are the frames, cards outside every zone stand free.
-    // A call between two of the cards that matter is a line, never a stub: the way from an entry to a finding.
-    if (this.secMemo?.key !== key) this.secMemo = { key, L: archLayout(zoneArch(a), "diff", (n) => (exposure.has(n.id) ? 1 : 0) + (ctx.marks.nodes.has(n.id) ? 1 : 0), true,
-      { lines: (i) => keep.has(a.edges[i]?.from) && keep.has(a.edges[i]?.to) }) };
-    const L = this.secMemo.L, base = this.archOpts("blast"), color = { open: t.ansi1, public: t.ansi3, internal: t.muted };
+    if (!keep.size) return null;
+    const key = `${[...exposure]}|${[...keep]}|${ctx.open.map((f) => f.id)}|${JSON.stringify(a)}`;
+    if (this.secMemo?.key !== key) {
+      // The kept cards, the calls between them, and the zones and groups that still hold one. A finding that breaks a
+      // call names it by its index ("e<i>"): renumbered for the shorter list of calls.
+      const idx = [], edges = (a.edges ?? []).filter((e, i) => keep.has(e.from) && keep.has(e.to) && idx.push(i)), now = new Map(idx.map((i, k) => [i, k]));
+      // A card here says what matters for security only: its name, its way in and its findings. What the PR changed
+      // in it and its sentence are on Architecture impact.
+      const nodes = a.nodes.filter((n) => keep.has(n.id)).map((n) => ({ ...n, description: "", status: undefined })), holds = (key2) => (g) => nodes.some((n) => n[key2] === g.id);
+      const sa = { ...a, nodes, edges, groups: (a.groups ?? []).filter(holds("group")), zones: (a.zones ?? []).filter(holds("zone")) };
+      const renumber = (f) => { const m = /^e(\d+)$/.exec(String(f.breaks?.edge ?? "")); return m ? { ...f, breaks: { ...f.breaks, edge: now.has(Number(m[1])) ? `e${now.get(Number(m[1]))}` : undefined } } : f; };
+      const marks = archMarks(sa, ctx.open.map(renumber), this.ai?.access);
+      this.secMemo = { key, marks, hidden: a.nodes.filter((n) => !keep.has(n.id)),
+        L: archLayout(zoneArch(sa), "diff", (n) => (exposure.has(n.id) ? 1 : 0) + (marks.nodes.has(n.id) ? 1 : 0), true, { lines: () => true }) };
+    }
+    const { L, marks, hidden } = this.secMemo, base = this.archOpts("blast"), color = { open: t.ansi1, public: t.ansi3, internal: t.muted };
     const mark = (e, id = null) => chip(t, EXPOSURE[e], color[e], e !== "internal", id, e === "open" ? "Reachable without credentials of the cloud account, and nothing checks the caller" : e === "public" ? "Reachable without credentials of the cloud account; something checks the caller" : "Reachable only with a right inside the cloud account");
-    const opts = { ...base, marks: ctx.marks, keep, numbers: false, zoom: settings().zoom || 1, onFocus: (id, cx) => { this.fh.focus(); this.secCard(id, cx); } };
+    const opts = { ...base, marks, numbers: false, zoom: settings().zoom || 1, onFocus: (id, cx) => { this.fh.focus(); this.secCard(id, cx); } };
     const deco = (n) => (exposure.has(n.id) ? [h_flex().flex_none().h(15).child(mark(exposure.get(n.id), `rv-sec-ex-${n.id}`))] : []);
     return v_flex().id("rv-sec-map").gap(6)
       .child(h_flex().gap(10).items_center().flex_wrap().text_size(11.5).text_color(t.muted)
         .children(order.map((e) => mark(e))).child("ways in and rights at a card")
         .child(chip(t, "High · 1", t.ansi1, true)).child("unresolved security findings at a card or call")
-        .child("Dimmed: neither.").when(hasTrust(L), (e) => e.child(trustLegend(L, t))))
-      .child(this.archCanvas(t, L, opts, { id: "rv-sec-canvas", pic: "rv-sec-pic", decorate: deco, notes: false }));
+        .when(hasTrust(L), (e) => e.child(trustLegend(L, t))))
+      .child(this.archCanvas(t, L, opts, { id: "rv-sec-canvas", pic: "rv-sec-pic", decorate: deco, notes: false }))
+      .when(hidden.length > 0, (e) => e.child(div().id("rv-sec-hidden").text_size(12.5).text_color(t.muted).whitespace_normal()
+        .tooltip(hidden.map((n) => n.label ?? n.id).join("\n"))
+        .child(`Left out: ${hidden.length} ${hidden.length === 1 ? "component has" : "components have"} no way in, no right and no security finding (${hidden.slice(0, 4).map((n) => n.label ?? n.id).join(", ")}${hidden.length > 4 ? ", …" : ""}). All of them are on Architecture impact.`)));
   },
   // A card of the picture lit (null: none), and its first row below brought into view.
   secCard(id, cx) {
