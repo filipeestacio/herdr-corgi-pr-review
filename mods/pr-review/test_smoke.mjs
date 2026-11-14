@@ -9,7 +9,7 @@ import { S, cx as base } from "./render_stub.mjs";
 
 const { default: PrReview } = await import("./main.js");
 const { splitPatch, hunksOf, diffRows, hash } = await import("./pr.js");
-const { foldOnOpen } = await import("./views.js");
+const { foldOnOpen, resWatch } = await import("./views.js");
 const R = await import("./review.js");
 const { withThreadState } = await import("./threads.js");
 const fx = (name) => readFileSync(new URL(`../../demo/fixtures/review/${name}`, import.meta.url), "utf8");
@@ -154,6 +154,20 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   await tour(await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify({ ...doc, resilience: { ...res, paths: res.paths.map((p) => ({ ...p, blocker: null, result: "mitigated", limited_by: "template.yaml:11" })) } }) }), "PR #2, every path limited");
   for (const state of ["running", "failed"]) await tour(await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify({ ...doc, runs: { ...doc.runs, resilience: { state, busy: state === "running", error: "Stopped", at: new Date().toISOString() } } }) }), `PR #2, resilience ${state}`);
   await tour(await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify({ ...doc, resilience: res }), trusted: false }), "someone else's PR with resilience paths");
+  // Wave R2: signal and seen_as, a base not comparable, blind spots and calls for the watch list, a doubled effect, a
+  // tool text to leave out, a race without on-call words, a probe that never ran and one with an unknown base.
+  const r2 = { ...res, not_checked: [...(res.not_checked ?? []), "Runtime behaviour: nothing was executed, because Bash was denied"],
+    blind_spots: [{ failure: "Mail transport failure is not visible", at: "library/mailer.py:19", signal: "none", alarm: "none" }, { failure: "Queue age is not monitored", at: "template.yaml:11", signal: "platform_only", alarm: "none" }],
+    deps: [{ edge: "e6", at: "template.yaml:32", mode: "async" }], effects: [{ kind: "mail", node: "reminders" }, { kind: "mail", node: "consumer" }],
+    paths: res.paths.map((p, k) => ({ ...p, signal: k % 2 ? "none" : "log", seen_as: "Lambda errors in the log", pre_existing: k === 0 ? "unknown" : p.pre_existing, failing: [...(p.failing ?? []), "duplicate_effect", "poison_message"],
+      race: p.race ? { ...p.race, oncall: undefined } : p.race, kind: k === 2 ? "timeout" : p.kind, budget: k === 2 ? null : p.budget, ladder: k === 2 ? [] : p.ladder })) };
+  const v2 = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify({ ...doc, resilience: r2 }) });
+  v2.deep = { ...v2.deep, probes: { [v2.probeKey("pr1")]: { state: "done", status: "script_failed", line: "The agent ended without running the probe.", ms: 0, head: null },
+    [v2.probeKey("pr2")]: { state: "done", status: "reproduced", line: "handled 1, no mail", ms: 1100, head: "ccddf95", base: { status: "unknown", line: "TypeError" }, pre_existing: "unknown", network_barrier: true, sandbox: "sandbox-exec" } } };
+  await tour(v2, "PR #2, resilience with signals, blind spots and probes not run");
+  const w = v2.resNow() && resWatch(v2.resNow(), v2.ai?.arch);
+  assert.equal(w.before.length, 1, "a blind spot without any signal goes before the merge");
+  assert.ok(!v2.mergeRows().some((r) => /Bash was denied/.test(r.title)) && v2.verdictNow().some((p) => p.key === "resilience"), "the Overview names the resilience blockers");
 }
 // Someone else's PR with reasons for a security review: the offers instead of a start.
 {
