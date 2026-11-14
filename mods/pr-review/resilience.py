@@ -33,6 +33,8 @@ STRENGTHS = ["runs_pr_code", "forced_schedule", "models_env"]
 FAILING = ["unbounded_retry", "no_dlq", "poison_message", "over_timeout", "duplicate_effect", "lost_effect", "swallowed_retry",
            "shared_resource", "no_timeout_public", "silent", "removed_signal", "reads_foreign_state", "race", "no_jitter", "no_alarm",
            "no_breaker", "no_trace", "cardinality", "n_plus_one", "unbounded_queue", "no_throttle", "stale_cache", "clock", "dishonest_response"]
+# What a function raises out of itself: its platform's error metric shows it (Lambda Errors), whatever else is silent.
+RAISING = {"poison_message", "over_timeout", "no_dlq"}
 FINDS = {"findings": {**STRINGS, "description": "ids of findings that show it: an existing finding's id from the list, or the ref of a new one"}}
 AT = {**S, "description": "file:line"}
 
@@ -60,14 +62,14 @@ SCHEMA = {
     "clocks": {"type": "array", "items": {"type": "object", "required": ["kind", "at", "effect"], "properties": {"kind": S, "at": AT, "effect": S, **FINDS}}},
     "blind_spots": {"type": "array", "items": {"type": "object", "required": ["id", "failure", "at", "signal", "alarm"], "properties": {
         "id": S, "failure": S, "at": AT, "signal": {"enum": SIGNALS}, "alarm": {"enum": ALARMS}, **FINDS}}},
-    "paths": {"type": "array", "items": {"type": "object", "required": ["id", "kind", "trigger", "steps", "end", "result", "failing", "signal", "seen_as"], "properties": {
+    "paths": {"type": "array", "items": {"type": "object", "required": ["id", "kind", "trigger", "steps", "end", "result", "failing", "raises", "signal", "seen_as"], "properties": {
         "id": S, "kind": {"enum": PATH_KINDS}, "trigger": S, "steps": STRINGS, "end": S, "result": {"enum": RESULTS}, "limited_by": AT,
-        "failing": {"type": "array", "items": {"enum": FAILING}}, "signal": {"enum": SIGNALS}, "seen_as": S, **FINDS, "probe": S, "note": S, "action": S}}},
+        "failing": {"type": "array", "items": {"enum": FAILING}}, "raises": BOOL, "signal": {"enum": SIGNALS}, "seen_as": S, **FINDS, "probe": S, "note": S, "action": S}}},
     "checks": {"type": "array", "items": {"type": "object", "required": ["check", "result", "why"], "properties": {
         "check": S, "result": {"enum": CHECK_RESULTS}, "at": AT, "why": S, **FINDS}}},
     "additions": {"type": "array", "items": {"type": "object", "required": ["what", "kind", "at", "solves", "likelihood", "cost", "simpler", "result"], "properties": {
         "what": S, "kind": S, "at": AT, "solves": S, "likelihood": {"enum": LIKELIHOOD}, "cost": {"type": "object", "properties": {"mental": S, "ops": S, "money": S}},
-        "simpler": S, "result": {"enum": ADD_RESULTS}, "purpose": S, "next": S, **FINDS}}},
+        "simpler": S, "result": {"enum": ADD_RESULTS}, "purpose": S, "works_today": BOOL, "broken_by": S, "next": S, **FINDS}}},
     "probes": {"type": "array", "items": {"type": "object", "required": ["id", "claim", "of", "kind", "strength"], "properties": {
         "id": S, "claim": S, "of": S, "kind": {"enum": PROBE_KINDS}, "strength": {"enum": STRENGTHS}}}},
     "not_checked": STRINGS}
@@ -142,15 +144,19 @@ ASK = (
     "mitigated: only when a protection stands behind it (a dead-letter queue, a limit, a guard, a timeout) and limited_by "
     "names its file:line; not_assessed, also for a path that cannot happen today for another reason, with a note such "
     "as \"not possible today, see p6\"), failing (what it breaks, from: "
-    + ", ".join(FAILING) + "), signal (what shows the failure: alarm, log at warning or above, metric, dlq, platform_only "
-    "for the platform's own error metrics of a function that raises, none when nothing does), seen_as (one sentence: what "
+    + ", ".join(FAILING) + "), raises (true when the failure ends in an exception or timeout that leaves a function "
+    "unhandled: the platform counts it as an error), signal (what shows the failure: alarm, log at warning or above, "
+    "metric, dlq, platform_only for the platform's own error metrics of a function that raises, none only when nothing "
+    "raises and nothing logs: a swallowed error, a success answer despite the loss, a call that never happens), seen_as (one sentence: what "
     "on-call sees, e.g. \"Lambda Errors on the consumer, no message\"), findings, probe (the id of a probe that would show "
     "it), note, action (what to do about it as one sentence starting with a verb, e.g. \"Decouple: add a dead-letter queue "
     "with maxReceiveCount\", only for this path's failure)); additions (one per component or mechanism the PR adds: what, "
-    "kind, at, solves (the failure it solves, with its line), likelihood (likely, possible, rare, cannot_happen), cost "
+    "kind, at, solves (the failure it solves in production once the PR works as intended, with its line), likelihood (of "
+    "that failure: likely, possible, rare, cannot_happen; never cannot_happen because of a bug in the part), works_today "
+    "(false when a bug keeps it from working, e.g. nothing publishes to the queue), broken_by (that bug, one sentence), cost "
     "{mental, ops, money}, simpler (the simpler alternative and what it would lose), result (justified: it solves a "
     "failing path of this PR; questionable: small use against its cost; unjustified: it solves nothing that can happen "
-    "here, or it is a retry layer under another one), purpose (what it is for, one sentence), next (one sentence with a "
+    "here, or it is a retry layer under another one; a bug that keeps it from working changes works_today, never result), purpose (what it is for, one sentence), next (one sentence with a "
     "verb: keep, drop or change it, together with what its findings ask, e.g. \"Keep the queue, add a dead-letter queue, "
     "drop the mailer retry\"), findings); checks (one row for each of cors, cache_control, rollback, limits, cardinality, clocks, health, shutdown, "
     "and any other check you made beyond the paths: result finding|clean|not_checkable|elsewhere, at, why); probes (r1, r2, …: a small "
@@ -228,8 +234,7 @@ def view(answer, findings, pic, known, changed=None):
                       "steps": [s for s in (step(x) for x in p.get("steps") or []) if s], "end": str(p.get("end") or ""), "result": result,
                       "limited_by": at(p.get("limited_by")) or None, "failing": [x for x in dict.fromkeys(p.get("failing") or []) if x in FAILING],
                       # signal (what shows the failure) and seen_as; visible is kept for older readers: anything but none
-                      "signal": enum(p.get("signal"), SIGNALS), "seen_as": str(p.get("seen_as") or ""),
-                      "visible": enum(p.get("signal"), SIGNALS) not in (None, "none") if p.get("signal") else bool(p.get("visible")), "findings": found, "probe": p.get("probe") if p.get("probe") in probe_ids else None, "note": str(p.get("note") or ""),
+                      **signal_of(p), "findings": found, "probe": p.get("probe") if p.get("probe") in probe_ids else None, "note": str(p.get("note") or ""),
                       "action": str(p.get("action") or "")})
     # The base rule: a new finding is the PR's only when its lines are lines the diff adds; a flaw whose lines stand
     # unchanged in the base was there before (the one-day window in reminders.py on the demo's base); without the diff
@@ -240,7 +245,8 @@ def view(answer, findings, pic, known, changed=None):
     additions = [{"what": str(a.get("what") or ""), "kind": str(a.get("kind") or ""), "at": at(a.get("at")), "solves": str(a.get("solves") or ""),
                   "likelihood": enum(a.get("likelihood"), LIKELIHOOD), "cost": {k: str((a.get("cost") or {}).get(k) or "") for k in ("mental", "ops", "money")},
                   "simpler": str(a.get("simpler") or ""), "result": enum(a.get("result"), ADD_RESULTS) or "questionable", "findings": fids(a.get("findings")),
-                  "purpose": str(a.get("purpose") or ""), "next": str(a.get("next") or "")}
+                  "purpose": str(a.get("purpose") or ""), "next": str(a.get("next") or ""),
+                  "works_today": a.get("works_today") if isinstance(a.get("works_today"), bool) else None, "broken_by": str(a.get("broken_by") or "")}
                  for a in lst("additions") if a.get("what")]
     retry_under_redelivery(deps, additions)
     return {"deps": deps, "effects": effects, "state": state, "races": races, "additions": additions,
@@ -258,6 +264,20 @@ def view(answer, findings, pic, known, changed=None):
             "probes": probes, "not_checked": [str(x) for x in answer.get("not_checked") or []]}
 
 
+def signal_of(p):
+    """A path's signal, seen_as and visible (kept for older readers: anything but none). A failure that raises out of a
+    function (raises, or what it breaks raises: a poison message, a batch over its timeout) is at least platform_only,
+    whatever the run says: the platform counts the error. none stays for a swallowed error, a success answer despite
+    the loss, a call that never happens. signal_said: the run's own word when the rule changed it."""
+    said = p.get("signal") if p.get("signal") in SIGNALS else None
+    raises = p.get("raises") is True or bool(RAISING & set(p.get("failing") or []))
+    out = {"raises": raises, "signal": said, "seen_as": str(p.get("seen_as") or "")}
+    if raises and said in (None, "none"):
+        out.update(signal="platform_only", signal_said=said, seen_as="The function's error metric counts it; nothing else says what failed.")
+    out["visible"] = out["signal"] not in (None, "none") if out["signal"] or not isinstance(p.get("visible"), bool) else p["visible"]
+    return out
+
+
 def retry_under_redelivery(deps, additions):
     """A retry layer under a queue's redelivery is unjustified: a call that retries inside a consumer whose queue
     delivers the whole message again (the mailer's three attempts under SQS). The run's word on such an addition is
@@ -273,7 +293,7 @@ def retry_under_redelivery(deps, additions):
         if a is None:
             a = {"what": f"{r.get('layer') or 'client'} retry under the queue's redelivery", "kind": "retry layer", "at": f"{loop}:{line[0]}" if line else loop,
                  "solves": "", "likelihood": None, "cost": {"mental": "", "ops": "", "money": ""}, "simpler": "", "result": "unjustified", "findings": [],
-                 "purpose": "Retries a failed call inside one delivery", "next": "", "derived": True}
+                 "purpose": "Retries a failed call inside one delivery", "works_today": None, "broken_by": "", "next": "", "derived": True}
             additions.append(a)
         a["result"] = "unjustified"
         a["simpler"] = a["simpler"] or "Let the queue's redelivery retry the message"
