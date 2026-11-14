@@ -238,6 +238,13 @@ assert.equal(pendingText([{ file: "a.py" }, { file: "a.py" }, { file: "b.py" }])
   assert.deepEqual(analysisAge({ head: "abcdef123", exact: false, now: "9876543ff", age: "1 d ago" }), { stale: true, text: "Analysis of abcdef1, 1 d ago · the PR is at 9876543 now" });
   assert.deepEqual(analysisAge({ exact: true, age: "5 min ago" }), { stale: false, text: "Analysis of this diff, 5 min ago" }, "an analysis from before it saved its head");
   assert.equal(analysisAge({ exact: false, now: "9876543" }).text, "Analysis of an older diff");
+  // The state hints at the top of the Analysis tab: checkout, an analysis waiting for it, reviewer runs.
+  const { stateHints } = await import("./views.js");
+  assert.deepEqual(stateHints({ checkout: { busy: true }, pendingRun: true, runs: { security: { busy: true }, claude: { at: "x" } }, names: { security: "Security review" } }).map((h) => [h.key, h.text, Boolean(h.spin)]),
+    [["checkout", "Checking out the PR head: the analysis starts once it is there…", true], ["run-security", "Security review is running…", true]]);
+  assert.deepEqual(stateHints({ checkout: { error: "no such ref" }, pendingRun: true }).map((h) => [h.text, Boolean(h.error)]), [["Could not check out the PR head: no such ref", true]]);
+  assert.deepEqual(stateHints({ pendingRun: true }).map((h) => h.key), ["wait"]);
+  assert.deepEqual(stateHints({}), []);
 }
 // ---- a finding's facts, its card's line, the rows' heights, the sequence diagram (the diff and a layer's head)
 import { factRows, findingAnchor, wrapCount, seqLayout, IMPACT, SEVERITY_SCALE, SEQ } from "./views.js";

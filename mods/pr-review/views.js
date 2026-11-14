@@ -496,3 +496,15 @@ export function analysisAge({ head = null, exact = true, now = null, age = "" })
   const at = (x) => String(x).slice(0, 7), moved = !exact || Boolean(head && now && head !== now);
   return { stale: moved, text: `Analysis of ${head ? at(head) : exact ? "this diff" : "an older diff"}${age ? `, ${age}` : ""}${moved && now && head ? ` · the PR is at ${at(now)} now` : ""}` };
 }
+
+// The state hints at the top of the Analysis tab, where they are seen instead of a grey line under the page: the PR
+// head's checkout, an analysis waiting for it, reviewer runs. checkout: {busy} | {error} | null; runs: the findings
+// file's runs (busy while one runs); names: kind -> label. -> [{key, text, spin, error}]
+export function stateHints({ checkout = null, pendingRun = false, runs = {}, names = {} }) {
+  return [
+    checkout?.busy && { key: "checkout", spin: true, text: `Checking out the PR head${pendingRun ? ": the analysis starts once it is there" : ""}…` },
+    checkout?.error && { key: "checkout", error: true, text: `Could not check out the PR head: ${checkout.error}` },
+    pendingRun && !checkout && { key: "wait", text: "The analysis starts once the PR head is checked out." },
+    ...Object.entries(runs ?? {}).filter(([, r]) => r?.busy).map(([k]) => ({ key: `run-${k}`, spin: true, text: `${names[k] ?? k} is running…` })),
+  ].filter(Boolean);
+}
