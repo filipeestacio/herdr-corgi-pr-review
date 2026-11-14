@@ -104,7 +104,7 @@ assert.deepEqual(args.slice(0, 2), ["run", "--bg"]);
 assert.ok(args.includes("--no-notify"), "nothing typed into the parent");
 assert.equal(args[args.indexOf("--parent") + 1], "t3", "a sub-agent of the PR's agent");
 assert.equal(args[args.indexOf("--cwd") + 1], "/w", "in its own worktree");
-assert.deepEqual(args.slice(args.indexOf("--") + 1, args.indexOf("claude") + 1), ["env", "CLAUDE_CONFIG_DIR=/c", "claude"], "on the PR's context");
+assert.deepEqual(args.slice(args.indexOf("--") + 1, args.indexOf("claude") + 1), [...TH.NO_PUSH_ENV, "env", "CLAUDE_CONFIG_DIR=/c", "claude"], "its git cannot push, on the PR's context");
 assert.deepEqual(args.slice(args.indexOf("--permission-mode")), ["--permission-mode", "auto", "Fix it"], "in auto mode");
 assert.ok(TH.subAgentArgs({ parent: null, cwd: "/w", name: "n", task: "x", job: "j" }).includes("--no-parent"));
 assert.deepEqual(args.slice(args.indexOf("--strict-mcp-config"), args.indexOf("--strict-mcp-config") + 3), ["--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}'], "no MCP server of the context");
@@ -210,7 +210,7 @@ console.log("threads ok");
   const sub = Object.fromEntries(TH.sendFacts({ kind: "sub", account: "Claude Code (Anthropic) · account in ~/.claude", trusted: true, branch: "fix/7-f1" }));
   assert.equal(sub["Runs as"], "Claude Code (Anthropic) · account in ~/.claude");
   assert.equal(Object.fromEntries(TH.sendFacts({ kind: "new", account: "acct", model: "Sonnet" }))["Runs as"], "acct · Sonnet", "the model a new agent runs on");
-  assert.match(sub.May, /auto mode/); assert.match(sub.Push, /^Never/); assert.match(sub.Result, /fix\/7-f1.*Nothing reaches the PR until you apply it/);
+  assert.match(sub.May, /auto mode/); assert.match(sub.Push, /^Not through git: .*Not covered: a program that clears its environment, or a push through the GitHub API.*auto mode may run/); assert.match(sub.Result, /fix\/7-f1.*Nothing reaches the PR until you apply it/);
   assert.equal(sub.Starts, undefined, "the choice above says where it starts");
   assert.match(Object.fromEntries(TH.sendFacts({ kind: "sub", account: "a", trusted: false })).May, /someone else's PR.*asks before every edit/);
   const main = Object.fromEntries(TH.sendFacts({ kind: "main", account: "a", name: "PR #7" }));
@@ -279,7 +279,7 @@ console.log("threads ok");
   assert.equal(out.a1.result, "reproduced"); assert.equal(out.a1.state, "done");
   assert.deepEqual([out.a2.result, out.a2.reason, out.a2.head], ["not_reproduced", "The agent ended without a result for this finding.", "h"]);
   const f = Object.fromEntries(TH.sendFacts({ kind: "verify", account: "acct", trusted: false, branch: "verify/2-a1", model: "Sonnet" }));
-  assert.match(f.Starts, /can run code from this PR/); assert.match(f.May, /manual mode.*--setting-sources user/); assert.match(f.Push, /^Never/);
+  assert.match(f.Starts, /can run code from this PR/); assert.match(f.May, /manual mode.*--setting-sources user/); assert.match(f.Push, /^Not through git: .*web tools.*Not covered/); assert.doesNotMatch(f.Push, /auto mode/, "someone else's PR: manual, nothing runs without asking");
   assert.equal(f["Runs as"], "acct · Sonnet");
   assert.match(Object.fromEntries(TH.sendFacts({ kind: "verify", account: "a", trusted: true })).May, /auto mode.*runs the PR's code/);
   console.log("verify agent ok");
@@ -360,3 +360,28 @@ console.log("threads ok");
   assert.ok(TH.probeArgs({ cwd: "/w/x", name: "n", task: "T", job: "j", id: ok }).includes(`Write(//w/x/.pr-review-probe/${ok}.py)`));
   console.log("probe id ok");
 }
+// Agents that get PR text: no MCP servers in the Ask and Send review tabs either; the push lock in its wrappers and
+// in git itself; what trusting a PR turns on.
+{
+  const ask = TH.tabArgs({ env: ["env", "A=1"], model: "sonnet", ask: true, trusted: false }), send = TH.tabArgs({ model: "opus" });
+  assert.deepEqual(ask, ["env", "A=1", "claude", "--model", "sonnet", ...TH.NO_MCP, "--permission-mode", "manual", "--setting-sources", "user"], "Ask on someone else's PR: no MCP, manual, the user's settings only");
+  assert.deepEqual(TH.tabArgs({ model: "sonnet", ask: true, trusted: true }).slice(-2), ["--permission-mode", "manual"]);
+  assert.deepEqual(send, ["claude", "--model", "opus", ...TH.NO_MCP], "Send review: no MCP");
+  for (const r of ["Bash(git -C * push*)", "Bash(git -c * push*)", "Bash(env * git push*)", "Bash(sh -c *git push*)"]) assert.ok(TH.NO_PUSH.includes(r), r);
+  // The real thing: with NO_PUSH_ENV, git pushes nowhere, in a script, with -C and -c, to any URL; fetch still works.
+  const { execFileSync } = await import("node:child_process"), { mkdtempSync, rmSync } = await import("node:fs"), { tmpdir } = await import("node:os");
+  const d = mkdtempSync(`${tmpdir()}/nopush-`), git = (args, env = {}) => execFileSync("git", args, { cwd: `${d}/w`, env: { ...process.env, ...env }, stdio: "pipe" }).toString();
+  try {
+    execFileSync("git", ["init", "-q", "--bare", `${d}/r.git`]); execFileSync("git", ["init", "-q", `${d}/w`]);
+    git(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"]); git(["remote", "add", "origin", `${d}/r.git`]);
+    const lock = Object.fromEntries(TH.NO_PUSH_ENV.slice(1).map((x) => [x.slice(0, x.indexOf("=")), x.slice(x.indexOf("=") + 1)]));
+    for (const how of [["push", "origin", "HEAD:main"], ["-C", ".", "-c", "a.b=c", "push", "origin", "HEAD:main"], ["push", "https://github.com/o/r.git", "HEAD:main"]])
+      assert.throws(() => git(how, lock), /pushing-is-off-in-this-review/, how.join(" "));
+    assert.throws(() => execFileSync("sh", ["-c", "git push -q origin HEAD:main"], { cwd: `${d}/w`, env: { ...process.env, ...lock }, stdio: "pipe" }), /pushing-is-off/, "sh -c");
+    git(["fetch", "-q", "origin"], lock);
+    assert.equal(execFileSync("git", ["-C", `${d}/r.git`, "for-each-ref"]).toString(), "", "nothing arrived");
+  } finally { rmSync(d, { recursive: true, force: true }); }
+  assert.deepEqual(["auto mode", "own agent session", "Probes start without asking", "security review starts by itself", "Language servers"].filter((w) => !TH.TRUST_TURNS_ON.some((x) => x.includes(w))), [], "the trust prompt names all of it");
+  console.log("agents with PR text ok");
+}
+

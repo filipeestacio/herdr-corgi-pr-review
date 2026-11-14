@@ -604,11 +604,15 @@ export const ReviewMode = {
     const pr = this.prSel, who = pr.author ? `@${pr.author}` : "someone else";
     return v_flex().flex_none().px(14).py(10).gap(8).bg(t.ansi3 + "1c").border_b(1).border_color(t.border).text_size(12.5)
       .child(div().font_semibold().text_color(t.foreground).child(`Do you trust the authors of this code? This PR is by ${who}.`))
-      .child(div().whitespace_normal().text_color(t.muted).child("Language servers for go-to-definition can run code from the repository (build scripts, proc macros, its own TypeScript). In Restricted Mode they don't: Java has no build import, Rust has no go-to-definition, and nothing is downloaded. Reading the diff, reviewers and the AI analysis work the same either way."))
+      // Everything trusting turns on (threads.js TRUST_TURNS_ON), so the choice is made knowing it.
+      .child(div().whitespace_normal().text_color(t.muted).child("Trusting it turns on:"))
+      .child(v_flex().gap(2).pl(8).children(TH.TRUST_TURNS_ON.map((x, k) => h_flex().id(`rv-trust-on-${k}`).gap(6).items_start().text_color(t.muted)
+        .child(div().flex_none().child("·")).child(div().flex_1().min_w(0).whitespace_normal().child(x)))))
+      .child(div().whitespace_normal().text_color(t.muted).child("In Restricted Mode each of these asks you first or stays off: agents ask before every command and read only your own settings, the security review is offered instead of started, Java has no build import and Rust no go-to-definition. Reading the diff, the reviewers you start and the AI analysis work the same either way."))
       .child(h_flex().gap(8).flex_wrap()
-        .child(pill("rv-trust-pr", t, "Trust this PR", (_e, cx) => this.trust("pr", cx), false, t.foreground).tooltip("Allow language servers to run this PR's build scripts for full go-to-definition"))
-        .when(Boolean(pr.repo), (e) => e.child(pill("rv-trust-repo", t, `Trust all PRs in ${pr.repo}`, (_e, cx) => this.trust("repo", cx)).tooltip("Trust every PR in this repository from now on")))
-        .child(pill("rv-trust-no", t, "Stay in Restricted Mode", (_e, cx) => this.trust("ask", cx)).tooltip("Keep language servers from running this code; go-to-definition may find less")));
+        .child(pill("rv-trust-pr", t, "Trust this PR", (_e, cx) => this.trust("pr", cx), false, t.foreground).tooltip("Turn on everything listed above for this PR"))
+        .when(Boolean(pr.repo), (e) => e.child(pill("rv-trust-repo", t, `Trust all PRs in ${pr.repo}`, (_e, cx) => this.trust("repo", cx)).tooltip(`Turn on everything listed above for every PR in ${pr.repo} from now on, also those by other people${this.repoVis?.[pr.repo] === "PUBLIC" ? ": this repository is public, so anyone can open one" : ""}`)))
+        .child(pill("rv-trust-no", t, "Stay in Restricted Mode", (_e, cx) => this.trust("ask", cx)).tooltip("Keep everything listed above off for this PR; agents ask first and go-to-definition may find less")));
   },
   applyTrust() {
     const w = this.worktree, yes = this.trustedPr();
@@ -1182,7 +1186,7 @@ export const ReviewMode = {
       }
       if (plan.kind === "new" && plan.where) {
         run("tab.new", { space: this.spaceFor(this.ctxId(), origin?.cwd, this.root), folder: plan.where, name: `Ask · PR #${origin?.number ?? ""}`,
-          argv: [...this.ctxEnv(this.ctxId()), "claude", "--model", model(), ...(this.trustedPr() ? ["--permission-mode", "manual"] : TH.permissionArgs(false))], task: text });
+          argv: TH.tabArgs({ env: this.ctxEnv(this.ctxId()), model: model(), ask: true, trusted: this.trustedPr() }), task: text });
         this.note = "Started a new agent tab with your question. The finding stays as it is.";
         return cx.notify();
       }

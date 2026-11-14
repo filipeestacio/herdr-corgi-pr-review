@@ -20,6 +20,7 @@ import { spaces, panes, focused, agents, exec, hc, run, theme, settings, readTex
 import { diffRows, buildPrompt, splitPatch, selection, nextChange, lineLabel, anchorRow, buildReview, hunksOf, hash, uiLine, reviewRequest, mapReview, triageOf, isSecurity } from "./pr.js";
 import { parsePrRef, ghTarget, pruneSources, codeModel, windowActive } from "./pr.js";
 import * as C from "./context.js";
+import { tabArgs } from "./threads.js"; // a new Claude tab with the PR's text: no MCP servers
 import { loadDiff, saveDiff } from "./diffcache.js";
 import { setupBanner, renderSetup, loadSetup, runSetup, openUrl, readConfig } from "./setup-view.js";
 import { chip, PRIORITY_TIP } from "./stack.js";
@@ -524,7 +525,7 @@ export default class PrReview extends View {
           run("tab.new", { space: this.spaceFor(ctx, origin.cwd, this.root), folder: origin.cwd, name: `PR #${origin.number}`, argv: [...this.ctxEnv(origin.sessionContext ?? ctx), "claude", "--resume", origin.session], task: prompt });
           this.note = `${what}: resumed the PR's session in a new tab`;
         } else {
-          run("tab.new", { space: this.spaceFor(ctx, this.root), folder: this.root ?? location().cwd, name: "PR-Review", argv: [...this.ctxEnv(ctx), "claude", "--model", walkModel()], task: prompt });
+          run("tab.new", { space: this.spaceFor(ctx, this.root), folder: this.root ?? location().cwd, name: "PR-Review", argv: tabArgs({ env: this.ctxEnv(ctx), model: walkModel() }), task: prompt });
           this.note = `${what}: started a new Claude tab`;
         }
         done(cx);
