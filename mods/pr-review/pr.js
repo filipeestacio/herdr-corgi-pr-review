@@ -1262,6 +1262,7 @@ export const tierSteps = (tier) => ({ up: tier === "sonnet" ? "opus" : null, dow
 // What a path breaks that blocks a merge, in the order the reason is told, with the reason in words. Alone no blocker:
 // no jitter, no alarm, no breaker, no trace context, high cardinality (they make a failure worse or harder to see).
 export const RES_BLOCKING = [
+  ["dishonest_response", "the route answers success while the work is lost"],
   ["unbounded_retry", "load grows without a limit"],
   ["no_dlq", "a message that always fails comes back until it expires"],
   ["poison_message", "a message that always fails comes back until it expires"],
@@ -1273,13 +1274,53 @@ export const RES_BLOCKING = [
   ["no_timeout_public", "a call without a timeout waits inside a public route's request"],
   ["removed_signal", "the PR removes the signal on this path"],
 ];
+const REDELIVERY = new Set(["load grows without a limit", "a message that always fails comes back until it expires", "the worst run outlasts its timeout and is delivered again"]);
 const days = (s) => (s >= 86400 ? `${Math.round(s / 86400)} ${Math.round(s / 86400) === 1 ? "day" : "days"}` : s >= 3600 ? `${Math.round(s / 3600)} h` : `${Math.round(s)} s`);
 // The calls a path goes through: the deps whose edge or place is one of its steps, or whose file a step is in (a
 // model often names the path by its lines, consumer.py:21, and the call by another line of the same file).
 const fileOf = (x) => String(x ?? "").replace(/:\d+$/, "");
-// loose (ladders and map marks only): also a call in the file of a step; a blocker decides on the strict match.
-const depsOf = (path, deps, loose = false) => (deps ?? []).filter((d) => (d.edge && path.steps.includes(d.edge)) ||
-  (d.at && path.steps.some((s) => s === d.at || (loose && /:\d+$/.test(s) && fileOf(s) === fileOf(d.at)))));
+// The calls a path really reaches (wave R2: never a call that only shares a file): the call's edge is a step, its
+// node is one the path goes through, or its place is a step. path.reach: the node ids the path goes through (steps that
+// are nodes, both ends of a step edge, the card of a file:line step; reachOf); without it only the steps themselves.
+// The calls a path really makes: a call with an edge when the path takes that edge (path.via, else its edge steps); a
+// queue's trigger without an edge when the path comes into its consumer over an edge that leaves the process
+// (path.entered); another call without an edge when the path reaches its node and steps into the file of its retry
+// loop (or its own); any call by its own line. A node merely reached makes no call of it: a record that raises before
+// the mail is never multiplied by the mailer's retry.
+const depsOf = (path, deps) => {
+  const via = new Set(path.via ?? path.steps), entered = new Set(path.entered ?? []), r = path.reach ?? new Set(path.steps);
+  const files = new Set(path.steps.map(fileOf));
+  return (deps ?? []).filter((d) => (d.at && path.steps.includes(d.at)) || (d.edge ? via.has(d.edge)
+    : d.trigger ? entered.has(d.node) : r.has(d.node) && files.has(fileOf(d.retry?.at ?? d.at))));
+};
+// The edges a path takes (arch: ai.arch): its edge steps and every edge whose two ends it reaches; entered: the nodes
+// an edge step that leaves the process (not in_process, e.g. queue → consumer) leads into.
+export function viaOf(path, arch, reach = reachOf(path, arch)) {
+  const edges = arch?.edges ?? [], steps = new Set(path.steps ?? []);
+  return { via: [...new Set([...[...steps].filter((s) => /^e\d+$/.test(s)), ...edges.flatMap((e, k) => (reach.has(e.from) && reach.has(e.to) ? [`e${k}`] : []))])],
+    entered: edges.flatMap((e, k) => (steps.has(`e${k}`) && !e.in_process ? [e.to] : [])) };
+}
+// The node ids a path goes through on the map (arch: ai.arch): node steps, both ends of an edge step, and for a
+// file:line step the card of that file (the last that starts at or above the line, else the file's first).
+export function reachOf(path, arch) {
+  const nodes = arch?.nodes ?? [], edges = arch?.edges ?? [], out = new Set();
+  const same = (a, b) => a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`);
+  for (const s of path.steps ?? []) {
+    if (nodes.some((n) => n.id === s)) { out.add(s); continue; }
+    const e = /^e(\d+)$/.exec(s);
+    if (e && edges[Number(e[1])]) { out.add(edges[Number(e[1])].from); out.add(edges[Number(e[1])].to); continue; }
+    const m = /^(.+?):(\d+)$/.exec(String(s));
+    if (!m) continue;
+    const mine = nodes.map((n) => ({ id: n.id, at: /^(.+?):(\d+)/.exec(String(n.at ?? "")) })).filter((x) => x.at && same(x.at[1], m[1]));
+    const card = mine.filter((x) => Number(x.at[2]) <= Number(m[2])).sort((a, b) => Number(b.at[2]) - Number(a.at[2]))[0] ?? mine[0]
+      // a card without a place (the unchanged mailer) by its file's name: library/mailer.py → mailer
+      ?? nodes.find((n) => !n.at && n.id === m[1].split("/").pop().replace(/\.[^.]+$/, ""));
+    if (card) out.add(card.id);
+  }
+  return out;
+}
+// Silent: nothing shows the failure (signal none); an older run says it with visible false.
+const silentOf = (p) => (p.signal ? p.signal === "none" : !p.visible);
 
 // What the map marks on the chosen path, only there: ⏱ a timeout (or "⏱ no timeout" on a sync call without one),
 // ×n a retry, DLQ or "no DLQ" at a consumer, "✕ silent" at its end when nothing signals it, "1 + N" for a call in a
@@ -1287,9 +1328,9 @@ const depsOf = (path, deps, loose = false) => (deps ?? []).filter((d) => (d.edge
 // node id or a file:line; the view puts a place on its card (views.js resCardOf). One mark per kind and place.
 export function marksOf(path, deps) {
   const out = [], add = (at, mark) => { if (at && !out.some((x) => x.at === at && x.mark === mark)) out.push({ at, mark }); };
-  const mine = depsOf(path, deps, true), place = path.steps.find((x) => /:\d+$/.test(x)) ?? path.steps[0] ?? null;
+  const mine = depsOf(path, deps), place = path.steps.find((x) => /:\d+$/.test(x)) ?? path.steps[0] ?? null;
   for (const d of mine) {
-    const at = d.edge ?? d.at;
+    const at = d.edge ?? d.node ?? d.at;
     if (d.timeout?.s > 0) add(at, `⏱ ${d.timeout.s} s`);
     else if (d.mode === "sync") add(at, "⏱ no timeout");
     if (d.retry?.attempts > 1) add(d.retry.at || at, `×${d.retry.attempts}`);
@@ -1298,17 +1339,19 @@ export function marksOf(path, deps) {
   if (path.failing.includes("no_timeout_public") && !out.some((x) => x.mark.startsWith("⏱"))) add(place, "⏱ no timeout");
   if (["no_dlq", "poison_message"].some((k) => path.failing.includes(k)) && !out.some((x) => x.mark.endsWith("DLQ"))) add(place, "no DLQ");
   if (path.failing.includes("n_plus_one")) add(path.steps[0] ?? null, "1 + N");
-  if ((!path.visible || path.failing.includes("silent")) && path.steps.length) add(path.steps.at(-1), "✕ silent");
+  if ((silentOf(path) || path.failing.includes("silent")) && path.steps.length) add(path.steps.at(-1), "✕ silent");
   return out;
 }
 
-// How much a failure on this path multiplies: one factor per retry layer and per redelivery, with its line; the
-// product as text. A redelivery without a dead-letter queue or a receive limit has no limit until the message expires.
+// How much a failure on this path multiplies: one factor per retry layer and per redelivery the path reaches, with
+// its line; the product as text: "up to 30 times", or "10 × without limit until the message expires (4 days)" when a
+// redelivery has no dead-letter queue or receive limit.
 export function ladderOf(path, deps) {
-  const factors = [];
-  for (const d of depsOf(path, deps, true)) {
-    const r = d.retry, t = d.trigger;
-    if (r?.attempts > 1) factors.push({ label: `${r.layer || "retry"}: ${r.attempts} attempts`, n: r.attempts, at: r.at || d.at });
+  const factors = [], loops = new Set();
+  for (const d of depsOf(path, deps)) {
+    const r = d.retry, t = d.trigger, loop = String(r?.at || d.at).split(":")[0];
+    // ponytail: one retry loop per file; the mailer's loop named on the handler's and the consumer's call counts once
+    if (r?.attempts > 1 && !loops.has(loop) && loops.add(loop)) factors.push({ label: `${r.layer || "retry"}: ${r.attempts} attempts`, n: r.attempts, at: r.at || d.at });
     if (t && (t.batch > 1) && t.partial_batch === false) factors.push({ label: `the whole batch of ${t.batch} again`, n: t.batch, at: d.at });
     if (t && t.max_receive > 0) factors.push({ label: `redelivered up to ${t.max_receive} times, then the dead-letter queue`, n: t.max_receive, at: d.at });
     else if (t && t.dlq === false && d.mode === "async") {
@@ -1317,8 +1360,8 @@ export function ladderOf(path, deps) {
     }
   }
   if (!factors.length) return null;
-  const open = factors.find((f) => f.n === null);
-  const text = open ? `no limit until the message expires${open.until}` : `up to ${factors.reduce((p, f) => p * f.n, 1)} times`;
+  const open = factors.find((f) => f.n === null), product = factors.filter((f) => f.n !== null).reduce((p, f) => p * f.n, 1);
+  const text = open ? `${product > 1 ? `${product} × ` : ""}without limit until the message expires${open.until}` : `up to ${product} times`;
   return { factors, text };
 }
 
@@ -1341,7 +1384,7 @@ const RES_VISIBLE = /mail|sms|text message|push|notif|payment|charge|refund|invo
 const RES_EFFECT = new Set(["duplicate_effect", "lost_effect", "swallowed_retry"]);
 // A path's end that names such an effect counts too: a lost publish ends in mails nobody gets.
 const visibleOn = (path, effects) => !effects.length || RES_VISIBLE.test(path.end ?? "") || effects.some((e) => RES_VISIBLE.test(`${e.kind} ${e.id}`) &&
-  (path.steps.includes(e.node) || path.steps.some((s) => String(s).split(":")[0] === String(e.at ?? "").split(":")[0])));
+  (path.steps.includes(e.node) || (path.reach?.has(e.node) ?? false) || path.steps.some((s) => String(s).split(":")[0] === String(e.at ?? "").split(":")[0])));
 // A message that always fails is bounded when a dead-letter queue or a receive limit takes it (on the path's calls,
 // else on every queue consumer of the run); a run outlasting its timeout blocks only when it comes back (a consumer
 // with redelivery), not in a request that just fails.
@@ -1358,33 +1401,40 @@ export function blockerOf(path, ladder, budget, effects = [], deps = []) {
   if (hit) return { why: hit[1], at: hit[0] === "over_timeout" && budget ? budget.at : at };
   if (ladder?.factors.some((f) => f.n === null)) return { why: "load grows without a limit", at: ladder.factors.find((f) => f.n === null).at };
   if (budget?.over_s > 0) return { why: "the worst run outlasts its timeout and is delivered again", at: budget.at };
-  if (!path.visible && (path.kind === "effect" || path.kind === "silent") && seen) return { why: "the path repeats or loses effects and nothing signals it", at };
+  if (silentOf(path) && (path.kind === "effect" || path.kind === "silent") && seen) return { why: "the path repeats or loses effects and nothing signals it", at };
   return null;
 }
 
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 // The block of a run with its derived parts, at this.ai.resilience; null without one. head: today's head (older:
-// the run looked at another one).
-// findings: the findings file's (or merged) findings; a path whose findings were all there before this PR
-// (introduced_here false) is pre_existing and blocks nothing.
+// the run looked at another one). findings: the findings file's (or merged) findings. A path whose findings were all
+// there before this PR (introduced_here false: their lines stand unchanged in the base) is pre_existing and blocks
+// nothing; when the base cannot tell for any of them (introduced_here null) and none is new, pre_existing is "unknown"
+// and the blocker stays, marked unclear ("Blocker? old or new unclear").
 export function withResilience(ai, block, head = null, findings = []) {
   if (!ai) return ai;
   if (!block || !Array.isArray(block.paths)) return { ...ai, resilience: null };
-  const deps = block.deps ?? [], before = new Map(findings.flatMap((f) => (f.ids ?? [f.id]).map((id) => [id, f.introduced_here === false])));
+  const deps = block.deps ?? [], intro = new Map(findings.flatMap((f) => (f.ids ?? [f.id]).map((id) => [id, f.introduced_here ?? null])));
   // also_security: one of the path's findings is also a security finding (⛨, or found by the security run too).
   const sec = new Set(findings.filter((f) => f.security || (f.sources ?? []).some((x) => x.reviewer === "security")).flatMap((f) => f.ids ?? [f.id]));
-  const paths = block.paths.map((p) => {
-    const ladder = ladderOf(p, deps), budget = budgetOf(p, deps), pre = p.findings.length > 0 && p.findings.every((id) => before.get(id) === true);
-    return { ...p, ladder, budget, marks: marksOf(p, deps), pre_existing: pre, blocker: pre ? null : blockerOf(p, ladder, budget, block.effects ?? [], deps),
+  const paths = block.paths.map((raw) => {
+    const reach = reachOf(raw, ai.arch), p = { ...raw, reach, ...viaOf(raw, ai.arch, reach) }, said = p.findings.map((id) => (intro.has(id) ? intro.get(id) : null));
+    const pre = !said.length || said.includes(true) ? false : said.every((x) => x === false) ? true : "unknown";
+    const ladder = ladderOf(p, deps), budget = budgetOf(p, deps), blocker = pre === true ? null : blockerOf(p, ladder, budget, block.effects ?? [], deps);
+    return { ...p, reach: [...p.reach], ladder, budget, marks: marksOf(p, deps), pre_existing: pre, blocker: blocker && pre === "unknown" ? { ...blocker, unclear: true } : blocker,
       also_security: p.findings.some((id) => sec.has(id)) };
   });
-  // One cause blocks once: a blocking path with the reason of an earlier one and a finding or a call (a dep's place)
-  // in common is that path again (same_cause: its id), a finding but no second blocker; the missing dead-letter queue
-  // behind three paths counts one time.
+  // One cause blocks once: a blocking path with the reason of an earlier one and a finding or a call in common, or the
+  // same action or the same place, is that path again (same_cause: its id; the first lists all in triggers): the missing
+  // dead-letter queue behind p1 (a record raises) and p2 (the batch outlasts its timeout) is one blocker with two triggers.
   const spots = (p) => new Set([...p.findings, ...p.steps.filter((s) => deps.some((d) => d.edge === s || d.at === s))]);
+  const act = (p) => String(p.action ?? "").trim().toLowerCase().replace(/[.\s]+$/, "");
+  // the same unlimited redelivery: a poison message and a batch over its timeout both come back from one queue
+  const again = (p) => REDELIVERY.has(p.blocker.why) && p.ladder?.factors.find((f) => f.n === null)?.at;
   for (const [k, p] of paths.entries()) {
-    const first = p.blocker && paths.slice(0, k).find((q) => q.blocker && q.blocker.why === p.blocker.why && [...spots(p)].some((x) => spots(q).has(x)));
-    if (first) Object.assign(p, { blocker: null, same_cause: first.id });
+    const first = p.blocker && paths.slice(0, k).find((q) => q.blocker && !q.same_cause && ((q.blocker.why === p.blocker.why && [...spots(p)].some((x) => spots(q).has(x))) ||
+      (act(p) && act(p) === act(q)) || (p.blocker.at && p.blocker.at === q.blocker.at) || (again(p) && again(p) === again(q))));
+    if (first) { Object.assign(p, { blocker: null, same_cause: first.id }); first.triggers = [...(first.triggers ?? [first.id]), p.id]; }
   }
   paths.sort((a, b) => Number(Boolean(b.blocker)) - Number(Boolean(a.blocker)));
   const blockers = paths.filter((p) => p.blocker), found = paths.filter((p) => p.result === "finding"), mitigated = paths.filter((p) => p.result === "mitigated");
@@ -1394,17 +1444,21 @@ export function withResilience(ai, block, head = null, findings = []) {
     : blockers.length ? `${blockers.length} of ${plural(paths.length, "path")} ${blockers.length === 1 ? "blocks" : "block"} the merge: ${blockers[0].blocker.why}${blockers.length > 1 ? `, and ${blockers.length - 1} more` : ""}${tail}.`
       : found.length ? `${plural(found.length, "path")} with a finding, none blocks the merge${tail}.`
         : mitigated.length ? `Every assessed path is limited${mitigated[0].limited_by ? `, e.g. at ${mitigated[0].limited_by}` : ""}${tail}.` : `No path was assessed${tail}.`;
-  const watch = [...new Set([
-    ...(block.blind_spots ?? []).filter((b) => b.alarm === "none" || b.alarm === "unknown").map((b) => `${b.failure} (${b.at}): nothing in the repository alarms on it`),
-    ...deps.filter((d) => d.mode === "async").map((d) => `the age of the oldest message at ${d.edge ?? d.at}`),
-  ])];
+  // What nothing shows goes before the merge (unseen); what shows only without an alarm, and the queues' age, are
+  // watched after it, once per resource.
+  const spotsOf = (b) => (b.signal === "none" ? "unseen" : b.alarm === "none" || b.alarm === "unknown" ? "watch" : null);
+  const unseen = [...new Set((block.blind_spots ?? []).filter((b) => spotsOf(b) === "unseen").map((b) => `${b.failure} (${b.at}): nothing shows it`))];
+  const byPlace = new Map();
+  for (const b of (block.blind_spots ?? []).filter((x) => spotsOf(x) === "watch")) byPlace.set(fileOf(b.at), `${b.failure} (${b.at}): seen as ${b.signal ?? "a signal"}, but nothing alarms on it`);
+  for (const d of deps.filter((x) => x.mode === "async")) { const key = d.edge ?? d.node ?? fileOf(d.at); if (![...byPlace.keys()].includes(key)) byPlace.set(key, `the age of the oldest message at ${d.edge ?? d.node ?? d.at}`); }
+  const watch = [...new Set(byPlace.values())];
   // The parts the PR adds, weighed against their cost (additions): "This PR adds 4 parts: 2 justified, 1 questionable,
   // 1 solves nothing here."; "" without any.
   const adds = block.additions ?? [], by = (r) => adds.filter((a) => a.result === r).length;
   const addParts = [[by("justified"), "justified"], [by("questionable"), "questionable"], [by("unjustified"), "solves nothing here", "solve nothing here"]].filter(([n]) => n)
     .map(([n, one, many]) => `${n} ${n === 1 || !many ? one : many}`);
   const additionsLine = adds.length ? `This PR adds ${plural(adds.length, "part")}: ${addParts.length > 1 ? `${addParts.slice(0, -1).join(", ")} and ${addParts.at(-1)}` : addParts[0]}.` : "";
-  return { ...ai, resilience: { ...block, paths, blockers: blockers.map((p) => p.id), summary, watch, additionsLine, older: Boolean(block.head && head && block.head !== head),
+  return { ...ai, resilience: { ...block, paths, blockers: blockers.map((p) => p.id), summary, watch, unseen, additionsLine, older: Boolean(block.head && head && block.head !== head),
     counts: { paths: paths.length, blockers: blockers.length, mitigated: mitigated.length, not_assessed: na,
       checks_clean: checks.filter((c) => c.result === "clean").length, not_checkable: checks.filter((c) => c.result === "not_checkable").length,
       additions: { justified: by("justified"), questionable: by("questionable"), unjustified: by("unjustified") } } } };

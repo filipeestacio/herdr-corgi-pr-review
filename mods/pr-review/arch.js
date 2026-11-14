@@ -112,6 +112,19 @@ export function crossings(paths) {
   return out;
 }
 
+// Stretches where two different paths run on top of each other (the same line within 2 px, sharing more than 4 px):
+// worse than a crossing, since nobody can tell the two apart there. [{a, b, x1, y1, x2, y2}] per pair of segments.
+export function overlapsOf(paths) {
+  const segs = paths.flatMap((p) => p.segments.map((s) => ({ p: p.key, h: s.y1 === s.y2, at: s.y1 === s.y2 ? s.y1 : s.x1, lo: s.y1 === s.y2 ? Math.min(s.x1, s.x2) : Math.min(s.y1, s.y2), hi: s.y1 === s.y2 ? Math.max(s.x1, s.x2) : Math.max(s.y1, s.y2) })));
+  const out = [];
+  for (let i = 0; i < segs.length; i++) for (let j = i + 1; j < segs.length; j++) {
+    const a = segs[i], b = segs[j], lo = Math.max(a.lo, b.lo), hi = Math.min(a.hi, b.hi);
+    if (a.p === b.p || a.h !== b.h || Math.abs(a.at - b.at) > 2 || hi - lo <= 4) continue;
+    out.push(a.h ? { a: a.p, b: b.p, x1: lo, y1: a.at, x2: hi, y2: a.at } : { a: a.p, b: b.p, x1: a.at, y1: lo, x2: a.at, y2: hi });
+  }
+  return out;
+}
+
 const overlaps = (a, b, m = 0) => a.x < b.x + b.w + m && b.x < a.x + a.w + m && a.y < b.y + b.h + m && b.y < a.y + a.h + m;
 
 // Where a picture's element comes from: implemented (in this PR's diff, evidence file:line), existing (already in the
@@ -247,16 +260,18 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
   // A long line runs down to the channel under the picture, so it crosses every next-column line that leaves a card
   // below its own in the same column (that line's start or its way into its target meets the long line's way down):
   // such a pair counts as swapped too, and a card with a long line goes below its neighbours where it can.
-  const longE = edges.filter((e) => kindOf(e) === "long");
+  const longE = edges.filter((e) => kindOf(e) === "long"), up = (e) => Boolean(opts.over?.has(`long:${e.i}`)); // up: over the picture (see the end)
   const swapped = () => {
     const row = rows();
     let n = 0;
     for (const a of nexts) for (const b of nexts) if (col.get(a.from) === col.get(b.from) && row.get(a.from) < row.get(b.from) && row.get(a.to) > row.get(b.to)) n++;
-    for (const a of longE) for (const b of nexts) if (col.get(a.from) === col.get(b.from) && row.get(a.from) < row.get(b.from)) n++;
+    for (const a of longE) for (const b of nexts) if (col.get(a.from) === col.get(b.from) && (up(a) ? row.get(a.from) > row.get(b.from) : row.get(a.from) < row.get(b.from))) n++;
+    // A line over the picture comes down into its target: a line into a card above that one is in its way.
+    for (const a of longE.filter(up)) for (const b of nexts) if (col.get(a.to) === col.get(b.to) && row.get(b.to) < row.get(a.to)) n++;
     // Two long lines from one column cross unless the upper one ends no further right than the lower one (they nest:
     // the upper one on the upper channel, the lower one under it and out past it). Their crossing sits under the
     // picture, which reads easier than one among the cards: it counts half, so a tie keeps it down there.
-    for (const a of longE) for (const b of longE) if (a !== b && col.get(a.from) === col.get(b.from) && row.get(a.from) < row.get(b.from) && col.get(a.to) > col.get(b.to)) n += 0.5;
+    for (const a of longE) for (const b of longE) if (a !== b && !up(a) && !up(b) && col.get(a.from) === col.get(b.from) && row.get(a.from) < row.get(b.from) && col.get(a.to) > col.get(b.to)) n += 0.5;
     return n;
   };
   for (let c = 0; c < ncol; c++) {
@@ -391,7 +406,8 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
 
   // Port y: a state's call at its row; the rest spread along the side (above the states), by the other end's height.
   const portY = new Map(); // `${pathKey}:${end}:${id}` -> y
-  const otherY = (it) => { if (it.p.kind === "long") return Infinity; const ends = it.p.kind === "trunk" ? it.p.branches.map((b) => b.to) : it.end === "to" ? it.p.from : [it.p.to]; return avg(ends.map((id) => at.get(id).y + at.get(id).h / 2)); };
+  // A long line's port faces its channel: the lowest one on its side, the highest when it runs over the picture.
+  const otherY = (it) => { if (it.p.kind === "long") return opts.over?.has(it.p.key) ? -Infinity : Infinity; const ends = it.p.kind === "trunk" ? it.p.branches.map((b) => b.to) : it.end === "to" ? it.p.from : [it.p.to]; return avg(ends.map((id) => at.get(id).y + at.get(id).h / 2)); };
   for (const [k, items] of ports) {
     const id = k.slice(0, k.lastIndexOf(":")), n = at.get(id), right = k.endsWith(":r");
     const fixed = (it) => (right ? anchorOf.get(`${it.p.key}:${id}`) : undefined);
@@ -427,11 +443,11 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
   // Lane order per gutter: the permutation (small gutters) or swaps with the fewest crossings inside the gutter. A long
   // line's way down from its card (out) and up to its target (in) take part, so its lane goes where it crosses the
   // fewest lines rather than always outermost; the start order is by where a line ends (the way down last).
-  const lane = new Map(), channelY = Math.max(0, ...frames.map((f) => f.y + f.h)) + 14;
+  const lane = new Map(), channelY = Math.max(0, ...frames.map((f) => f.y + f.h)) + 14, cyOf = (p) => (opts.over?.has(p.key) ? -LANE : channelY);
   const part = (q, trial) => {
     const x = trial.get(q.key), p = q.p;
-    if (q.kind === "out") { const f = at.get(p.from[0]), sy = PY(p, "from", f.id); return [{ x1: f.x + W, y1: sy, x2: x, y2: sy }, { x1: x, y1: sy, x2: x, y2: channelY }]; }
-    if (q.kind === "in") { const ty = PY(p, "to", p.to); return [{ x1: x, y1: channelY, x2: x, y2: ty }, { x1: x, y1: ty, x2: at.get(p.to).x, y2: ty }]; }
+    if (q.kind === "out") { const f = at.get(p.from[0]), sy = PY(p, "from", f.id); return [{ x1: f.x + W, y1: sy, x2: x, y2: sy }, { x1: x, y1: sy, x2: x, y2: cyOf(p) }]; }
+    if (q.kind === "in") { const ty = PY(p, "to", p.to); return [{ x1: x, y1: cyOf(p), x2: x, y2: ty }, { x1: x, y1: ty, x2: at.get(p.to).x, y2: ty }]; }
     return build(q, trial).segs;
   };
   for (let c = 0; c < ncol; c++) {
@@ -440,9 +456,9 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
     if (!items.length) continue;
     const left = colX[c] + cw[c] + zone[c] + textW[c] + 14;
     const trialOf = (order) => new Map(order.map((p, k) => [p.key, left + k * LANE]));
-    const cost = (order) => { const trial = trialOf(order); return crossings(order.map((q) => ({ key: q.key, segments: part(q, trial) }))).length; };
-    const tyOf = (q) => (q.kind === "out" ? Infinity : q.kind === "in" ? PY(q.p, "to", q.p.to) : q.kind === "trunk" ? Math.min(...q.branches.map((b) => PY(b, "to", b.to))) : PY(q, "to", q.to));
-    const yOf = (q) => (q.kind === "out" ? PY(q.p, "from", q.p.from[0]) : q.kind === "in" ? channelY : Math.min(...ysOf(q)));
+    const cost = (order) => { const trial = trialOf(order), ps = order.map((q) => ({ key: q.key, segments: part(q, trial) })); return crossings(ps).length + 2 * overlapsOf(ps).length; }; // running on top of each other counts as two crossings
+    const tyOf = (q) => (q.kind === "out" ? (opts.over?.has(q.p.key) ? -Infinity : Infinity) : q.kind === "in" ? PY(q.p, "to", q.p.to) : q.kind === "trunk" ? Math.min(...q.branches.map((b) => PY(b, "to", b.to))) : PY(q, "to", q.to));
+    const yOf = (q) => (q.kind === "out" ? PY(q.p, "from", q.p.from[0]) : q.kind === "in" ? cyOf(q.p) : Math.min(...ysOf(q)));
     const start = [...items].sort((a, b) => tyOf(a) - tyOf(b) || yOf(a) - yOf(b));
     for (const [k, v] of trialOf(bestOrder(items, cost, start))) lane.set(k, v);
   }
@@ -465,18 +481,35 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
     Object.assign(p.chip, { x: sx + STUB + 4, y: sy - CHIP_H / 2 });
   }
   // A long line: out of its card, down its lane to a channel under the picture, along it, up the lane before its
-  // target and in from the left, like every other call.
-  const bottom = Math.max(0, ...frames.map((f) => f.y + f.h));
-  // Channels under the picture: the line that starts furthest right on the top one, then by where it ends, so the
-  // lines nest instead of crossing on their way down or up.
+  // target and in from the left, like every other call. One whose card is the top one of its column may run over the
+  // picture instead (a channel above it), when that crosses or covers fewer lines; the picture then moves down.
+  let bottom = Math.max(0, ...frames.map((f) => f.y + f.h));
+  // Channels under (and over) the picture: the line that starts furthest right nearest to the cards, then by where it
+  // ends, so the lines nest instead of crossing on their way down or up.
   const chan = [...longP].sort((a, b) => lane.get(`${b.key}:out`) - lane.get(`${a.key}:out`) || lane.get(`${a.key}:in`) - lane.get(`${b.key}:in`));
-  longP.forEach((p) => {
-    const j = chan.indexOf(p);
-    const f = at.get(p.from[0]), T = at.get(p.to), sx = f.x + W, sy = PY(p, "from", f.id), ty = PY(p, "to", p.to), x1 = lane.get(`${p.key}:out`), x2 = lane.get(`${p.key}:in`), cy = bottom + 14 + j * LANE;
-    p.segments = [{ x1: sx, y1: sy, x2: x1, y2: sy }, { x1, y1: sy, x2: x1, y2: cy }, { x1, y1: cy, x2, y2: cy }, { x1: x2, y1: cy, x2, y2: ty }, { x1: x2, y1: ty, x2: T.x, y2: ty }];
-    p.arrow = { x: T.x, y: ty, left: false };
-  });
-  const hops = crossings([...paths.filter((p) => p.kind === "next" || p.kind === "long"), ...trunks]);
+  const over = new Set(longP.filter((p) => opts.over?.has(p.key)));
+  const routeLongs = () => {
+    const under = chan.filter((p) => !over.has(p)), above = chan.filter((p) => over.has(p));
+    for (const p of longP) {
+      const f = at.get(p.from[0]), T = at.get(p.to), sx = f.x + W, sy = PY(p, "from", f.id), ty = PY(p, "to", p.to), x1 = lane.get(`${p.key}:out`), x2 = lane.get(`${p.key}:in`);
+      const cy = over.has(p) ? -LANE - above.indexOf(p) * LANE : bottom + 14 + under.indexOf(p) * LANE;
+      p.segments = [{ x1: sx, y1: sy, x2: x1, y2: sy }, { x1, y1: sy, x2: x1, y2: cy }, { x1, y1: cy, x2, y2: cy }, { x1: x2, y1: cy, x2, y2: ty }, { x1: x2, y1: ty, x2: T.x, y2: ty }];
+      p.arrow = { x: T.x, y: ty, left: false };
+    }
+  };
+  routeLongs();
+  let dy = 0;
+  if (over.size) {
+    // Room for the channels over the picture: everything moves down (each segment, arrow and chip once).
+    dy = 6 + over.size * LANE; // the lowest channel 12 px over the frames, 6 px of room over the highest
+    const segs = new Set([...paths, ...trunks].flatMap((p) => p.segments ?? []));
+    for (const g of segs) { g.y1 += dy; g.y2 += dy; }
+    for (const p of paths) { if (p.arrow) p.arrow = { ...p.arrow, y: p.arrow.y + dy }; if (p.chip) p.chip.y += dy; }
+    for (const n of nodes) n.y += dy;
+    for (const f of frames) f.y += dy;
+    bottom += dy;
+  }
+  const drawnP = [...paths.filter((p) => p.kind === "next" || p.kind === "long"), ...trunks], hops = crossings(drawnP), overlapping = overlapsOf(drawnP);
 
   // Numbers in reading order: by the source's column, then where the line leaves it (top to bottom). A stub's chip
   // carries its number. ponytail: the chip keeps the width measured with its first number (same digit count up to 20).
@@ -509,7 +542,19 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
     .sort((a, b) => gIds.indexOf(a.id) - gIds.indexOf(b.id));
   const width = ncol ? colX[ncol - 1] + cw[ncol - 1] + gw[ncol - 1] : 0;
   const height = bottom + (longP.length ? 14 + longP.length * LANE : 0);
-  return { groups: outGroups, nodes, paths, trunks, hops, width, height, label: LB };
+  const out = { groups: outGroups, nodes, paths, trunks, hops, overlaps: overlapping, width, height, top: dy, label: LB }; // top: the room over the picture
+  // A long line from the top card of its column may run over the picture instead: each such line on its own, then all
+  // of them, laid out again with their ports, lanes and card order facing up. The layout that crosses and covers the
+  // fewest lines wins; a tie keeps every line under the picture.
+  if (opts.over) return out;
+  const firstInCol = (id) => !nodes.some((m) => m.col === at.get(id).col && m.y < at.get(id).y), ups = longP.filter((p) => firstInCol(p.from[0])).map((p) => p.key);
+  const tangle = (L) => L.hops.length + 2 * L.overlaps.length;
+  let best = out;
+  for (const set of [...ups.map((k) => [k]), ...(ups.length > 1 ? [ups] : [])]) {
+    const alt = archLayout(arch, view, extra, fit, { ...opts, over: new Set(set) });
+    if (tangle(alt) < tangle(best)) best = alt;
+  }
+  return best;
 }
 
 // Where the unresolved findings sit on the picture. One that breaks the flow says where (`breaks`: {node}, or {from,
@@ -578,7 +623,7 @@ export function zoneArch(arch) {
 // line that goes on in another band can carry its number. One band (the whole picture) when it fits or there is no
 // gap to cut at.
 export function archBands(L, viewW) {
-  if (!(viewW > 0) || L.width <= viewW) return [{ x0: 0, x1: L.width, h: L.height, in: [], out: [] }];
+  if (!(viewW > 0) || L.width <= viewW) return [{ x0: 0, x1: L.width, h: L.height, y0: 0, in: [], out: [] }];
   const boxes = [...L.nodes, ...L.paths.flatMap((p) => [p.chip, p.text, p.badge && { x: p.badge.x - 9, w: 18 }])].filter((b) => b && b.w > 0).map((b) => [b.x, b.x + b.w]).sort((a, b) => a[0] - b[0]);
   // A gap can be cut right after what is left of it (lo: that gutter's lanes start the next band) or right before what
   // is right of it, a group's frame included (hi: they end this one).
@@ -597,8 +642,8 @@ export function archBands(L, viewW) {
     if (g === undefined) break;
     cuts.push(g); x0 = g.lo;
   }
-  const spans = [...L.groups.map((g) => [g.x, g.x + g.w, g.y + g.h]), ...L.paths.flatMap((p) => [...p.segments.map((s) => [Math.min(s.x1, s.x2), Math.max(s.x1, s.x2), Math.max(s.y1, s.y2) + 12]),
-    ...[p.chip, p.text].filter(Boolean).map((b) => [b.x, b.x + b.w, b.y + b.h])])];
+  const spans = [...L.groups.map((g) => [g.x, g.x + g.w, g.y + g.h, g.y]), ...L.paths.flatMap((p) => [...p.segments.map((s) => [Math.min(s.x1, s.x2), Math.max(s.x1, s.x2), Math.max(s.y1, s.y2) + 12, Math.min(s.y1, s.y2) - 12]),
+    ...[p.chip, p.text].filter(Boolean).map((b) => [b.x, b.x + b.w, b.y + b.h, b.y])])];
   const crossing = (c) => {
     const at = new Map(); // y -> {y, nums, back}
     for (const p of L.paths) for (const g of p.segments) if (g.y1 === g.y2 && Math.min(g.x1, g.x2) < c && Math.max(g.x1, g.x2) > c) {
@@ -608,9 +653,11 @@ export function archBands(L, viewW) {
     }
     return [...at.values()].sort((a, b) => a.y - b.y);
   };
-  const bandsAt = (xs) => [0, ...xs].map((a, k) => ({ x0: a, x1: xs[k] ?? L.width })).map((b) => ({ ...b, h: Math.max(0, ...spans.filter(([a, z]) => a < b.x1 && z > b.x0).map(([, , y]) => y)),
-    in: b.x0 > 0 ? crossing(b.x0) : [], out: b.x1 < L.width ? crossing(b.x1) : [] }));
-  const tall = (xs) => bandsAt(xs).reduce((sum, b) => sum + b.h, 0);
+  // y0: the room over the picture (L.top) a band without a line up there does not need; the band shows from y0 to h.
+  const bandsAt = (xs) => [0, ...xs].map((a, k) => ({ x0: a, x1: xs[k] ?? L.width })).map((b) => { const own = spans.filter(([a, z]) => a < b.x1 && z > b.x0);
+    return { ...b, h: Math.max(0, ...own.map(([, , y]) => y)), y0: Math.max(0, Math.min(L.top ?? 0, ...own.map(([, , , y]) => y))),
+      in: b.x0 > 0 ? crossing(b.x0) : [], out: b.x1 < L.width ? crossing(b.x1) : [] }; });
+  const tall = (xs) => bandsAt(xs).reduce((sum, b) => sum + b.h - b.y0, 0);
   // Each cut on the side that makes the bands less tall: a line that runs far down its gutter goes to the band that is
   // tall anyway. hi only while the band left of it still fits the view.
   const xs = cuts.map((g) => g.lo);

@@ -5380,48 +5380,65 @@ export const ReviewMode = {
   startProbe(p, cx) {
     const base = this.fixBase();
     if (!base) { this.note = "Not started: the PR has no local checkout to make the probe's checkout from"; return cx.notify(); }
-    const branch = TH.probeBranch(this.prSel.number, p.id), path = TH.fixPath(home(), this.prSel.repo, branch), key = this.probeKey(p.id);
+    const branch = TH.probeBranch(this.prSel.number, p.id), path = TH.fixPath(home(), this.prSel.repo, branch), key = this.probeKey(p.id); // one branch per start
     this.updateDeep(cx, (d) => ({ ...d, probes: { ...(d.probes ?? {}), [key]: { state: "running", at: Date.now() } } }));
     cx.notify();
     cx.spawn(async (cx) => {
+      const git = (args) => exec("git", ["-C", base, ...args], { timeout: 60000 });
       try {
-        const { git, head } = await this.addWorktree(base, { branch, path, head: this.headNow() });
+        await git(["worktree", "prune"]); // worktrees of starts that were cut off (their folders are gone)
+        const { head } = await this.addWorktree(base, { branch, path, head: this.headNow() });
         await exec("mkdir", ["-p", `${path}/${TH.PROBE_DIR}`]); // the agent may write there only, so the folder is there
         const mb = this.prSel.base ? (await git(["merge-base", head, `origin/${this.prSel.base}`]).catch(() => null))?.stdout?.trim() || null : null;
         const path_ = (this.ai?.resilience?.paths ?? this.find?.resilience?.paths ?? []).find((x) => x.id === p.of);
         const findings = this.findings().filter((f) => (path_?.findings ?? p.findings ?? []).some((x) => f.ids.includes(x)));
         const context = findings.length ? verifyContextMd(findings, { pr: this.prSel, head, ai: this.ai, statusOf: (f) => this.fstatus(f), threats: this.ai?.threats ?? null }) : "";
-        const task = TH.probePrompt({ pr: this.pr, head, base: mb, probe: p, path, runner: this.probeRunner(), context, lang: this.lang() });
+        const task = TH.probePrompt({ pr: this.pr, head, probe: { ...p, signal: p.signal ?? path_?.signal ?? (path_?.visible === false ? "none" : null) }, path, context, lang: this.lang() });
         const job = Date.now().toString(36), { agent } = this.sendAgent();
-        const r = await hc(TH.probeArgs({ parent: agent?.address ?? null, cwd: path, name: `probe-${p.id}-${job}`, env: this.ctxEnv(this.ctxId()), task, job, model: codeModel(model()), runner: this.probeRunner() }));
-        if (r.code !== 0) { await git(["worktree", "remove", "--force", path]); await git(["branch", "-D", branch]); throw new Error((r.stderr || r.stdout).trim().slice(0, 200)); }
-        this.updateDeep(cx, (d) => ({ ...d, probes: { ...(d.probes ?? {}), [key]: { state: "running", job, path, branch, base, head, terminal: JSON.parse(r.stdout).address, at: Date.now() } } }));
-        this.note = `Probe ${p.id} started: an agent writes a small script and runs it in a sandbox on ${branch}. Nothing goes to the PR.`;
+        const r = await hc(TH.probeArgs({ parent: agent?.address ?? null, cwd: path, name: `probe-${p.id}-${job}`, env: this.ctxEnv(this.ctxId()), task, job, model: codeModel(model()), id: p.id }));
+        if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().slice(0, 200));
+        this.updateDeep(cx, (d) => ({ ...d, probes: { ...(d.probes ?? {}), [key]: { state: "running", job, path, branch, base, head, mb, terminal: JSON.parse(r.stdout).address, at: Date.now() } } }));
+        this.note = `Probe ${p.id} started: an agent writes a small script on ${branch}; the review then runs it in a sandbox. Nothing goes to the PR.`;
       } catch (e) {
+        await git(["worktree", "remove", "--force", path]).catch(() => null); await git(["branch", "-D", branch]).catch(() => null);
         this.updateDeep(cx, (d) => { const probes = { ...(d.probes ?? {}) }; delete probes[key]; return { ...d, probes }; });
         this.note = `Probe not started: ${String(e).replace(/^Error: /, "")}`;
       }
       cx.notify();
     });
   },
-  // A running probe is over once the runner wrote its result and the agent answered, or once the agent is gone (not
-  // before a minute). Then: the result into deep.json, the agent, worktree and branch removed (script and output kept).
+  // A running probe: once the agent is done (its answer line, or its turn over for a minute, or its terminal gone, or
+  // after 15 minutes at the latest), the review runs the script itself through probe.py (head and the merge base),
+  // then keeps the result in deep.json and removes the agent, its worktree and its branch, also when something on the
+  // way fails. A start that never got its worktree is dropped after 10 minutes.
   probeTick(cx) {
     for (const [key, p] of Object.entries(this.deep.probes ?? {})) {
-      if (p?.state !== "running" || !p.path) continue;
+      if (p?.state !== "running" || (this.probeBusy ??= new Set()).has(key)) continue;
+      if (!p.path) {
+        if (Date.now() - (p.at ?? 0) > 600000) this.updateDeep(cx, (d) => { const probes = { ...(d.probes ?? {}) }; delete probes[key]; return { ...d, probes }; });
+        continue;
+      }
       const id = key.slice(key.lastIndexOf("|") + 1);
       cx.spawn(async (cx) => {
-        const [result, answers, script] = await Promise.all([`${TH.PROBE_DIR}/${id}.result.json`, TH.VERIFY_FILE, `${TH.PROBE_DIR}/${id}.py`].map((f) => readTextFile(`${p.path}/${f}`).catch(() => "")));
-        // Over: the terminal is gone, or the agent finished its turn (it stays live, idle) and a minute has passed.
-        const all = terminals(), t = all.find((x) => x.address === p.terminal), gone = all.length > 0 && Date.now() - p.at > 60000 && (!t || t.state !== "live" || (t.status?.state ?? t.status) === "done");
-        const out = TH.probeOutcome(id, { result: result || null, answer: TH.parseProof(answers, [id])[id] ?? null, script, ended: gone });
-        if (!out || this.deep.probes?.[key]?.job !== p.job) return;
-        this.updateDeep(cx, (d) => ({ ...d, probes: { ...(d.probes ?? {}), [key]: { ...out, branch: p.branch } } }));
-        if (p.terminal) run("terminal.kill", { terminal: p.terminal });
-        const git = (args) => exec("git", ["-C", p.base, ...args], { timeout: 60000 });
-        await git(["worktree", "remove", "--force", p.path]); await git(["branch", "-D", p.branch]);
-        this.note = `Probe ${id}: ${out.status.replace("_", " ")}${out.line ? `, ${out.line}` : ""}.`;
-        cx.notify();
+        const read = (f) => readTextFile(`${p.path}/${f}`).catch(() => "");
+        const answer = TH.parseProbeAnswer(await read(TH.VERIFY_FILE), id);
+        const all = terminals(), t = all.find((x) => x.address === p.terminal), late = Date.now() - p.at;
+        const ended = Boolean(answer) || late > 900000 || (all.length > 0 && late > 60000 && (!t || t.state !== "live" || (t.status?.state ?? t.status) === "done"));
+        if (!ended || this.probeBusy.has(key) || this.deep.probes?.[key]?.job !== p.job) return;
+        this.probeBusy.add(key);
+        const git = (args) => exec("git", ["-C", p.base, ...args], { timeout: 60000 }).catch(() => null);
+        try {
+          if (p.terminal) run("terminal.kill", { terminal: p.terminal });
+          const script = await read(`${TH.PROBE_DIR}/${id}.py`);
+          if (script.trim()) await exec("python3", [this.probeRunner(), p.path, id, ...(p.mb ? ["--base", p.mb] : [])], { timeout: 120000 }).catch(() => null);
+          const out = TH.probeOutcome(id, { result: script.trim() ? (await read(`${TH.PROBE_DIR}/${id}.result.json`)) || null : null, answer, script });
+          this.updateDeep(cx, (d) => ({ ...d, probes: { ...(d.probes ?? {}), [key]: { ...out, branch: p.branch } } }));
+          this.note = `Probe ${id}: ${out.status.replace("_", " ")}${out.line ? `, ${out.line}` : ""}.`;
+        } finally {
+          await git(["worktree", "remove", "--force", p.path]); await git(["branch", "-D", p.branch]);
+          this.probeBusy.delete(key);
+          cx.notify();
+        }
       });
     }
   },
