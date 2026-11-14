@@ -105,6 +105,9 @@ for (const n of [0, 3, 310]) {
   ok(`${n} files: Architecture page, the layer closed (its highlight still shows)`, () => v.render(cx));
   v.archFocus = null; v.page = null; v.cur = 1;
   ok(`${n} files: the same layer open in the Layers view`, () => v.render(cx));
+  // Its picture is a row of the diff list, right after the layer's head; a question names the file the analysis gives.
+  assert.deepEqual(v.items.slice(v.at.s1, v.at.s1 + 2).map((it) => it.t), ["step", "vis"], "a layer's picture sits over its code");
+  assert.deepEqual([v.asked({ questionFiles: ["src/a.ts", ""] }, "q?", 0), v.asked({ questionFiles: ["src/a.ts", ""] }, "q?", 1), v.asked({}, "q?", 0)], ["a.ts — q?", "q?", "q?"]);
   // Its analysis finding: in the layer above, and in the Findings tab (read live from the analysis, linked to its layer).
   assert.deepEqual(v.findings().map((f) => f.id), ["a1"]); assert.equal(v.layerOf(v.findings()[0]), 1);
   v.tab = "findings";
@@ -131,6 +134,12 @@ for (const n of [0, 3, 310]) {
     v.tab = "files"; v.page = null; v.sug = v.openSugs()[0].key;
     ok("the diff: the finding's card and the note, opened", () => { v.render(cx); layout(0); });
     assert.deepEqual(v.items.filter((it) => ["find", "fact", "sug"].includes(it.t)).map((it) => it.t), ["find", "fact", "sug"], "a fix sent stays in the diff; one note, no buttons");
+    // Cards in the diff: a security finding from high on starts open; folded, a card is one row without buttons.
+    assert.equal(v.findOpen(f), true); assert.equal(v.findOpen({ ...f, security: false }), false);
+    v.fopen = new Map([[f.id, false]]);
+    ok("the diff: the finding's card folded", () => { v.render(cx); layout(0); });
+    assert.deepEqual(v.items.filter((it) => ["find", "fact"].includes(it.t)).map((it) => it.t), ["find"]);
+    v.fopen = null;
     v.dismiss(f, cx);
     assert.deepEqual([v.fstatus(v.findings()[0]), v.counts().unresolved], ["dismissed", 0]); assert.match(v.note, /all 3 sources of it/);
     v.find = { ...v.find, list: [], status: {}, reports: {} }; v.ai = { ...v.ai, suspects: [] }; v.sug = null; v.ffocus = null; v.note = null; v.tab = "findings";

@@ -427,7 +427,15 @@ export function findingStatus(f, status, reports, head, lineNow) {
 const rank = (x) => RISKS.indexOf(x.severity);
 const RAISE = new Set(["security", "availability"]);
 // A suggestion's text as a finding's title (its first sentence) and detail (the rest).
-const titled = (text) => { const m = /^(.{12,160}?)[.;]\s+(.+)$/s.exec(String(text).trim()); return m ? [m[1], m[2]] : [String(text).trim().replace(/\.$/, ""), ""]; };
+// The texts are Markdown: the cut is never inside inline code, and the title is plain (plainText).
+const titled = (text) => {
+  const s = String(text).trim();
+  for (const m of s.matchAll(/[.;]\s+/g)) {
+    if (m.index > 160) break;
+    if (m.index >= 12 && s.slice(0, m.index).split("`").length % 2 === 1) return [plainText(s.slice(0, m.index)), s.slice(m.index + m[0].length)];
+  }
+  return [plainText(s.replace(/\.$/, "")), ""];
+};
 
 // Findings (the reviewers' and the analysis') and AI suggestions on the same file and new-side line are one finding:
 // the highest severity leads (its title and text show), every source stays in `sources` with its own severity, and
@@ -451,7 +459,9 @@ export function mergeFindings(findings, suspects = [], status = {}) {
     const lead = [...g].sort((a, b) => rank(a) - rank(b))[0], coded = g.find((x) => x.head), all = [lead, ...g].map(findingFacts);
     const has = (v) => (Array.isArray(v) ? v.length > 0 : v !== null && v !== ""), fact = (k) => (all.find((x) => has(x[k])) ?? all[0])[k];
     const held = g.filter((x) => status[x.id]).sort((a, b) => String(status[b.id].at ?? "").localeCompare(String(status[a.id].at ?? "")))[0];
-    return { ...lead, id: (held ?? lead).id, ids: g.map((x) => x.id), end: Math.max(...g.map((x) => x.end ?? x.line ?? 0)), step: g.find((x) => x.step)?.step ?? null,
+    // line and end come from a model's or a reviewer's answer: whole numbers with line <= end for every caller (0: no line).
+    const whole = (n) => (Number.isInteger(n) && n > 0 ? n : 0), line = whole(lead.line);
+    return { ...lead, line, id: (held ?? lead).id, ids: g.map((x) => x.id), end: Math.max(line, ...g.map((x) => whole(x.end))), step: g.find((x) => x.step)?.step ?? null,
       suggestion: lead.suggestion || g.find((x) => x.suggestion)?.suggestion || "", ...(coded ? { head: coded.head, code: coded.code } : {}),
       ...Object.fromEntries(Object.keys(all[0]).map((k) => [k, fact(k)])),
       security: g.some((x) => x.reviewer === "security" || x.category === "security"),
@@ -829,4 +839,16 @@ export function reviewState({ pr, head = "", list, counts, findings, statusOf, p
     ...(taskHead(list) ? [`Task check: ${taskHead(list)}`, ...[...list.rows, ...list.extra].map(ask), ""] : []),
     ...groups.flatMap(([label, fs]) => [`${label} (${fs.length}):`, ...fs.map(one), ""]),
     ...(progress ? [progress, ""] : []), ...(findings.some((f) => f.security) ? ["Security findings are listed by title only."] : [])].join("\n").trim() + "\n";
+}
+
+// ---- Markdown texts (findings, suggestions, comments) where one plain line is shown
+
+// A Markdown text as one plain line, for a folded card, a list row or a title: its first paragraph only, without code
+// blocks, list markers, a heading's "#" or a quote's ">", and without the marks of code, bold and links. A text that
+// is nothing but a code block (a GitHub suggestion) gives the block's first line.
+export function plainText(text) {
+  const src = String(text ?? ""), noCode = src.replace(/^[ \t]*(```|~~~)[^\n]*\n[\s\S]*?(?:\n[ \t]*\1[^\n]*|$)/gm, "");
+  const para = noCode.split(/\n[ \t]*\n/).find((p) => p.trim()) ?? src.split("\n").find((l) => l.trim() && !/^[ \t]*(```|~~~)/.test(l)) ?? "";
+  return para.split("\n").map((l) => l.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "").replace(/^\s*(?:#{1,6}\s+|>\s?)/, "")).join(" ")
+    .replace(/`([^`]*)`/g, "$1").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/\s+/g, " ").trim();
 }

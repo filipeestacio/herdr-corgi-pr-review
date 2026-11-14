@@ -219,6 +219,9 @@ assert.equal(findingStatus(fb, { b: { s: "dismissed" } }, reps, "h2", "y(1)"), "
   // The source that already has a status keeps the id, so a fix sent for it and its report stay with the finding.
   assert.equal(mergeFindings(list, sugs, { a1: { s: "progress", fixHead: "h1", at: "2" } }).findings[2].id, "a1");
   assert.equal(mergeFindings([{ ...sec, line: 0 }, { ...sec, id: "sec2", line: 0 }]).findings.length, 2, "findings without a line never merge");
+  // line and end come from a model: whole numbers with line <= end for every caller, whatever it wrote (0: no line).
+  assert.deepEqual(mergeFindings([{ ...sec, end: 3 }, { ...sec, id: "s2", file: "b", line: 4, end: 1e9 }, { ...sec, id: "s3", file: "c", line: 2.5, end: "9" }, { ...sec, id: "s4", file: "d", line: 5, end: 7.5 }])
+    .findings.map((f) => [f.file, f.line, f.end]), [["b", 4, 1e9], ["c", 0, 0], ["d", 5, 5], ["t.yaml", 18, 18]]);
   // One count for every view: the severities add up to the unresolved ones; a fix sent is still unresolved.
   const st = { sec1: "progress", a2: "open", a3: "dismissed" };
   const c = findingCounts(m.findings, (f) => st[f.id] ?? (f.line === 40 ? "fixed" : "recheck"));
@@ -488,4 +491,21 @@ console.log("ok");
   assert.deepEqual(mergeBlockers({ related }).map((b) => b.title), ["Overlaps with open PR #5"]);
   assert.equal(triageOf({ pr: { title: "x" }, related: { open: [related.open[0]] } }).priority, 3);
   console.log("ok overview");
+}
+
+// One plain line of a Markdown text: its first paragraph, no code block, no list markers, no marks.
+{
+  const { plainText, mergeFindings } = await import("./pr.js");
+  assert.equal(plainText("`TOKEN` defaults to `\"\"`. **Bad**.\n\nSecond paragraph."), 'TOKEN defaults to "". Bad.');
+  assert.equal(plainText("Refuse it.\n\n```python\nx = 1\n```"), "Refuse it.", "a code block's language word does not show");
+  assert.equal(plainText("```python\nx = 1\n```\n\nThen the reason."), "Then the reason.");
+  assert.equal(plainText("```suggestion\n  return 1\n```"), "return 1", "nothing but a code block: its first line");
+  assert.equal(plainText("- one\n- two\n1. three"), "one two three");
+  assert.equal(plainText("## Why\nsee [the docs](https://example.com) now"), "Why see the docs now");
+  assert.deepEqual([plainText("#2 feat: loan_id"), plainText("plain title"), plainText(null)], ["#2 feat: loan_id", "plain title", ""]);
+  // A suggestion's title is cut at the first sentence end outside inline code, and is plain.
+  const sug = (line, reason) => ({ key: `e.py:+${line}`, hunk: "h", path: "e.py", line, old: false, severity: "high", reason });
+  assert.deepEqual(mergeFindings([], [sug(1, "`json.loads(x); y` raises `KeyError` on a missing id; both return 500."), sug(2, "Import couples the two. Split it."), sug(3, "No sentence end here")]).findings.map((f) => [f.title, f.detail]),
+    [["json.loads(x); y raises KeyError on a missing id", "both return 500."], ["Import couples the two", "Split it."], ["No sentence end here", ""]]);
+  console.log("ok plain text");
 }

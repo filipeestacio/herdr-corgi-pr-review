@@ -24,6 +24,9 @@ import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview,
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible, pastTop } from "./views.js";
 import { orderDiffers, worst, byUrgency } from "./views.js";
 import { archView, archModel, archLegend, visualsCard, visualCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
+import { visualPlan } from "./stack.js";
+import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCALE } from "./views.js";
+import { plainText } from "./pr.js";
 import { hasSources, archLayout, archBands } from "./arch.js";
 import * as TH from "./threads.js";
 import { leftWidth, rowClick, CHIP_W, ASK_W, keyRoute, scopeLine, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf, rangeLabel, pinAnchor, pinAdd, pinDrop, pinsOf, pinsOn, codePins, drillPush, drillTo, crumbs, drillKey, cachePut, mapDrill, exploreId, exploreIndex, exploreAi, pathOf, lineOf, repoOfRemote, exploreTrust, layersForNode } from "./explore.js";
@@ -107,6 +110,10 @@ const THREAD_COLOR = { fixed: "ansi2", answered: "accent", wontfix: "muted", que
 const PROBE = "0".repeat(40);
 const CTX_MS = 10 * 60000; // related PRs, CI checks, mergeability (related.py): asked again after this while the review is open
 const OPEN_ST = ["open", "progress", "recheck"];
+// A finding's card in the diff: its height folded, the label column of an open one, the link at its head's right end.
+const FIND_FOLDED = 34, FIND_LABEL = 112, FIND_LINK = 150;
+// A layer's head over its code: its texts wrap at about 95 characters instead of running across the whole column.
+const LAYER_TEXT = 640;
 // The Layers tab's pages (left nav); null: the diff of the current layer.
 const PAGES = [["overview", "Overview"], ["blast", "Security blast radius"], ["arch", "Architecture impact"]]; // measures the mono font's character width, for clicks on tokens inside the virtual list
 
@@ -275,7 +282,7 @@ export function flowCard(f, t, id, onJump) {
 }
 
 // Markdown markers dropped where a line is drawn as plain text (list rows).
-const plain = (s) => String(s ?? "").replace(/`([^`]*)`/g, "$1").replace(/\*\*([^*]+)\*\*/g, "$1");
+const plain = plainText; // one plain line of a Markdown text: its first paragraph, no code blocks, no marks (pr.js)
 const ago = (iso) => { const m = Math.round((Date.now() - Date.parse(iso)) / 60000); return !Number.isFinite(m) ? "" : m < 60 ? `${m} min ago` : m < 2880 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`; };
 
 
@@ -301,7 +308,7 @@ export const ReviewMode = {
     this.press = { x: 0, w: 0, shift: false }; this.items = []; this.at = {};
     // The inline composer (one at a time, under the selection) and the Finish-your-review popover's summary.
     this.composing = false; this.finishOpen = false; this.event = "comment"; this.route = null; this.posted = null; this.gh = [];
-    this.draft = TextareaState.new({ placeholder: "Leave a comment (⌘↩ adds it, Esc cancels)" });
+    this.draft = TextareaState.new({ placeholder: "Leave a comment" });
     this.summary = TextareaState.new({ placeholder: "Leave a comment" });
     // Threads: sent/posted comments with their replies; the GitHub preview's ticks and inline edit; the agent preview.
     this.threadDoc = {}; this.replies = {}; this.openThreads = new Set(); this.off = new Set(); this.summaryOn = true; this.editItem = null; this.replyTo = null; this.sendP = null;
@@ -365,6 +372,15 @@ export const ReviewMode = {
     // Scripts and tests: the composer's text, then its "Post now / Send to agent…" button; the preview's "Send to agent".
     else if (name === "draft") { this.draft.set_value(arg); }
     else if (name === "single") this.singleComment(cx);
+    // The same as their clicks: the ▾ beside the composer's main button, and a finding's card in the diff
+    // (finding-card:<finding id> opens or folds it).
+    else if (name === "compose-more") this.toggleComposeMore();
+    else if (name === "comment-row") { // comment-row:<id>: a click on that row of the Comments tab (its whole text shows, the diff jumps to it)
+      const r = this.commentRowsNow().find((x) => x.id === arg);
+      if (r) { this.tab = "comments"; this.crow = r.id; this.jumpTo(`${r.file}:${r.line}`, cx); }
+    }
+    else if (name === "note") { const n = this.openSugs().find((x) => `${x.path}:${x.line}` === arg); this.sug = n && this.sug !== n.key ? n.key : null; } // note:<path>:<line>: a click on the AI note there
+    else if (name === "finding-card") { const f = this.findingById(arg); if (f) (this.fopen ??= new Map()).set(f.id, !this.findOpen(f)); }
     else if (name === "send") this.sendConfirmed(cx);
     else if (name === "route") this.route = arg; // github | agent: where Submit and single comments go
     else if (name === "fix") this.fixComments(arg ? arg.split(",") : this.selected(), cx); // fix:<comment id>[,<id>…], else the selected ones (the preview opens)
@@ -827,6 +843,12 @@ export const ReviewMode = {
   },
   // The Findings tab with f open.
   openFinding(f) { this.tab = "findings"; this.ffocus = f.id; },
+  // A finding's card in the diff is one line until a click opens it (fopen: id -> bool); a security finding from high
+  // on starts open.
+  findOpen(f) { return this.fopen?.get(f.id) ?? Boolean(f.security && ["critical", "high"].includes(f.severity)); },
+  // An open card's rows under its title: what the finding claims (views.js factRows), its text and its suggestion.
+  // The texts are Markdown (inline code, paragraphs, a code block in a suggestion) and are drawn as such.
+  findRows(f) { return [...factRows(f), f.detail && ["Detail", f.detail], f.suggestion && ["Suggestion", f.suggestion]].filter(Boolean); },
   // The index (in steps()) of the layer an analysis finding belongs to, or -1.
   layerOf(f) { return f.step ? this.steps().findIndex((s) => s.findings?.some((x) => f.ids.includes(x.id))) : -1; },
   // A layer's findings: the ones the analysis filed in it, and every other finding in one of its files (a reviewer's).
@@ -1180,6 +1202,9 @@ export const ReviewMode = {
     if (items.length + rows.length > cap) { items.push({ t: "note", text: `${rows.length} lines not shown: the view holds about ${cap} lines at once. Collapse other files (click their header) to open this one.` }); return []; }
     const sugs = this.openSugs(path), cms = this.comments.filter((c) => c.file === path), used = new Set();
     const finds = this.findings().filter((f) => f.file === path && OPEN_ST.includes(this.fstatus(f))); // a fix sent stays here until it is verified
+    // A card sits under the first code line of its finding's range; an open one marks the range in the gutter.
+    const under = new Map(finds.map((f) => [f, findingAnchor(rows, f.line, f.end)]));
+    (this.fmarks ??= new Map()).set(path, rangeMarks(rows, finds.filter((f) => this.findOpen(f)).map((f) => ({ line: f.line, end: Math.max(f.end ?? f.line, under.get(f)), mark: SEV[f.severity] }))));
     const own = this.ghOwn(), gh = this.ghNow().list.filter((g) => g.path === path && !own(g)), ghUsed = new Set(), f = this.fsel, range = this.composing && f?.path === path && rangeOf(rows, f.a, f.b);
     const ths = this.threads().filter((x) => x.file === path), notes = codePins(this.pins(), path);
     const show = this.show();
@@ -1206,7 +1231,7 @@ export const ReviewMode = {
       }
       for (const th of ths) if (atLine(r, th.end, th.old)) { if (show.mine) items.push(...this.cardItems("th", th)); else hide("Yours"); }
       for (const pin of notes) if (atLine(r, pin.anchor.end, pin.anchor.old)) { if (show.notes) items.push(...this.cardItems("pin", pin)); else hide("Notes"); }
-      if (r.kind !== "-") for (const f of finds) if (f.line === r.number) { if (show.ai) items.push({ t: "find", f }, { t: "fact", f }); else hide("Findings"); }
+      if (r.kind !== "-") for (const f of finds) if (under.get(f) === r.number) { if (show.ai) items.push({ t: "find", f }, ...(this.findOpen(f) ? [{ t: "fact", f }] : [])); else hide("Findings"); }
       const n = Object.values(hidden).reduce((a, b) => a + b, 0);
       if (n) items.push({ t: "hidden", text: `${n} hidden · ${Object.keys(hidden).join(", ")}`, key: `${path}:${lineKey(r)}` });
     });
@@ -1218,7 +1243,7 @@ export const ReviewMode = {
     const items = [], at = {};
     steps.forEach((s, i) => {
       at[`s${i}`] = items.length;
-      items.push({ t: "step", s, i });
+      items.push({ t: "step", s, i }, ...(s.visuals ?? []).map((v, k) => ({ t: "vis", v, i, text: `vis|${i}|${k}` })));
       const present = this.present(s);
       if (s.stale) items.push({ t: "note", text: "Outdated: these hunks are no longer in the diff." });
       for (const id of present) {
@@ -1330,7 +1355,10 @@ export const ReviewMode = {
       else if (inside && which === 1) this.discuss(it.f, cx);
       else if (inside && which === 2) { const job = this.fixOf(it.f.id); if (job?.terminal) this.goFix(job); else this.fix([it.f], cx); }
       else if (inside && which === 3) this.dismiss(it.f, cx);
-    } else if (it.t === "find") this.openFinding(it.f);
+    } else if (it.t === "find") {
+      if (this.findOpen(it.f) && x >= this.press.w - 16 - FIND_LINK) this.openFinding(it.f);
+      else (this.fopen ??= new Map()).set(it.f.id, !this.findOpen(it.f));
+    }
     else if (it.t === "cact") {
       const b = x - GUTTER - 12, which = b >= 0 && b < BTN ? 0 : b >= BTN + BTN_GAP && b < 2 * BTN + BTN_GAP ? 1 : -1;
       if (it.t === "cact" && which === 0) this.openComposer(cx, it.c);
@@ -1661,6 +1689,7 @@ export const ReviewMode = {
   cardMax() { return Math.max(320, Math.min(CARD_W, (this.listW ?? 900) - GUTTER - 16)); },
   // A card is as wide as its text needs, 420 to 720 px (narrower only when the diff is).
   cardW(c) {
+    if (c && c.src !== "notes") return Math.max(320, (this.listW ?? 900) - GUTTER - 16); // your own words: as wide as a finding's card
     const longest = c ? Math.max(String(c.text).split("\n").reduce((n, l) => Math.max(n, l.length), 0) * 7.4 + 28, ...c.replies.map((r) => r.text.length * 7 + 60), 300 + c.status[0].length * 6.5) : CARD_W;
     return Math.min(this.cardMax(), Math.max(CARD_MIN, Math.round(longest)));
   },
@@ -1724,7 +1753,7 @@ export const ReviewMode = {
     if (it.k === "pin") { this.openNotes ??= new Set(); if (this.openNotes.has(c.id)) this.openNotes.delete(c.id); else this.openNotes.add(c.id); }
   },
   cardRow(it, t) {
-    const c = this.cardOf(it), W = this.cardW(c), col = t[SOURCE[c.src]] ?? t.accent, selMode = this.selected().length > 0, sel = this.selected().includes(c.id);
+    const c = this.cardOf(it), W = this.cardW(c), col = c.src === "notes" ? t[SOURCE.notes] : t.foreground, selMode = this.selected().length > 0, sel = this.selected().includes(c.id);
     const avatar = (name, src, size = 18) => div().w(size).h(size).flex_none().rounded_full().flex().items_center().justify_center().bg((t[SOURCE[src]] ?? t.accent) + "33")
       .text_size(size * 0.58).font_semibold().text_color(t.foreground).child(String(name).replace(/^Note.*/, "N")[0]?.toUpperCase() ?? "?");
     const pillC = ([label, k]) => div().flex_none().px(6).h(18).flex().items_center().rounded(9).border_1().border_color(t[k] ?? t.muted).text_size(11).text_color(t[k] ?? t.muted).child(label);
@@ -1755,11 +1784,11 @@ export const ReviewMode = {
     }
     const reply = (r, k) => v_flex().id(`rv-crp-${c.key}-${k}`).ml(22).gap(1).pt(4)
       .child(h_flex().h(20).gap(6).items_center().text_size(11.5).child(avatar(r.author, r.src, 16)).child(div().font_semibold().child(r.author)).when(Boolean(r.status), (e) => e.child(pillC(r.status).id(`rv-crps-${c.key}-${k}`).tooltip(`What the reply reported: ${r.status[0]}`))))
-      .child(div().pl(22).max_h(19 * 8).overflow_hidden().text_size(12.5).line_height(1.5).whitespace_normal().text_color(t.foreground).child(plain(r.text)));
+      .child(div().pl(22).text_size(12.5).line_height(1.5).text_color(t.foreground).child(TextView.markdown(`rv-crm-${c.key}-${k}`, String(r.text ?? ""))));
     const last = it.k !== "th";
     return div().w_full().h(this.sizeOf(it)).pl(GUTTER).when(last, (e) => e.pb(CARD_GAP)).child(stripe(frame(v_flex()).h_full().px(12).pt(2).pb(8).overflow_hidden()
       .when(last, (e) => e.border_b(1).rounded_bl(8).rounded_br(8)).text_size(13.5)
-      .child(div().line_height(1.48).whitespace_normal().text_color(t.foreground).child(c.text))
+      .child(div().line_height(1.48).text_color(t.foreground).child(TextView.markdown(`rv-cbm-${c.key}`, String(c.text ?? ""))))
       .children(c.replies.map(reply))));
   },
 
@@ -1781,17 +1810,20 @@ export const ReviewMode = {
   },
 
   closeComposer(cx) {
-    this.composing = false; this.editing = null; this.draft.set_value(""); this.fh.focus(); cx.notify();
+    this.composing = false; this.editing = null; this.composeMore = false; this.draft.set_value(""); this.fh.focus(); cx.notify();
   },
 
-  // The composer's buttons, left to right: x from the list's left edge (clicks are placed by x, see onItem).
+  // The composer's buttons, left to right: x from the list's left edge (clicks are placed by x, see onItem). The main
+  // button adds to the pending review. Posting this one comment to GitHub at once is public and cannot be taken back,
+  // so it waits behind the ▾ beside the main button (composeMore) instead of sitting next to it.
   composeButtons() {
+    const now = this.routeNow() === "github" ? [["▾", 28, "toggleComposeMore"], ...(this.composeMore ? [["Post now to GitHub", 160, "singleComment"]] : [])] : [["Send to agent…", 160, "singleComment"]];
     const list = this.editing ? [["Suggestion", 104, "insertSuggestion"], ["Cancel", 80, "closeComposer"], ["Update comment", 140, "addDraft", true]]
-      : [["Suggestion", 104, "insertSuggestion"], ["Cancel", 80, "closeComposer"], [this.routeNow() === "github" ? "Post now to GitHub" : "Send to agent…", 160, "singleComment"],
-        [this.comments.length ? "Add review comment" : "Start a review", 160, "addDraft", true]];
+      : [["Suggestion", 104, "insertSuggestion"], ["Cancel", 80, "closeComposer"], [this.comments.length ? "Add review comment" : "Start a review", 160, "addDraft", true], ...now];
     let x = GUTTER + 16; // the card's 4 px border and 12 px padding
-    return list.map(([label, w, act, primary], i) => { const b = { label, w, act, primary, x: x + (i === 1 ? 24 : 0) }; x = b.x + w + BTN_GAP; return b; });
+    return list.map(([label, w, act, primary], i) => { const b = { label, w, act, primary, x: x + (i === 1 ? 24 : 0) }; x = b.x + w + (list[i + 1]?.[2] === "toggleComposeMore" ? 2 : BTN_GAP); return b; });
   },
+  toggleComposeMore() { this.composeMore = !this.composeMore; },
 
   // A ```suggestion block with the selected lines, for GitHub's "Commit suggestion".
   insertSuggestion() {
@@ -2170,20 +2202,22 @@ export const ReviewMode = {
         .child(v_flex().id("rv-comments-left").absolute().inset_0().overflow_y_scroll().p(8).gap(2)
           .when(!rows.length, (e) => e.child(div().p(6).text_size(12.5).text_color(t.muted).whitespace_normal().child(all.length ? "The Show switch in the bar hides these comments." : "Comments you write, send or post show here, with their replies.")))
           .children(files.flatMap((file) => [div().pt(8).pb(2).px(6).text_size(11.5).font_semibold().text_color(t.muted).truncate().child(file),
-            ...rows.filter((r) => r.file === file).map((r) => {
+            ...rows.filter((r) => r.file === file).flatMap((r) => {
               const st = STATE[r.state], mine = r.kind === "pending" || r.kind === "thread";
-              return h_flex().id(`rv-cr-${r.id}`).tooltip("Jump to this comment in the diff").gap(8).items_center().px(6).h(30).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
-                .on_click((_e, cx) => { if (r.kind === "thread") this.openThreads.add(r.id); if (r.kind === "note") (this.openNotes ??= new Set()).add(r.id); this.jumpTo(`${r.file}:${r.line}`, cx); })
+              // A row is one line; the one clicked last shows its whole text under it, as Markdown.
+              const whole = this.crow === r.id ? [div().id(`rv-crw-${r.id}`).ml(68).mr(6).mb(6).px(10).py(6).rounded(6).bg(t.surface).text_size(13).line_height(1.5).child(TextView.markdown(`rv-crwm-${r.id}`, String(r.text ?? "")))] : [];
+              return [h_flex().id(`rv-cr-${r.id}`).tooltip("Jump to this comment in the diff").gap(8).items_center().px(6).h(30).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
+                .on_click((_e, cx) => { this.crow = r.id; if (r.kind === "thread") this.openThreads.add(r.id); if (r.kind === "note") (this.openNotes ??= new Set()).add(r.id); this.jumpTo(`${r.file}:${r.line}`, cx); })
                 .child(div().id(`rv-crb-${r.id}`).tooltip((mine ? "Select to fix this comment with an agent" : "Only your own comments can be selected")).accessibility_label("Select comment").w(14).h(14).flex_none().rounded(3).border_1().border_color(sel.has(r.id) ? t.accent : mine ? t.input : "#00000000").bg(sel.has(r.id) ? t.accent : "#00000000")
                   .flex().items_center().justify_center().text_size(10).text_color(t.accent_foreground).child(sel.has(r.id) ? "✓" : "")
                   .when(mine, (e) => e.on_click((_e, cx) => { this.toggleSel(r.id, cx); cx.stop_propagation(); })))
                 .child(div().w(40).flex_none().text_size(11.5).text_color(t.muted).child(`${r.old ? "−" : ""}${r.line}`))
-                .child(div().flex_1().min_w(0).truncate().text_size(13).child(plain(String(r.text).split("\n")[0])))
+                .child(div().flex_1().min_w(0).truncate().text_size(13).child(plain(r.text)))
                 .when(r.replies > 0, (e) => e.child(div().id(`rv-crr-${r.id}`).tooltip(`${r.replies} replies in this thread`).flex_none().text_size(11.5).text_color(t.muted).child(`↩ ${r.replies}`)))
                 .when(Boolean(r.stale), (e) => e.child(badge(t, "STALE", t.ansi3).id(`rv-crst-${r.id}`).tooltip(STALE_TIP)))
                 .when(Boolean(r.outdated), (e) => e.child(badge(t, "Outdated", t.muted).id(`rv-cro-${r.id}`).tooltip("GitHub marks this comment outdated: the code it was on changed since")))
                 .when(Boolean(r.resolved), (e) => e.child(badge(t, "Resolved", t.ansi2).id(`rv-crv-${r.id}`).tooltip("This thread is resolved on GitHub")))
-                .child(div().id(`rv-crs-${r.id}`).tooltip(STATE_TIP[r.state] ?? st[0]).flex_none().px(6).h(18).flex().items_center().rounded(9).border_1().border_color(t[st[1]] ?? t.muted).text_size(11).text_color(t[st[1]] ?? t.muted).child(st[0]));
+                .child(div().id(`rv-crs-${r.id}`).tooltip(STATE_TIP[r.state] ?? st[0]).flex_none().px(6).h(18).flex().items_center().rounded(9).border_1().border_color(t[st[1]] ?? t.muted).text_size(11).text_color(t[st[1]] ?? t.muted).child(st[0])), ...whole];
             })])))
         .child(Scrollbar.vertical("rv-comments-left").absolute().inset_0()));
   },
@@ -2319,17 +2353,13 @@ export const ReviewMode = {
       ;
   },
 
-  // A layer's explanation, check questions and pictures, as the Layers view shows them; a card's "In the layer
-  // analysis" shows the same. p, n: keep the ids unique per place; tab: the key of the shown picture in this.visTab;
-  // bar: drawn above the pictures.
+  // A layer's explanation, findings and pictures; a card's "In the layer analysis" shows them. The Layers view (p
+  // "rv") has the pictures, like the check questions, once: over the layer's code (item: "step" and "vis").
+  // p, n: keep the ids unique per place; tab: the key of the shown picture in this.visTab; bar: drawn above the pictures.
   layerParts(s, t, p, n, tab, bar = null) {
+    const pics = p !== "rv" && s.visuals?.length > 0;
     return [
       Boolean(s.text) && div().text_size(13.5).line_height(1.5).text_color(t.foreground).child(TextView.markdown(`${p}-ex-${stepKey(s)}`, s.text)),
-      s.questions?.length > 0 && v_flex().pt(2).gap(8)
-        .child(div().text_size(11.5).font_semibold().text_color(t.muted).child("CHECK"))
-        .children(s.questions.map((q, k) => h_flex().id(`${p}-q-${n}-${k}`).tooltip("A question to check while you read this layer").gap(8).items_start().text_size(13.5).line_height(1.5)
-          .child(div().flex_none().text_color(t.accent).child("?"))
-          .child(div().flex_1().min_w(0).child(TextView.markdown(`${p}-q-${stepKey(s)}-${k}`, this.asked(s, q)))))),
       // Every finding in this layer's files, whoever found it: one line each with its source and state.
       this.layerFindings(s).length > 0 && v_flex().pt(2).gap(6)
         .child(div().text_size(11.5).font_semibold().text_color(t.muted).child("FINDINGS"))
@@ -2342,8 +2372,8 @@ export const ReviewMode = {
             .child(div().flex_none().text_size(11.5).text_color(t.muted).child(f.sources.length === 1 ? this.sourcesOf(f) : `${f.sources.length} sources`))
             .when(st !== "open", (e) => e.child(div().flex_none().text_size(11.5).text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(FSTATUS[st]?.[0] ?? st)));
         })),
-      bar,
-      s.visuals?.length > 0 && visualsCard(s.visuals, t, `${p}-vis-${n}`, (at, cx) => this.jumpTo(at, cx),
+      pics && bar,
+      pics && visualsCard(s.visuals, t, `${p}-vis-${n}`, (at, cx) => this.jumpTo(at, cx),
         this.visTab?.[tab] ?? 0, (k, cx) => { this.visTab = { ...this.visTab, [tab]: k }; cx.notify(); }, this.wrapX()),
     ].filter(Boolean);
   },
@@ -2378,8 +2408,9 @@ export const ReviewMode = {
       security: this.openFindings().filter((f) => f.security), related: this.ctx });
   },
   filesOf(s) { return [...new Set(this.present(s).map((id) => this.byId.get(id).path))]; },
-  // "file.ts — question": a check question with the file it is about.
-  asked(s, q) { const f = this.filesOf(s)[0]; return f ? `${f.split("/").pop()} — ${q}` : q; },
+  // "file.ts — question": a check question with the file it is about (the analysis names it; none when the question
+  // is about several files, or in an analysis from before it did).
+  asked(s, q, k) { const f = s.questionFiles?.[k]; return f ? `${f.split("/").pop()} — ${q}` : q; },
 
   // What stands in the way of a merge, most urgent first: the merge blockers (pr.js mergeBlockers, the Overview's
   // list) by severity, security first among equals. No layers: those are the list below.
@@ -3487,25 +3518,28 @@ export const ReviewMode = {
 
   // ---- render: the diff list (inside the virtual list: no handlers, onItem places clicks by x)
 
-  // Lines a wrapped text takes in a card of the diff column (UI font ≈ 7.4 px per char at 13.5 px).
-  lines(text) { return Math.max(1, Math.ceil(String(text).length / Math.max(30, ((this.listW ?? 900) - GUTTER - 60) / 7.4))) + (String(text).match(/\n/g)?.length ?? 0); },
+  // Lines a wrapped text takes in a card of the diff column (views.js wrapCount); less: what a label column takes.
+  lines(text, less = 0) { return wrapCount(text, (this.listW ?? 900) - GUTTER - 45 - less); },
+  // The height of a Markdown text in such a card (views.js mdHeight).
+  md(text, less = 0) { return mdHeight(text, (this.listW ?? 900) - GUTTER - 45 - less); },
 
   sizeOf(it) {
     if (it.t === "row") return it.src[it.ri].kind === "@" ? 30 : ROW;
-    if (it.t === "step") return 66 + 24 * it.s.questions.length;
-    if (it.t === "sug") return this.sug === it.s.key ? 56 + 21 * this.lines(it.s.reason) : 26;
+    if (it.t === "step") { const w = Math.min(LAYER_TEXT, (this.listW ?? 900) - 32), qs = it.s.questions; return 48 + mdHeight(it.s.why, w) + (qs.length ? 26 + qs.reduce((n, q, k) => n + 4 + mdHeight(this.asked(it.s, q, k), w - 20), 0) : 0); }
+    if (it.t === "vis") return visualPlan(it.v, (this.listW ?? 900) - 32).h + 8;
+    if (it.t === "sug") return this.sug === it.s.key ? 56 + this.md(it.s.reason) : 26;
     if (it.t === "pad") return 60;
     if (it.t === "fold") return it.h;
     if (it.t === "hidden") return 24;
     if (it.t === "ch") return this.cardOf(it).folded ? 28 + 2 * CARD_GAP : CARD_HEAD;
-    if (it.t === "cb") { const c = this.cardOf(it), w = this.cardW(c); return 12 + 20 * this.cardLines(c.text, w) + c.replies.reduce((n, r) => n + 26 + 19 * Math.min(8, this.cardLines(r.text, w - 22)), 0) + (it.k === "th" ? 0 : CARD_GAP); }
+    if (it.t === "cb") { const c = this.cardOf(it), w = this.cardW(c) - 26; return 12 + mdHeight(c.text, w, 20) + c.replies.reduce((n, r) => n + 26 + mdHeight(r.text, w - 44, 19, 12.5), 0) + (it.k === "th" ? 0 : CARD_GAP); }
     if (it.t === "cr") return CARD_REPLY + CARD_GAP;
-    if (it.t === "gh") return 44 + 21 * Math.min(6, this.lines(it.g.body));
+    if (it.t === "gh") return 50 + this.md(it.g.body);
     if (it.t === "compose") return COMPOSE;
     if (it.t === "composeact") return ACT + 4;
     if (it.t === "cact" || it.t === "fact") return ACT;
     if (it.t === "def") return 190;
-    if (it.t === "find") return 44 + 21 * Math.min(3, this.lines(`${it.f.title} ${it.f.detail}`)) + (this.fixLine(it.f) ? 21 : 0);
+    if (it.t === "find") return this.findOpen(it.f) ? 48 + (this.fixLine(it.f) ? 21 : 0) + 21 * this.lines(it.f.title) + this.findRows(it.f).reduce((n, [, v]) => n + 4 + this.md(v, FIND_LABEL), 0) : FIND_FOLDED;
     return { path: 30, file: 44, gap: 30, note: 30 }[it.t];
   },
 
@@ -3524,7 +3558,8 @@ export const ReviewMode = {
       return mono(h_flex()).h(ROW).w_full().text_size(13).cursor_pointer()
         .when(Boolean(tone), (e) => e.bg(tint(r.kind) + "1a")).when(on, (e) => e.bg(t.selection))
         .child(div().w(4).h_full().flex_none().when(on, (e) => e.bg(t.accent)).when(!on && Boolean(focus), (e) => e.bg(t.accent + "55"))
-          .when(!on && !focus && Boolean(this.pinMarks?.has(`${it.path}:${r.n}`)), (e) => e.bg(t.ansi5)))
+          .when(!on && !focus && Boolean(this.pinMarks?.has(`${it.path}:${r.n}`)), (e) => e.bg(t.ansi5))
+          .when(!on && r.kind !== "-" && Boolean(this.fmarks?.get(it.path)?.get(r.n)), (e) => e.bg(t[this.fmarks.get(it.path).get(r.n)]))) // the lines of an open finding
         .child(h_flex().h_full().flex_none().relative().when(Boolean(tone), (e) => e.bg(tint(r.kind) + "40")).child(num(r.o)).child(num(r.n))
           // GitHub's "+" on hover: the line numbers are the comment button (onItem: x inside the gutter).
           .child(h_flex().absolute().inset_0().justify_end().items_center().text_color("#00000000").hover((s) => s.text_color(t.accent_foreground).bg(t.accent + "26"))
@@ -3550,11 +3585,11 @@ export const ReviewMode = {
     // click opens its whole text (this.sug); a and x still take it as a comment or hide it.
     if (it.t === "sug") {
       const s = it.s, open = this.sug === s.key;
-      return div().w_full().h(this.sizeOf(it)).pl(GUTTER).pr(16).py(2).cursor_pointer().child(v_flex().size_full().px(12).justify_center().gap(4).border_l(2).border_color(open ? t.accent : t.border).text_size(12.5)
+      return div().w_full().h(this.sizeOf(it)).pl(GUTTER).pr(16).py(2).cursor_pointer().child(v_flex().size_full().px(12).justify_center().gap(4).border_l(2).border_color(t[SEV[s.severity]] ?? t.border).text_size(12.5)
         .child(h_flex().h(20).flex_none().gap(8).items_center().text_color(t.muted)
           .child(div().flex_none().child(`${open ? "▾" : "▸"} AI note · ${s.severity}${s.approx ? " · near this line" : ""}`))
           .when(!open, (e) => e.child(div().flex_1().min_w(0).truncate().child(plain(s.reason)))))
-        .when(open, (e) => e.child(div().flex_1().min_h(0).overflow_hidden().text_size(13.5).line_height(1.55).whitespace_normal().text_color(t.foreground).child(plain(s.reason)))
+        .when(open, (e) => e.child(div().flex_1().min_h(0).text_size(13.5).line_height(1.55).text_color(t.foreground).child(TextView.markdown(`rv-sgm-${s.key}`, s.reason)))
           .child(div().h(20).flex_none().text_size(12).text_color(t.muted).child("A note, not a finding. Press a to add it as a comment, x to hide it."))));
     }
     if (it.t === "find" || it.t === "fact") {
@@ -3567,13 +3602,22 @@ export const ReviewMode = {
           .child(button(t, live ? "Go to fix" : "Fix", c, t.foreground).id(`rv-fa-f-${f.id}`).tooltip(live ? "Show the fix agent's terminal" : "Fix this with an agent: a preview first; a sub-agent never pushes"))
           .child(button(t, "Dismiss finding", t.border, t.muted).id(`rv-fa-x-${f.id}`).tooltip(`Dismiss this finding${f.sources.length > 1 ? ` with all ${f.sources.length} of its sources` : ""}; it stays in the Findings tab under Dismissed`)));
       }
-      return div().w_full().h(this.sizeOf(it)).pl(GUTTER).pr(16).pt(6).child(card(v_flex()).size_full().px(12).pt(8).gap(4).border_t(1).text_size(13.5)
-        .child(h_flex().h(18).gap(8).items_center().child(badge(t, f.severity, c).id(`rv-lfs-${f.id}`).tooltip(`${f.severity} severity: the highest of its sources`))
-          .when(Boolean(f.security), (e) => e.child(badge(t, "Security", t.ansi1).id(`rv-lfsec-${f.id}`).tooltip("A security finding: the security review found it, or its content is about security")))
-          .child(div().id(`rv-lfr-${f.id}`).tooltip("Where this finding comes from, each source with its own severity").min_w(0).truncate().text_size(12).font_semibold().text_color(t.muted).child(this.sourcesOf(f)))
-          .child(div().id(`rv-lfst-${f.id}`).tooltip("Where this finding stands: unresolved, fix sent, fixed (verified) or dismissed").flex_none().text_size(12).font_semibold().text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(FSTATUS[st]?.[0] ?? st)))
+      // One line folded (severity, title, sources, state); open: the head, the fix line, the title and findRows.
+      const open = this.findOpen(f), state = div().id(`rv-lfst-${f.id}`).tooltip("Where this finding stands: unresolved, fix sent, fixed (verified) or dismissed").flex_none().text_size(12).font_semibold().text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(FSTATUS[st]?.[0] ?? st);
+      const head = (e) => e.child(div().w(10).flex_none().text_size(12).text_color(t.muted).child(open ? "▾" : "▸"))
+        .child(badge(t, f.severity, c).id(`rv-lfs-${f.id}`).tooltip(`${f.severity} is the highest severity among this finding's sources. The scale:\n${SEVERITY_SCALE}`))
+        .when(Boolean(f.security), (x) => x.child(badge(t, "⛨ Security", t.ansi1).bg(t.ansi1 + "26").id(`rv-lfsec-${f.id}`).tooltip("A security finding: the security review found it, or its content is about security")));
+      const sources = div().id(`rv-lfr-${f.id}`).tooltip("Where this finding comes from, each source with its own severity").min_w(0).truncate().text_size(12).font_semibold().text_color(t.muted).child(this.sourcesOf(f));
+      if (!open) return div().id(`rv-lf-${f.id}`).tooltip("Open this finding: what it claims, its text, its suggestion and its actions").w_full().h(FIND_FOLDED).pl(GUTTER).pr(16).pt(6).pb(2).cursor_pointer()
+        .child(head(card(h_flex())).size_full().px(12).gap(8).items_center().border_t(1).border_b(1).text_size(13.5)
+          .child(div().flex_1().min_w(0).truncate().child(f.title)).child(div().flex_none().max_w(300).child(sources)).child(state));
+      return div().w_full().h(this.sizeOf(it)).pl(GUTTER).pr(16).pt(6).cursor_pointer().child(card(v_flex()).size_full().px(12).pt(8).gap(4).border_t(1).text_size(13.5).overflow_hidden()
+        .child(head(h_flex().h(18).flex_none().gap(8).items_center()).child(sources).child(state).child(div().flex_1())
+          .child(div().id(`rv-lfo-${f.id}`).tooltip("Open this finding in the Findings tab").w(FIND_LINK - 12).flex_none().text_right().text_size(12).text_color(t.accent).child("Open in Findings ↗")))
         .when(Boolean(line), (e) => e.child(div().h(17).flex_none().truncate().text_size(12).text_color(t.muted).child(line)))
-        .child(div().flex_1().min_h(0).overflow_hidden().line_height(1.55).whitespace_normal().child(`${f.title}. ${plain(f.detail)}`)));
+        .child(div().flex_none().line_height(1.55).whitespace_normal().font_semibold().child(f.title))
+        .children(this.findRows(f).map(([label, text]) => h_flex().flex_none().items_start().line_height(1.55)
+          .child(div().w(FIND_LABEL).flex_none().text_size(12).text_color(t.muted).child(label)).child(div().flex_1().min_w(0).child(TextView.markdown(`rv-lfm-${f.id}-${label}`, text))))));
     }
     if (it.t === "ch" || it.t === "cb" || it.t === "cr") return this.cardRow(it, t);
     if (it.t === "pad") return div().w_full().h(60);
@@ -3588,26 +3632,24 @@ export const ReviewMode = {
           .when(Boolean(it.loose), (e) => e.child(div().text_color(t.muted).child(g.line ?? g.original_line ? `· line ${g.line ?? g.original_line}, not shown` : "· on the file")))
           .when(Boolean(g.outdated), (e) => e.child(badge(t, "Outdated", t.muted).id(`rv-gho-${g.id}`).tooltip("GitHub marks this comment outdated: the code it was on changed since")))
           .when(Boolean(g.resolved), (e) => e.child(badge(t, "Resolved", t.ansi2).id(`rv-ghr-${g.id}`).tooltip("This thread is resolved on GitHub"))))
-        .child(div().flex_1().min_h(0).overflow_hidden().line_height(1.55).whitespace_normal().text_color(t.foreground).child(plain(g.body))));
+        .child(div().flex_1().min_h(0).line_height(1.55).text_color(t.foreground).child(TextView.markdown(`rv-ghm-${g.id}`, String(g.body ?? "")))));
     }
     if (it.t === "compose") {
       const c = this.editing, a = c ?? this.selAnchor(), out = Boolean(a) && this.routeNow() === "github" && !inDiff(this.diffLines ?? new Map(), { file: this.fsel?.path, ...a });
-      const now = this.routeNow() === "github" ? (shared("review.hintPostNow") ? "Post now: one comment to GitHub at once" : "Tip: Post now to GitHub posts this one comment at once; Start a review collects them for one review")
-        : "Send to agent…: shows what goes to the agent first";
       return div().w_full().h(COMPOSE).pl(GUTTER).pr(16).pt(6).child(v_flex().size_full().px(12).pt(8).pb(4).gap(6).border_l(4).border_r(1).border_t(1)
-        .border_color(t.accent).bg(t.surface).rounded_tl(4).rounded_tr(4)
+        .border_color(t.muted).bg(t.surface).rounded_tl(4).rounded_tr(4)
         .child(h_flex().h(18).gap(8).items_center().text_size(12)
           .child(div().font_semibold().text_color(t.foreground).child(c ? `Edit comment · ${uiLine(c)}` : a ? `Comment on ${uiLine(a)}` : "Comment"))
           .when(out, (e) => e.child(badge(t, "not in the diff: will go into the review body", t.ansi3).id("rv-compose-out").tooltip("GitHub cannot attach a line comment outside the diff, so it goes into the review body")))
-          .child(div().flex_1().min_w(0).truncate().text_right().text_color(t.muted).child(c ? "⌘↩ saves · Esc cancels" : `⌘↩ adds to the review · Esc cancels · ${now}`)))
+          .child(div().flex_1().min_w(0).truncate().text_right().text_color(t.muted).child(`⌘↩: ${this.composeButtons().find((b) => b.primary).label} · Esc: Cancel`)))
         .child(div().flex_1().min_h(0).px(10).py(6).rounded(6).border_1().border_color(this.typing === "draft" ? t.accent : t.border).bg(t.background).cursor_text()
           .child(Textarea.new(this.draft).size_full().text_size(13.5).text_color(t.foreground))));
     }
     if (it.t === "composeact") {
       const bs = this.composeButtons();
       return div().w_full().h(ACT + 4).pl(GUTTER).pr(16).pb(6).child(h_flex().size_full().px(12).items_center().border_l(4).border_r(1).border_b(1)
-        .border_color(t.accent).bg(t.surface).rounded_bl(4).rounded_br(4)
-        .children(bs.map((b, i) => div().id(`rv-cb-${b.act}`).tooltip(COMPOSE_TIP[b.act]).w(b.w).h(28).flex_none().ml(i === 0 ? 0 : b.x - bs[i - 1].x - bs[i - 1].w)
+        .border_color(t.muted).bg(t.surface).rounded_bl(4).rounded_br(4)
+        .children(bs.map((b, i) => div().id(`rv-cb-${b.act}`).tooltip(COMPOSE_TIP[b.act] ?? (this.composeMore ? "Hide Post now to GitHub" : "Another way to send this comment: post it to GitHub at once, outside the review")).w(b.w).h(28).flex_none().ml(i === 0 ? 0 : b.x - bs[i - 1].x - bs[i - 1].w)
           .flex().items_center().justify_center().rounded(6).border_1().border_color(b.primary ? t.solid : t.border).bg(b.primary ? t.solid : t.background)
           .text_size(12.5).text_color(b.primary ? t.solid_foreground : t.foreground).when(Boolean(b.primary), (e) => e.font_semibold())
           .child(this.sending && b.act !== "closeComposer" && b.act !== "insertSuggestion" ? "…" : b.label))));
@@ -3625,16 +3667,20 @@ export const ReviewMode = {
         .when(n > 0, (e) => e.child(div().id(`rv-fh-cm-${f.path}`).tooltip(`${n} pending comments in this file`).px(8).text_size(12).text_color(t.accent).child(`● ${n}`)))
         .child(div().id(`rv-fh-ad-${f.path}`).tooltip(`${f.add} lines added`).px(4).text_size(12.5).text_color(t.ansi2).child(`+${f.add}`)).child(div().id(`rv-fh-dl-${f.path}`).tooltip(`${f.del} lines removed`).pl(2).pr(16).text_size(12.5).text_color(t.ansi1).child(`−${f.del}`));
     }
+    // A layer's head over its code: title, why, and the check questions, once and whole, each with the file the
+    // analysis names for it. Its pictures follow as rows of their own, as wide as the column.
     if (it.t === "step") {
       const s = it.s, on = it.i === this.cur;
       return v_flex().w_full().h(this.sizeOf(it)).px(16).pt(10).gap(4).bg(on ? t.selected : t.raised).border_t(1).border_color(t.border).cursor_pointer()
-        .child(h_flex().h(24).gap(10).items_center()
-          .child(div().id(`rv-lstep-${it.i}`).tooltip(this.done(s) ? "You checked this layer" : "Layer number").text_size(14).font_semibold().text_color(this.done(s) ? t.ansi2 : t.muted).child(this.done(s) ? "✓" : `${it.i + 1}`))
-          .child(div().flex_1().min_w(0).truncate().text_size(15).font_semibold().child(plain(s.title)))
-          .when(!s.pseudo, (e) => e.child(riskBadge(t, s).id(`rv-lrb-${it.i}`).tooltip(focusTip(s)))))
-        .child(div().h(22).truncate().text_size(13.5).text_color(t.foreground).child(plain(s.why)))
-        .children(s.questions.map((q) => div().h(24).truncate().text_size(13.5).text_color(t.muted).child(`?  ${plain(this.asked(s, q))}`)));
+        .child(h_flex().h(24).flex_none().gap(10).items_center()
+          .child(div().id(`rv-lstep-${it.i}`).tooltip(this.done(s) ? "This layer is checked off" : "Layer number").text_size(14).font_semibold().text_color(this.done(s) ? t.ansi2 : t.muted).child(this.done(s) ? "✓" : `${it.i + 1}`))
+          .child(div().flex_1().min_w(0).truncate().text_size(15).font_semibold().child(plain(s.title))))
+        .child(div().flex_none().max_w(LAYER_TEXT).line_height(1.55).text_size(13.5).text_color(t.foreground).child(TextView.markdown(`rv-lwhy-${it.i}`, s.why)))
+        .when(s.questions.length > 0, (e) => e.child(div().id(`rv-lq-${it.i}`).tooltip("Questions to check while you read this layer's code").h(18).flex_none().mt(4).text_size(11.5).font_semibold().text_color(t.muted).child("CHECK"))
+          .children(s.questions.map((q, k) => h_flex().flex_none().max_w(LAYER_TEXT).gap(8).items_start().text_size(13.5).line_height(1.55)
+            .child(div().w(12).flex_none().text_color(t.accent).child("?")).child(div().flex_1().min_w(0).child(TextView.markdown(`rv-lqm-${it.i}-${k}`, this.asked(s, q, k)))))));
     }
+    if (it.t === "vis") return div().w_full().h(this.sizeOf(it)).px(16).pb(8).bg(it.i === this.cur ? t.selected : t.raised).child(visualCard(it.v, t, `rv-lvis-${it.i}-${it.text}`, null, null, (this.listW ?? 900) - 32));
     if (it.t === "def") return this.defItem(it, t);
     if (it.t === "fold") return div().h(it.h).w_full().pl(GUTTER).pt(8).text_size(12.5).text_color(t.muted).cursor_pointer().child(`${it.n} lines folded to keep the list fast · they open as you scroll here, or click`);
     if (it.t === "path") return mono(h_flex()).h(30).w_full().px(16).items_center().text_size(12.5).text_color(t.muted).truncate().child(it.h.path);
@@ -3709,7 +3755,9 @@ export const ReviewMode = {
     }
     if (this.hunks && model() !== this.aiModel && !this.aiBusy) this.loadAi(cx, "cache");
     if (this.prSel) this.loadModels(cx);
-    if (this.winW) this.listW = this.winW - this.leftW() - SPLIT - (this.drawerSqueezes() ? 380 : 0); // the diff column's width: card heights wrap to it
+    // The diff column's width: card heights wrap to it. on_size_change reports the window in logical px; the column and
+    // its rows are laid out in px scaled by the person's zoom (as in settleTop).
+    if (this.winW) this.listW = this.winW / (settings().zoom || 1) - this.leftW() - SPLIT - (this.drawerSqueezes() ? 380 : 0);
     // Lines a pinned answer cites: marked in the diff's gutter (memoized on the pins).
     if (this.pinMarksOf !== this.pins()) { this.pinMarksOf = this.pins(); this.pinMarks = new Set(this.pinMarksOf.flatMap((p) => (p.evidence ? [p.evidence.replace(/^(.*?):(\d+).*$/, "$1:$2")] : []))); }
     const other = target && !C.shown(ctxDoc(), prCtx(target), shared);

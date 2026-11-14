@@ -184,3 +184,112 @@ export function byUrgency(blockers, security = () => false) {
   const rank = (b) => { const i = SEVERITIES.indexOf(b.severity); return i < 0 ? SEVERITIES.length : i; };
   return blockers.map((b, i) => ({ b, i, sec: security(b) ? 0 : 1 })).sort((x, y) => rank(x.b) - rank(y.b) || x.sec - y.sec || x.i - y.i).map((x) => x.b);
 }
+
+// ---- what a finding claims (an open card in the diff; any other place that names the same facts)
+
+// The scale behind a severity: the analysis names a finding's impact, and the impact fixes the severity.
+export const IMPACT = {
+  breaks_requirement: ["high", "it breaks a requirement of the task"], dead_path: ["high", "it leaves the new path without effect"],
+  unauthorized_access: ["high", "it allows access without permission"], data_exposure: ["high", "it exposes data"], data_loss: ["high", "it loses data"],
+  edge_case: ["medium", "it fails in an edge case"], degraded_operation: ["medium", "it makes the system harder to operate"],
+  fragile_structure: ["medium", "it makes the structure fragile"], untested: ["medium", "it is not covered by a test"],
+  maintainability: ["low", "it makes the code harder to maintain"], unrequested: ["low", "the task did not ask for it"],
+};
+export const CERTAINTY = { confirmed: "Confirmed: something that ran shows it.", derived: "Derived: it follows from the code that was read.",
+  assumed: "Assumed: it depends on something that could not be checked." };
+
+// The help text of a severity chip: the whole scale, one line per severity.
+export const SEVERITY_SCALE = ["high", "medium", "low"].map((s) => `${s}: ${Object.values(IMPACT).filter(([sev]) => sev === s).map(([, why]) => why).join(", ")}.`).join("\n");
+
+// A finding's facts as [label, text] rows: why it has its severity, its effect, how sure the claim is, and what has
+// to hold for it to happen. A finding from an older analysis has none of these fields and gives no rows.
+export function factRows(f) {
+  const why = IMPACT[f?.impact]?.[1], known = Boolean(f?.effect || f?.certainty);
+  return [why && ["Severity", `${f.severity ?? IMPACT[f.impact][0]}, because ${why}.`], f?.effect && ["Effect", f.effect],
+    CERTAINTY[f?.certainty] && ["Certainty", CERTAINTY[f.certainty]],
+    f?.preconditions?.length ? ["Preconditions", f.preconditions.join("; ")] : known && ["Preconditions", "None: it always happens."]].filter(Boolean);
+}
+
+// The line a finding's card sits under: the first line with code from its own line on (new side), so the card never
+// hangs under an empty line. Its own line when the next code is more than three lines past its range (line..end) or
+// not shown. rows: a file's rows ({kind, number, text}).
+export function findingAnchor(rows, line, end = line) {
+  const r = rows.find((x) => x.kind !== "-" && x.number >= line && String(x.text ?? "").trim());
+  return r && r.number <= Math.max(line, end ?? line) + 3 ? r.number : line;
+}
+
+// The gutter marks of ranges of lines: Map(new-side line number -> mark) for the rows that are really shown. A
+// range's line and end come from a model's answer, so the work goes over the rows, never over the range (an end of
+// 1e9 costs nothing); a range whose line or end is not a whole number, or that ends before it starts, marks nothing.
+// ranges: [{line, end, mark}]; the first range that holds a row marks it.
+export function rangeMarks(rows, ranges) {
+  const ok = ranges.filter((x) => Number.isInteger(x.line) && Number.isInteger(x.end) && x.end >= x.line), out = new Map();
+  if (ok.length) for (const r of rows) {
+    if (r.kind === "-" || !Number.isInteger(r.number)) continue;
+    const hit = ok.find((x) => r.number >= x.line && r.number <= x.end);
+    if (hit) out.set(r.number, hit.mark);
+  }
+  return out;
+}
+
+// How many lines a text takes when it wraps at words in `width` px of the UI font (13.5 px unless `size` says
+// otherwise): the virtual list needs every row's height before it draws. Character widths by class, measured on
+// screenshots (within 2 %) and taken 4 % wider, so a card is never a line short.
+const CH_W = (ch) => (ch === " " || "iljtfI.,:;'|!()[]{}-/`\"".includes(ch) ? 4 : ch > "\u2e7f" ? 13.5 : /[A-Zmw_@%&]/.test(ch) ? 8.5 : /\d/.test(ch) ? 8 : 7.3);
+export function wrapCount(text, width, size = 13.5) {
+  const k = (size / 13.5) * 1.04, room = Math.max(40, width);
+  let n = 0;
+  for (const para of String(text ?? "").split("\n")) {
+    let x = 0;
+    n++;
+    for (const word of para.split(" ")) {
+      const w = [...word].reduce((sum, ch) => sum + CH_W(ch), 0) * k;
+      if (x > 0 && x + 4 * k + w > room) { n++; x = 0; }
+      x += (x > 0 ? 4 * k : 0) + w;
+      if (x > room) { n += Math.floor(x / room); x %= room; } // a word longer than a line breaks inside
+    }
+  }
+  return n;
+}
+
+// A sequence visual as a sequence diagram: one column per participant with its lifeline at x, one row per call in
+// the given order, from the caller's lifeline (x1) to the callee's (x2; the same for a call to itself). The columns
+// share `width`, each between SEQ.MIN and SEQ.MAX px. Returns {cols, calls, width, height}.
+export const SEQ = { MIN: 130, MAX: 280, HEAD: 30, ROW: 38, PAD: 6 };
+export function seqLayout(v, width) {
+  const nodes = (v?.nodes ?? []).filter((n) => n?.id), col = Math.max(SEQ.MIN, Math.min(SEQ.MAX, Math.floor(width / Math.max(1, nodes.length))));
+  const x = new Map(nodes.map((n, k) => [n.id, Math.round(col * (k + 0.5))]));
+  const calls = [...(v?.edges ?? []), ...(v?.transitions ?? [])].filter((e) => x.has(e.from) && x.has(e.to))
+    .map((e, k) => ({ ...e, n: k + 1, text: transitionText(e), x1: x.get(e.from), x2: x.get(e.to), y: SEQ.HEAD + SEQ.PAD + k * SEQ.ROW }));
+  return { cols: nodes.map((n) => ({ ...n, x: x.get(n.id), w: col - 16 })), calls, width: col * nodes.length, height: SEQ.HEAD + 2 * SEQ.PAD + calls.length * SEQ.ROW };
+}
+
+// ---- the height of a Markdown text (review.js: comment and finding cards are rows of the virtual list)
+
+// What TextView.markdown takes at `width` px, in px: the list needs it before it draws, and a row that is too low
+// cuts its text. Counted by block: a paragraph or a heading by its wrapped lines (each source line on its own, which
+// is never fewer than the joined paragraph), a list by its items (indented, a little apart), a fenced code block by
+// its lines (a long one wraps) plus its frame; MD.GAP between blocks. Inline code counts as ordinary letters without
+// narrow ones. lh: the line height, size: the font size of the place. Measured on screenshots at 13.5 px.
+export const MD = { GAP: 10, CODE_LH: 24, CODE_PAD: 48, CODE_CH: 8.8, CODE_IN: 32, ITEM_IN: 24, ITEM_GAP: 4, HEAD: 1.5 };
+const codeWide = (line) => line.replace(/`([^`]*)`/g, (_m, code) => `aa${code.replace(/\S/g, "a")}`);
+const codeRows = (line, width) => { const n = (line.length * MD.CODE_CH) / Math.max(40, width - MD.CODE_IN); return n <= 1 ? 1 : Math.ceil(n * 1.15); }; // it wraps at words
+export function mdHeight(text, width, lh = 21, size = 13.5) {
+  const lines = String(text ?? "").replace(/\r/g, "").split("\n"), blocks = [];
+  let open = false; // a paragraph or a list goes on
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i], fence = /^\s*(```|~~~)/.exec(l);
+    if (fence) {
+      let n = 0;
+      for (i++; i < lines.length && !lines[i].trimStart().startsWith(fence[1]); i++) n += codeRows(lines[i], width);
+      blocks.push(MD.CODE_PAD + Math.max(1, n) * MD.CODE_LH); open = false;
+    } else if (!l.trim()) open = false;
+    else {
+      const head = /^\s*#{1,6}\s+/.test(l), item = /^\s*(?:[-*+]|\d+[.)])\s+/.test(l), indent = item || (open && /^\s{2,}/.test(l)) ? MD.ITEM_IN : 0;
+      const h = head ? MD.HEAD * lh * wrapCount(l, width, size * MD.HEAD) : lh * wrapCount(codeWide(l), width - indent, size) + (item ? MD.ITEM_GAP : 0);
+      if (open && !head) blocks[blocks.length - 1] += h; else blocks.push(h);
+      open = !head;
+    }
+  }
+  return Math.ceil(blocks.reduce((a, b) => a + b, lh * !blocks.length) + MD.GAP * Math.max(0, blocks.length - 1));
+}

@@ -211,3 +211,69 @@ assert.equal(pendingText([{ file: "a.py" }, { file: "a.py" }, { file: "b.py" }])
   assert.deepEqual(byUrgency(bs, (b) => b.finding === "s1").map((b) => b.title), ["auth", "bug", "bug 2", "rule", "overlap"]);
   assert.deepEqual(byUrgency(bs).map((b) => b.title), ["bug", "auth", "bug 2", "rule", "overlap"]);
 }
+// ---- a finding's facts, its card's line, the rows' heights, the sequence diagram (the diff and a layer's head)
+import { factRows, findingAnchor, wrapCount, seqLayout, IMPACT, SEVERITY_SCALE, SEQ } from "./views.js";
+
+// An open card says why the finding has its severity, what it does, how sure the claim is and what it depends on.
+assert.deepEqual(factRows({ severity: "high", impact: "unauthorized_access", effect: "Anyone can call /late.", certainty: "assumed", preconditions: ["TOKEN is not set", "no authorizer"] }), [
+  ["Severity", "high, because it allows access without permission."], ["Effect", "Anyone can call /late."],
+  ["Certainty", "Assumed: it depends on something that could not be checked."], ["Preconditions", "TOKEN is not set; no authorizer"]]);
+// No preconditions means it always happens; a finding from an older analysis has no such fields and gets no rows.
+assert.deepEqual(factRows({ severity: "medium", effect: "Two mails.", certainty: "derived", preconditions: [] }).at(-1), ["Preconditions", "None: it always happens."]);
+assert.deepEqual(factRows({ severity: "high", title: "x", detail: "y", preconditions: [] }), []);
+assert.deepEqual(factRows(null), []);
+// The scale names every impact under the severity it fixes.
+assert.equal(SEVERITY_SCALE.split("\n").length, 3);
+for (const [sev, why] of Object.values(IMPACT)) assert.ok(SEVERITY_SCALE.split("\n").find((l) => l.startsWith(`${sev}:`)).includes(why));
+
+// A card sits under the first line with code from the finding's line on: not under an empty one.
+const fr = [{ kind: " ", number: 7, text: "import os" }, { kind: "+", number: 8, text: "" }, { kind: "-", number: 8, text: "old" }, { kind: " ", number: 9, text: "TOKEN = 1" }, { kind: "gap" }, { kind: "+", number: 30, text: "x" }];
+assert.equal(findingAnchor(fr, 8, 8), 9);
+assert.equal(findingAnchor(fr, 8, 16), 9);
+assert.equal(findingAnchor(fr, 7, 9), 7);
+assert.equal(findingAnchor(fr, 10, 10), 10); // the next code is far below: it stays on its own line
+assert.equal(findingAnchor([], 3), 3);
+
+// Lines of a wrapped text: at words, a long word inside, a newline always.
+assert.equal(wrapCount("", 300), 1);
+assert.equal(wrapCount("one two", 300), 1);
+assert.equal(wrapCount("a\nb", 300), 2);
+assert.equal(wrapCount("word ".repeat(40).trim(), 300), Math.ceil(40 / Math.floor((300 + 4.16) / (4 * 7.3 * 1.04 + 4.16)))); // 9 words a line
+assert.ok(wrapCount("x".repeat(200), 300) >= 5);
+assert.ok(wrapCount("FRONT_DESK_TOKEN ".repeat(10), 400) > wrapCount("front desk token ".repeat(10), 400)); // capitals are wider
+assert.ok(wrapCount("some text that wraps", 100, 13.5) >= wrapCount("some text that wraps", 100, 10));
+
+// A sequence diagram: a column per participant, a row per call in order, from the caller's lifeline to the callee's.
+const sq = seqLayout({ nodes: [{ id: "a", label: "Client" }, { id: "b", label: "Handler" }, { id: "c", label: "Store" }],
+  edges: [{ from: "a", to: "b", label: "GET /late" }, { from: "b", to: "c", event: "late", action: "reads" }, { from: "b", to: "b", label: "check" }, { from: "c", to: "a", label: "200" }, { from: "a", to: "zz", label: "nowhere" }] }, 900);
+assert.deepEqual(sq.cols.map((c) => c.x), [140, 420, 700]); // 900 px for three: SEQ.MAX each
+assert.equal(sq.width, 3 * SEQ.MAX);
+assert.deepEqual(sq.calls.map((c) => [c.n, c.x1, c.x2, c.text]), [[1, 140, 420, "GET /late"], [2, 420, 700, "late / reads"], [3, 420, 420, "check"], [4, 700, 140, "200"]]);
+assert.deepEqual(sq.calls.map((c) => c.y), [0, 1, 2, 3].map((k) => SEQ.HEAD + SEQ.PAD + k * SEQ.ROW));
+assert.equal(sq.height, SEQ.HEAD + 2 * SEQ.PAD + 4 * SEQ.ROW);
+assert.equal(seqLayout({ nodes: [{ id: "a" }, { id: "b" }] }, 100).width, 2 * SEQ.MIN); // never narrower than SEQ.MIN a column
+assert.equal(seqLayout(null, 500).calls.length, 0);
+
+// The gutter marks of a finding's lines go over the rows that are shown: a range to line 1e9 (a model wrote it) marks
+// three rows and allocates nothing; a range that is no range marks nothing.
+import { rangeMarks } from "./views.js";
+const mr = [{ kind: " ", number: 7 }, { kind: "-", number: 8 }, { kind: "+", number: 8 }, { kind: "gap" }, { kind: "+", number: 30 }];
+assert.deepEqual([...rangeMarks(mr, [{ line: 8, end: 1e9, mark: "a" }, { line: 7, end: 7, mark: "b" }])], [[7, "b"], [8, "a"], [30, "a"]]);
+assert.equal(rangeMarks(mr, [{ line: 7.5, end: 9, mark: "x" }, { line: 9, end: 7, mark: "x" }, { line: 7, end: Infinity, mark: "x" }, { line: "7", end: 8, mark: "x" }, { line: 7, end: undefined, mark: "x" }]).size, 0);
+
+// The height of a Markdown text: paragraphs, a list and a fenced code block each count, with a gap between blocks.
+import { mdHeight, MD } from "./views.js";
+assert.equal(mdHeight("", 600), 21);
+assert.equal(mdHeight("One line with `code`.", 600), 21);
+assert.equal(mdHeight("One.\n\nTwo.\n\nThree.", 600), 3 * 21 + 2 * MD.GAP);
+assert.equal(mdHeight("Do this:\n\n- one\n- two\n- three", 600, 20), 20 + MD.GAP + 3 * (20 + MD.ITEM_GAP));
+assert.equal(mdHeight("Fix it.\n\n```python\na = 1\nb = 2\nc = 3\n```", 600), 21 + MD.GAP + MD.CODE_PAD + 3 * MD.CODE_LH);
+assert.equal(mdHeight("```suggestion\nreturn 1\n```", 600), MD.CODE_PAD + MD.CODE_LH); // a GitHub suggestion is a code block
+assert.equal(mdHeight("```\nopen to the end", 600), MD.CODE_PAD + MD.CODE_LH);
+// A code line longer than the block wraps; a list item has less room than a paragraph; a heading is taller.
+assert.ok(mdHeight("```\n" + "x".repeat(120) + "\n```", 300) >= MD.CODE_PAD + 4 * MD.CODE_LH);
+const long = "word ".repeat(30).trim();
+assert.ok(mdHeight(`- ${long}`, 300) >= mdHeight(long, 300));
+assert.ok(mdHeight("# Title", 600) > mdHeight("Title", 600));
+// It never gives less than the plain wrapped text does, so nothing that fit before is cut now.
+for (const w of [200, 420, 900]) assert.ok(mdHeight(long, w) >= 21 * wrapCount(long, w));
