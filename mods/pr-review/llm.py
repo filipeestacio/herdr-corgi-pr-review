@@ -73,6 +73,12 @@ def tier(model):
     return "haiku" if "haiku" in m else "sonnet" if "sonnet" in m else "opus"
 
 
+def code_model(model):
+    """The model for a call that reads or judges code: at least sonnet. Haiku is fine for text (triage, turning a
+    reviewer's prose into findings) but too weak to reason about code, so a passed haiku (an old caller) becomes sonnet."""
+    return "sonnet" if not model or tier(model) == "haiku" else model
+
+
 def parse(stdout):
     """What `claude -p` printed, as its result object: the JSON itself (--output-format json), or a stream's result
     line (stream-json). A slash command may run as a fork and answer there: the result then is only "Command
@@ -101,7 +107,7 @@ def parse(stdout):
     return data
 
 
-def claude(feature, prompt, *, context=None, model="haiku", schema=None, system=None, budget=0.2,
+def claude(feature, prompt, *, context=None, model="sonnet", schema=None, system=None, budget=0.2,
            timeout=180, tools="", cwd=None, extra=(), meta=None, skills=False):
     """Runs `claude -p`, records the call, returns structured_output (with a schema) or the result text.
     meta: a dict that gets {cost, tokens, usage ({input, output, cache_read, cache_write} tokens), ms, model_id,

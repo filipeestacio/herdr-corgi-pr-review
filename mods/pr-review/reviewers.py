@@ -2,7 +2,7 @@
 """Automated reviewers for the review layout: Claude's /code-review, Claude's /security-review, `codex review`.
 
 argv[1]: JSON {kind: "claude"|"security"|"codex", url, number, context ({id, env}: the PR's), model (a Claude
-model or alias from models.py), codexModel (a Codex slug from models.py; none: Codex's default), worktree (a detached checkout of the PR head, worktree.py), base (the PR's base branch),
+model or alias from models.py; haiku runs as sonnet, llm.code_model), codexModel (a Codex slug from models.py; none: Codex's default), worktree (a detached checkout of the PR head, worktree.py), base (the PR's base branch),
 head (sha), level (code-review effort: low|medium|high), file (pr-data/findings/<url hash>.json)}.
 Runs the reviewer read-only in the worktree (Claude: Read/Grep/Glob/Agent and read-only git/gh Bash only, no edits;
 Codex: sandbox_mode=read-only), turns its answer into findings {id, reviewer, file, line, end, severity, title,
@@ -375,6 +375,7 @@ def codex_review(req):
 
 def main(arg):
     req = json.loads(arg)
+    req["model"] = llm.code_model(req.get("model"))  # a reviewer judges code: never haiku (the prose pass stays haiku)
     wt = req["worktree"]
     git("fetch", "--quiet", "origin", req["base"], cwd=wt)  # the base for "what changed"
     started = time.monotonic()

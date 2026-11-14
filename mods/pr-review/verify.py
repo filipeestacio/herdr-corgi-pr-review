@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fix verification for the review layout: were the findings sent to Fix really fixed by the pushes since?
 
-argv[1]: JSON {context ({id, env}: the PR's), model (haiku|sonnet|opus), worktree (checkout with the PR head), head, items:
+argv[1]: JSON {context ({id, env}: the PR's), model (sonnet|opus; a passed haiku runs as sonnet, llm.code_model), worktree (checkout with the PR head), head, items:
 [{id, file, line, title, detail, suggestion, since (the head when it was sent to Fix)}]}.
 An item can also be checked on its fix branch, before the fix is in the PR: it then carries its own `worktree` (the
 fix's), `head` (the commit the agent reported), `since` (where the branch started) and `branch` (its name); its
@@ -63,6 +63,7 @@ def prompt(req):
 
 
 def main(req):
+    req = {**req, "model": llm.code_model(req.get("model"))}  # it judges code: never haiku
     meta = {}
     answer = llm.claude(FEATURE, prompt(req), context=req.get("context"), model=req["model"], schema=SCHEMA,
                         budget=BUDGET[llm.tier(req["model"])], timeout=540, meta=meta)

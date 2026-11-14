@@ -190,6 +190,9 @@ export function budget(hunks, max = 60000) {
 export const MODELS = { haiku: { label: "Haiku", chars: 60000 }, sonnet: { label: "Sonnet", chars: 150000 }, opus: { label: "Opus", chars: 150000 } };
 // A model's class, as llm.tier: haiku, sonnet, or opus (the bigger ones, and any model not named).
 export const tierOf = (m) => (/haiku/i.test(m ?? "") ? "haiku" : /sonnet/i.test(m ?? "") ? "sonnet" : "opus");
+// The model for anything that reads or judges code: at least Sonnet. Haiku is fine for text (triage, reshaping a
+// reviewer's prose) but too weak to reason about code, so a stored or passed haiku becomes sonnet (llm.code_model).
+export const codeModel = (m) => (!m || tierOf(m) === "haiku" ? "sonnet" : m);
 // Dollars per million input and output tokens, by the longest prefix of the resolved model id. Neither CLI reports
 // prices, so these are Anthropic's list prices (November 2026); a model not listed costs its class's price.
 // ponytail: a hand-kept table; update it when Anthropic's prices change.

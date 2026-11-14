@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The AI analysis of one PR (or branch diff) for the review layout's "AI" tab and the panel's walkthrough.
 
-argv[1]: JSON {out, latest, status, model (haiku|sonnet|opus), context ({id, env, tickets}), pr (url or
+argv[1]: JSON {out, latest, status, model (sonnet|opus; a passed haiku runs as sonnet, llm.code_model), context ({id, env, tickets}), pr (url or
 null), source, worktree (the PR head checked out, or the repo root; null: diff only), hunks: [{alias, id, path,
 lines}], cut: [aliases left out for size]; incremental runs add previous (the shown analysis' file), since
 ({base, head}) and full (today's whole-diff hunks [{alias, id, path, head}]) and send only the new hunks (n1..)}.
@@ -1063,6 +1063,7 @@ def analyze_cohorts(req, cohorts, hunks, index, run, t, candidates, wt, lang, ca
 if __name__ == "__main__":
     req = json.loads(pathlib.Path(sys.argv[1][1:]).read_text() if sys.argv[1].startswith("@") else sys.argv[1])
     req["started"] = dt.datetime.now().astimezone().isoformat()
+    req["model"] = llm.code_model(req.get("model"))  # analysis, diagrams, Look inside, Ask, drill: never haiku
     status = req.get("status")
     if status:
         save(status, {"busy": True, "pid": os.getpid(), "started": dt.datetime.now().astimezone().isoformat(), "model": req["model"]})

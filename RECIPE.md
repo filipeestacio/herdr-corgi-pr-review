@@ -55,7 +55,7 @@ title bar (traffic lights at 12, 16):
 - The bar (52 px, `chrome`, draggable; the mod with `{part: "bar"}`, left padding 84 px): `← Back`, `#n title`
   (14 px semibold), `owner/repo#n`, a state badge, a context tag (only with several contexts), merge risk and
   review effort badges, `Pre-merge checks ✓ n ✗ n`, `Mark done`, a round `?` (the keys popup), `Reviews ▾`,
-  `Values: On`, the model picker (Haiku / Sonnet / Opus) and the shown analysis' model and cost (it truncates first
+  `Values: On`, the model picker (Sonnet / Opus, never Haiku: it reads and judges code) and the shown analysis' model and cost (it truncates first
   when the window is narrow), and at the right GitHub's green (`#238636`) `Review changes ▾`, which reads
   `Finish your review (n) ▾` while n comments are pending.
 - The body (`{part: "review"}`): a 420 px left column with the tabs `Files · n`, `Analysis · n`, `Comments · n`,
@@ -142,7 +142,7 @@ Explore shows Overview, Layers, Architecture and Files for a topic, without a di
 - `Review` switches to the review layout (and remembers the layout to come back to); `← Back` / Esc returns.
   The first time, the mod writes `review-layout.json` to `layouts/review.json`; when a `review` layout that isn't
   this mod's is already there, it uses `layouts/pr-review.json` instead. It never overwrites a file.
-- The AI analysis never runs by itself: "Analyze with Sonnet" (or Haiku/Opus) starts it detached; a spinner shows
+- The AI analysis never runs by itself: "Analyze with Sonnet" (or Opus) starts it detached; a spinner shows
   the time and the cost cap; it can take minutes. After a push, "Only new changes" analyses just the new commits.
 - `Reviews ▾` lists Claude code review, Security review and (when installed) Codex review with their last run;
   Run starts one in the background on a checkout of the PR head; findings appear inline and under Findings.

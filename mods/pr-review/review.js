@@ -20,7 +20,7 @@ import { findingSteps, funnel, funnelLine, ownerOf, quickFirst, hasEffort } from
 import { overviewMd, findingMd, findingsMd, layerMd, architectureMd, securityMd, verifyContextMd } from "./markdown.js"; // Copy this page as Markdown
 import { highlightJob, highlightStep, highlightLines, langOf, colors, renderLine, refAt } from "./syntax.js";
 import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js";
-import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf, priceOf, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch } from "./pr.js";
+import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf, codeModel, priceOf, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch } from "./pr.js";
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState, codeOf, isStale } from "./pr.js";
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible, pastTop } from "./views.js";
@@ -60,7 +60,8 @@ const openFile = () => `${appHome()}/pr-data/open-reviews.json`;
 // shared("review.registry") is every entry, done ones too, with {at}: for plug-ins that mirror reviews elsewhere
 // (PROVIDERS.md). Written on each registry change, 1.5 s after the last edit.
 // The AI analysis' model: any value the claude CLI offers (models.py), Sonnet until one is picked.
-const model = () => { const m = shared("review.model"); return typeof m === "string" && m ? m : "sonnet"; };
+// At least Sonnet (pr.js codeModel): every use reads or judges code, which Haiku is too weak for.
+const model = () => { const m = shared("review.model"); return codeModel(typeof m === "string" && m ? m : "sonnet"); };
 // The models the CLIs offer per context ({at, claude, codex}, models.py), shared so the Reviews popup sees them too;
 // pr-data/models.json keeps them across restarts.
 const modelsFile = () => `${appHome()}/pr-data/models.json`;
@@ -73,12 +74,13 @@ const codexChoices = () => Object.values(modelsDoc()).map((d) => d?.codex ?? [])
 const resolvedOf = (m) => Object.values(modelsDoc()).flatMap((d) => d?.claude ?? []).find((x) => x.value === m)?.resolved ?? m;
 // "$4 / $20 per MTok": input and output.
 const priceText = (m) => { const [i, o] = priceOf(resolvedOf(m)); return `$${i} / $${o} per MTok`; };
-// The choices for a context: the CLI's aliases (opus, fable, sonnet, haiku: each its family's newest model; older
-// models by full id are left out, unless one is the current pick), or the three classes until the CLI answered.
+// The choices for a context: the CLI's aliases (opus, fable, sonnet: each its family's newest model; older models by
+// full id are left out, unless one is the current pick), or the classes until the CLI answered. Never Haiku: every
+// choice here reads or judges code (codeModel).
 const modelChoices = (ctx) => {
   const list = modelsDoc()[ctx]?.claude ?? [], cur = model();
-  const shown = list.filter((c) => !c.value.startsWith("claude-") || c.value === cur);
-  return shown.length ? shown : Object.entries(MODELS).map(([value, v]) => ({ value, label: v.label, description: "" }));
+  const shown = list.filter((c) => (!c.value.startsWith("claude-") || c.value === cur) && tierOf(c.value) !== "haiku");
+  return shown.length ? shown : Object.entries(MODELS).filter(([k]) => k !== "haiku").map(([value, v]) => ({ value, label: v.label, description: "" }));
 };
 const cacheDir = () => `${appHome()}/pr-data/cache`;
 const valuesOn = () => shared("review.values") !== false; // inline example values (flow traces), on by default
@@ -272,8 +274,8 @@ const button = (t, label, border, color) => div().w(BTN).h(28).flex_none().flex(
 // The picker's short form: the CLI's aliases (opus, sonnet, …: each its family's newest), else the three classes.
 export const modelPills = (t, id) => {
   const seen = new Map();
-  for (const c of Object.values(modelsDoc()).flatMap((d) => d?.claude ?? [])) if (!c.value.startsWith("claude-") && !seen.has(c.value)) seen.set(c.value, c.label);
-  const pills = seen.size ? [...seen] : Object.entries(MODELS).map(([k, v]) => [k, v.label]);
+  for (const c of Object.values(modelsDoc()).flatMap((d) => d?.claude ?? [])) if (!c.value.startsWith("claude-") && tierOf(c.value) !== "haiku" && !seen.has(c.value)) seen.set(c.value, c.label);
+  const pills = seen.size ? [...seen] : Object.entries(MODELS).filter(([k]) => k !== "haiku").map(([k, v]) => [k, v.label]);
   return h_flex().gap(4).flex_wrap().children(pills.map(([k, label]) =>
     pill(`${id}-${k}`, t, label, () => setShared("review.model", k), model() === k).tooltip(`Use ${label} for the AI calls`)));
 };
@@ -348,6 +350,11 @@ export const ReviewMode = {
       st.on("blur", (_e, cx) => { if (this.typing === k) this.typing = false; cx.notify(); });
     }
     this.prSel = shared("review.target") ?? null;
+    // An old pick of Haiku: switched to Sonnet once, with the reason.
+    if (tierOf(String(shared("review.model") ?? "sonnet")) === "haiku") {
+      setShared("review.model", "sonnet");
+      this.note = "Switched the model from Haiku to Sonnet: Haiku is fine for text, but too weak to reason about code.";
+    }
     cx.spawn(async (cx) => { this.cfg = await readConfig(); await loadSetup(this, cx); });
     if (!shared("review.models")) cx.spawn(async (cx) => { try { setShared("review.models", JSON.parse(await readTextFile(modelsFile()))); cx.notify(); } catch { /* none yet */ } });
     // Ask about this: one input (the Architecture page's or the shown layer's), threads and drill-downs from deep.json.
@@ -434,7 +441,7 @@ export const ReviewMode = {
     else if (name === "copy-md") this.copyMd(arg); // copy-md: this page; copy-md:verify: the context for an agent that checks the open finding, or the unresolved security findings
     else if (name === "criterion") this.toggleAsk(arg); // criterion:<ask id> | other: a click on a row of the Overview's task check
     else if (name === "open-gh") { if (this.prSel?.url) openUrl(this.prSel.url); }
-    else if (name === "model") { if (arg) setShared("review.model", arg); }
+    else if (name === "model") { if (arg) setShared("review.model", codeModel(arg)); }
     // For keys and scripted demos: a card's panel on the Architecture page (card:<node id>), the layers' order
     // (order:reading | order:risk) and Minimize, the same as their clicks.
     else if (name === "card") { this.page = "arch"; this.tab = "steps"; this.archFocus = arg || null; }
@@ -511,7 +518,7 @@ export const ReviewMode = {
     const back = resumeFields(p.ui);
     if (back) { // resume: where you were
       Object.assign(this, back.fields);
-      if (back.model && back.model !== shared("review.model")) setShared("review.model", back.model);
+      if (back.model && codeModel(back.model) !== shared("review.model")) setShared("review.model", codeModel(back.model));
       if (back.values !== undefined && back.values !== valuesOn()) setShared("review.values", back.values);
       this.pendingScroll = back.scroll;
     }
@@ -1062,7 +1069,7 @@ export const ReviewMode = {
       }
       if (plan.kind === "new" && plan.where) {
         run("tab.new", { space: this.spaceFor(this.ctxId(), origin?.cwd, this.root), folder: plan.where, name: `Ask · PR #${origin?.number ?? ""}`,
-          argv: [...this.ctxEnv(this.ctxId()), "claude", ...(this.trustedPr() ? ["--permission-mode", "manual"] : TH.permissionArgs(false))], task: text });
+          argv: [...this.ctxEnv(this.ctxId()), "claude", "--model", model(), ...(this.trustedPr() ? ["--permission-mode", "manual"] : TH.permissionArgs(false))], task: text });
         this.note = "Started a new agent tab with your question. The finding stays as it is.";
         return cx.notify();
       }
@@ -1722,7 +1729,7 @@ export const ReviewMode = {
         const w = await git(["worktree", "add", "-b", f.branch, f.path, head]);
         if (w.code !== 0) throw new Error(w.stderr.trim().slice(0, 200));
         const id = Date.now().toString(36), { agent } = this.sendAgent();
-        const r = await hc(TH.subAgentArgs({ parent: agent?.address ?? null, cwd: f.path, name: `fix-${id}`, env: this.ctxEnv(this.ctxId()), task: text, job: id, auto: trusted }));
+        const r = await hc(TH.subAgentArgs({ parent: agent?.address ?? null, cwd: f.path, name: `fix-${id}`, env: this.ctxEnv(this.ctxId()), task: text, job: id, auto: trusted, model: model() }));
         if (r.code !== 0) { await git(["worktree", "remove", "--force", f.path]); await git(["branch", "-D", f.branch]); throw new Error((r.stderr || r.stdout).trim().slice(0, 200)); }
         const terminal = JSON.parse(r.stdout).address;
         this.updateThreads(cx, (d) => TH.addFix(d, key, { id, branch: f.branch, path: f.path, base, head, items: f.items, terminal, target: "sub", at: Date.now(), state: "running" }));
@@ -2274,7 +2281,7 @@ export const ReviewMode = {
   sendPopover(t) {
     const p = this.sendP, fix = p.fix, sub = fix?.target === "sub", kind = fix ? fix.target : p.ask?.kind ?? null, short = (x) => (x ? String(x).replace(home(), "~") : null);
     const live = this.sendAgent().agent, name = live ? p.agent.split(" · ")[0] : null;
-    const facts = kind ? TH.sendFacts({ kind, account: accountOf(this.ctxId()), trusted: this.trustedPr(), branch: fix?.branch, name: p.ask?.name ?? name, chat: p.ask?.chat, where: short(p.ask?.where) }) : [];
+    const facts = kind ? TH.sendFacts({ kind, account: accountOf(this.ctxId()), trusted: this.trustedPr(), branch: fix?.branch, name: p.ask?.name ?? name, chat: p.ask?.chat, where: short(p.ask?.where), model: modelLabel(model()) }) : [];
     const picking = Boolean(fix?.pool), n = fix?.items.length ?? 0, some = !picking || n > 0, ready = !this.sending && some, text = this.sendText.value();
     const go = this.sending ? "Sending…" : sub ? (picking && n ? `Start fix agent for ${n} ${n === 1 ? "finding" : "findings"}` : "Start fix agent") : fix ? "Send to main agent"
       : p.ask ? { new: "Start agent", resume: "Resume its session", live: p.ask.chat ? "Draft in chat" : "Paste to agent" }[p.ask.kind] : "Send to agent";
