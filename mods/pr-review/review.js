@@ -397,6 +397,10 @@ export const ReviewMode = {
       if (v) setShared(key, [v, ...(shared(key) ?? []).filter((x) => x !== v)].slice(0, 200));
       this.applyExploreTrust();
     }
+    // line:<l|r>:<line key>:<select|shift|comment|chip>:<path>: a click on that line in the shown diff, on its half side
+    // by side (the unified view takes the line): on its code, shift-click on its code, on its line number, on its
+    // "+ Comment" chip. The same handler as the click (onItem).
+    else if (name === "line") this.pressLine(arg, cx);
     else if (name === "copy-link") copyText(this.prSel?.url ?? "");
     else if (name === "copy-state") this.copyState();
     // For scripts: what the wheel does in the right pane's page (scroll:top | bottom | <a section of the page>), and a
@@ -1358,6 +1362,20 @@ export const ReviewMode = {
 
   // ---- clicks in the list: one handler for all rows (gpui-kit); where in the row comes from the press
 
+  pressLine(arg, cx) {
+    const [side, k, how, ...p] = String(arg).split(":"), path = p.join(":"), w = this.listW ?? 900, hits = [];
+    for (const [key, it] of this.byKey ?? []) {
+      if (it.t !== "row" || it.path !== path) continue;
+      const ri = it.l === undefined ? it.ri : side === "l" ? it.l : it.r;
+      if (ri !== null && lineKey(it.src[ri]) === k) hits.push([key, it, ri]);
+    }
+    if (!hits.length) { this.note = `Line ${k} of ${path} is not in the shown diff`; return; }
+    const [, it0, ri] = hits[0], pair = it0.l !== undefined, hw = pair ? w / 2 : w, base = pair && side === "r" ? hw : 0, gw = pair ? HALF_GUTTER : GUTTER;
+    const [key] = how === "chip" ? hits[Math.min(hits.length, this.wrapsOf(it0.src, ri, it0.cols).length) - 1] : hits[0]; // the chip: on the line's last visual line
+    this.press = { x: base + (how === "comment" ? 10 : how === "chip" ? hw - 12 - CHIP_W / 2 : gw + 4), w, shift: how === "shift", cmd: false };
+    this.onItem(key, cx);
+  },
+
   onItem(key, cx) {
     const it = this.byKey?.get(key); // a stable key: the item pressed, even if the list changed since
     if (!it) return;
@@ -1366,20 +1384,23 @@ export const ReviewMode = {
     this.fh.focus();
     if (it.t === "row") {
       if (it.hunk) this.visit(it.hunk, cx);
-      const r = it.src[it.ri];
-      if (r.number === undefined) return;
+      // Side by side: the half pressed is the line, x and the width are the half's (views.js pairSide).
+      const h = it.l === undefined ? { ri: it.ri, x, w: this.press.w, side: null } : pairSide(x, this.press.w, it.l, it.r), r = h.ri === null ? null : it.src[h.ri];
+      if (!r || r.number === undefined) return;
       // A wrapped line's next visual line: its code starts that many columns into the line.
-      const starts = this.wrapsOf(it.src, it.ri, it.cols), a = starts[it.part ?? 0] ?? 0, lastPart = (it.part ?? 0) === starts.length - 1;
-      if (this.press.cmd) return this.define(it, r, cx, x < GUTTER ? x : x + a * (this.charW ?? 7.8)); // ⌘-click a name: its definition
+      const starts = this.wrapsOf(it.src, h.ri, it.cols), part = it.part ?? 0, a = starts[part], lastPart = part === starts.length - 1, gw = h.side ? HALF_GUTTER : GUTTER;
+      if (a === undefined) return; // the blank under a half's shorter line
+      if (this.press.cmd) return this.define(it, r, cx, h.x < gw ? h.x : h.x + a * (this.charW ?? 7.8), gw, h.ri); // ⌘-click a name: its definition
       // Selections are (file, line keys), not row indexes: rows are rebuilt on every render.
-      // A line number (GitHub's gutter "+") opens the composer there; shift-click makes it a range.
-      const k = lineKey(r), f = this.fsel;
+      // A line number (GitHub's gutter "+") opens the composer there; shift-click makes it a range. Side by side a
+      // selection stays on its half: a press on the other half starts a new one there.
+      const k = lineKey(r), same = !h.side || !this.fsel?.side || this.fsel.side === h.side, f = same ? this.fsel : null;
       // The selection's chips sit on a wrapped line's last visual line: as far right on the others is code.
-      const d = rowClick({ x: lastPart ? x : Math.min(x, this.press.w - 21 - CHIP_W - ASK_W), w: this.press.w, shift, gutterW: GUTTER, composing: this.composing, editing: Boolean(this.editing), sel: f, path: it.path, k,
+      const d = rowClick({ x: lastPart ? h.x : Math.min(h.x, h.w - 21 - CHIP_W - ASK_W), w: h.w, shift, gutterW: gw, composing: this.composing, editing: Boolean(this.editing), sel: f, path: it.path, k,
         rangeOk: Boolean(f && f.path === it.path && rangeOf(this.rowsFor(it.path), f.a, k)) });
       if (d.focus) return this.draft.focus(); // the open composer keeps its line
       if (d.ask) { this.setDrawer("open", cx, null); return cx.notify(); }
-      this.fsel = d.sel; this.sug = null;
+      this.fsel = d.sel && h.side ? { ...d.sel, side: h.side } : d.sel; this.sug = null;
       if (d.open) this.openComposer(cx);
     } else if (it.t === "sug") { this.sug = this.sug === it.s.key ? null : it.s.key; this.visit(it.s.hunk, cx); }
     else if (it.t === "ch" || it.t === "cb" || it.t === "cr") this.cardClick(it, x, cx);
