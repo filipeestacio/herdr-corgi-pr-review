@@ -145,11 +145,37 @@ def findings_schema(kind, worktree=None):
 
 
 MISSING = re.compile(r"unknown (slash )?(command|skill)|no such (command|skill)|not a (known|valid) (command|skill)", re.I)
+# The steps of a security review, taken over from what the /security-review template asks (it cannot run here: its
+# template runs plain git), plus the places where a change to infrastructure goes wrong in practice: rights, retries.
+SECURITY_STEPS = (
+    " Work in three steps. 1. Context: read the diff and the code around it; list each way in (routes, handlers, queue "
+    "and event consumers, scheduled jobs, scripts an operator runs), each infrastructure resource and grant the diff "
+    "adds or changes, and what each way in reaches. 2. Check every changed place against each of these, following the "
+    "data from the caller or the message to what it changes:\n"
+    "- authentication and authorization: who can call it, what checks the caller and where, and whether the check fails "
+    "open (an empty or default secret, a missing authorizer, a route that skips the check the others have);\n"
+    "- permissions: take each grant, role or policy the diff adds one by one and find the call in the code that uses it "
+    "(e.g. a send to the queue the policy names); a grant with no such call is a finding at the grant's line, also when "
+    "another finding explains why the call is missing; and is it wider than the code needs (actions, resources, "
+    "principals, public access);\n"
+    "- input: each field a caller or a message controls, and what it reaches without a check (ids, paths, queries, "
+    "commands, templates, deserialization, a state the record must be in);\n"
+    "- secrets: hard-coded values, unsafe defaults, a secret the deployment never sets, secrets in errors or logs;\n"
+    "- error and retry paths: what happens when a call, a message or a batch fails: is a side effect repeated on retry "
+    "(a mail sent twice, a charge made twice), does one bad record fail or re-run a whole batch, is there a dead-letter "
+    "queue, is a failure swallowed so the work is silently lost, does a failure leave data half written or fail open;\n"
+    "- state across components: does a component rely on state that another process or function holds (its memory, a "
+    "local file), so it reads nothing or something else in production;\n"
+    "- personal data and logging: what reaches logs, errors or responses that must not;\n"
+    "- dependencies: packages the diff adds or changes, and whether they are used.\n"
+    "3. Report each problem the code shows, at the line where it happens, also one that is not an exploit but a failure "
+    "a caller or a message can trigger (lost or repeated work). Leave out what you could not confirm in the code: no "
+    "guesses, no best-practice advice without a concrete effect, nothing about tests or documentation; say in your scope "
+    "report what you did not check.")
 PLAIN = {"claude": "Review the changes of this checkout against origin/{base} (git diff origin/{base}...HEAD), which are "
                    "PR #{number}, for bugs and correctness problems: read the surrounding code before you report anything.",
          "security": "Do a security review of the changes of this checkout against origin/{base} (git diff "
-                     "origin/{base}...HEAD), which are PR #{number}: injection, auth, secrets, unsafe input handling, "
-                     "data exposure. Report only real, exploitable problems."}
+                     "origin/{base}...HEAD), which are PR #{number}." + SECURITY_STEPS}
 
 
 def git(*args, cwd):

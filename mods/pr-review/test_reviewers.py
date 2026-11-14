@@ -16,6 +16,13 @@ assert "ref" in sec["properties"]["findings"]["items"]["required"] and "reachabi
 for part in ("zones: the trust zones", "auth_kind (none:", "threats: a threat model", "at least one entry for each of them", "gates: the check", "principal_kind (internet", "without an authorizer"):
     assert part in sec["description"] and part not in code["description"], part
 
+# The security run's own prompt carries the steps of the /security-review template (which cannot run: its template runs
+# plain git) plus rights and retries; it asks for nothing it could only guess.
+plain = reviewers.PLAIN["security"].format(base="b", number=2)
+for part in ("authentication and authorization", "a grant with no such call is a finding", "error and retry paths", "re-run a whole batch",
+             "state across components", "secrets:", "personal data and logging", "dependencies:", "Leave out what you could not confirm"):
+    assert part in plain, part
+
 # A reviewer reads someone else's code: only the checkout, read-only git, no network, and nothing that is not allowed.
 p = reviewers.permissions("/work/check out")
 assert p[:3] == ("--restricted", "--permission-mode", "dontAsk"), "file tools confined to the checkout, its .claude settings ignored, the rest refused"
