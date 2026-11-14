@@ -269,10 +269,10 @@ export function visualPlan(v, wide, bare = false) {
   let P;
   if (v.kind === "state_machine") {
     // In the diagram a transition carries its number, which never gets cut; its text is in the list (a Catch or
-    // Retry keeps its chip). w: how far the lines and labels really reach (stateLayout's width leaves them out).
+    // Retry keeps its chip). w: stateLayout's width, which holds the lines and their labels.
     const isErr = (e) => e.error === "catch" || e.error === "retry" || (!e.event && /^(catch|retry)\b/i.test(String(e.label ?? "")));
     const S = stateLayout({ ...v, edges: [], transitions: edges.map((e, k) => (isErr(e) ? e : { ...e, event: undefined, guard: undefined, action: undefined, label: String(k + 1) })) });
-    const w = Math.ceil(Math.max(S.width, ...S.edges.flatMap((e) => [...e.segments.flatMap((x) => [x.x1, x.x2]), e.labelAt ? e.labelAt.x + Math.min(e.labelAt.w, 24) : 0])) + 4);
+    const w = S.width;
     const side = inner - w - 24 >= 320, texts = edges.map((e, k) => edgeText(v, e, `${k + 1}. `)), listH = rowsH(texts, (side ? inner - w - 24 : inner) - 4, 12, 18, 4);
     P = bare ? { S, w, side: false, bare, texts, h: S.height + 2 } : { S, w, side, texts, h: side ? Math.max(S.height + 2, listH) : S.height + 2 + 8 + listH };
   } else if (v.kind === "sequence") {

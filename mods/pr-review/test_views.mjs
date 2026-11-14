@@ -211,6 +211,33 @@ assert.equal(pendingText([{ file: "a.py" }, { file: "a.py" }, { file: "b.py" }])
   const bs = [{ severity: "medium", title: "rule" }, { severity: "high", title: "bug" }, { severity: "low", title: "overlap" }, { severity: "high", title: "auth", finding: "s1" }, { severity: "high", title: "bug 2" }];
   assert.deepEqual(byUrgency(bs, (b) => b.finding === "s1").map((b) => b.title), ["auth", "bug", "bug 2", "rule", "overlap"]);
   assert.deepEqual(byUrgency(bs).map((b) => b.title), ["bug", "auth", "bug 2", "rule", "overlap"]);
+  // "By focus" follows what the rows show: "Tests · 3 medium" after "SAM template · 1 high ⛨" (it came first by the
+  // hidden field risk), security first among equals, then more findings, then reading order, no findings last.
+  const { byFocus } = await import("./views.js");
+  const L = (title, order, ...fs) => ({ title, order, fs });
+  const ls = [L("events", 1, { severity: "high" }), L("tests", 2, { severity: "medium" }, { severity: "medium" }, { severity: "medium" }), L("docs", 3),
+    L("template", 4, { severity: "high", security: true }), L("handler", 5, { severity: "high" }, { severity: "high" }), L("reminders", 6, { severity: "high" })];
+  assert.deepEqual(byFocus(ls, (l) => l.fs).map((l) => l.title), ["template", "handler", "events", "reminders", "tests", "docs"]);
+  // The attention box's heading counts by decision: security, criteria not met, the other blockers.
+  const { attentionCounts } = await import("./views.js");
+  assert.deepEqual(attentionCounts([{ security: true }, { security: true }, {}, {}, {}], 3), ["⛨ 2", "3 criteria not met", "3 other blockers"]);
+  assert.deepEqual(attentionCounts([{}], 0), ["1 blocker"]);
+  assert.deepEqual(attentionCounts([{ security: true }], 1), ["⛨ 1", "1 criterion not met"]);
+  // A layer's ways in and rights from the access rows at its files: public or opened by the PR; others do not count.
+  const { layerAccess } = await import("./views.js");
+  const acc = [{ resource: "FrontDesk Api", kind: "route", public: true, auth_kind: "code", at: "template.yaml:24" },
+    { resource: "Queue", kind: "queue", principal: "FrontDesk function", actions: ["sqs:SendMessage"], public: false, opened_by_pr: true, at: "template.yaml:20" },
+    { resource: "Old table", kind: "table", principal: "Job", actions: ["read"], public: false, at: "infra/db.yaml:3" }];
+  assert.deepEqual(layerAccess(acc, ["deploy/template.yaml"]), { entries: 1, grants: 1,
+    text: "This layer opens a public route (FrontDesk Api), and grants FrontDesk function sqs:SendMessage on Queue." });
+  assert.equal(layerAccess(acc, ["infra/db.yaml", "src/a.py"]), null, "an old right the PR does not open");
+  assert.equal(layerAccess([], ["a"]), null);
+  // The analysis' head and age at the top of the column, amber once the PR moved on.
+  const { analysisAge } = await import("./views.js");
+  assert.deepEqual(analysisAge({ head: "abcdef123", exact: true, now: "abcdef123", age: "2 h ago" }), { stale: false, text: "Analysis of abcdef1, 2 h ago" });
+  assert.deepEqual(analysisAge({ head: "abcdef123", exact: false, now: "9876543ff", age: "1 d ago" }), { stale: true, text: "Analysis of abcdef1, 1 d ago · the PR is at 9876543 now" });
+  assert.deepEqual(analysisAge({ exact: true, age: "5 min ago" }), { stale: false, text: "Analysis of this diff, 5 min ago" }, "an analysis from before it saved its head");
+  assert.equal(analysisAge({ exact: false, now: "9876543" }).text, "Analysis of an older diff");
 }
 // ---- a finding's facts, its card's line, the rows' heights, the sequence diagram (the diff and a layer's head)
 import { factRows, findingAnchor, wrapCount, seqLayout, IMPACT, SEVERITY_SCALE, SEQ } from "./views.js";
@@ -468,3 +495,24 @@ assert.equal(oneSided(rowsOf("-+")), false, "a line changed");
   assert.equal(scopeConflicts(tab, []).size, 1, "without findings only the runs' own contradiction");
   assert.equal(scopeConflicts(null).size, 0);
 }
+// ---- the PR list: at most three marks, security first
+import { rowMarks } from "./views.js";
+assert.deepEqual(rowMarks({ top: "high", security: true }, { priority: 1, type: "Feature", chips: ["High security risk", "Feature", "Low effort"] }).map((m) => m.text), ["⛨ high", "P1", "Feature"]);
+assert.deepEqual(rowMarks({ top: "medium", security: false }, null).map((m) => [m.text, m.security]), [["medium", false]]);
+assert.deepEqual(rowMarks(null, { priority: 3, type: "Docs" }).map((m) => m.text), ["P3", "Docs"]);
+assert.equal(rowMarks({ top: "low" }, { priority: 2, type: "Fix" }).length, 3);
+
+// ---- the stack in the review's bar
+import { stackOf } from "./views.js";
+assert.deepEqual(stackOf({ stacked_on: { number: 1, url: "u1" } }, 2).map((p) => [p.number, Boolean(p.self)]), [[1, false], [2, true]], "PR #2 on top of #1");
+assert.deepEqual(stackOf({ stacked_above: [{ number: 2, url: "u2" }] }, 1).map((p) => [p.number, Boolean(p.self)]), [[1, true], [2, false]], "PR #1 under #2");
+assert.equal(stackOf({ stacked_on: null, stacked_above: [] }, 3), null);
+assert.equal(stackOf(null, 3), null, "no context yet");
+
+// ---- a layer's "Depends on" chips: clicks placed by x from the right end
+import { chipAt, textW } from "./views.js";
+assert.equal(chipAt(950, 1000, [80, 100]), 1, "the last chip ends at the right end");
+assert.equal(chipAt(850, 1000, [80, 100]), 0, "the one before it, a gap to the left");
+assert.equal(chipAt(897, 1000, [80, 100]), -1, "the gap between them");
+assert.equal(chipAt(700, 1000, [80, 100]), -1);
+assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));

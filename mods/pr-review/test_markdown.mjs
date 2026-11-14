@@ -82,7 +82,7 @@ const all = [f("m1", "medium", { breaks: { node: "c" } }), sec, f("l1", "low"), 
     rules: [{ rule: "Tests for new code", source: "CLAUDE.md", status: "fail", where: "a.py:3", why: "None." }] };
   const text = overviewMd({ ...base, ai, findings: all, statusOf, checks: [{ name: "Conventional Commit title", ok: true, why: "feat: x" }, { name: "CI: unit", ok: false, why: "fail", ci: true }, { name: "Tests for new code", ok: false, rule: true }],
     related: { stacked_on: { number: 1, title: "base", url: "https://example.test/pull/1" } } });
-  assert.ok(text.startsWith(`${first}\n\n# Review overview: feat: x\n\n**Verdict:** 1 security finding (high) · 0 of 2 acceptance criteria met · 1 high finding · 2 checks failed\n**Merge risk:** high. No auth.\n`));
+  assert.ok(text.startsWith(`${first}\n\n# Review overview: feat: x\n\n**Verdict:** 1 security cause, high (reach assumed) · 0 of 2 acceptance criteria met · 2 checks failed\n**Merge risk:** high. No auth.\n`));
   assert.match(text, /\*\*Stacked on:\*\* #1 base \(https:\/\/example\.test\/pull\/1\)\. This PR merges after it\.\n\*\*Components:\*\* 1 new component, 1 without an owner\n/);
   assert.match(text, /## Check against the task: 0 of 2 acceptance criteria met, 1 extra\n\n### Security\n\n- \*\*high\*\* security: T s1 \(`a\.py:3-9`\) · Assumed, not checked\n/);
   assert.match(text, /### Acceptance criteria\n\n- \*\*broken\*\*: Only staff call it\n  - Why: No check\.\n  - \*\*high\*\* security: T s1 [^\n]*\n- \*\*partly\*\*: Mails once\n  - No finding backs this state\.\n/);
@@ -93,7 +93,7 @@ const all = [f("m1", "medium", { breaks: { node: "c" } }), sec, f("l1", "low"), 
   assert.match(old, /## Check against the task: 0 of 2 criteria met, 1 extra\n\n### Criteria\n\n- \*\*broken\*\*: Only staff call it\n- \*\*partly\*\*: Mails once\n\n### Not in the task\n\n- \*\*extra\*\*: A new route\n$/);
   // No analysis: the reviewers' findings under the PR's line, and it says so.
   const none = overviewMd({ ...base, findings: [f("r1", "medium")], statusOf });
-  assert.match(none, /\*\*Verdict:\*\* 1 medium finding\nNo analysis of this diff yet[^\n]*\n\n## Unresolved findings\n\n### Other findings\n\n- \*\*medium\*\*: T r1 /);
+  assert.match(none, /\*\*Verdict:\*\* 1 unresolved finding\nNo analysis of this diff yet[^\n]*\n\n## Unresolved findings\n\n### Other findings\n\n- \*\*medium\*\*: T r1 /);
   console.log("ok overview");
 }
 

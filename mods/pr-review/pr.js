@@ -291,8 +291,11 @@ export function mapReview(answer, hunks) {
     asks: (answer.asks ?? []).map((a, k) => {
       const coverage = ["seen", "partly", "absent", "extra"].includes(a.coverage) ? a.coverage : "absent";
       return { id: String(a.id ?? `c${k + 1}`), text: a.text ?? "", coverage, state: ASK_STATES.includes(a.state) ? a.state : STATE_OF[coverage], why: a.why ?? "",
-        acceptance: typeof a.acceptance === "boolean" ? a.acceptance : null, findings: (a.findings ?? []).map(String), hunks: ids(a.hunks), elements: (a.elements ?? []).map(String) };
+        acceptance: typeof a.acceptance === "boolean" ? a.acceptance : null, findings: (a.findings ?? []).map(String), hunks: ids(a.hunks), elements: (a.elements ?? []).map(String),
+        short: String(a.short ?? "") }; // short: the criterion's name in at most eight words ("": an older analysis)
     }),
+    // whatChanged: {adds, changes, runtime}, each up to three short sentences; null for an older analysis.
+    whatChanged: answer.what_changed ? Object.fromEntries(["adds", "changes", "runtime"].map((k) => [k, (answer.what_changed[k] ?? []).map(String).slice(0, 3)])) : null,
     unlinked: (answer.unlinked ?? []).map(String), components: answer.components ?? [], componentCounts: answer.component_counts ?? null, access: answer.access ?? [] };
 }
 
@@ -326,7 +329,12 @@ export const EFFORTS = ["quick", "moderate", "heavy"];
 export const findingFacts = (f) => ({ impact: f.impact ?? null, effect: String(f.effect ?? ""), preconditions: (f.preconditions ?? []).map(String),
   certainty: ["confirmed", "derived", "assumed"].includes(f.certainty) ? f.certainty : null, criteria: (f.criteria ?? []).map(String), breaks: f.breaks ?? null,
   effort: EFFORTS.includes(f.effort) ? f.effort : null,
-  reachable_from: (f.reachable_from ?? []).map(String), reachability: ["public", "authenticated", "internal_only", "unknown"].includes(f.reachability) ? f.reachability : null });
+  reachable_from: (f.reachable_from ?? []).map(String), reachability: ["public", "authenticated", "internal_only", "unknown"].includes(f.reachability) ? f.reachability : null,
+  // introduced_here: the flaw is in what this PR adds or changes (false: it was there before; null: not said, an older
+  // analysis). path_certainty / path_why: for a security finding, how sure the way from outside to it is, apart from
+  // certainty (the flaw in the code).
+  introduced_here: typeof f.introduced_here === "boolean" ? f.introduced_here : null,
+  path_certainty: ["confirmed", "derived", "assumed"].includes(f.path_certainty) ? f.path_certainty : null, path_why: String(f.path_why ?? "") });
 
 // A suspicious line taken over as a pending review comment (rows: its hunk's or file's rows); null when not shown there.
 export function suspectComment(s, rows, id) {
@@ -462,14 +470,15 @@ const NEAR = 3; // lines between two findings of one defect at most (PR #2: 19/2
 // reviewer, or a category). Being on the same line or in the same function is not enough: on PR #2 consumer.py 20
 // and 23, in one function, say different things. An AI suggestion joins a finding on its own line (it is worded as a
 // fix, so no word measure tells its claim: on PR #2 the same and the different ones both score 0 to 0.38). A
-// suggestion without one is a note (not a finding, not counted), unless it is high or about security or availability:
-// then it is a finding of its own. line..end spans all sources, the anchor in the diff is the first line; criteria are
+// suggestion without one is a note (not a finding, not counted), unless it is high, about security or availability,
+// or in a file the public can reach (publicFiles: then the category word the model chose does not decide): then it is
+// a finding of its own. line..end spans all sources, the anchor in the diff is the first line; criteria are
 // those of all sources. The id is the source's that already has a status (so "Fix sent" and its report survive a run
 // that adds a source to the line), else the leading one's; `ids` has them all.
 // → {findings: [{...the leading source, id, ids, severity, security, step, sources: [{id, reviewer, severity, title,
 // detail, suggestion}]}], notes: [suspect]}, findings by severity, then file and line. The facts of a finding
 // (findingFacts) are the leading source's; one it does not have comes from the first source that does.
-export function mergeFindings(findings, suspects = [], status = {}) {
+export function mergeFindings(findings, suspects = [], status = {}, publicFiles = new Set()) {
   const notes = [], at = (x) => `${x.file}:${x.line}`;
   const own = (s) => { const [title, detail] = titled(s.reason); return { id: `s${hash(s.key)}`, reviewer: "ai", file: s.path, line: s.line, end: s.line, severity: s.severity, category: s.category ?? "bug", title, detail, suggestion: "" }; };
   // In line order, so 19, 20 and 22 can become one; a finding without a line stays alone.
@@ -481,7 +490,7 @@ export function mergeFindings(findings, suspects = [], status = {}) {
   }
   // ponytail: a suggestion on a removed line stays a note (findings sit on new-side lines).
   const sugs = suspects.filter((s) => !s.old).map((s) => [s, own(s)]);
-  const raised = new Set(sugs.filter(([s, x]) => !byLine.has(at(x)) && (s.severity === "high" || RAISE.has(s.category))).map(([s]) => s));
+  const raised = new Set(sugs.filter(([s, x]) => !byLine.has(at(x)) && (s.severity === "high" || RAISE.has(s.category) || publicFiles.has(s.path))).map(([s]) => s));
   for (const [s, x] of sugs) if (raised.has(s) && !byLine.has(at(x))) { kept.push([x]); byLine.set(at(x), kept.at(-1)); }
   for (const [s, x] of sugs) { const g = byLine.get(at(x)); if (g && !g.includes(x)) g.push(x); else if (!g) notes.push(s); }
   for (const s of suspects) if (s.old) notes.push(s);
@@ -732,17 +741,19 @@ export function preMergeChecks({ title, rules = [], ctx = null }) {
 }
 
 // What stands between the PR and a merge, most severe first: conflicts, failing CI, failed rules, high/critical
-// unresolved findings (sent(f): a fix is out for it, which does not resolve it), fixes not verified on this head,
+// unresolved findings that this PR brings in (introduced_here not false; one that was there before is in alreadyThere)
+// and security findings of any severity (at their own severity; sent(f): a fix is out for it,
+// which does not resolve it), fixes not verified on this head,
 // overlapping open PRs (not the one this PR is stacked on: that is its base, the merge order is given).
 export function mergeBlockers({ checks = [], findings = [], unverified = 0, related = null, sent = () => false }) {
   const out = [];
-  if (checks.some((c) => c.name === "No merge conflicts" && c.ok === false)) out.push({ severity: "high", title: "Code conflicts need to be resolved", why: "The base branch changed the same lines since this branch was cut: merge or rebase the base first." });
+  if (checks.some((c) => c.name === "No merge conflicts" && c.ok === false)) out.push({ kind: "conflict", severity: "high", title: "Code conflicts need to be resolved", why: "The base branch changed the same lines since this branch was cut: merge or rebase the base first." });
   const ci = checks.filter((c) => c.ci && c.ok === false);
-  if (ci.length) out.push({ severity: "high", title: `${ci.length} CI ${ci.length === 1 ? "check is" : "checks are"} failing`, why: ci.map((c) => c.name.replace(/^CI: /, "")).join(", ") });
-  for (const c of checks.filter((x) => (x.rule || x.name === "Conventional Commit title") && x.ok === false)) out.push({ severity: "medium", title: `Rule not met: ${c.name}`, why: c.why ?? "", where: c.where });
-  for (const f of findings.filter((x) => x.severity === "high" || x.severity === "critical")) out.push({ severity: "high", title: f.title, why: `${f.file}:${f.line} · unresolved ${f.severity} finding${sent(f) ? " · fix sent, not verified" : ""}`, finding: f.id });
-  if (unverified) out.push({ severity: "medium", title: `${unverified} ${unverified === 1 ? "fix is" : "fixes are"} not verified`, why: "Sent to Fix before the last push: verify them on the new head." });
-  for (const p of related?.open ?? []) if (p.overlap > 0 && !p.stacked) out.push({ severity: "low", title: `Overlaps with open PR #${p.number}`, why: `Both change ${p.overlap} ${p.overlap === 1 ? "file" : "files"} (${(p.files ?? []).slice(0, 3).join(", ")}): agree on the merge order.`, url: p.url });
+  if (ci.length) out.push({ kind: "ci", severity: "high", title: `${ci.length} CI ${ci.length === 1 ? "check is" : "checks are"} failing`, why: ci.map((c) => c.name.replace(/^CI: /, "")).join(", ") });
+  for (const c of checks.filter((x) => (x.rule || x.name === "Conventional Commit title") && x.ok === false)) out.push({ kind: "rule", severity: "medium", title: `Rule not met: ${c.name}`, why: c.why ?? "", where: c.where });
+  for (const f of findings.filter((x) => (x.severity === "high" || x.severity === "critical" || x.security) && x.introduced_here !== false)) out.push({ kind: "finding", severity: x2(f.severity), title: f.title, why: `${f.file}:${f.line} · unresolved ${f.severity} finding${sent(f) ? " · fix sent, not verified" : ""}`, finding: f.id });
+  if (unverified) out.push({ kind: "verify", severity: "medium", title: `${unverified} ${unverified === 1 ? "fix is" : "fixes are"} not verified`, why: "Sent to Fix before the last push: verify them on the new head." });
+  for (const p of related?.open ?? []) if (p.overlap > 0 && !p.stacked) out.push({ kind: "overlap", severity: "low", title: `Overlaps with open PR #${p.number}`, why: `Both change ${p.overlap} ${p.overlap === 1 ? "file" : "files"} (${(p.files ?? []).slice(0, 3).join(", ")}): agree on the merge order.`, url: p.url });
   return out;
 }
 
@@ -763,8 +774,9 @@ export function triageOf({ pr, analysis = null, size = null, security = [], rela
   const why = llm?.why ?? (overlap ? `Review this early: ${overlap} other open ${overlap === 1 ? "PR touches" : "PRs touch"} the same files, so its assumptions shape theirs.`
     : high ? `Review this early: merge risk is ${risk}${analysis.mergeRisk.why ? ` (${analysis.mergeRisk.why})` : ""}.`
     : score !== null && score <= 2 && !sec ? "A quick look should do: small and low risk." : null);
-  const depth = score === null ? null : score >= 3 || high ? "Deep review" : "Quick look";
-  return { priority, why, chips: [sec, type, depth, effort].filter(Boolean) };
+  // ponytail: no "Deep review" / "Quick look" any more: from the same score as the effort, it said "Deep review" beside
+  // "Low effort" whenever the merge risk was high.
+  return { priority, why, type, chips: [sec, type, effort].filter(Boolean) };
 }
 
 // ---- PRs you didn't open (main.js sources "This repo", "Review requested", "Open PR…")
@@ -822,28 +834,117 @@ export function taskList(asks = [], findings = [], unlinked = [], statusOf = () 
     other: open.filter((f) => !f.security && !asks.some((a) => linked(a, f))), marked, criteria: criteria.length, met: criteria.filter((a) => a.state === "met").length };
 }
 const count = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+// The Overview's groups of criteria: the acceptance criteria ("head") and the rest of the description ("rest"), each
+// with whether all its rows are met (then it folds to one line at the end of the page).
+export function criteriaGroups(l) {
+  const marked = l.rows.filter((r) => l.marked && r.ask.acceptance), rest = l.rows.filter((r) => !marked.includes(r));
+  return [["head", marked], ["rest", rest]].filter(([, rows]) => rows.length).map(([key, rows]) => ({ key, rows, met: rows.every((r) => r.ask.state === "met") }));
+}
 const metText = (l) => `${l.met} of ${l.criteria} ${l.marked ? "acceptance criteria" : "criteria"} met`;
 // "0 of 5 acceptance criteria met, 1 extra"; "" without a task.
 export const taskHead = (l) => (l.rows.length + l.extra.length ? `${metText(l)}${l.extra.length ? `, ${l.extra.length} extra` : ""}` : "");
-// The verdict under the PR title, security first: [{key, text, tone: high | medium | low | ok}] from the list above,
-// findingCounts and what else stands before a merge (failed rules or checks, fixes not verified on this head).
-// "1 security finding (high)", "0 of 5 acceptance criteria met", "6 high findings".
+// A security finding whose way from outside rests on an assumption (path_certainty; an older finding: its certainty).
+const reachAssumed = (f) => (f.path_certainty ?? f.certainty) === "assumed";
+// The verdict under the PR title, counted by what decides a merge: the unresolved security findings (one per cause:
+// merged findings are one), the task's
+// criteria, and the blockers besides findings (failed rules or checks, fixes not verified on this head). It does not
+// count the high findings: the groups below say how severe each one is. Without a task and without a security finding:
+// the unresolved findings. → [{key, text, short, tone: security | ok | plain}]; `short` is the bar's excerpt
+// ("⛨ 2 high · 0/5 criteria"), from the same parts so the two never disagree.
 export function verdictParts(l, c, { failed = 0, toVerify = 0 } = {}) {
-  const sec = l.security, secHigh = sec.filter((f) => f.severity === "high").length, top = ["high", "medium", "low"].find((k) => c[k]);
-  const worst = l.rows.some((r) => ["broken", "not_done"].includes(r.ask.state)) ? "high" : "medium";
-  return [sec.length === 1 && { key: "security", text: `1 security finding (${sec[0].severity})`, tone: sec[0].severity },
-    sec.length > 1 && { key: "security", text: `${sec.length} security findings, ${secHigh || "none"} high`, tone: secHigh ? "high" : "medium" },
-    l.criteria > 0 && { key: "criteria", text: metText(l), tone: l.met === l.criteria ? "ok" : worst },
-    top ? { key: "findings", text: count(c[top], `${top} finding`), tone: top } : { key: "findings", text: c.unresolved ? count(c.unresolved, "unresolved finding") : "No unresolved findings", tone: c.unresolved ? "medium" : "ok" },
-    failed > 0 && { key: "checks", text: `${count(failed, "check")} failed`, tone: "high" },
-    toVerify > 0 && { key: "verify", text: `${count(toVerify, "fix", "fixes")} to verify`, tone: "medium" }].filter(Boolean);
+  const sec = l.security, secHigh = sec.filter((f) => f.severity === "high").length, open = c.unresolved ? count(c.unresolved, "unresolved finding") : "No unresolved findings";
+  const assumed = sec.filter(reachAssumed).length, reach = !assumed ? "" : assumed === sec.length ? " (reach assumed)" : ` (reach assumed for ${assumed})`;
+  return [sec.length === 1 && { key: "security", text: `1 security cause, ${sec[0].severity}${reach}`, short: `⛨ 1 ${sec[0].severity}`, tone: "security" },
+    sec.length > 1 && { key: "security", text: `${sec.length} security causes, ${secHigh || "none"} high${reach}`, short: secHigh ? `⛨ ${secHigh} high` : `⛨ ${sec.length}`, tone: "security" },
+    l.criteria > 0 && { key: "criteria", text: metText(l), short: `${l.met}/${l.criteria} criteria`, tone: l.met === l.criteria ? "ok" : "plain" },
+    !sec.length && !l.criteria && { key: "findings", text: open, short: open, tone: c.unresolved ? "plain" : "ok" },
+    failed > 0 && { key: "checks", text: `${count(failed, "check")} failed`, short: `${count(failed, "check")} failed`, tone: "plain" },
+    toVerify > 0 && { key: "verify", text: `${count(toVerify, "fix", "fixes")} to verify`, short: `${count(toVerify, "fix", "fixes")} to verify`, tone: "plain" }].filter(Boolean);
+}
+
+// What the PR does, as a labeled list [[label, [{text, source?, evidence?}]]]: the analysis' whatChanged {adds,
+// changes, runtime} when it has one; an older analysis' paragraphs cut into sentences, a summary sentence that starts
+// with "Adds" under Adds, the other ones under Changes, the behavior under At run time. Empty labels are left out.
+const sentences = (s) => (typeof s === "string" ? s.replace(/\s+/g, " ").trim().split(/(?<=[.!?])\s+(?=[A-Z`"(])/).filter(Boolean) : []);
+export function doesList(ai) {
+  const w = ai?.whatChanged, item = (text) => ({ text: String(text) });
+  const runtime = ai?.behaviorPoints?.length ? ai.behaviorPoints : sentences(ai?.behavior).map(item), said = sentences(ai?.summary), adds = said.filter((x) => /^(adds?|introduces?|creates?)\b/i.test(x));
+  const lists = w ? [w.adds, w.changes, w.runtime].map((l) => (l ?? []).map(item)) : [adds.map(item), said.filter((x) => !adds.includes(x)).map(item), runtime];
+  return [["Adds", lists[0]], ["Changes", lists[1]], ["At run time", lists[2]]].filter(([, l]) => l.length);
+}
+
+// ---- the Overview: the list before the merge, the suggested action, what nobody checked, the attack surface
+
+// An analysis' repo rule that only restates the PR's own criteria ("PR acceptance criteria"): the criteria have their
+// own list, so they are not counted a second time as rules.
+export const realRules = (rules = []) => rules.filter((r) => !/acceptance|criteri/i.test(String(r.source ?? "")));
+
+// What stands before the merge, as rows for the Overview, most urgent first: the unresolved security findings, the
+// findings that break a criterion not met (most severe first), a criterion not met that no finding stands for, then the
+// other blockers (pr.js mergeBlockers: high findings, conflicts, CI, rules, fixes to verify, overlapping PRs). A finding
+// already there before this PR is not in it. → [{kind: security | criterion | ask | finding | conflict | ci | rule |
+// verify | overlap, title, finding?, ask?, asks (the unmet criteria it breaks), where?, why?, url?}]
+const RANK = { critical: 0, high: 1, medium: 2, low: 3 };
+export function beforeMerge({ list, findings = [], blockers = [], statusOf = () => "open" }) {
+  const unmet = list.rows.filter((r) => ["broken", "partly", "not_done"].includes(r.ask.state)), ids = new Set(), rows = [];
+  const breaks = (f) => unmet.filter((r) => r.findings.some((x) => x.id === f.id)).map((r) => r.ask);
+  const add = (f, kind) => { if (!f || ids.has(f.id) || f.introduced_here === false || ["fixed", "dismissed"].includes(statusOf(f))) return; ids.add(f.id); rows.push({ kind, title: f.title, finding: f, asks: breaks(f), where: `${f.file}:${f.line}` }); };
+  list.security.forEach((f) => add(f, "security"));
+  unmet.flatMap((r) => r.findings).sort((a, b) => (RANK[a.severity] ?? 9) - (RANK[b.severity] ?? 9)).forEach((f) => add(f, "criterion"));
+  for (const r of unmet) if (!r.findings.some((f) => ids.has(f.id))) rows.push({ kind: "ask", title: r.ask.short || r.ask.text, ask: r.ask, asks: [r.ask] });
+  for (const b of blockers) {
+    if (b.finding) add(findings.find((f) => f.id === b.finding || (f.ids ?? []).includes(b.finding)), "finding");
+    else rows.push({ kind: b.kind ?? "check", title: b.title, why: b.why ?? "", where: b.where ?? null, url: b.url ?? null, asks: [] });
+  }
+  return rows;
+}
+// The action the Overview suggests from those rows: anything the author has to change asks for changes; fixes waiting
+// for a check (and PRs that overlap) only delay an approval.
+export function verdictAction(rows) {
+  const change = rows.filter((r) => !["verify", "overlap"].includes(r.kind)).length, verify = rows.some((r) => r.kind === "verify");
+  return change ? "Request changes" : verify ? "Approve after verifying the fixes" : "Approve";
+}
+
+// What nobody checked: the areas no run reports as checked (the analysis' and the reviewers' own reports; an area one
+// run checked is not counted), the unresolved findings that rest on an assumption, and how far the security review
+// got. → {areas, assumptions, security: "not run" | "running" | "failed" | "no findings" | "n findings", text}
+export function notChecked({ ai = null, runs = {}, open = [] }) {
+  const all = [...(ai?.scope?.checked ?? []), ...Object.values(runs ?? {}).flatMap((r) => r?.scope?.checked ?? [])];
+  const seen = new Set(all.filter((c) => c.result !== "not_checked").map((c) => c.area));
+  const areas = [...new Set(all.filter((c) => c.result === "not_checked" && !seen.has(c.area)).map((c) => String(c.area).replace(/_/g, " ")))];
+  const assumptions = open.filter((f) => f.certainty === "assumed" || f.path_certainty === "assumed"), sr = runs?.security;
+  const security = !sr?.state ? "not run" : sr.state === "running" ? "running" : sr.state === "failed" ? "failed" : sr.count ? count(sr.count, "finding") : "no findings";
+  return { areas, assumptions, security, text: `${count(areas.length, "area")} not checked · ${count(assumptions.length, "assumption")} · security review: ${security}` };
+}
+
+// The attack surface in one line, from the analysis' access rows and what it checked about secrets: "1 way in, 1
+// public, 1 opened here · 2 rights, 1 unused · secrets: finding". null when there is nothing to say.
+export function surfaceLine(access = [], checked = []) {
+  const entries = (access ?? []).filter((x) => x.public || /route|endpoint|api|url|http|gateway|ingress/i.test(String(x.kind ?? ""))), rights = (access ?? []).filter((x) => !entries.includes(x));
+  const pub = entries.filter((x) => x.public).length, opened = entries.filter((x) => x.opened_by_pr).length, unused = rights.filter((x) => x.used === false).length;
+  const sec = (checked ?? []).find((c) => c.area === "secrets");
+  const parts = [entries.length > 0 && `${count(entries.length, "way in", "ways in")}${pub ? `, ${pub} public` : ""}${opened ? `, ${opened} opened here` : ""}`,
+    rights.length > 0 && `${count(rights.length, "right")}${unused ? `, ${unused} unused` : ""}`, sec && `secrets: ${String(sec.result).replace(/_/g, " ")}`].filter(Boolean);
+  return parts.length ? parts.join(" · ") : null;
+}
+
+// The checks in the groups the bar and the Overview count alike: the repo rules (the title's form and the analysis'
+// rules), CI, and the merge conflicts check.
+export const checkGroups = (checks = []) => ({ rules: checks.filter((c) => !c.ci && c.name !== "No merge conflicts"), ci: checks.filter((c) => c.ci), conflict: checks.filter((c) => c.name === "No merge conflicts") });
+
+// What the AI runs on a PR cost, summed: "$0.53 (Analysis $0.22, Security review $0.31)"; "" when nothing is known.
+// runs: [[label, cost]].
+export function costLine(runs) {
+  const paid = runs.filter(([, c]) => Number(c) > 0), usd = (c) => `$${Number(c).toFixed(2)}`;
+  return paid.length ? `${usd(paid.reduce((n, [, c]) => n + Number(c), 0))} (${paid.map(([k, c]) => (paid.length > 1 ? `${k} ${usd(c)}` : k)).join(", ")})` : "";
 }
 
 // How sure a finding is and what it hangs on, instead of telling its effect as a fact: "Assumed, not checked · only
-// if FRONT_DESK_TOKEN is not set (and 1 more)" (a sentence's capital goes, a name's stays). "" for a finding from before
-// the analysis said so.
+// if FRONT_DESK_TOKEN is not set and the HttpApi route has no authorizer": every precondition, they are rarely more
+// than two (a sentence's capital and end go, a name's capital stays). "" for a finding from before the analysis said so.
 export const CERTAINTY = { confirmed: "Confirmed by a run", derived: "Derived from the code", assumed: "Assumed, not checked" };
-export const certaintyLine = (f) => [CERTAINTY[f.certainty], f.preconditions?.length ? `only if ${f.preconditions[0].replace(/^[A-Z](?=[a-z])/, (c) => c.toLowerCase())}${f.preconditions.length > 1 ? ` (and ${f.preconditions.length - 1} more)` : ""}` : null].filter(Boolean).join(" · ");
+const clause = (p) => String(p).trim().replace(/\.$/, "").replace(/^[A-Z](?=[a-z])/, (c) => c.toLowerCase());
+export const certaintyLine = (f) => [CERTAINTY[f.certainty], f.preconditions?.length ? `only if ${f.preconditions.map(clause).join(" and ")}` : null].filter(Boolean).join(" · ");
 // What a severity follows from (the analysis' impact scale), for the tooltip of a severity chip.
 export const SEVERITY_SCALE = { high: "it breaks a requirement, leaves a dead path, allows unauthorized access, exposes data or loses data",
   medium: "an edge case, degraded operation, a fragile structure or untested code", low: "maintainability, or work the task did not ask for" };
@@ -859,30 +960,38 @@ export function componentLine(cc) {
 
 // The review's state as plain text, to paste for a colleague ("Copy review state"). A security finding is in it with
 // its title only: no file, no line, nothing about how to reach it.
-export function reviewState({ pr, head = "", list, counts, findings, statusOf, progress = "" }) {
+// behavior: what the PR does at run time, first so the reader knows the PR; fixOf(f): the agent and branch of a fix sent
+// ("a sub-agent, fix/2-x"); cost: costLine's text.
+export function reviewState({ pr, head = "", list, counts, findings, statusOf, progress = "", behavior = "", fixOf = () => "", cost = "" }) {
   const word = (s) => s.replace("_", " ");
   const ask = (r) => `- ${word(r.ask.state)}: ${r.ask.text}${r.ask.acceptance ? " (acceptance criterion)" : ""}${r.ask.why ? `. ${r.ask.why}` : ""}${r.unlinked ? " No finding backs this." : ""}`;
-  const one = (f) => (f.security ? `- ${f.severity}, security: ${f.title}` : `- ${f.severity}: ${f.title} (${f.file}:${f.line})`);
+  const one = (f) => `${f.security ? `- ${f.severity}, security: ${f.title}` : `- ${f.severity}: ${f.title} (${f.file}:${f.line})`}${statusOf(f) === "progress" && fixOf(f) ? `. Fix: ${fixOf(f)}` : ""}`;
   const groups = [["Unresolved", ["open", "recheck"]], ["Fix sent", ["progress"]], ["Fixed", ["fixed"]], ["Dismissed", ["dismissed"]]]
     .map(([label, st]) => [label, findings.filter((f) => st.includes(statusOf(f)))]).filter(([, fs]) => fs.length);
   return [`Review state of ${pr.repo ?? ""}#${pr.number}: ${pr.title ?? ""}`, `${pr.url ?? ""}${head ? ` at ${String(head).slice(0, 7)}` : ""}`, "",
+    ...(behavior ? [`What it does: ${String(behavior).replace(/\s+/g, " ").trim()}`, ""] : []),
     verdictParts(list, counts).map((p) => p.text).join(" · "), "",
     ...(taskHead(list) ? [`Task check: ${taskHead(list)}`, ...[...list.rows, ...list.extra].map(ask), ""] : []),
     ...groups.flatMap(([label, fs]) => [`${label} (${fs.length}):`, ...fs.map(one), ""]),
-    ...(progress ? [progress, ""] : []), ...(findings.some((f) => f.security) ? ["Security findings are listed by title only."] : [])].join("\n").trim() + "\n";
+    ...(progress ? [progress, ""] : []), ...(cost ? [`AI runs on this PR: ${cost}.`, ""] : []), ...(findings.some((f) => f.security) ? ["Security findings are listed by title only."] : [])].join("\n").trim() + "\n";
 }
 
 // ---- Markdown texts (findings, suggestions, comments) where one plain line is shown
 
 // A Markdown text as one plain line, for a folded card, a list row or a title: its first paragraph only, without code
 // blocks, list markers, a heading's "#" or a quote's ">", and without the marks of code, bold and links. A text that
-// is nothing but a code block (a GitHub suggestion) gives the block's first line.
+// is nothing but a code block (a GitHub suggestion) gives the block's first line. HTML tags (a bot's <a><picture>…)
+// go; a text that is then empty but had an image gives the image's alt text, or "(image)".
 export function plainText(text) {
-  const src = String(text ?? ""), noCode = src.replace(/^[ \t]*(```|~~~)[^\n]*\n[\s\S]*?(?:\n[ \t]*\1[^\n]*|$)/gm, "");
+  const raw = String(text ?? "").replace(/<!--[\s\S]*?-->/g, ""), src = raw.replace(HTML_TAG, " ");
+  if (!src.trim() && /<img\b/i.test(raw)) return /<img\b[^>]*\balt\s*=\s*"([^"]+)"/i.exec(raw)?.[1].trim() || "(image)";
+  const noCode = src.replace(/^[ \t]*(```|~~~)[^\n]*\n[\s\S]*?(?:\n[ \t]*\1[^\n]*|$)/gm, "");
   const para = noCode.split(/\n[ \t]*\n/).find((p) => p.trim()) ?? src.split("\n").find((l) => l.trim() && !/^[ \t]*(```|~~~)/.test(l)) ?? "";
   return para.split("\n").map((l) => l.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "").replace(/^\s*(?:#{1,6}\s+|>\s?)/, "")).join(" ")
     .replace(/`([^`]*)`/g, "$1").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/\s+/g, " ").trim();
 }
+// The HTML tags GitHub renders in a comment, by name: a type like `Vec<String>` or `<T>` is no tag.
+const HTML_TAG = /<\/?(?:a|abbr|b|blockquote|br|code|details|div|em|h[1-6]|hr|i|img|kbd|li|ol|p|picture|pre|source|span|strong|sub|summary|sup|table|tbody|td|th|thead|tr|ul)\b[^>]*>/gi;
 
 // ---- the Findings tab: a finding's way into the PR, how its number comes about, owners, effort (review.js findingsPane)
 
@@ -898,8 +1007,12 @@ export function findingSteps(f, st = null, { report = null, facts = [] } = {}) {
   const v = st?.verify ?? null, declined = report?.status === "wontfix", at = (x) => String(x ?? "").slice(0, 7), word = String(v?.result ?? "").replace("_", " ");
   const done = { reported: true, evidence: f.certainty === "confirmed", sent: Boolean(st?.fixHead) && !declined, verified: v?.result === "fixed" || (st?.s === "fixed" && !v),
     in_pr: v?.result === "fixed" && !v.branch };
+  const p = f.proof?.state === "done" ? f.proof : null, checking = f.proof?.state === "running";
   const missing = {
-    evidence: f.certainty === "derived" ? "No evidence yet: the finding is derived from the code." : f.certainty === "assumed" ? "No evidence yet: the finding rests on something that could not be checked."
+    evidence: checking ? "No evidence yet: an agent is checking it now, in its own checkout of the PR head."
+      : p?.result === "refuted" ? `An agent refuted it${p.reason ? `: ${p.reason.replace(/\.$/, "")}` : ""}. Dismiss it if you agree.`
+      : p?.result === "not_reproduced" ? `No evidence yet: an agent could not reproduce it${p.reason ? `: ${p.reason.replace(/\.$/, "")}` : ""}.`
+      : f.certainty === "derived" ? "No evidence yet: the finding is derived from the code." : f.certainty === "assumed" ? "No evidence yet: the finding rests on something that could not be checked."
       : "No evidence yet: nothing that ran shows it.",
     sent: declined ? `No fix on its way: the agent declined${report.note ? `, ${report.note}` : "."}` : "No fix sent yet: Fix hands the finding to an agent.",
     verified: !v ? "Not verified yet: Verify checks the commit the fix agent reports, on its branch or in the PR head."
@@ -909,7 +1022,8 @@ export function findingSteps(f, st = null, { report = null, facts = [] } = {}) {
   };
   const own = { sent: ["Agent", "Branch", "Commit", "Report"], verified: v ? ["Check"] : [] };
   const last = STEPS.map(([k]) => done[k]).lastIndexOf(true), next = STEPS.findIndex(([k], i) => i > last && !done[k]);
-  return STEPS.map(([key, label], i) => ({ key, label, done: done[key], next: i === next, missing: done[key] ? null : missing[key], details: facts.filter(([l]) => own[key]?.includes(l)) }));
+  return STEPS.map(([key, label], i) => ({ key, label, done: done[key], next: i === next, missing: done[key] ? null : missing[key],
+    details: key === "evidence" ? proofFacts(f.proof) : facts.filter(([l]) => own[key]?.includes(l)) }));
 }
 
 // How the Findings tab's number comes about: what each source reported (every report counts), how
@@ -1005,3 +1119,45 @@ export function recommendModel(kind, data = {}) {
 }
 // One class up or down from `tier` for code, never to Haiku: {up, down} (null at the end).
 export const tierSteps = (tier) => ({ up: tier === "sonnet" ? "opus" : null, down: tier === "opus" ? "sonnet" : null });
+
+// ---- Verify with an agent (review.js verifyAgent): an agent's check of a finding, kept in the status map as
+// status[id].proof: {state: "running", job, path, branch, base, terminal, head, at} while it works, then {state: "done",
+// result (threads.js PROOF_RESULTS), reason, command, output, test, head, at}. Older statuses have none.
+export const PROOF_WORDS = { reproduced: "Reproduced", not_reproduced: "Not reproduced", refuted: "Refuted" };
+// The findings with the agent's check on them (f.proof): reproduced makes the certainty "confirmed" (something that
+// ran shows it); not reproduced and refuted leave it as it was, and refuted only suggests Dismiss.
+export const withProof = (findings, status = {}) => findings.map((f) => {
+  const p = status[f.id]?.proof;
+  return !p ? f : { ...f, proof: p, ...(p.state === "done" && p.result === "reproduced" ? { certainty: "confirmed" } : {}) };
+});
+// The check as [label, text] pairs, for the "Evidence" step's details.
+export const proofFacts = (p) => !p ? [] : p.state === "running" ? [["Agent", `checking it on ${p.branch ?? "its branch"}${p.terminal ? ` (${p.terminal})` : ""}`]] : [
+  ["Result", `${PROOF_WORDS[p.result] ?? p.result} by an agent${p.head ? ` at ${String(p.head).slice(0, 7)}` : ""}${p.reason ? `: ${p.reason}` : ""}`],
+  p.command && ["Command", p.command], p.output && ["Output", p.output], p.test && ["Test", p.test]].filter(Boolean);
+
+// The group "Already there before this PR": unresolved findings whose flaw this PR did not bring in (introduced_here
+// false). They are no merge blocker (mergeBlockers leaves them out); most severe first, then file and line.
+export function alreadyThere(findings = []) {
+  const rank = { critical: 0, high: 1, medium: 2, low: 3 };
+  return findings.filter((f) => f.introduced_here === false).sort((a, b) => (rank[a.severity] ?? 9) - (rank[b.severity] ?? 9) || String(a.file).localeCompare(String(b.file)) || a.line - b.line)
+    .map((f) => ({ severity: f.severity, title: f.title, why: `${f.file}:${f.line} · ${f.severity} finding, already there before this PR`, finding: f.id }));
+}
+
+// The files a way in from outside reaches (access entries with public: their own line's file and the file of the
+// architecture card they open, e.g. template.yaml for the route and library/handler.py for its handler).
+export function publicFiles(access = [], nodes = []) {
+  const file = (at) => String(at ?? "").replace(/:\d+.*$/, "");
+  return new Set((access ?? []).filter((a) => a?.public).flatMap((a) => [file(a.at), file((nodes ?? []).find((n) => n.id === a.node)?.at)]).filter(Boolean));
+}
+
+// The same in one short line, under the Findings tab's count: "31 reports from 4 sources, 27 after merging · 3 on
+// security, none confirmed by a run" (the unresolved number is the count line's own).
+export function funnelShort(x) {
+  if (!x.merged) return "";
+  const n = (k, one, many = `${one}s`) => `${k} ${k === 1 ? one : many}`;
+  return `${n(x.reported, "report")} from ${n(x.by.length, "source")}, ${x.reported > x.merged ? `${x.merged} after merging` : "none merged"}`
+    + (x.security ? ` · ${x.security} on security, ${x.confirmed || "none"} confirmed by a run` : "");
+}
+
+// A blocker's severity for a finding: critical counts as high; a security finding below high keeps its own.
+const x2 = (s) => (s === "critical" ? "high" : s);

@@ -512,3 +512,70 @@ export function scopeConflicts(tab, open = []) {
   }
   return out;
 }
+
+// A PR row's marks in the PR list (main.js), at most three by weight: the highest open severity, with ⛨ when an open
+// finding is about security (one mark, the only red one), then the priority, then the type. Effort is left out: the
+// review itself has no "Review effort" either.
+export function rowMarks(risk, tri) {
+  return [risk?.top && { text: `${risk.security ? "⛨ " : ""}${risk.top}`, security: Boolean(risk.security), kind: "risk" },
+    tri && { text: `P${tri.priority}`, kind: "priority" }, tri?.type && { text: tri.type, kind: "type" }].filter(Boolean).slice(0, 3);
+}
+
+// A stack of PRs around this one (related.py stacked_on, stacked_above), bottom first: [{number, title, url, self}];
+// null when this PR is in no stack. The review's bar shows it as "Stack: #1 → #2".
+export function stackOf(ctx, number) {
+  const below = ctx?.stacked_on ?? null, above = ctx?.stacked_above ?? [];
+  return below || above.length ? [...(below ? [below] : []), { number, self: true }, ...above] : null;
+}
+
+// ---- "Depends on" in a layer's head (review.js item "step"): small chips at the right end of the title row
+// A text's width in px of the UI font at `size` (the estimate wrapCount uses), for chips whose clicks are placed by x.
+export const textW = (text, size = 13.5) => Math.ceil([...String(text ?? "")].reduce((w, ch) => w + CH_W(ch), 0) * (size / 13.5) * 1.04);
+// Which of the chips laid out right-aligned (the last one ending at `right`, `gap` px between) a press at x hit: its
+// index, or -1.
+export function chipAt(x, right, widths, gap = 6) {
+  let r = right;
+  for (let k = widths.length - 1; k >= 0; k--) {
+    const l = r - widths[k];
+    if (x >= l && x < r) return k;
+    r = l - gap;
+  }
+  return -1;
+}
+
+// "By focus": the layers by what their rows show (worst): the highest unresolved severity first, a layer with a
+// security finding first among equals, then more findings, then reading order; layers without one last.
+// open(s): a layer's unresolved findings.
+export function byFocus(steps, open) {
+  const rank = (w) => (w ? (SEVERITIES.indexOf(w.severity) + 1 || SEVERITIES.length + 1) : SEVERITIES.length + 2);
+  return steps.map((s) => ({ s, w: worst(open(s)) }))
+    .sort((a, b) => rank(a.w) - rank(b.w) || Number(Boolean(b.w?.security)) - Number(Boolean(a.w?.security)) || (b.w?.count ?? 0) - (a.w?.count ?? 0) || a.s.order - b.s.order)
+    .map((x) => x.s);
+}
+
+// The "Needs your attention" heading counts by decision, not by severity: "⛨ 2 · 3 criteria not met · 4 other
+// blockers". list: the box's items ({security}); notMet: the task's criteria broken or not done.
+export function attentionCounts(list, notMet = 0) {
+  const sec = list.filter((a) => a.security).length, rest = list.length - sec;
+  return [sec && `⛨ ${sec}`, notMet && `${notMet} ${notMet === 1 ? "criterion" : "criteria"} not met`, rest && `${rest} ${sec ? "other " : ""}${rest === 1 ? "blocker" : "blockers"}`].filter(Boolean);
+}
+
+// A layer's ways in and rights: the access rows (the analysis' or the security run's) at one of its files that are
+// public or opened by this PR, with the sentence for the mark at its row ("This layer opens a public route (Api)."),
+// so a layer that adds a way in shows it without a finding. null: none.
+export function layerAccess(access, files) {
+  const at = (x) => String(x.at ?? "").replace(/:\d+(?:-\d+)?$/, ""), has = (p) => files.some((f) => f === p || f.endsWith(`/${p}`) || p.endsWith(`/${f}`));
+  const rows = (access ?? []).filter((x) => (x.public || x.opened_by_pr) && at(x) && has(at(x)));
+  if (!rows.length) return null;
+  const { entries, grants } = surfaceOf(rows);
+  const say = [...entries.map((x) => `opens ${x.public ? "a public" : "a"} ${x.kind || "way in"}${x.resource ? ` (${x.resource})` : ""}`),
+    ...grants.map((x) => `grants ${x.principal || "someone"} ${(x.actions ?? []).join(", ") || "a right"}${x.resource ? ` on ${x.resource}` : ""}`)];
+  return { entries: entries.length, grants: grants.length, text: `This layer ${say.join(", and ")}.` };
+}
+
+// The analysis' line at the top of the Analysis tab: the head it read and its age, "stale" (amber) once the PR moved
+// on (another head, or not this diff). head: the analysis file's (null: from before it said so); now: the PR's head.
+export function analysisAge({ head = null, exact = true, now = null, age = "" }) {
+  const at = (x) => String(x).slice(0, 7), moved = !exact || Boolean(head && now && head !== now);
+  return { stale: moved, text: `Analysis of ${head ? at(head) : exact ? "this diff" : "an older diff"}${age ? `, ${age}` : ""}${moved && now && head ? ` · the PR is at ${at(now)} now` : ""}` };
+}
