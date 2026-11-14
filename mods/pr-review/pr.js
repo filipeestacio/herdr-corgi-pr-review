@@ -470,14 +470,15 @@ const NEAR = 3; // lines between two findings of one defect at most (PR #2: 19/2
 // reviewer, or a category). Being on the same line or in the same function is not enough: on PR #2 consumer.py 20
 // and 23, in one function, say different things. An AI suggestion joins a finding on its own line (it is worded as a
 // fix, so no word measure tells its claim: on PR #2 the same and the different ones both score 0 to 0.38). A
-// suggestion without one is a note (not a finding, not counted), unless it is high or about security or availability:
-// then it is a finding of its own. line..end spans all sources, the anchor in the diff is the first line; criteria are
+// suggestion without one is a note (not a finding, not counted), unless it is high, about security or availability,
+// or in a file the public can reach (publicFiles: then the category word the model chose does not decide): then it is
+// a finding of its own. line..end spans all sources, the anchor in the diff is the first line; criteria are
 // those of all sources. The id is the source's that already has a status (so "Fix sent" and its report survive a run
 // that adds a source to the line), else the leading one's; `ids` has them all.
 // → {findings: [{...the leading source, id, ids, severity, security, step, sources: [{id, reviewer, severity, title,
 // detail, suggestion}]}], notes: [suspect]}, findings by severity, then file and line. The facts of a finding
 // (findingFacts) are the leading source's; one it does not have comes from the first source that does.
-export function mergeFindings(findings, suspects = [], status = {}) {
+export function mergeFindings(findings, suspects = [], status = {}, publicFiles = new Set()) {
   const notes = [], at = (x) => `${x.file}:${x.line}`;
   const own = (s) => { const [title, detail] = titled(s.reason); return { id: `s${hash(s.key)}`, reviewer: "ai", file: s.path, line: s.line, end: s.line, severity: s.severity, category: s.category ?? "bug", title, detail, suggestion: "" }; };
   // In line order, so 19, 20 and 22 can become one; a finding without a line stays alone.
@@ -489,7 +490,7 @@ export function mergeFindings(findings, suspects = [], status = {}) {
   }
   // ponytail: a suggestion on a removed line stays a note (findings sit on new-side lines).
   const sugs = suspects.filter((s) => !s.old).map((s) => [s, own(s)]);
-  const raised = new Set(sugs.filter(([s, x]) => !byLine.has(at(x)) && (s.severity === "high" || RAISE.has(s.category))).map(([s]) => s));
+  const raised = new Set(sugs.filter(([s, x]) => !byLine.has(at(x)) && (s.severity === "high" || RAISE.has(s.category) || publicFiles.has(s.path))).map(([s]) => s));
   for (const [s, x] of sugs) if (raised.has(s) && !byLine.has(at(x))) { kept.push([x]); byLine.set(at(x), kept.at(-1)); }
   for (const [s, x] of sugs) { const g = byLine.get(at(x)); if (g && !g.includes(x)) g.push(x); else if (!g) notes.push(s); }
   for (const s of suspects) if (s.old) notes.push(s);
@@ -938,10 +939,11 @@ export function costLine(runs) {
 }
 
 // How sure a finding is and what it hangs on, instead of telling its effect as a fact: "Assumed, not checked · only
-// if FRONT_DESK_TOKEN is not set (and 1 more)" (a sentence's capital goes, a name's stays). "" for a finding from before
-// the analysis said so.
+// if FRONT_DESK_TOKEN is not set and the HttpApi route has no authorizer": every precondition, they are rarely more
+// than two (a sentence's capital and end go, a name's capital stays). "" for a finding from before the analysis said so.
 export const CERTAINTY = { confirmed: "Confirmed by a run", derived: "Derived from the code", assumed: "Assumed, not checked" };
-export const certaintyLine = (f) => [CERTAINTY[f.certainty], f.preconditions?.length ? `only if ${f.preconditions[0].replace(/^[A-Z](?=[a-z])/, (c) => c.toLowerCase())}${f.preconditions.length > 1 ? ` (and ${f.preconditions.length - 1} more)` : ""}` : null].filter(Boolean).join(" · ");
+const clause = (p) => String(p).trim().replace(/\.$/, "").replace(/^[A-Z](?=[a-z])/, (c) => c.toLowerCase());
+export const certaintyLine = (f) => [CERTAINTY[f.certainty], f.preconditions?.length ? `only if ${f.preconditions.map(clause).join(" and ")}` : null].filter(Boolean).join(" · ");
 // What a severity follows from (the analysis' impact scale), for the tooltip of a severity chip.
 export const SEVERITY_SCALE = { high: "it breaks a requirement, leaves a dead path, allows unauthorized access, exposes data or loses data",
   medium: "an edge case, degraded operation, a fragile structure or untested code", low: "maintainability, or work the task did not ask for" };
@@ -1111,4 +1113,20 @@ export function alreadyThere(findings = []) {
   const rank = { critical: 0, high: 1, medium: 2, low: 3 };
   return findings.filter((f) => f.introduced_here === false).sort((a, b) => (rank[a.severity] ?? 9) - (rank[b.severity] ?? 9) || String(a.file).localeCompare(String(b.file)) || a.line - b.line)
     .map((f) => ({ severity: f.severity, title: f.title, why: `${f.file}:${f.line} · ${f.severity} finding, already there before this PR`, finding: f.id }));
+}
+
+// The files a way in from outside reaches (access entries with public: their own line's file and the file of the
+// architecture card they open, e.g. template.yaml for the route and library/handler.py for its handler).
+export function publicFiles(access = [], nodes = []) {
+  const file = (at) => String(at ?? "").replace(/:\d+.*$/, "");
+  return new Set((access ?? []).filter((a) => a?.public).flatMap((a) => [file(a.at), file((nodes ?? []).find((n) => n.id === a.node)?.at)]).filter(Boolean));
+}
+
+// The same in one short line, under the Findings tab's count: "31 reports from 4 sources, 27 after merging · 3 on
+// security, none confirmed by a run" (the unresolved number is the count line's own).
+export function funnelShort(x) {
+  if (!x.merged) return "";
+  const n = (k, one, many = `${one}s`) => `${k} ${k === 1 ? one : many}`;
+  return `${n(x.reported, "report")} from ${n(x.by.length, "source")}, ${x.reported > x.merged ? `${x.merged} after merging` : "none merged"}`
+    + (x.security ? ` · ${x.security} on security, ${x.confirmed || "none"} confirmed by a run` : "");
 }

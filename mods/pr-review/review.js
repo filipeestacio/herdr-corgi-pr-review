@@ -16,7 +16,7 @@ import { parseReports, findingStatus, mergeFindings, findingCounts, countLine, r
 import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig } from "./setup-view.js";
 import { taskList, taskHead, verdictParts, reviewState, certaintyLine, severityTip, componentLine, doesList, checkGroups, costLine, alreadyThere, criteriaGroups, beforeMerge, verdictAction, notChecked, surfaceLine, realRules } from "./pr.js"; // the Overview page
-import { findingSteps, funnel, funnelLine, ownerOf, quickFirst, hasEffort } from "./pr.js"; // the Findings tab
+import { findingSteps, funnel, funnelLine, ownerOf, quickFirst, hasEffort, publicFiles, funnelShort } from "./pr.js"; // the Findings tab
 import { withProof, PROOF_WORDS } from "./pr.js"; // Verify with an agent
 import { overviewMd, findingMd, findingsMd, layerMd, architectureMd, securityMd, verifyContextMd } from "./markdown.js"; // Copy this page as Markdown
 import { highlightJob, highlightStep, highlightLines, langOf, colors, renderLine, refAt } from "./syntax.js";
@@ -384,7 +384,7 @@ export const ReviewMode = {
     else if (name === "def") this.defineAt(arg, cx);
     // page:verify is the Findings tab now: fixes sent and their verification sit there, under "Fix sent".
     else if (name === "page" && arg === "verify") this.tab = "findings";
-    else if (name === "page") { this.tab = "steps"; this.page = PAGES.some(([k]) => k === arg) ? arg : "overview"; }
+    else if (name === "page") { this.tab = "steps"; this.page = PAGES.some(([k]) => k === arg) ? arg : "overview"; this.defFile = null; }
     else if (name === "finding") { const f = this.findingById(arg); if (f) { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); } } // finding:<id>: a click on its row in the Findings tab
     // The same as their clicks in the Findings tab: a step of the open finding (finding-step:sent | verified, again to
     // fold it) and the order (findings-sort:quick, findings-sort: for the usual one).
@@ -916,7 +916,7 @@ export const ReviewMode = {
     const lines = list.map((f) => (f.line > 0 ? anchor(f) : f.line)), at = lines.join();
     if (m?.ai === ai && m.list === list && m.st === st && m.handled === handled && m.n === n && m.at === at) return m;
     const moved = list.map((f, i) => (lines[i] === f.line ? f : { ...f, line: lines[i], end: Math.max(lines[i], f.end ?? 0), head: undefined, code: undefined }));
-    const m2 = mergeFindings([...moved, ...(ai?.steps ?? []).flatMap((s) => s.findings ?? [])], (ai?.suspects ?? []).filter((s) => !handled[s.key]), st);
+    const m2 = mergeFindings([...moved, ...(ai?.steps ?? []).flatMap((s) => s.findings ?? [])], (ai?.suspects ?? []).filter((s) => !handled[s.key]), st, publicFiles(ai?.access, ai?.arch?.nodes));
     return (this.findMemo = { ai, list, st, handled, n, at, ...m2, findings: withProof(m2.findings, st) }); // an agent's check on each (Verify with an agent)
   },
   findings() { return this.merged().findings; },
@@ -935,7 +935,12 @@ export const ReviewMode = {
   findOpen(f) { return this.fopen?.get(f.id) ?? Boolean(f.security && ["critical", "high"].includes(f.severity)); },
   // An open card's rows under its title: what the finding claims (views.js factRows), its text and its suggestion.
   // The texts are Markdown (inline code, paragraphs, a code block in a suggestion) and are drawn as such.
-  findRows(f) { return [...factRows(f), f.detail && ["Detail", f.detail], f.suggestion && ["Suggestion", f.suggestion]].filter(Boolean); },
+  // A card's rows: the facts, its text and suggestion, and what each other source says in its own words when that
+  // differs (on PR #2 the CodeUri note inside the token finding at template.yaml:14).
+  findRows(f) {
+    const others = (f.sources ?? []).filter((y) => y.title !== f.title || y.detail !== f.detail).map((y) => [REVIEWERS[y.reviewer]?.[0] ?? y.reviewer, `(${y.severity}) ${plain(y.title)}${y.detail ? `. ${y.detail}` : ""}`]);
+    return [...factRows(f), f.detail && ["Detail", f.detail], f.suggestion && ["Suggestion", f.suggestion], ...others].filter(Boolean);
+  },
   // The index (in steps()) of the layer an analysis finding belongs to, or -1.
   layerOf(f) { return f.step ? this.steps().findIndex((s) => s.findings?.some((x) => f.ids.includes(x.id))) : -1; },
   // A layer's findings: the ones the analysis filed in it, and every other finding in one of its files (a reviewer's).
@@ -1217,11 +1222,11 @@ export const ReviewMode = {
   // Files beyond 6000 lines (system headers) show 6000 lines around it.
   goDef(def, cx) {
     const inDiff = def.inRoot && this.fileHunks?.has(def.path) && this.rowsFor(def.path).some((r) => atLine(r, def.line, false));
-    if (inDiff) { this.defAt = null; return this.jumpTo(`${def.path}:${def.line}`, cx); }
+    if (inDiff) { this.defAt = null; return this.jumpTo(`${def.path}:${def.line}`, cx, true); } // true: no way back here
     const root = this.lspRoot();
     cx.spawn(async (cx) => {
       const text = def.inRoot ? await readTextFile(`${root}/${def.path}`).catch(() => null) : await contents(root, def.uri).catch(() => null);
-      if (text === null || text === undefined) { this.note = `Could not open ${where(def)}`; return cx.notify(); }
+      if (text === null || text === undefined) { this.note = this.jumpNote = `Could not open ${where(def)}`; return cx.notify(); }
       const all = text.replace(/\n$/, "").split("\n"), from = Math.max(0, def.line - 3000);
       const lines = all.slice(from, from + 6000).map(expandTabs);
       this.defFile = { path: def.path, line: def.line, from, lines, spans: highlightLines(lines, langOf(def.path), `def:${def.uri ?? def.path}:${from}`) };
@@ -1290,7 +1295,7 @@ export const ReviewMode = {
   // Bring an item of a list (by its key in `at`, or its index) to the top of the view. The kit's scroll_to_item only
   // reveals an item at the near edge, so a target below the view would land at its bottom, under the code read
   // before. renderReview settles it in two frames (settleTop): just past the target first, then exactly to the top.
-  scrollTo(view, key) { this.top = { view, key }; },
+  scrollTo(view, key) { this.top = { view, key }; this.defFile = null; }, // a jump shows the list: a file opened read-only goes
   settleTop(view, at, sizes, cx) {
     const go = this.top, i = go?.i ?? at[go?.key];
     if (!go || go.view !== view) return;
@@ -1301,14 +1306,19 @@ export const ReviewMode = {
     cx.timer.after(0, (cx) => cx.notify());
   },
 
-  // A flow's "path:line" to the hunk that holds it (in the AI list, else the Files view).
-  jumpTo(at, cx) {
+  // A flow's "path:line" to the hunk that holds it (in the AI list, else the Files view). A line outside the diff (a
+  // finding on unchanged code) opens its file read-only at that line, as a definition outside the diff does; what a
+  // jump could not do is said until the next jump.
+  jumpTo(at, cx, fromDef = false) { // fromDef: called by goDef, so a miss never goes back to it (no loop)
+    if (this.note && this.note === this.jumpNote) this.note = null;
     if (this.exMode) return this.openExploreFile(pathOf(at), lineOf(at) ?? 1, cx); // no diff: the file itself
     const [, path, line] = /^(.*?):(\d+)/.exec(at ?? "") ?? [];
-    const h = (this.hunks ?? []).find((x) => path && (x.path === path || x.path.endsWith(`/${path}`)) && x.rows.some((r) => r.n === Number(line)))
-      ?? (this.hunks ?? []).find((x) => path && (x.path === path || x.path.endsWith(`/${path}`)));
-    if (!h) { this.note = `Could not find ${at} in the diff`; return cx.notify(); }
-    this.visit(h.id, cx); this.page = null; // from a Layers page: show the diff
+    const file = (this.hunks ?? []).find((x) => path && (x.path === path || x.path.endsWith(`/${path}`)));
+    const h = (this.hunks ?? []).find((x) => file && x.path === file.path && x.rows.some((r) => r.n === Number(line)))
+      ?? (file && (!line || this.rowsFor(file.path, true).some((r) => atLine(r, Number(line), false))) ? file : null); // or context opened around a hunk
+    if (!h && line && !fromDef && this.lspRoot()) return this.goDef({ path: file?.path ?? path, line: Number(line), inRoot: true }, cx);
+    if (!h) { this.note = this.jumpNote = `Could not find ${at} in the diff`; return cx.notify(); }
+    this.visit(h.id, cx); this.page = null; this.defFile = null; // from a Layers page or a file outside the diff: show the diff
     const view = this.tab === "steps" && this.itemsOf("steps").at[h.id] !== undefined ? "steps" : "files";
     if (view === "files") { if (this.tab !== "findings" && this.tab !== "comments") this.tab = "files"; this.unfold(h.path); this.sinceOn = false; } // the whole PR has every hunk
     const k = `+${line}`, { items } = this.itemsOf(view), row = items.findIndex((x) => x.t === "row" && x.path === h.path && lineKey(x.src[x.ri]) === k);
@@ -2749,7 +2759,7 @@ export const ReviewMode = {
     const of = (b) => (b.finding ? this.findingById(b.finding) : null);
     return byUrgency(this.blockersNow(), (b) => Boolean(of(b)?.security)).map((b) => {
       const f = of(b);
-      return { severity: b.severity, label: b.title, why: b.why ?? "", security: Boolean(f?.security), finding: Boolean(f), sent: Boolean(f) && this.fstatus(f) === "progress", at: f ? `${f.file.split("/").pop()}:${f.line}` : "",
+      return { severity: b.severity, label: b.title, why: b.why ?? "", security: Boolean(f?.security), certainty: f?.certainty ?? null, finding: Boolean(f), sent: Boolean(f) && this.fstatus(f) === "progress", at: f ? `${f.file.split("/").pop()}:${f.line}` : "",
         go: (cx) => { if (f) this.openFinding(f); else if (b.where) this.jumpTo(b.where, cx); else this.page = "overview"; } };
     });
   },
@@ -2768,6 +2778,7 @@ export const ReviewMode = {
         .on_click((_e, cx) => { a.go(cx); cx.notify(); })
         .child(badge(t, a.severity, t[SEV[a.severity]] ?? t.ansi1))
         .when(a.security, (x) => x.child(div().flex_none().text_size(13).text_color(t.ansi1).child("⛨")))
+        .children([certaintyWord(t, a, `rv-att-c-${k}`)].filter(Boolean))
         .child(div().flex_1().min_w(0).truncate().text_size(13).child(a.label))
         .when(a.sent, (x) => x.child(div().flex_none().text_size(11.5).text_color(t[FSTATUS.progress[1]]).child(FSTATUS.progress[0])))
         .when(Boolean(a.at), (x) => x.child(div().flex_none().text_size(11.5).text_color(t.muted).child(a.at)))))
@@ -2906,11 +2917,14 @@ export const ReviewMode = {
       verify: [(_e, cx) => { this.tab = "findings"; cx.notify(); }, "Fixes sent before the last push, not verified on the new head: click for the Findings tab"] };
     const part = (p) => div().id(`rv-vd-${p.key}`).tooltip(go[p.key][1]).text_color(p.tone === "security" ? t.ansi1 : t.foreground)
       .when(Boolean(go[p.key][0]), (e) => e.cursor_pointer().hover((s) => s.underline()).on_click(go[p.key][0])).child(p.key === "security" ? `⛨ ${p.text}` : p.text);
-    const action = verdictAction(rows), state = [`PR ${pr.state ?? "open"}`, ctx?.stacked_on && `stacked on #${ctx.stacked_on.number}`].filter(Boolean).join(" · ");
+    // The stack: the base this PR builds on, and the PRs that build on this one (related.py stacked_above).
+    const action = verdictAction(rows), above = ctx?.stacked_above ?? [];
+    const state = [`PR ${pr.state ?? "open"}`, ctx?.stacked_on && `stacked on #${ctx.stacked_on.number}`, above.length > 0 && `${above.map((p) => `#${p.number}`).join(", ")} ${above.length === 1 ? "builds" : "build"} on this PR`].filter(Boolean).join(" · ");
     // The title with the PR's state; the verdict: the suggested action, then the numbers it rests on (only ⛨ red).
     const head = v_flex().flex_none().gap(6).max_w(1100)
       .child(h_flex().flex_wrap().gap(12).items_baseline().child(div().min_w(0).text_size(22).font_semibold().line_height(1.3).whitespace_normal().child(pr.title ?? `#${pr.number}`))
-        .child(div().id("rv-ov-state").flex_none().text_size(12.5).text_color(t.muted).tooltip(ctx?.stacked_on ? `This PR's base is the branch of #${ctx.stacked_on.number} ${ctx.stacked_on.title ?? ""}, so it merges after it. Click to open it in its own review.` : "The PR's state on GitHub")
+        .child(div().id("rv-ov-state").flex_none().text_size(12.5).text_color(t.muted).tooltip([ctx?.stacked_on ? `This PR's base is the branch of #${ctx.stacked_on.number} ${ctx.stacked_on.title ?? ""}, so it merges after it. Click to open it in its own review.` : "The PR's state on GitHub",
+            ...above.map((p) => `#${p.number} ${p.title ?? ""} builds on this PR: it merges after this one.`)].join("\n"))
           .when(Boolean(ctx?.stacked_on), (e) => e.cursor_pointer().hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => this.openRelated(ctx.stacked_on, cx))).child(state)))
       .when(verdict.length > 0 || Boolean(ai), (e) => e.child(h_flex().id("rv-verdict").flex_wrap().gap(8).items_center().text_size(15).font_semibold().line_height(1.35)
         .child(div().id("rv-vd-action").tooltip("The action this review suggests; Finish your review leaves the choice to you").text_color(action === "Approve" ? t.ansi2 : t.foreground).child(`${action}${verdict.length ? ":" : ""}`))
@@ -4038,7 +4052,7 @@ export const ReviewMode = {
     const all = this.findings(), c = this.counts(), runs = this.find.runs, toVerify = [...this.verifyList(), ...this.branchVerifyList()], notes = this.openSugs(), m = model();
     const by = (...st) => all.filter((x) => st.includes(this.fstatus(x)));
     const unresolved = by("open", "recheck"), sent = by("progress");
-    const name = (k) => REVIEWERS[k]?.[0] ?? k;
+    const name = (k) => REVIEWERS[k]?.[0] ?? k, fun = funnel(all, (f) => this.fstatus(f));
     // Each source with what it found: a number, "no findings" (it ran), "failed" or "not run".
     const ran = { analysis: Boolean(this.ai), ...Object.fromEntries(Object.keys(ALL_REVIEWERS).map((k) => [k, runs[k]?.state === "done"])) };
     const sources = [...new Set(["analysis", ...reviewersNow().map(([k]) => k), ...all.flatMap((x) => x.sources.map((y) => y.reviewer))])].map((k) => {
@@ -4061,14 +4075,18 @@ export const ReviewMode = {
           .child(badge(t, x.severity, col))
           .when(Boolean(x.effort), (e) => e.child(div().id(`rv-fef-${x.id}`).tooltip("How much work the fix is, as the analysis sees it: quick, moderate or heavy").flex_none().pt(1).text_size(12).text_color(t.muted).child(x.effort)))
           .when(Boolean(x.security), (e) => e.child(badge(t, "⛨ Security", t.ansi1).bg(t.ansi1 + "26")))
+          .children([certaintyWord(t, x, `rv-fcert-${x.id}`)].filter(Boolean))
           .child(div().flex_1().min_w(0).font_semibold().text_color(settled ? t.dim : t.foreground).when(!wide, (e) => e.truncate()).when(wide, (e) => e.whitespace_normal()).child(x.title))
           .child(div().flex_none().text_size(12).text_color(t.muted).child(`${x.file.split("/").pop()}:${x.line}${this.findRow(x) < 0 ? " · outside the diff" : ""}`))
-          .child(div().flex_none().text_size(12).font_semibold().text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(FSTATUS[st]?.[0] ?? st)))
+          .when(Boolean(stateWord(st)), (e) => e.child(div().flex_none().text_size(12).font_semibold().text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(stateWord(st)))))
         .when(on, (e) => e
           .child(div().text_size(12).text_color(t.muted).whitespace_normal().child(`Found by ${this.sourcesOf(x)}${owner ? ` · Owner: ${owner}` : ""}`))
           // An analysis finding is part of its layer: name it, a click opens it.
           .when(li >= 0, (e) => e.child(div().id(`rv-fly-${x.id}`).tooltip("Open the layer this finding belongs to").truncate().text_size(12).text_color(t.accent).cursor_pointer()
             .on_click((_e, cx) => { this.goStep(li, cx); cx.notify(); }).child(`${x.category} · layer: ${plain(this.steps()[li]?.title)} →`)))
+          // What it claims, how sure that is and what it needs, as on its card in the diff (views.js factRows).
+          .when(factRows(x).length > 0, (e) => e.child(v_flex().gap(3).children(factRows(x).map(([label, text]) => h_flex().gap(8).items_start().text_size(12.5).line_height(1.5)
+            .child(div().w(96).flex_none().text_color(t.muted).child(label)).child(div().flex_1().min_w(0).whitespace_normal().child(plain(text)))))))
           .child(div().line_height(1.5).child(TextView.markdown(`rv-fd-${x.id}`, x.detail + (x.suggestion ? `\n\n**Suggested:** ${x.suggestion}` : ""))))
           // What the other sources say about the same line, in their own words and with their own severity.
           .children(others.map((y, k) => div().id(`rv-fsrc-${x.id}-${k}`).text_size(12.5).text_color(t.muted).line_height(1.5).whitespace_normal().child(`${name(y.reviewer)} (${y.severity}): ${plain(y.title)}${y.detail ? `. ${plain(y.detail)}` : ""}`)))
@@ -4097,8 +4115,9 @@ export const ReviewMode = {
       : `A fix sent does not resolve a finding. Verify is one ${modelLabel(m)} call: it checks a reported commit on its fix branch, and the PR head once the fix is pushed. Only a passed check on the PR head moves a finding to Fixed.${toVerify.length ? "" : " Nothing to verify yet."}`;
     return v_flex().flex_1().min_h(0)
       .child(v_flex().flex_none().px(14).py(10).gap(8).border_b(1).border_color(t.border)
-        // How this number comes about is its help text: a line of its own would make the head three lines.
-        .child(div().id("rv-fcount").tooltip(`${funnelLine(funnel(all, (f) => this.fstatus(f)), name)} A finding with a fix sent stays unresolved until it is verified.`).text_size(13.5).font_semibold().child(countLine(c)))
+        // How this number comes about: in short under it, as a sentence with every source in its help text.
+        .child(div().id("rv-fcount").tooltip(`${funnelLine(fun, name)} A finding with a fix sent stays unresolved until it is verified.`).text_size(13.5).font_semibold().child(countLine(c)))
+        .when(Boolean(funnelShort(fun)), (e) => e.child(div().id("rv-ffunnel").tooltip(funnelLine(fun, name)).mt(-6).truncate().text_size(12).text_color(t.muted).child(funnelShort(fun))))
         .child(h_flex().flex_wrap().gap(4).children(sources.map((x) => div().id(`rv-fsrcn-${x.k}`).tooltip(x.n ? `Findings ${name(x.k)} is a source of` : runs[x.k]?.state === "failed" ? `${name(x.k)} failed: ${runs[x.k].error ?? "no result"}` : ran[x.k] ? `${name(x.k)} ran and found nothing` : `${name(x.k)} has not run on this PR`)
           .px(8).h(22).flex().items_center().rounded(6).border_1().border_color(t.border).text_size(12).text_color(x.n ? t.foreground : t.muted).child(x.text)))
           .when(efforts, (e) => e.child(div().id("rv-fsort").tooltip(this.fsort ? "Listed with the quickest fixes first; click for the usual order, by severity" : "List the findings with the quickest fixes first")
@@ -4235,16 +4254,16 @@ export const ReviewMode = {
           .child(button(t, "Dismiss finding", t.border, t.muted).id(`rv-fa-x-${f.id}`).tooltip(`Dismiss this finding${f.sources.length > 1 ? ` with all ${f.sources.length} of its sources` : ""}; it stays in the Findings tab under Dismissed`)));
       }
       // One line folded (severity, title, sources, state); open: the head, the fix line, the title and findRows.
-      const open = this.findOpen(f), state = div().id(`rv-lfst-${f.id}`).tooltip("Where this finding stands: unresolved, fix sent, fixed (verified) or dismissed").flex_none().text_size(12).font_semibold().text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(FSTATUS[st]?.[0] ?? st);
+      const open = this.findOpen(f), state = stateWord(st) ? div().id(`rv-lfst-${f.id}`).tooltip("Where this finding stands: fix sent, fixed (verified), dismissed, or unresolved with its line changed since").flex_none().text_size(12).font_semibold().text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(stateWord(st)) : null;
       const head = (e) => e.child(div().w(10).flex_none().text_size(12).text_color(t.muted).child(open ? "▾" : "▸"))
         .child(badge(t, f.severity, c).id(`rv-lfs-${f.id}`).tooltip(`${f.severity} is the highest severity among this finding's sources. The scale:\n${SEVERITY_SCALE}`))
         .when(Boolean(f.security), (x) => x.child(badge(t, "⛨ Security", t.ansi1).bg(t.ansi1 + "26").id(`rv-lfsec-${f.id}`).tooltip("A security finding: the security review found it, or its content is about security")));
       const sources = div().id(`rv-lfr-${f.id}`).tooltip("Where this finding comes from, each source with its own severity").min_w(0).truncate().text_size(12).font_semibold().text_color(t.muted).child(this.sourcesOf(f));
       if (!open) return div().id(`rv-lf-${f.id}`).tooltip("Open this finding: what it claims, its text, its suggestion and its actions").w_full().h(FIND_FOLDED).pl(GUTTER).pr(16).pt(6).pb(2).cursor_pointer()
         .child(head(card(h_flex())).size_full().px(12).gap(8).items_center().border_t(1).border_b(1).text_size(13.5)
-          .child(div().flex_1().min_w(0).truncate().child(f.title)).child(div().flex_none().max_w(300).child(sources)).child(state));
+          .children([certaintyWord(t, f, `rv-lfc-${f.id}`)].filter(Boolean)).child(div().flex_1().min_w(0).truncate().child(f.title)).child(div().flex_none().max_w(300).child(sources)).children([state].filter(Boolean)));
       return div().w_full().h(this.sizeOf(it)).pl(GUTTER).pr(16).pt(6).cursor_pointer().child(card(v_flex()).size_full().px(12).pt(8).gap(4).border_t(1).text_size(13.5).overflow_hidden()
-        .child(head(h_flex().h(18).flex_none().gap(8).items_center()).child(sources).child(state).child(div().flex_1())
+        .child(head(h_flex().h(18).flex_none().gap(8).items_center()).child(sources).children([state].filter(Boolean)).child(div().flex_1())
           .child(div().id(`rv-lfo-${f.id}`).tooltip("Open this finding in the Findings tab").w(FIND_LINK - 12).flex_none().text_right().text_size(12).text_color(t.accent).child("Open in Findings ↗")))
         .when(Boolean(line), (e) => e.child(div().h(17).flex_none().truncate().text_size(12).text_color(t.muted).child(line)))
         .child(div().flex_none().line_height(1.55).whitespace_normal().font_semibold().child(f.title))
@@ -4596,7 +4615,8 @@ export const ReviewMode = {
     const MARK = { true: ["✓", "ansi2", "Passed"], false: ["✗", "foreground", "Failed"], null: ["…", "ansi3", "Not decided yet"], "n/a": ["n/a", "muted", "Does not apply to this PR"] }; // red is the security part's
     const failed = all.some((r) => r.ok === false), open = this.rulesOpen ?? failed, passed = rules.filter((c) => c.ok === true).length, ci = checkGroups(checks).ci;
     const ruleText = `${passed} of ${rules.length} passed${ci.length ? ` · CI ${ci.filter((c) => c.ok === true).length} of ${ci.length}` : ""} ${open ? "▾" : "▸"}`;
-    const related = [...(ctx?.open ?? []).filter((p) => !p.stacked).map((p) => ({ ...p, state: "open" })), ...(ctx?.merged ?? []).map((p) => ({ ...p, state: "merged" }))];
+    // The base is in the title's state; a PR that builds on this one stays here as "on top".
+    const related = [...(ctx?.open ?? []).filter((p) => !p.stacked || p.above).map((p) => ({ ...p, state: p.above ? "on top" : "open" })), ...(ctx?.merged ?? []).map((p) => ({ ...p, state: "merged" }))];
     // A flow picture only when a path in it is broken or doubled: an unresolved finding breaks one of its calls.
     const flow = (ai?.visuals ?? []).find((v) => v.kind === "flow" && this.openFindings().some((f) => f.breaks));
     const surface = ai ? surfaceLine(ai.access, [...(ai.scope?.checked ?? []), ...(this.find.runs?.security?.scope?.checked ?? [])]) : null;
@@ -4622,14 +4642,14 @@ export const ReviewMode = {
         .child(div().w(22).flex_none().font_semibold().text_color(t[MARK[r.ok][1]]).child(MARK[r.ok][0]))
         .child(div().flex_1().min_w(0).truncate().child(r.name))))
         .when(!ctx, (x) => x.child(div().pl(100).text_size(12).text_color(t.muted).child("CI checks and mergeability load in the background…"))))
-      .when(related.length > 0, (e) => e.child(line("rv-ov-related", "Related PRs", div().child(`${related.length} touch the same files ${this.relOpen ? "▾" : "▸"}`), "Other PRs that change the same files: click to show them",
+      .when(related.length > 0, (e) => e.child(line("rv-ov-related", "Related PRs", div().child(`${related.length} touch the same files ${this.relOpen ? "▾" : "▸"}`), "Other PRs that change the same files, and the ones that build on this PR: click to show them",
         (_e, cx) => { this.relOpen = !this.relOpen; cx.notify(); }))
         .when(Boolean(this.relOpen), (x) => x.children(related.map((p) => h_flex().id(`rv-rel-${p.number}`).tooltip("Open this related PR in its own review").gap(8).items_center().pl(100).pr(6).py(2).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
           .on_click((_e, cx) => this.openRelated(p, cx))
-          .child(div().flex_none().text_size(12).text_color(p.state === "open" ? t.ansi2 : t.ansi5).child(p.state))
+          .child(div().flex_none().text_size(12).text_color(p.state === "open" ? t.ansi2 : p.above ? t.accent : t.ansi5).child(p.state))
           .child(div().flex_none().text_size(12.5).text_color(t.muted).child(`#${p.number}`))
           .child(div().flex_1().min_w(0).truncate().text_size(12.5).child(p.title))
-          .child(div().id(`rv-relf-${p.number}`).flex_none().text_size(12).text_color(t.muted).tooltip((p.files ?? []).join("\n") || "-").child(`${p.overlap} ${p.overlap === 1 ? "file" : "files"} overlap`))))));
+          .child(div().id(`rv-relf-${p.number}`).flex_none().text_size(12).text_color(t.muted).tooltip((p.files ?? []).join("\n") || "-").child(p.above ? "it builds on this PR" : `${p.overlap} ${p.overlap === 1 ? "file" : "files"} overlap`))))));
   },
 
   // The bar's "Repo rules 2/2": the rules this PR is checked against (the title's form and the analysis' repo rules)
@@ -4806,3 +4826,12 @@ function tabTip(id, t, tip, label) {
   return HoverCard.new(`${id}-tip`).anchor("top_center").open_delay(700).trigger(label)
     .content(div().max_w(280).px(10).py(6).rounded(6).border_1().border_color(t.border).bg(t.popover).text_size(12.5).text_color(t.foreground).whitespace_normal().child(tip));
 }
+
+// The Findings tab and the diff's finding cards (package F): how sure a security finding is, as one word in a line
+// that is folded (derived, assumed, confirmed; the open card says it in full).
+const CERT_TIP = { confirmed: "Confirmed: something that ran shows it", derived: "Derived: it follows from the code that was read; check it yourself", assumed: "Assumed: it rests on something the reviewer could not check" };
+function certaintyWord(t, f, id) {
+  return f?.security && CERT_TIP[f.certainty] ? div().id(id).tooltip(CERT_TIP[f.certainty]).flex_none().text_size(12).text_color(t.muted).child(f.certainty) : null;
+}
+// A finding's state as a word only when it is not the usual one: unresolved goes without saying.
+const stateWord = (st) => (st === "open" ? null : st === "recheck" ? "line changed" : FSTATUS[st]?.[0] ?? st);
