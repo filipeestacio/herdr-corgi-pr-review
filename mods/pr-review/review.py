@@ -200,7 +200,7 @@ SCHEMA = {"type": "object", "required": ["title", "summary", "behavior", "merge_
                                         "components", "checked", "what_changed", "read"], "properties": {
     "title": S, "summary": S, "behavior": S,
     "what_changed": {"type": "object", "required": ["adds", "changes", "runtime"], "properties": {
-        "adds": {**STRINGS, "maxItems": 3}, "changes": {**STRINGS, "maxItems": 3}, "runtime": {**STRINGS, "maxItems": 3}}},
+        **{k: {"type": "array", "maxItems": 3, "items": {**S, "description": "One thought, at most twelve words."}} for k in ("adds", "changes", "runtime")}}},
     "read": STRINGS,
     "merge_risk": {"type": "object", "required": ["level", "why"], "properties": {"level": {"enum": ["minimal", "low", "medium", "high", "critical"]}, "why": S}},
     "effort": {"type": "object", "required": ["score", "why"], "properties": {"score": {"type": "integer", "minimum": 1, "maximum": 5}, "why": S}},
@@ -209,7 +209,7 @@ SCHEMA = {"type": "object", "required": ["title", "summary", "behavior", "merge_
     "architecture": ARCHITECTURE, "blast_radius": BLAST, "visuals": VISUALS,
     "intent": {"type": "array", "maxItems": 6, "items": STATEMENT}, "behavior_points": {"type": "array", "maxItems": 6, "items": STATEMENT},
     "asks": {"type": "array", "items": {"type": "object", "required": ["id", "text", "short", "acceptance", "state", "why", "hunks"], "properties": {
-        "id": S, "text": S, "short": S, "acceptance": {"type": "boolean"}, "state": {"enum": ASK_STATES}, "why": S, "hunks": STRINGS, "elements": STRINGS}}},
+        "id": S, "text": S, "short": S, "acceptance": {"type": "boolean"}, "state": {"enum": ASK_STATES}, "why": {**S, "description": "One sentence, at most 20 words."}, "hunks": STRINGS, "elements": STRINGS}}},
     "components": {"type": "array", "maxItems": 16, "items": {"type": "object", "required": ["name", "kind", "status", "at", "operate"], "properties": {
         "name": S, "kind": S, "status": {"enum": ["new", "changed"]}, "at": S, "node": S, "operate": STRINGS}}},
     "checked": checked_schema(AREAS_CODE),
@@ -451,8 +451,9 @@ def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None,
             "codebase and unchanged; evidence where known), spec (only described in the PR description, the linked ticket, "
             "ADRs or spec docs, and NOT found in the diff: planned or missing). Never present a spec-only item as implemented: "
             "when you can't point at the diff, use spec.\n\ntitle/summary: the PR in one line and "
-            "in 2-3 sentences. what_changed: the change as three short lists, each at most three short sentences, empty when "
-            "none: adds (what is new: a module, an endpoint, a queue), changes (what existing code now does differently), runtime "
+            "in 2-3 sentences. what_changed: the change as three short lists of at most three entries each, empty when none; "
+            "each entry is one thought in at most twelve words, no list inside it, e.g. \"`consumer.py`: a Lambda that mails from the "
+            "queue\": adds (what is new: a module, an endpoint, a queue), changes (what existing code now does differently), runtime "
             "(what changes when it runs: a new call between services, a new permission, a new schedule). read: the paths of the "
             "files outside the diff that you read to check the change. behavior: 2-3 sentences on how the application's behavior changes, also for users (no code). "
             "intent and behavior_points: the PR's intent and its behavior change as single statements (at most 6 each), each "
@@ -492,7 +493,7 @@ def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None,
                  "acceptance (true: the task lists it as an acceptance criterion or in a checklist of requirements; false: you "
                  "derived it from the prose), state (met: the diff does it and no finding breaks it; partly: the diff does some "
                  "of it, or it holds only in some cases; broken: the code for it is in the diff and breaks the rule; not_done: "
-                 "nothing in the diff does it), why (one sentence: the reason for the state, naming the code), hunks, elements "
+                 "nothing in the diff does it), why (one sentence of at most 20 words: the reason for the state, naming the code), hunks, elements "
                  "(ids of the architecture or visual nodes with source spec that this requirement describes, if any). Plus one "
                  "entry with state extra for each change the task doesn't ask for (text: what, why: what it adds, hunks: where, "
                  "acceptance false). Every finding that breaks a requirement names it in criteria, and every requirement with "
