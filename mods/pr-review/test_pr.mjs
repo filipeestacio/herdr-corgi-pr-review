@@ -478,8 +478,8 @@ console.log("ok");
   assert.equal(taskHead(taskList([], [], [], statusOf)), "");
   const counts = { unresolved: 4, high: 2, medium: 2, low: 0, security: 1 };
   // Counted by what decides: security, criteria, blockers; not the high findings. Only security has a colour of its own.
-  assert.deepEqual(verdictParts(list, counts).map((p) => [p.text, p.short, p.tone]), [["1 security finding (high)", "⛨ 1 high", "security"], ["0 of 2 acceptance criteria met", "0/2 criteria", "plain"]]);
-  assert.deepEqual(verdictParts(taskList(asks, [f("a", "high", { security: true }), f("b", "low", { security: true })], [], statusOf), { unresolved: 2, high: 1, low: 1, security: 2 })[0].text, "2 security findings, 1 high");
+  assert.deepEqual(verdictParts(list, counts).map((p) => [p.text, p.short, p.tone]), [["1 security cause, high (reach assumed)", "⛨ 1 high", "security"], ["0 of 2 acceptance criteria met", "0/2 criteria", "plain"]]);
+  assert.deepEqual(verdictParts(taskList(asks, [f("a", "high", { security: true }), f("b", "low", { security: true })], [], statusOf), { unresolved: 2, high: 1, low: 1, security: 2 })[0].text, "2 security causes, 1 high");
   assert.deepEqual(verdictParts(taskList([asks[2]], [], [], statusOf), { unresolved: 0, security: 0 }).map((p) => [p.text, p.tone]), [["1 of 1 criteria met", "ok"]]);
   assert.deepEqual(verdictParts(taskList([asks[3]], [f("a", "medium")], [], statusOf), { unresolved: 1, medium: 1, security: 0 }).map((p) => [p.text, p.tone]), [["1 unresolved finding", "plain"]], "no task, no security: the findings");
   assert.equal(verdictParts(taskList(asks, [f("a", "high", { security: true }), f("b", "low", { security: true }), f("c", "low", { security: true })], [], statusOf), {})[0].short, "⛨ 1 high");
@@ -511,13 +511,33 @@ console.log("ok");
   assert.equal(costLine([["Analysis", undefined]]), "");
   // The copied state with the behavior first, a fix's agent and branch, and the cost.
   const handover = reviewState({ pr: { repo: "o/r", number: 2, title: "feat: x" }, list, counts, findings: all, statusOf, behavior: "Members get\n two mails.", fixOf: (x) => (x.id === "f3" ? "a sub-agent, fix/2-f3" : ""), cost: "$0.53 (Analysis $0.22, Security review $0.31)" });
-  assert.match(handover, /\n\nWhat it does: Members get two mails\.\n\n1 security finding/);
+  assert.match(handover, /\n\nWhat it does: Members get two mails\.\n\n1 security cause/);
   assert.match(handover, /\nFix sent \(1\):\n- medium: T f3 \(a\.py:3\)\. Fix: a sub-agent, fix\/2-f3\n/);
   assert.match(handover, /\nAI runs on this PR: \$0\.53 \(Analysis \$0\.22, Security review \$0\.31\)\.\n/);
+  // Before the merge: security first, then the findings that break a criterion (most severe first), a criterion not met
+  // without a finding, then the other blockers; a finding from before the PR or settled is not in it.
+  const { beforeMerge, verdictAction, notChecked, surfaceLine, realRules } = await import("./pr.js");
+  const blockers = [{ kind: "finding", finding: "f1" }, { kind: "finding", finding: "old" }, { kind: "rule", title: "Rule not met: r" }, { kind: "verify", title: "1 fix is not verified" }];
+  const withOld = [...all, f("old", "high", { introduced_here: false })];
+  const bm = beforeMerge({ list: taskList([...asks, { id: "c4", text: "four", short: "Four", state: "not_done", acceptance: true, findings: [] }], withOld, [], statusOf), findings: withOld, blockers, statusOf });
+  assert.deepEqual(bm.map((r) => [r.kind, r.finding?.id ?? r.title, r.asks.map((a) => a.id)]), [["security", "s1", []], ["criterion", "f1", ["c1"]], ["criterion", "f2", ["c2"]], ["ask", "Four", ["c4"]], ["rule", "Rule not met: r", []], ["verify", "1 fix is not verified", []]]);
+  assert.equal(verdictAction(bm), "Request changes");
+  assert.equal(verdictAction(bm.filter((r) => r.kind === "verify")), "Approve after verifying the fixes");
+  assert.equal(verdictAction([{ kind: "overlap" }]), "Approve");
+  assert.equal(verdictAction([]), "Approve");
+  // Not checked: an area one run checked is not counted; assumptions; how far the security review got.
+  const nc = notChecked({ ai: { scope: { checked: [{ area: "secrets", result: "not_checked" }, { area: "personal_data", result: "not_checked" }] } }, runs: { security: { state: "done", count: 0, scope: { checked: [{ area: "secrets", result: "clean" }] } } }, open: all });
+  assert.deepEqual([nc.areas, nc.assumptions.map((x) => x.id), nc.security], [["personal data"], ["s1"], "no findings"]);
+  assert.equal(nc.text, "1 area not checked · 1 assumption · security review: no findings");
+  assert.equal(notChecked({}).text, "0 areas not checked · 0 assumptions · security review: not run");
+  // The attack surface in one line; the criteria are not repo rules.
+  assert.equal(surfaceLine([{ kind: "route", public: true, opened_by_pr: true }, { kind: "queue", used: false }, { kind: "queue", used: true }], [{ area: "secrets", result: "not_checked" }]), "1 way in, 1 public, 1 opened here · 2 rights, 1 unused · secrets: not checked");
+  assert.equal(surfaceLine([], []), null);
+  assert.deepEqual(realRules([{ rule: "a", source: "PR acceptance criteria" }, { rule: "b", source: "CLAUDE.md" }]).map((r) => r.rule), ["b"]);
   // The copied state: a security finding with its title only (no file, no line, no facts), the others with their place.
   const text = reviewState({ pr: { repo: "o/r", number: 2, title: "feat: x", url: "https://example.test/pull/2" }, head: "abcdef1234", list, counts, findings: all, statusOf, progress: "1 of 9 files viewed" });
   assert.match(text, /^Review state of o\/r#2: feat: x\nhttps:\/\/example\.test\/pull\/2 at abcdef1\n/);
-  assert.match(text, /\n1 security finding \(high\) · 0 of 2 acceptance criteria met\n/);
+  assert.match(text, /\n1 security cause, high \(reach assumed\) · 0 of 2 acceptance criteria met\n/);
   assert.match(text, /\n- broken: one \(acceptance criterion\). w1\n- partly: two \(acceptance criterion\). w2\n- met: three\n- extra: more\n/);
   assert.match(text, /\nUnresolved \(3\):\n- high, security: T s1\n- high: T f1 \(a\.py:3\)\n- medium: T f2 \(a\.py:3\)\n/);
   assert.match(text, /\nFix sent \(1\):\n- medium: T f3 \(a\.py:3\)\n/);
