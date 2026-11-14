@@ -67,7 +67,11 @@ async function tour(v, name) {
   }
   if (line) { act(v, `comment:${line}`, at("composer open")); act(v, "draft:Why this?", at("composer with text")); act(v, "add", at("a pending comment")); assert.ok(v.comments.length > 0, at("the comment was added")); act(v, "comments", at("Comments with a pending comment")); act(v, "files", at("files again")); }
   // The pages, with their folds and rows clicked.
-  for (const p of ["overview", "blast", "arch"]) act(v, `page:${p}`, at(`page ${p}`));
+  for (const p of ["overview", "blast", "arch", "res"]) act(v, `page:${p}`, at(`page ${p}`));
+  // Resilience: every path opened (its picture and probe), all paths, the clean checks, a probe's script, and none open.
+  v.command("page:res", cx);
+  for (const p of v.resNow()?.paths ?? []) act(v, `res-path:${p.id}`, at(`Resilience, path ${p.id}`));
+  for (const c of ["res-more", "res-clean", "res-probe-open:pr1", "res-path:"]) act(v, c, at(`Resilience, ${c}`));
   v.command("page:overview", cx); v.rulesOpen = true; draw(v, at("Overview, rules open"));
   for (const a of [...(v.ai?.asks ?? []).map((x) => x.id), "other"]) act(v, `criterion:${a}`, at(`Overview, criterion ${a}`));
   v.command("page:blast", cx);
@@ -141,6 +145,15 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   v.aiError = "The model gave no answer";
   await tour(v, "PR #2 after every run failed");
   v.ai = null; await tour(v, "PR #2, the analysis failed and none is shown");
+}
+// The Resilience run's block: read, on another head (stale), running, failed, and on someone else's PR (a probe asks first).
+{
+  const res = JSON.parse(fx("resilience.json")), doc = JSON.parse(fx("findings-s.json"));
+  await tour(await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify({ ...doc, resilience: res }) }), "PR #2 with its resilience paths");
+  await tour(await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify({ ...doc, resilience: { ...res, head: "0000000aaaa" } }) }), "PR #2, resilience of an older head");
+  await tour(await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify({ ...doc, resilience: { ...res, paths: res.paths.map((p) => ({ ...p, blocker: null, result: "mitigated", limited_by: "template.yaml:11" })) } }) }), "PR #2, every path limited");
+  for (const state of ["running", "failed"]) await tour(await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify({ ...doc, runs: { ...doc.runs, resilience: { state, busy: state === "running", error: "Stopped", at: new Date().toISOString() } } }) }), `PR #2, resilience ${state}`);
+  await tour(await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify({ ...doc, resilience: res }), trusted: false }), "someone else's PR with resilience paths");
 }
 // Someone else's PR with reasons for a security review: the offers instead of a start.
 {

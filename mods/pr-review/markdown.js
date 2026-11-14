@@ -374,3 +374,31 @@ export function verifyContextMd(findings, { pr, head, ai = null, statusOf = () =
     unknown.length > 0 && ["## Not known from this PR", "", ...unknown, ""],
     steps.length > 0 && steps.map((s) => [`## Pictures of the layer "${flat(s.title)}"`, "", ...s.visuals.map((v) => visualMd(v))]));
 }
+
+// ---- the Resilience page: its paths (blockers first) with their ladder as text, budget, race as a Mermaid sequence,
+// the action and the probe; then other checks, not checkable and what to watch after the merge.
+const actorId = (k) => `A${k}`;
+export function resilienceMd({ pr, head, res = null, names = new Map() }) {
+  if (!res) return doc(prLine({ pr, head }), "", "# Resilience", "", "The resilience review has not run on this PR.");
+  const name = (s) => (/^e\d+$/.test(s) ? null : names.get(s) ?? s);
+  const order = [...(res.paths ?? [])].sort((a, b) => Number(Boolean(b.blocker)) - Number(Boolean(a.blocker)));
+  const probe = (p) => (res.probes ?? []).find((x) => x.id === p.probe || x.of === p.id);
+  const path = (p, k) => {
+    const pr2 = probe(p), way = [...new Set((p.steps ?? []).map(name).filter(Boolean))].join(" → ");
+    const race = p.race?.steps?.length ? ["", "```mermaid", "sequenceDiagram", ...(p.race.actors ?? []).map((a, j) => `  participant ${actorId(j)} as ${quoted(a)}`),
+      ...p.race.steps.slice(0, 6).map(([who, text], j) => `  Note over ${actorId(Math.max(0, (p.race.actors ?? []).indexOf(who)))}: ${ent(`${j === p.race.breaks_at ? "breaks here: " : ""}${text}`, /[#"<>|:;`]/g)}`), "```"] : [];
+    return [`## ${k + 1}. ${flat(p.trigger)}: ${flat(p.end)}`, "",
+      `- Verdict: ${p.blocker ? `Blocker: ${flat(p.blocker.reason)}` : p.result === "mitigated" ? `limited${p.limited_by ? ` at ${p.limited_by}` : ""}` : String(p.result ?? "").replace(/_/g, " ")}`,
+      way && `- Way: ${way}`, p.failing?.length && `- Failing: ${p.failing.join(", ")}`, `- Seen: ${p.visible ? flat(p.seen || "yes") : "no, silent"}`,
+      ...(p.ladder ?? []).map((r) => `- ${flat(r.name)}: ${flat(r.factor)}${r.at ? ` (${r.at})` : ""}${r.note ? `, ${flat(r.note)}` : ""}`),
+      p.product && `- Together: ${flat(p.product)}`,
+      p.budget && `- Budget: worst case ${p.budget.value_s} s against ${p.budget.limit_s} s${p.budget.at ? ` (${p.budget.at})` : ""}${p.budget.note ? `: ${flat(p.budget.note)}` : ""}`,
+      p.action && `- Action: ${flat(p.action)}`,
+      pr2 && `- Probe: ${pr2.status === "done" ? `${String(pr2.result).replace(/_/g, " ")}${pr2.number ? `, ${flat(pr2.number)}` : ""}${pr2.head ? ` at ${String(pr2.head).slice(0, 7)}` : ""}` : "not run yet"}`,
+      p.note && `- Note: ${flat(p.note)}`, ...race, ""];
+  };
+  const checks = (res.checks ?? []).map((c) => `- ${c.check}: ${String(c.result).replace(/_/g, " ")}${c.why ? `, ${flat(c.why)}` : ""}${c.at ? ` (${c.at})` : ""}`);
+  return doc(prLine({ pr, head }), "", "# Resilience", "", flat(res.summary ?? ""), res.head ? `Analysis of ${String(res.head).slice(0, 7)}.` : "", "", ...order.map(path),
+    checks.length ? ["## Other checks", "", ...checks, ""] : [], (res.not_checked ?? []).length ? ["## Not checkable", "", ...res.not_checked.map((x) => `- ${flat(x)}`), ""] : [],
+    (res.watch ?? []).length ? ["## After merge, watch", "", ...res.watch.map((x) => `- ${flat(x)}`)] : []);
+}

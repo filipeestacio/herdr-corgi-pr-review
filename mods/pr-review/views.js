@@ -871,3 +871,33 @@ export function mdBlocks(md) {
   flush();
   return out;
 }
+
+// ---- the Resilience page (CONCEPT-RESILIENCE.md): pure helpers for the view
+// Before the run: where it would start, counted from the picture and the ways in without a model ("This PR adds 1
+// queue, 2 Lambdas and 1 public route."). nodes: the cards to mark with ○. ponytail: a rough count by type and frame
+// words until the data's own count (ai.resilienceStart) is there.
+export function resStartOf(arch, access = []) {
+  const nodes = arch?.nodes ?? [], groups = arch?.groups ?? [], isNew = (x) => x.status === "new" || x.status === "added";
+  const queues = nodes.filter((n) => /queue|sqs|topic|stream|bus/i.test(`${n.type ?? ""} ${n.label ?? ""}`));
+  const fns = groups.filter((g) => /lambda|function|service|container|worker|job/i.test(`${g.kind ?? ""} ${g.label ?? ""}`));
+  const routes = (access ?? []).filter((x) => x.public), many = (k, one, more) => `${k} ${k === 1 ? one : more}`;
+  const parts = [queues.length && many(queues.length, "queue", "queues"), fns.length && many(fns.length, "function", "functions"), routes.length && many(routes.length, "public way in", "public ways in")].filter(Boolean);
+  const verb = [...queues, ...nodes.filter((n) => fns.some((g) => g.id === n.group))].some(isNew) ? "adds or changes" : "touches";
+  const text = parts.length ? `This PR ${verb} ${parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}` : parts[0]}: the run starts there.` : "The picture names no queue, function or public way in: the run reads the diff itself.";
+  return { text, nodes: [...new Set([...queues.map((n) => n.id), ...routes.map((x) => x.node).filter(Boolean), ...nodes.filter((n) => fns.some((g) => g.id === n.group) && (n.type === "function" || /handler|consumer/i.test(n.label ?? ""))).map((n) => n.id)])] };
+}
+// The paths in the order of the page: blockers first, then findings, not assessed, limited ones; the order otherwise kept.
+const RES_RANK = (p) => (p.blocker ? 0 : p.result === "finding" ? 1 : p.result === "not_assessed" ? 2 : 3);
+export const resOrder = (paths) => [...(paths ?? [])].sort((a, b) => RES_RANK(a) - RES_RANK(b));
+// The one picture of an opened path, by what it has: a ladder (retries), a budget (a timeout), a race's timeline, or
+// the writers of a shared state (two writers or more); null: none.
+export function resPicture(p) {
+  const has = { ladder: p?.ladder?.length > 0, budget: Boolean(p?.budget), race: (p?.race?.steps ?? []).length > 0, writers: (p?.writers ?? []).filter((w) => w.kind === "W").length >= 2 };
+  const pick = { retry: "ladder", timeout: "budget", race: "race", state: "writers" }[p?.kind];
+  return pick && has[pick] ? pick : ["ladder", "budget", "race", "writers"].find((k) => has[k]) ?? null;
+}
+// A budget as a bullet bar in px: the value's bar, the limit's line, the part over it. width: the bar's room.
+export function budgetBar({ value_s, limit_s }, width = 320) {
+  const max = Math.max(value_s, limit_s) * 1.1 || 1, px = (s) => Math.round((s / max) * width);
+  return { value: px(value_s), limit: px(limit_s), over: Math.max(0, px(value_s) - px(limit_s)), overS: Math.max(0, value_s - limit_s) };
+}

@@ -649,3 +649,18 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   const m2 = mapArch(own, [{ public: true, node: "fd" }]);
   assert.deepEqual([m2.nodes.find((n) => n.id === "m").zone, m2.nodes.some((n) => n.id === "\0in")], ["z1", false]);
 }
+
+// ---- the Resilience page's helpers
+{
+  const { resStartOf, resOrder, resPicture, budgetBar } = await import("./views.js");
+  const arch = { groups: [{ id: "g_fd", label: "Front desk Lambda" }, { id: "g_rc", label: "Reminder consumer Lambda" }, { id: "g_aws", label: "AWS" }],
+    nodes: [{ id: "handler", group: "g_fd", type: "component", label: "handler" }, { id: "queue", group: "g_aws", type: "data", label: "LoanEvents (SQS)", status: "new" }, { id: "consumer", group: "g_rc", label: "consumer (consumer.py)" }] };
+  const s = resStartOf(arch, [{ public: true, node: "handler" }]);
+  assert.equal(s.text, "This PR adds or changes 1 queue, 2 functions and 1 public way in: the run starts there.");
+  assert.deepEqual(s.nodes.sort(), ["consumer", "handler", "queue"]);
+  assert.match(resStartOf({ nodes: [] }).text, /names no queue/);
+  assert.deepEqual(resOrder([{ id: "a", result: "mitigated" }, { id: "b", result: "finding" }, { id: "c", result: "finding", blocker: { reason: "x" } }, { id: "d", result: "not_assessed" }]).map((p) => p.id), ["c", "b", "d", "a"]);
+  assert.equal(resPicture({ kind: "retry", ladder: [{}], budget: {} }), "ladder"); assert.equal(resPicture({ kind: "timeout", budget: { value_s: 1, limit_s: 2 } }), "budget");
+  assert.equal(resPicture({ kind: "state", writers: [{ kind: "W" }] }), null, "one writer: no matrix"); assert.equal(resPicture({ kind: "other", race: { steps: [[1]] } }), "race");
+  assert.deepEqual(budgetBar({ value_s: 70, limit_s: 10 }, 308), { value: 280, limit: 40, over: 240, overS: 60 });
+}
