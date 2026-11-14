@@ -185,6 +185,10 @@ assert.deepEqual(riskSignal({ analysis: layers, findings: reviewers }), { top: "
 assert.deepEqual(riskSignal({ analysis: layers, findings: reviewers, status: { r1: { s: "fixed" }, a2: { s: "progress" } } }), { top: "high", open: 4, security: true });
 assert.deepEqual(riskSignal({ analysis: layers, findings: reviewers, status: { r1: { s: "dismissed" }, a2: { s: "fixed" } } }), { top: "medium", open: 3, security: false });
 assert.deepEqual(riskSignal({ analysis: { steps: [] }, findings: [] }), { top: null, open: 0, security: false });
+// ⛨ as in the review (pr.js isSecurity): by the finding's effect when it has one, not by who found it.
+assert.equal(riskSignal({ findings: [{ id: "s", reviewer: "security", severity: "high", impact: "edge_case", category: "bug" }] }).security, false, "the security reviewer's bug is no security finding");
+assert.equal(riskSignal({ findings: [{ id: "c", reviewer: "claude", severity: "high", impact: "unauthorized_access", category: "bug" }] }).security, true, "access without permission is, whoever found it");
+assert.equal(riskSignal({ findings: [{ id: "d", reviewer: "claude", severity: "high", impact: "data_loss", category: "data" }] }).security, false, "data loss only with the category security");
 // An analysis cached before layers had findings still loads.
 assert.deepEqual(riskSignal({ analysis: {} }), { top: null, open: 0, security: false });
 

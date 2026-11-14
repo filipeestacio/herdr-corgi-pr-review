@@ -1,6 +1,7 @@
 // Pure helpers for the panel's state (main.js) and a layer's flow picture (stack.js visualCard). No gpui imports, so
 // node tests them (test_views.mjs).
 import { transitionText } from "./arch.js";
+import { isSecurity } from "./pr.js";
 
 // The panel is either picking a PR (none chosen yet, or PRs ▾ open) or showing the chosen one (its diff or walkthrough).
 // chosen: a PR, or the current branch picked from the list.
@@ -36,7 +37,7 @@ export function riskSignal({ analysis = null, findings = null, status = null } =
   if (!analysis && !findings) return null;
   const open = [...(findings ?? []), ...(analysis?.steps ?? []).flatMap((s) => s.findings ?? [])].filter((f) => !["fixed", "dismissed"].includes(status?.[f.id]?.s));
   return { top: SEVERITIES.find((s) => open.some((f) => f.severity === s)) ?? null, open: open.length,
-    security: open.some((f) => f.reviewer === "security" || f.category === "security") };
+    security: open.some(isSecurity) }; // as the review's ⛨ (pr.js isSecurity): what it does, not who found it
 }
 
 // "0/6 layers · 2/9 files · 1 comment · 11 open findings" for a review in progress (open-reviews.json `progress`,

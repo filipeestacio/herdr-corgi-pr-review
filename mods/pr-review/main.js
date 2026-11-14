@@ -17,7 +17,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, Editor, EditorState, TextView } from "gpui-base";
 import { spaces, panes, focused, agents, exec, hc, run, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, home, layout, props, watchFolder, nextCommand } from "herdr";
-import { diffRows, buildPrompt, splitPatch, selection, nextChange, lineLabel, anchorRow, buildReview, hunksOf, hash, uiLine, reviewRequest, mapReview, triageOf } from "./pr.js";
+import { diffRows, buildPrompt, splitPatch, selection, nextChange, lineLabel, anchorRow, buildReview, hunksOf, hash, uiLine, reviewRequest, mapReview, triageOf, isSecurity } from "./pr.js";
 import { parsePrRef, ghTarget, pruneSources, codeModel } from "./pr.js";
 import * as C from "./context.js";
 import { loadDiff, saveDiff } from "./diffcache.js";
@@ -759,7 +759,7 @@ export default class PrReview extends View {
         // The diff's size from its cache (in parts, diffcache.js); a missing one leaves the effort to the analysis.
         const [ctx, diff] = await Promise.all([pr.headSha ? read(`${cacheDir()}/ctx-${h}-${pr.headSha}.json`) : null, loadDiff(`${cacheDir()}/diff-${h}-${head}`, pr.url, head, readTextFile)]);
         const files = diff ? splitPatch(diff) : null;
-        const security = (fd?.findings ?? []).filter((f) => f.reviewer === "security" && !["fixed", "dismissed"].includes(fd.status?.[f.id]?.s));
+        const security = (fd?.findings ?? []).filter((f) => isSecurity(f) && !["fixed", "dismissed"].includes(fd.status?.[f.id]?.s)); // as the review's ⛨
         out.set(pr.url, triageOf({ pr, analysis, size: files && { files: files.length, lines: files.reduce((n, f) => n + f.add + f.del, 0) },
           security, related: ctx, llm: llm[pr.url] ?? null }));
       }).map((one) => one.catch(() => null))); // a broken cache file costs that row its chips, not the whole list
