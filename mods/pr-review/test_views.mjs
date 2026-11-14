@@ -686,3 +686,11 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.equal(resSentence({ trigger: "x", end: "SQS never sees it" }), "x: SQS never sees it");
   assert.equal(resSentence({ trigger: "x", end: "Lambda times out" }), "x: Lambda times out", "a name keeps its capital");
 }
+
+// ---- a path's marks on the map's cards
+{
+  const { resMarksOn } = await import("./views.js");
+  const arch = { nodes: [{ id: "q", at: "template.yaml:11" }, { id: "c", at: "library/consumer.py:11" }], edges: [{ from: "q", to: "c" }] };
+  const m = resMarksOn([{ at: "e0", mark: "no DLQ" }, { at: "e0", mark: "⏱ 10 s" }, { at: "library/consumer.py:19", mark: "✕ silent" }, { at: "x.py:1", mark: "×3" }, { node: "q", text: "batch 10" }], arch);
+  assert.deepEqual([...m], [["c", "no DLQ · ⏱ 10 s · ✕ silent"], ["q", "batch 10"]]);
+}

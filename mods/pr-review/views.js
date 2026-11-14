@@ -926,3 +926,13 @@ export function resCardOf(step, arch) {
 // "Trigger: end" as one sentence: the end's first letter small unless it starts a name or a code word.
 // ponytail: only the usual first words of a sentence; a name (Lambda, Mailer) keeps its capital.
 export const resSentence = (p) => `${p.trigger}: ${/^(The|A|An|One|Every|Each|Both|No|Nothing|It|Its|Batch|Mail|Mails)\b/.test(p.end ?? "") ? p.end[0].toLowerCase() + p.end.slice(1) : p.end ?? ""}`;
+// A path's marks per card of the map: R-D's {at (node, "e<k>" or file:line), mark} or this view's {node, text}; a call's
+// mark on the card it calls, a place's on the card of its file; several on one card joined. Map(node id -> text).
+export function resMarksOn(marks, arch) {
+  const out = new Map();
+  for (const m of marks ?? []) {
+    const e = /^e(\d+)$/.exec(String(m.at ?? "")), id = m.node ?? (e ? arch?.edges?.[Number(e[1])]?.to : resCardOf(m.at, arch)), text = m.text ?? m.mark;
+    if (id && text) out.set(id, out.has(id) ? `${out.get(id)} · ${text}` : text);
+  }
+  return out;
+}

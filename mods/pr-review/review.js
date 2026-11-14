@@ -37,7 +37,7 @@ import { plainText } from "./pr.js";
 import { pollDue, pollAfter, windowActive } from "./pr.js"; // background fetches (ghTick)
 import { hasSources, archLayout, archBands } from "./arch.js";
 import { archMarks, transitionText } from "./arch.js";
-import { resStartOf, resOrder, resPicture, budgetBar, resPathView, resCardOf, resSentence } from "./views.js";
+import { resStartOf, resOrder, resPicture, budgetBar, resPathView, resCardOf, resSentence, resMarksOn } from "./views.js";
 import { withResilience, resilienceStart, RUN_TYPICAL } from "./pr.js"; // the Resilience run's data // the Resilience page
 import { transitionMarks, effectiveFrom, inProcess, mapArch, crossingsOf, crossingChanged, secSentence, TRUST_ORDER } from "./views.js";
 import { trustLegend, hasTrust } from "./stack.js";
@@ -4088,7 +4088,7 @@ export const ReviewMode = {
   resMap(t, a, p, start) {
     const L = this.archL(), on = new Set(p ? (p.steps ?? []).map((s) => resCardOf(s, a)).filter(Boolean) : start); // places light the card of their file
     const fs = p ? this.openFindings().filter((f) => (p.findings ?? []).some((id) => (f.ids ?? [f.id]).includes(id))) : [];
-    const marks = archMarks(a, fs, this.ai?.access, this.ai?.threats ?? []), byNode = new Map((p?.marks ?? []).map((m) => [m.node, m.text]));
+    const marks = archMarks(a, fs, this.ai?.access, this.ai?.threats ?? []), byNode = resMarksOn(p?.marks, a); // R-D marksOf: a call's mark on the card it calls
     const opts = { ...this.archOpts("res"), marks, keep: on.size ? on : null, zoom: settings().zoom || 1 };
     // A path chosen anew: the picture scrolls to its first card (one row; Wrap shows it all anyway).
     const key = p?.id ?? "start";
