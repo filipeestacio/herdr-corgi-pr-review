@@ -258,7 +258,7 @@ export function renderMini() {
       .tooltip("Close the minimized review").accessibility_label("Close minimized review").on_click(() => setShared("review.minimized", null)).child("✕"));
 }
 
-const pill = (id, t, label, click, on = false, color) => div().id(id).px(9).h(26).flex().items_center().rounded(6).border_1()
+const pill = (id, t, label, click, on = false, color) => div().id(id).flex_none().whitespace_nowrap().px(9).h(26).flex().items_center().rounded(6).border_1()
   .border_color(on ? t.accent : t.border).text_size(12.5).text_color(color ?? (on ? t.foreground : t.muted)).cursor_pointer()
   .hover((s) => s.text_color(t.foreground)).on_mouse_down("left", stop).on_click(click).child(label);
 const badge = (t, label, color) => div().flex_none().px(6).py(1).rounded(5).border_1().border_color(color).text_size(11.5).font_semibold().text_color(color).child(label);
@@ -2478,12 +2478,12 @@ export const ReviewMode = {
       .child(div().flex_1().min_h(0).relative()
         .child(v_flex().id("rv-comments-left").absolute().inset_0().overflow_y_scroll().p(8).gap(2)
           .when(!rows.length, (e) => e.child(div().p(6).text_size(12.5).text_color(t.muted).whitespace_normal().child(all.length ? "The Show switch in the bar hides these comments." : "Comments you write, send or post show here, with their replies.")))
-          .children(files.flatMap((file) => [div().pt(8).pb(2).px(6).text_size(11.5).font_semibold().text_color(t.muted).truncate().child(file),
+          .children(files.flatMap((file) => [div().flex_none().pt(8).pb(2).px(6).text_size(11.5).font_semibold().text_color(t.muted).truncate().child(file),
             ...rows.filter((r) => r.file === file).flatMap((r) => {
               const st = STATE[r.state], mine = r.kind === "pending" || r.kind === "thread";
               // A row is one line; the one clicked last shows its whole text under it, as Markdown.
               const whole = this.crow === r.id ? [div().id(`rv-crw-${r.id}`).ml(68).mr(6).mb(6).px(10).py(6).rounded(6).bg(t.surface).text_size(13).line_height(1.5).child(TextView.markdown(`rv-crwm-${r.id}`, String(r.text ?? "")))] : [];
-              return [h_flex().id(`rv-cr-${r.id}`).tooltip("Jump to this comment in the diff").gap(8).items_center().px(6).h(30).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
+              return [h_flex().id(`rv-cr-${r.id}`).tooltip("Jump to this comment in the diff").flex_none().gap(8).items_center().px(6).h(30).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
                 .on_click((_e, cx) => { this.crow = r.id; if (r.kind === "thread") this.openThreads.add(r.id); if (r.kind === "note") (this.openNotes ??= new Set()).add(r.id); this.jumpTo(`${r.file}:${r.line}`, cx); })
                 .child(div().id(`rv-crb-${r.id}`).tooltip((mine ? "Select to fix this comment with an agent" : "Only your own comments can be selected")).accessibility_label("Select comment").w(14).h(14).flex_none().rounded(3).border_1().border_color(sel.has(r.id) ? t.accent : mine ? t.input : "#00000000").bg(sel.has(r.id) ? t.accent : "#00000000")
                   .flex().items_center().justify_center().text_size(10).text_color(t.accent_foreground).child(sel.has(r.id) ? "✓" : "")
@@ -3968,12 +3968,13 @@ export const ReviewMode = {
       const steps = on ? findingSteps(x, this.find.status[x.id], { report: this.find.reports[x.id], facts: this.fixFacts(x) }) : [];
       const next = steps.find((s) => s.next), shown = steps.find((s) => this.fstep?.id === x.id && s.key === this.fstep.key && s.details.length);
       return v_flex().id(`rv-fc-${x.id}`).flex_none().px(8).py(on ? 8 : 4).gap(6).rounded(7).border_l(3).border_color(on ? t.accent : col).when(on, (e) => e.bg(t.surface)).text_size(13.5)
-        .child(h_flex().id(`rv-ft-${x.id}`).tooltip("Open this finding and show its line in the diff").gap(8).items_start().cursor_pointer().hover((h) => h.text_color(t.foreground))
+        // A narrow column wraps the row: the place and the state go under the title instead of squeezing it to nothing.
+        .child(h_flex().id(`rv-ft-${x.id}`).tooltip("Open this finding and show its line in the diff").flex_wrap().gap(8).items_start().cursor_pointer().hover((h) => h.text_color(t.foreground))
           .on_click((_e, cx) => { this.ffocus = on ? null : x.id; if (!on) this.jumpTo(`${x.file}:${x.line}`, cx); cx.notify(); })
           .child(badge(t, x.severity, col))
           .when(Boolean(x.effort), (e) => e.child(div().id(`rv-fef-${x.id}`).tooltip("How much work the fix is, as the analysis sees it: quick, moderate or heavy").flex_none().pt(1).text_size(12).text_color(t.muted).child(x.effort)))
           .when(Boolean(x.security), (e) => e.child(badge(t, "⛨ Security", t.ansi1).bg(t.ansi1 + "26")))
-          .child(div().flex_1().min_w(0).font_semibold().text_color(settled ? t.dim : t.foreground).when(!wide, (e) => e.truncate()).when(wide, (e) => e.whitespace_normal()).child(x.title))
+          .child(div().flex_1().min_w(120).font_semibold().text_color(settled ? t.dim : t.foreground).when(!wide, (e) => e.truncate()).when(wide, (e) => e.whitespace_normal()).child(x.title))
           .child(div().flex_none().text_size(12).text_color(t.muted).child(`${x.file.split("/").pop()}:${x.line}${this.findRow(x) < 0 ? " · outside the diff" : ""}`))
           .child(div().flex_none().text_size(12).font_semibold().text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(FSTATUS[st]?.[0] ?? st)))
         .when(on, (e) => e
@@ -4383,14 +4384,15 @@ export const ReviewMode = {
     const listId = `rv-list-${this.tab === "steps" ? "steps" : "files"}`;
     const range = this.fsel && rangeOf(this.rowsFor(this.fsel.path), this.fsel.a, this.fsel.b);
     this.selKeys = range ? new Set(this.rowsFor(this.fsel.path).slice(range[0], range[1] + 1).map(lineKey)) : null;
-    const tabBtn = (id, label) => div().id(`rv-tab-${id}`).flex_1().min_w(0).h(32).flex().items_center().justify_center().rounded(7).text_size(13.5).cursor_pointer()
+    // A tab is at least as wide as its label and shares what is left; a column too narrow for all four wraps them.
+    const tabBtn = (id, label) => div().id(`rv-tab-${id}`).flex_grow(1).flex_shrink(0).px(8).h(32).flex().items_center().justify_center().rounded(7).text_size(13.5).cursor_pointer()
       .bg(this.tab === id ? t.selected : t.chrome).text_color(this.tab === id ? t.foreground : t.muted).when(this.tab === id, (e) => e.font_semibold()).hover((s) => s.text_color(t.foreground))
-      .on_click((_e, cx) => { this.tab = id; cx.notify(); }).child(tabTip(`rv-tab-${id}`, t, TAB_TIP[id], div().child(label)));
+      .on_click((_e, cx) => { this.tab = id; cx.notify(); }).child(tabTip(`rv-tab-${id}`, t, TAB_TIP[id], div().whitespace_nowrap().child(label)));
     return root
       .child(this.metaRow(t))
       .child(h_flex().flex_1().min_h(0)
         .child(v_flex().w(this.leftW()).flex_none().h_full().bg(t.chrome)
-          .child(h_flex().flex_none().p(8).gap(6).border_b(1).border_color(t.border)
+          .child(h_flex().flex_none().flex_wrap().p(8).gap(6).border_b(1).border_color(t.border)
             .child(tabBtn("files", `Files · ${this.shown().patch.length}`)).child(tabBtn("steps", `Analysis${this.ai ? ` · ${this.ai.steps.filter((s) => !s.pseudo).length}` : ""}`))
             .child(tabBtn("comments", `Comments${this.commentRowsNow().length ? ` · ${this.commentRowsNow().length}` : ""}`))
             .child(tabBtn("findings", `Findings${this.findings().length ? ` · ${this.counts().unresolved}` : ""}`)))
