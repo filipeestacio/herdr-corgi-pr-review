@@ -109,11 +109,11 @@ STATUS = {"enum": ["new", "changed", "unchanged", "removed"]}
 ARCHITECTURE = {"type": "object", "required": ["groups", "nodes", "edges"], "properties": {
     "groups": {"type": "array", "maxItems": 5, "items": {"type": "object", "required": ["id", "label", "kind"], "properties": {"id": S, "label": S, "kind": S}}},
     "nodes": {"type": "array", "maxItems": 12, "items": {"type": "object", "required": ["id", "group", "label", "description", "type", "status"], "properties": {
-        "id": S, "group": S, "label": S, "description": S, "details": S, "type": S, "status": STATUS, "at": S, "source": SOURCE, "evidence": S,
+        "id": S, "group": S, "label": S, "description": S, "details": S, "type": S, "status": STATUS, "at": S, "source": SOURCE, "evidence": S, "runs_in": S,
         "states": {"type": "array", "maxItems": 10, "items": {"type": "object", "required": ["name", "type"], "properties": {
             "name": S, "type": {"enum": STATE_TYPES}, "calls": S, "status": STATUS, "source": SOURCE, "evidence": S}}}}}},
     "edges": {"type": "array", "maxItems": 16, "items": {"type": "object", "required": ["from", "to", "label"], "properties": {
-        "from": S, "to": S, "label": S, "status": STATUS, "source": SOURCE, "evidence": S}}}}}
+        "from": S, "to": S, "label": S, "status": STATUS, "source": SOURCE, "evidence": S, "in_process": {"type": "boolean"}}}}}}
 BLAST = {"type": "object", "required": ["units", "context"], "properties": {
     "units": {"type": "array", "maxItems": 8, "items": {"type": "object", "required": ["id", "label", "type", "status", "files", "spots"], "properties": {
         "id": S, "label": S, "type": S, "status": {"enum": ["added", "changed", "removed"]}, "files": STRINGS, "spots": {"type": "integer"}}}},
@@ -470,8 +470,11 @@ def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None,
             "unchanged node: only the sentence), type such as component, api·service, data, "
             "service, orchestration, status new/changed/unchanged/removed, at: file:line; an orchestrator such as a Step Functions "
             "state machine may list its states in order (name, type task/choice/parallel/map/wait/pass/fail/succeed, calls: the id "
-            "of the node a task state invokes, status), each call is then drawn from that state's row), edges (from, to, label: "
-            "what happens, e.g. \"Creates invitation\"; draw them in call direction, caller to callee); "
+            "of the node a task state invokes, status), each call is then drawn from that state's row), runs_in (for code "
+            "without a deployment of its own, a module or library: the id of the group or node whose process runs it; none for a "
+            "deployed unit), edges (from, to, label: "
+            "what happens, e.g. \"Creates invitation\"; draw them in call direction, caller to callee; in_process: true when the "
+            "call stays in one process, a plain function call, no network, queue or event between); "
             "when the code or the template opens a way in from outside (a route, a function URL, a public bucket), the caller "
             "and the entry are nodes too (type external and gateway), so the way in is on the picture; at most 12 nodes, empty "
             "lists when the PR touches no architecture. visuals (optional, at most 3): pictures of the whole PR the architecture "
@@ -706,6 +709,13 @@ def place(answer):
     for row in answer.get("components") or []:
         if row.get("node") not in nodes:
             row.pop("node", None)
+    groups = {g.get("id") for g in arch.get("groups") or []}
+    for n in arch.get("nodes") or []:  # runs_in: a group or another node, else none
+        if n.get("runs_in") not in (nodes | groups) - {n.get("id")}:
+            n.pop("runs_in", None)
+    for e in arch.get("edges") or []:
+        if not isinstance(e.get("in_process"), bool):
+            e.pop("in_process", None)
 
 
 def seat_state_diagrams(answer, path_of):

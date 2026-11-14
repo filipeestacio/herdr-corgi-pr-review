@@ -101,7 +101,10 @@ v = reviewers.security_view(answer, findings, pic, changed)
 assert [(z["id"], z["nodes"]) for z in v["zones"]] == [("net", ["client", "api"]), ("fd", ["handler", "store"]), ("q", ["queue"]), ("w", ["worker", "cron"])], \
     "unknown trust, unknown nodes, a node's second zone and a second zone of the same id go"
 assert v["crossing"] == [{"from": "api", "to": "handler", "edge": "e1"}, {"from": "handler", "to": "queue", "edge": "e3"}, {"from": "queue", "to": "worker", "edge": "e4"}], v["crossing"]
-assert [(r["id"], r.get("node"), r["opened_by_pr"]) for r in v["access"]] == [("acc1", "api", True), ("acc2", "queue", False), ("acc3", "lone", False), ("acc4", None, True)]
+assert [(r["id"], r.get("node"), r["opened_by_pr"]) for r in v["access"] if not r.get("derived")] == [("acc1", "api", True), ("acc2", "queue", False), ("acc3", "lone", False), ("acc4", None, True)]
+op = [r for r in v["access"] if r.get("derived")]
+assert [(r["id"], r["resource"], r["principal_kind"], r["actions"], r["from_gate"], r["value_from"], r.get("node")) for r in op] == [("acc5", "FRONT_DESK_TOKEN", "operator", ["set FRONT_DESK_TOKEN"], 0, None, "api")], \
+    "a holds_if that names a setting gives an operator way in; nothing in the repository sets it"
 got = {x["title"]: (x["reachable_from"], x["reachability"]) for x in findings}
 assert got["token check fails open"] == (["acc1"], "public"), "the broken check itself is reached before any check"
 assert got["by its node, above its line"] == (["acc1"], "authenticated"), "the node above its line, then its callers to the entry"
@@ -135,7 +138,41 @@ lone = reviewers.security_view({"access": [{"resource": "Api", "at": "t.yaml:3",
 assert "opened_by_pr" not in lone["access"][0] and "principal_kind" not in lone["access"][0] and lone["access"][0]["change"] == "added"
 assert [x["result"] for x in lone["threats"]] == ["not_assessed"], "no diff: the row stays; a finding result needs a finding"
 assert reviewers.security_view({"access": [{"resource": "Old", "at": "t.yaml:3", "change": "unchanged"}]}, [], {}, {"t.yaml": {3}})["threats"] == [], "an unchanged grant needs no entry"
-assert reviewers.security_view({}, [], {}, {}) == {"zones": [], "access": [], "crossing": [], "gates": [], "threats": [], "effective_zones": []}
+assert reviewers.security_view({}, [], {}, {}) == {"zones": [], "access": [], "crossing": [], "bypasses": [], "gates": [], "threats": [], "effective_zones": []}
+
+# Welle 5: zones through runs_in, a call in one process is no crossing but may bypass one, the principal's node, the
+# path of a threat, a reach that disagrees with its threat, and an operator way in from a gate's condition.
+w5 = {"architecture": {"groups": [{"id": "g_fd"}, {"id": "g_c"}],
+      "nodes": [{"id": "h", "status": "changed", "at": "lib/handler.py:9"}, {"id": "c", "status": "new", "runs_in": "g_c"}, {"id": "m", "status": "unchanged", "runs_in": "c"},
+                {"id": "q", "status": "new"}],
+      "edges": [{"from": "h", "to": "c", "status": "new", "in_process": True}, {"from": "q", "to": "c", "status": "new"}, {"from": "c", "to": "m", "status": "new", "in_process": True}]}}
+cfg = pathlib.Path(tempfile.mkdtemp())
+(cfg / "template.yaml").write_text("Resources:\n  Fn:\n    Environment:\n      API_KEY: x\n")
+ans5 = {"zones": [{"id": "p", "trust": "public", "nodes": ["h"]}, {"id": "i", "trust": "internal", "nodes": ["g_c", "c"]}, {"id": "d", "trust": "data", "nodes": ["q"]}],
+        "access": [{"resource": "Api", "public": True, "auth_kind": "code", "at": "lib/handler.py:9", "node": "h", "change": "added", "principal": "anyone"},
+                   {"resource": "Queue", "public": False, "auth_kind": "iam", "at": "t.yaml:5", "node": "q", "change": "added", "principal": "FrontDesk role", "principal_node": "g_fd"},
+                   {"resource": "X", "public": False, "at": "t.yaml:6", "change": "added", "principal_node": "ghost"}],
+        "gates": [{"where": {"access": "acc1"}, "principal": "bearer", "check": "token", "at": "lib/handler.py:9", "source": "code", "holds_if": "FRONT_DESK_TOKEN and API_KEY are set", "carries": []}],
+        "threats": [{"where": {"from": "h", "to": "c"}, "threat": "An internet request reaches the queue handler.", "result": "not_assessed", "note": "no time",
+                     "path": ["internet", "h", "c", "m", "made-up"]},
+                    {"where": {"access": "acc1"}, "threat": "Empty token passes.", "findings": ["f1"], "result": "finding", "path": ["h", "internet"]}]}
+tok = [{"id": "tk", "ref": "f1", "file": "t.yaml", "line": 5, "impact": "unauthorized_access"}]  # placed at the queue's row: reachable_from acc2
+v5 = reviewers.security_view(ans5, tok, w5, {"lib/handler.py": {9}, "t.yaml": {5, 6}}, cfg)
+assert v5["crossing"] == [{"from": "q", "to": "c", "edge": "e1"}] and v5["bypasses"] == [{"from": "h", "to": "c", "edge": "e0"}], \
+    "in one process: no crossing; between zones it bypasses the boundary; c -> m stays inside (m runs in c)"
+assert [r["principal_node"] for r in v5["access"][:3]] == [None, "g_fd", None], "a principal's node only when the picture has it"
+t5 = {x["id"]: x for x in v5["threats"]}
+assert (t5["t1"]["where"], t5["t1"]["result"], t5["t1"]["note"], t5["t1"]["path"]) == ({"from": "h", "to": "c", "edge": "e0"}, "not_assessed", "no time", ["internet", "h", "c", "m"]), \
+    "a bypass carries a threat; a path keeps the picture's ids and internet first"
+assert t5["t2"]["path"] == ["h"] and any(x["where"] == {"from": "q", "to": "c", "edge": "e1"} and x["derived"] for x in v5["threats"])
+assert tok[0]["reach_conflict"] == {"finding": {"reachable_from": ["acc2"], "reachability": "internal_only"}, "threat": {"id": "t2", "where": {"access": "acc1"}, "reachability": "public"}}
+assert (tok[0]["reachability"], tok[0]["reachable_from"]) == ("public", ["acc1", "acc2"]), "the more exposed side wins, the threat's row first"
+ops = [(r["resource"], r["value_from"], r["node"]) for r in v5["access"] if r.get("derived")]
+assert ops == [("FRONT_DESK_TOKEN", None, "h"), ("API_KEY", "template.yaml:4", "h")], "an operator way in per setting, with where the repository sets it"
+agree = [{"id": "ok", "ref": "f1", "file": "lib/handler.py", "line": 9, "impact": "unauthorized_access"}]
+reviewers.security_view(ans5, agree, w5, {"lib/handler.py": {9}}, None)
+assert "reach_conflict" not in agree[0] and agree[0]["reachable_from"] == ["acc1"], "finding and threat at the same row: no conflict"
+assert "principal_node (the id" in reviewers.findings_schema("security")["description"] and "bypasses the boundary" in reviewers.findings_schema("security")["description"]
 entry = {"architecture": {"nodes": [{"id": "c", "status": "unchanged"}, {"id": "h", "status": "changed"}], "edges": [{"from": "c", "to": "h", "status": "changed"}]}}
 ez = {"zones": [{"id": "p", "trust": "public", "nodes": ["c"]}, {"id": "a", "trust": "authenticated", "nodes": ["h"]}],
       "access": [{"resource": "Api", "public": True, "node": "h", "at": "t.yaml:1", "change": "added"}], "threats": [{"where": {"access": "acc1"}, "threat": "x", "result": "not_assessed"}]}

@@ -84,13 +84,13 @@ SECURITY = {
         "id": S, "name": S, "trust": {"enum": TRUST}, "evidence": S, "nodes": review.STRINGS}}},
     "access": {"type": "array", "maxItems": 16, "items": {"type": "object", "required": ["id", "resource", "kind", "principal", "principal_kind", "change", "actions", "public",
                                                                                          "auth", "auth_kind", "at"], "properties": {
-        "id": S, "resource": S, "kind": S, "principal": S, "principal_kind": {"enum": PRINCIPAL_KINDS}, "change": {"enum": CHANGES}, "actions": review.STRINGS,
+        "id": S, "resource": S, "kind": S, "principal": S, "principal_kind": {"enum": PRINCIPAL_KINDS}, "principal_node": S, "change": {"enum": CHANGES}, "actions": review.STRINGS,
         "public": {"type": "boolean"}, "auth": S, "auth_kind": {"enum": AUTH_KINDS}, "used": {"type": "boolean"}, "at": S, "node": S}}},
     "gates": {"type": "array", "items": {"type": "object", "required": ["where", "principal", "check", "at", "source", "holds_if", "carries"], "properties": {
         "where": WHERE, "principal": S, "check": {"enum": CHECKS}, "at": S, "source": {"enum": ["config", "code"]}, "holds_if": S, "carries": review.STRINGS}}},
     "threats": {"type": "array", "items": {"type": "object", "required": ["where", "boundary", "threat", "stride", "findings", "result", "goal"], "properties": {
         "where": WHERE, "boundary": S, "threat": S, "stride": {"enum": STRIDE}, "findings": review.STRINGS, "result": {"enum": THREAT_RESULTS}, "goal": S,
-        "evidence": S, "note": S}}}}
+        "path": review.STRINGS, "evidence": S, "note": S}}}}
 ASK_SECURITY = (
     " Each finding also has ref (f1, f2, … in order; threats name findings by it) and reachability (who can reach the flaw: "
     "public, authenticated, internal_only, or unknown when the code does not show it). In infrastructure code, a permission "
@@ -104,7 +104,8 @@ ASK_SECURITY = (
     "that the PR's code and infrastructure code add or change (IAM policies and roles, resource policies, routes and their "
     "authorizers, public flags), one row per grant or entry point, at most 16: id (acc1, acc2, … in order), resource (its "
     "name in the template), kind (e.g. queue, function, route, bucket, table), principal (who gets it: a function, a role, "
-    "\"anyone on the internet\"), principal_kind (internet: anyone from outside; operator: a person running a script, the "
+    "\"anyone on the internet\"), principal_node (the id of the picture's node or group (frame) that is the principal, e.g. "
+    "the group of the function whose role gets the grant; none when no node or group is it), principal_kind (internet: anyone from outside; operator: a person running a script, the "
     "console or a manual deploy; ci: a CI or deploy pipeline; role: a role or function of the system), change (added, "
     "widened, narrowed, removed or unchanged: what this PR does to the grant or entry), actions (e.g. sqs:SendMessage, "
     "\"call GET /items\"), public (true when it is reachable without credentials of the cloud account), auth (what checks "
@@ -114,7 +115,10 @@ ASK_SECURITY = (
     "the PR adds or changes (admin scripts, workflows, deploy jobs, guardrails they switch) are rows of their own; empty "
     "when the PR touches no such place. A crossing is an access row, or a call between two picture nodes in zones of "
     "different trust: once you have the zones, go through the picture's edges and take every edge whose two ends lie in "
-    "zones of different trust; the PR adds or changes it when the edge or one of its ends is new or changed. gates: the check at each crossing the PR adds or changes, where it really happens: where (access: "
+    "zones of different trust; the PR adds or changes it when the edge or one of its ends is new or changed. A call that "
+    "stays in one process (in_process in the picture) is no crossing; when it reaches code written for another source "
+    "of input (a queue consumer's handler called with an internet request), it bypasses the boundary and needs a threat "
+    "like a crossing. A node that runs in another node's or group's process (runs_in) stands in that zone. gates: the check at each crossing the PR adds or changes, where it really happens: where (access: "
     "the id of an access row; or from and to: the two picture nodes), principal (the identity the request goes on with), "
     "check (none, network, token, signature, iam), at (file:line of the check), source (config: a gateway, authorizer or "
     "policy checks before the code runs; code: the receiving function's own code checks), holds_if (what must be true for "
@@ -126,7 +130,10 @@ ASK_SECURITY = (
     "S spoofing, T tampering, R repudiation, I information disclosure, D denial of service, E elevation of privilege), "
     "findings (the refs of your findings that show it), result (finding: a finding shows it; mitigated: the code holds "
     "against it, and evidence names the file:line that shows it; not_assessed: you did not check it), goal (what an "
-    "attacker reaches in the end, one sentence), evidence (file:line, for mitigated), note (a few words).")
+    "attacker reaches in the end, one sentence), path (the ids of the nodes or groups from the principal to what the "
+    "attacker reaches, also the steps that cross no boundary, e.g. [\"internet\", \"handler\", \"consumer\", \"mailer\"]), "
+    "evidence (file:line, for mitigated), note (a few words; for not_assessed the reason). A finding's reachable_from "
+    "and reachability name the same place as the threat that names it.")
 ASK_JSON = "\n\n" + ASK
 
 
@@ -229,10 +236,14 @@ def picture_text(pic):
     arch = pic.get("architecture") or {}
     if not arch.get("nodes"):
         return "\n\nThis PR has no architecture picture yet: zones name no nodes, and threats sit only at access rows."
-    return ("\n\nThe architecture picture of this PR from its analysis. Nodes (id: label, type, status, file:line):\n"
-            + "\n".join(f"- {n.get('id')}: {n.get('label')}, {n.get('type') or ''}, {n.get('status') or ''}, {n.get('at') or ''}" for n in arch["nodes"])
+    return ("\n\nThe architecture picture of this PR from its analysis. Groups (frames: id: label, kind):\n"
+            + "\n".join(f"- {g.get('id')}: {g.get('label')}, {g.get('kind') or ''}" for g in arch.get("groups") or [])
+            + "\nNodes (id: label, type, status, group, file:line, runs_in):\n"
+            + "\n".join(f"- {n.get('id')}: {n.get('label')}, {n.get('type') or ''}, {n.get('status') or ''}, {n.get('group') or ''}, {n.get('at') or ''}"
+                        + (f", runs in {n['runs_in']}" if n.get("runs_in") else "") for n in arch["nodes"])
             + "\nEdges (caller -> callee: label, status):\n"
-            + "\n".join(f"- {e.get('from')} -> {e.get('to')}: {e.get('label') or ''}, {e.get('status') or ''}" for e in arch.get("edges") or []))
+            + "\n".join(f"- {e.get('from')} -> {e.get('to')}: {e.get('label') or ''}, {e.get('status') or ''}" + (", in_process" if e.get("in_process") else "")
+                         for e in arch.get("edges") or []))
 
 
 def spot(x):
@@ -273,7 +284,7 @@ def reach(nodes, edges, components, rows, findings):
             f["reachability"] = "unknown"
 
 
-def security_view(answer, findings, pic, changed):
+def security_view(answer, findings, pic, changed, root=None):
     """The security reviewer's view checked against the analysis' picture (pic: its answer, {} without one) and the
     diff (changed: {path: line numbers the diff adds}, None when unknown). Sets each finding's reachable_from and
     reachability (reach) and drops its ref. Returns:
@@ -281,7 +292,13 @@ def security_view(answer, findings, pic, changed):
     a known diff)}]; crossing [{from, to, edge: e<k> in the picture's edges}] (the calls between zones of different
     trust); gates [{where, principal, check, at, source, holds_if, carries}]; threats [{id: t1.., where, boundary,
     threat, stride, findings: finding ids, result, goal, evidence, note, derived?}]; effective_zones [{node, drawn,
-    effective, where}]. where is {access} or {from, to, edge}.
+    effective, where}]; bypasses [{from, to, edge}] (a call in one process between
+    zones of different trust: no crossing, but it needs a threat like one). where is {access} or {from, to, edge}.
+    Also: a node without a zone of its own stands in the zone of what it runs_in; access[].principal_node only when the
+    picture has that node or group (else None); threats[].path only ids the picture has (and "internet" first); a
+    finding whose threat sits at another place than its reachable_from gets reach_conflict and the more exposed of the
+    two (reach_conflict()); a gate whose holds_if names configuration, an environment variable or a secret gives an
+    operator way in (operator_rows(); root: the checkout, to find where the value is set).
     Only what has its place stays: a zone's node must be on the picture; a gate sits at a crossing (an access row or a
     crossing call); a threat at a crossing this PR adds or changes (an access row whose change is not unchanged, or that
     sits in added lines; a call whose edge or one of its ends is new or changed). A threat with findings is a finding;
@@ -291,22 +308,30 @@ def security_view(answer, findings, pic, changed):
     access row from public counts as public), and only the cards where that is more exposed than their drawn zone."""
     arch = pic.get("architecture") or {}
     nodes, edges = arch.get("nodes") or [], arch.get("edges") or []
-    ids = {n.get("id") for n in nodes}
+    ids, frames = {n.get("id") for n in nodes}, {g.get("id") for g in arch.get("groups") or []}
+    runs_in = {n.get("id"): n.get("runs_in") for n in nodes if n.get("runs_in")}
     zones, zone_of = [], {}
     for z in answer.get("zones") or []:
         if isinstance(z, dict) and z.get("id") and z.get("trust") in TRUST and z["id"] not in [x["id"] for x in zones]:
             mine = [n for n in dict.fromkeys(z.get("nodes") or []) if n in ids and n not in zone_of]
             zone_of.update((n, z) for n in mine)
             zones.append({"id": str(z["id"]), "name": str(z.get("name") or z["id"]), "trust": z["trust"], "evidence": str(z.get("evidence") or ""), "nodes": mine})
+    for n in ids:  # code without a deployment of its own stands where it runs (two steps at most)
+        host = runs_in.get(n)
+        while n not in zone_of and host and host in runs_in and host not in zone_of:
+            host = runs_in[host] if runs_in[host] != host else None
+        if n not in zone_of and host in zone_of:
+            zone_of[n] = zone_of[host]
     trust = lambda n: (zone_of.get(n) or {}).get("trust")  # noqa: E731
-    crossing = [{"from": e["from"], "to": e["to"], "edge": f"e{k}"} for k, e in enumerate(edges)
-                if trust(e.get("from")) and trust(e.get("to")) and trust(e["from"]) != trust(e["to"])]
+    differ = lambda e: trust(e.get("from")) and trust(e.get("to")) and trust(e["from"]) != trust(e["to"])  # noqa: E731
+    crossing = [{"from": e["from"], "to": e["to"], "edge": f"e{k}"} for k, e in enumerate(edges) if differ(e) and not e.get("in_process")]
+    bypasses = [{"from": e["from"], "to": e["to"], "edge": f"e{k}"} for k, e in enumerate(edges) if differ(e) and e.get("in_process")]
     rows, named = [], {}
     for r in answer.get("access") or []:
         if not isinstance(r, dict) or not r.get("resource"):
             continue
         row = {**{k: v for k, v in r.items() if (k != "node" or v in ids) and (k != "principal_kind" or v in PRINCIPAL_KINDS) and (k != "change" or v in CHANGES)},
-               "id": f"acc{len(rows) + 1}"}
+               "id": f"acc{len(rows) + 1}", "principal_node": r.get("principal_node") if r.get("principal_node") in ids | frames else None}
         named.setdefault(str(r.get("id") or row["id"]), row["id"])
         if changed is not None:
             path, line = spot(row)
@@ -328,7 +353,7 @@ def security_view(answer, findings, pic, changed):
         if row is not None:
             new = row.get("change") in CHANGES[:4] or (row.get("change") is None and row.get("opened_by_pr") is not False)
             return {"access": row["id"]}, row, new
-        cross = next((c for c in crossing if (c["from"], c["to"]) == (w.get("from"), w.get("to"))), None)
+        cross = next((c for c in crossing + bypasses if (c["from"], c["to"]) == (w.get("from"), w.get("to"))), None)
         if cross:
             return dict(cross), None, bool({edges[int(cross["edge"][1:])].get("status"), status.get(cross["from"]), status.get(cross["to"])} & {"new", "changed"})
         return None
@@ -349,16 +374,17 @@ def security_view(answer, findings, pic, changed):
         result = "finding" if found else "mitigated" if said == "mitigated" and str(t.get("evidence") or "").strip() else "not_assessed"
         threats.append({"id": f"t{len(threats) + 1}", "where": at[0], "boundary": str(t.get("boundary") or ""), "threat": text,
                         "stride": t.get("stride") if t.get("stride") in STRIDE else "", "findings": found, "result": result, "goal": str(t.get("goal") or ""),
+                        "path": [str(x) for k, x in enumerate(t.get("path") or []) if x in ids | frames or (k == 0 and x == "internet")],
                         "evidence": str(t.get("evidence") or ""), "note": str(t.get("note") or "")})
     name = lambda n: (zone_of.get(n) or {}).get("name") or n  # noqa: E731
     open_ = [({"access": r["id"]}, f"{r.get('principal') or 'caller'} → {r['resource']}") for r in rows if place({"access": r["id"]})[2]] + \
-            [(dict(c), f"{name(c['from'])} → {name(c['to'])}") for c in crossing if place(c)[2]]
+            [(dict(c), f"{name(c['from'])} → {name(c['to'])}") for c in crossing + bypasses if place(c)[2]]
     # A call from a public card into a card with a public access row is that row's way in, not a second crossing.
     same = lambda w: [{"access": r["id"]} for r in rows if w.get("edge") and r.get("public") and r.get("node") == w["to"] and trust(w["from"]) == "public"]  # noqa: E731
     for where, boundary in open_:
         if not any(t["where"] in (where, *same(where)) for t in threats):
             threats.append({"id": f"t{len(threats) + 1}", "where": where, "boundary": boundary, "threat": "No threat was named for this crossing.", "stride": "",
-                            "findings": [], "result": "not_assessed", "goal": "", "evidence": "", "note": "", "derived": True})
+                            "findings": [], "result": "not_assessed", "goal": "", "path": [], "evidence": "", "note": "No threat was named for this crossing.", "derived": True})
     effective = {}
     for g in gates:
         if g["check"] != "none" and g["source"] != "code":
@@ -369,7 +395,84 @@ def security_view(answer, findings, pic, changed):
         drawn = trust(node)
         if caller and drawn and TRUST.index(caller) < TRUST.index(drawn) and (node not in effective or TRUST.index(caller) < TRUST.index(effective[node]["effective"])):
             effective[node] = {"node": node, "drawn": drawn, "effective": caller, "where": w}
-    return {"zones": zones, "access": rows, "crossing": crossing, "gates": gates, "threats": threats, "effective_zones": list(effective.values())}
+    reach_conflict(findings, threats, rows, trust)
+    rows += operator_rows(gates, rows, nodes, root)
+    return {"zones": zones, "access": rows, "crossing": crossing, "bypasses": bypasses, "gates": gates, "threats": threats, "effective_zones": list(effective.values())}
+
+
+# How exposed a place is: an access row by its own words (public and nothing checks: public; public behind a check:
+# authenticated; else internal_only), a call by the trust of its caller's zone.
+LEVEL_OF_TRUST = {"public": "public", "authenticated": "authenticated", "internal": "internal_only", "data": "internal_only"}
+
+
+def reach_conflict(findings, threats, rows, trust):
+    """A finding and the threat that names it must say the same place. When the threat sits at an access row the
+    finding's reachable_from does not name, or at a more exposed place than its reachability: reach_conflict
+    {finding: {reachable_from, reachability}, threat: {id, where, reachability}}, and the more exposed side wins
+    (reachability; reachable_from starts with the threat's row). Nothing is taken silently."""
+    by = {f["id"]: f for f in findings}
+    for t in threats:
+        w, row = t["where"], next((r for r in rows if r["id"] == t["where"].get("access")), None)
+        for fid in t["findings"]:
+            f = by.get(fid)
+            if not f or "reach_conflict" in f:
+                continue
+            # as reach(): a public row that nothing checks, or the finding is the broken check itself, is public
+            level = (("public" if row.get("auth_kind") == "none" or f.get("impact") == "unauthorized_access" else "authenticated") if row.get("public") else "internal_only") \
+                if row else LEVEL_OF_TRUST.get(trust(w.get("from")))
+            here = f.get("reachability") if f.get("reachability") in REACH else "unknown"
+            off_row = row is not None and row["id"] not in (f.get("reachable_from") or [])
+            wider = level in REACH and REACH.index(level) < REACH.index(here)
+            if off_row or wider:
+                f["reach_conflict"] = {"finding": {"reachable_from": list(f.get("reachable_from") or []), "reachability": here},
+                                       "threat": {"id": t["id"], "where": dict(w), "reachability": level}}
+                if wider:
+                    f["reachability"] = level
+                if row is not None:
+                    f["reachable_from"] = [row["id"], *[x for x in f.get("reachable_from") or [] if x != row["id"]]]
+
+
+SETTING = re.compile(r"\b[A-Z][A-Z0-9]*_[A-Z0-9_]{2,}\b")  # FRONT_DESK_TOKEN
+CONFIGISH = re.compile(r"environment|env var|config|secret|parameter|setting|deploy", re.I)
+CONFIG_FILES = re.compile(r"\.(ya?ml|json|toml|tf|tfvars|env|ini|cfg|conf)$|(^|/)\.env[^/]*$|Dockerfile", re.I)
+
+
+def value_from(root, name):
+    """Where the checkout's configuration sets `name` (file:line of the first config file that names it), or None."""
+    base = pathlib.Path(root) if root else None
+    if not base or not base.is_dir():
+        return None
+    for f in sorted(base.rglob("*")):
+        rel = f.relative_to(base).as_posix()
+        if rel.startswith(".git/") or not f.is_file() or not CONFIG_FILES.search(rel):
+            continue
+        try:
+            for k, line in enumerate(f.read_text(errors="replace").splitlines(), 1):
+                if name in line:
+                    return f"{rel}:{k}"
+        except OSError:
+            continue
+    return None
+
+
+def operator_rows(gates, rows, nodes, root):
+    """An operator way in for each gate whose holds_if names configuration, an environment variable or a secret: who
+    deploys sets the value the check depends on (derived, from_gate, value_from: where the repository sets it, None
+    when nowhere)."""
+    out, label = [], {n.get("id"): n.get("label") or n.get("id") for n in nodes}
+    for k, g in enumerate(gates):
+        text = g.get("holds_if") or ""
+        names = list(dict.fromkeys(SETTING.findall(text)))
+        if not names and not CONFIGISH.search(text):
+            continue
+        w = g["where"]
+        node = next((r.get("node") for r in rows if r["id"] == w.get("access")), None) if w.get("access") else w.get("to")
+        for name in names or ["configuration"]:
+            src = value_from(root, name) if names else None
+            out.append({"id": f"acc{len(rows) + len(out) + 1}", "resource": name, "kind": "configuration", "principal": f"operator who deploys {label.get(node, node or 'it')}",
+                        "principal_kind": "operator", "principal_node": None, "change": "unchanged", "actions": [f"set {name}"], "public": False, "auth": "deploy access",
+                        "auth_kind": "iam", "at": src or g.get("at") or "", **({"node": node} if node else {}), "derived": True, "from_gate": k, "value_from": src})
+    return out
 
 
 def scope(raw, kind):
@@ -505,7 +608,7 @@ def main(arg):
         review.introduced(f, changed)
     security = None
     if req["kind"] == "security":
-        security = {"head": req["head"], "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "picture": made, **security_view(answer, findings, pic, changed)}
+        security = {"head": req["head"], "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "picture": made, **security_view(answer, findings, pic, changed, wt)}
     for f in findings:
         f.pop("ref", None)
     notes = [f"/{'code-review' if req['kind'] == 'claude' else 'security-review'} not available: ran as a plain prompt"] if meta.get("fallback") else []
