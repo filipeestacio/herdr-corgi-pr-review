@@ -241,6 +241,31 @@ assert ans["unlinked"] == [], "every broken or partly requirement here has a fin
 assert f3["severity"] == "low" and f3["criteria"] == ["c3"] and c3["findings"] == [f3["id"]], "an extra change does not raise the severity"
 assert f4["criteria"] == [] and f4["severity"] == "medium" and "breaks" not in f4, "unknown requirement and node dropped"
 assert f2["breaks"] == {"from": "reminders", "to": "mailer", "edge": "e1"} and f3["breaks"] == {"node": "status"}
+rp = {"architecture": {"groups": [{"id": "g_fd"}], "nodes": [{"id": "h", "runs_in": "g_fd"}, {"id": "c", "runs_in": "h"}, {"id": "x", "runs_in": "nowhere"}, {"id": "s", "runs_in": "s"}],
+                       "edges": [{"from": "h", "to": "c", "in_process": True}, {"from": "c", "to": "x", "in_process": "yes"}]}, "steps": []}
+review.place(rp)
+assert [n.get("runs_in") for n in rp["architecture"]["nodes"]] == ["g_fd", "h", None, None] and [e.get("in_process") for e in rp["architecture"]["edges"]] == [True, None], \
+    "runs_in names a group or another node; in_process is a bool"
+cy = {"architecture": {"groups": [], "nodes": [{"id": "a", "runs_in": "b"}, {"id": "b", "runs_in": "a"}, {"id": "c", "runs_in": "a"}, {"id": "d", "runs_in": "c"}], "edges": []}, "steps": []}
+review.place(cy)
+chain = {n["id"]: n.get("runs_in") for n in cy["architecture"]["nodes"]}
+assert sum(1 for k in ("a", "b") if chain[k]) == 1 and chain["c"] == "a" and chain["d"] == "c", ("a cycle loses one link, the rest stays", chain)
+
+# Files of a checkout are read only as regular files inside it: no symlink on the way, no .., no absolute path.
+top = pathlib.Path(tempfile.mkdtemp())
+(top / "outside.md").write_text("SECRET\n")
+co = top / "co"
+(co / "docs").mkdir(parents=True)
+(co / "CONTRIBUTING.md").write_text("Use small PRs.\n")
+(co / "CLAUDE.md").symlink_to(top / "outside.md")
+(co / "linked").symlink_to(top)
+(co / ".github").mkdir()
+(co / ".github" / "CODEOWNERS").symlink_to(top / "outside.md")
+assert review.read_checkout(co, "CONTRIBUTING.md") == "Use small PRs.\n" and review.read_checkout(co, "CONTRIBUTING.md", cap=3) == "Use"
+for bad in ("CLAUDE.md", "linked/outside.md", "../outside.md", str(top / "outside.md"), "~/x", "docs", "nope.md"):
+    assert review.read_checkout(co, bad) is None, bad
+rules = review.repo_rules(co)
+assert "Use small PRs." in rules and "SECRET" not in rules and review.code_owners(co) is None, "symlinked rules and CODEOWNERS are skipped"
 assert ans["steps"][0]["question_files"] == ["library/loans.py", "library/s.py", ""], ans["steps"][0]["question_files"]
 assert [c["owner"] for c in ans["components"]] == ["@ops", "@lib-team @lead", None], [c["owner"] for c in ans["components"]]
 assert ans["component_counts"] == {"new": 2, "changed": 1, "no_owner": 1, "codeowners": True}
@@ -308,7 +333,8 @@ assert sh["asks"][0]["short"] == "one reminder mail per loan and never ever" and
 p4 = review.prompt([], [], "PR: x", True)
 for part in ("what_changed: the change as three short lists", "read: the paths of the files outside the diff", "short (its name in at most eight words",
              "introduced_here (true when", "path_certainty (confirmed, derived or assumed", "certainty stays about the code alone",
-             "one thought in at most twelve words", "one sentence of at most 20 words", "would be the same without the PR"):
+             "one thought in at most twelve words", "one sentence of at most 20 words", "would be the same without the PR", "runs_in (for code",
+             "in_process: true when the call stays in one process"):
     assert part in p4, part
 assert {"what_changed", "read"} <= set(review.SCHEMA["required"]) and {"what_changed", "read"} <= set(review.MERGE_SCHEMA["required"])
 print("ok finish")

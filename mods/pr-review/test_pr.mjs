@@ -421,7 +421,7 @@ console.log("ok");
   assert.deepEqual([old.unlinked, old.components, old.componentCounts, old.access, old.steps[0].questionFiles], [[], [], null, [], [""]]);
   const of = old.steps[0].findings[0];
   assert.match(of.id, /^a[0-9a-f]+$/);
-  assert.deepEqual(findingFacts(of), { impact: null, effect: "", preconditions: [], certainty: null, criteria: [], breaks: null, effort: null, reachable_from: [], reachability: null, introduced_here: null, path_certainty: null, path_why: "" });
+  assert.deepEqual(findingFacts(of), { impact: null, effect: "", preconditions: [], certainty: null, criteria: [], breaks: null, effort: null, reachable_from: [], reachability: null, introduced_here: null, path_certainty: null, path_why: "", reach_conflict: null });
   const now = mapReview({ unlinked: ["c2"], components: [{ name: "Queue", status: "new" }], component_counts: { new: 1, changed: 0, no_owner: 1, codeowners: false }, access: [{ resource: "Api", public: true }],
     steps: [{ title: "s", hunks: ["h1"], check_questions: ["", "q1?", "q2?"], question_files: ["x.py", "a.py", ""],
       suggestions: [{ hunk: "h1", line: 2, side: "new", severity: "low", category: "availability", text: "No retry. Add one." }],
@@ -444,9 +444,9 @@ console.log("ok");
   assert.deepEqual(m.findings.map((f) => [f.file, f.line, f.severity, f.reviewer, f.category]), [["a.py", 9, "high", "security", undefined], ["a.py", 2, "low", "ai", "availability"]]);
   assert.deepEqual(m.notes, []);
   assert.deepEqual(findingFacts(m.findings[0]), { impact: "unauthorized_access", effect: "Anyone reads it.", preconditions: ["redelivery"], certainty: "confirmed", criteria: ["c1"], breaks: { from: "n1", to: "n2", edge: "e5" }, effort: null,
-    reachable_from: ["acc1"], reachability: "public", introduced_here: null, path_certainty: null, path_why: "" }, "a reviewer names no reachability: the merged finding has the analysis's");
+    reachable_from: ["acc1"], reachability: "public", introduced_here: null, path_certainty: null, path_why: "", reach_conflict: null }, "a reviewer names no reachability: the merged finding has the analysis's");
   assert.ok(m.findings[0].ids.includes(now.asks[0].findings[0]), "an ask finds its finding through ids");
-  assert.deepEqual(findingFacts(m.findings[1]), { impact: null, effect: "", preconditions: [], certainty: null, criteria: [], breaks: null, effort: null, reachable_from: [], reachability: null, introduced_here: null, path_certainty: null, path_why: "" });
+  assert.deepEqual(findingFacts(m.findings[1]), { impact: null, effect: "", preconditions: [], certainty: null, criteria: [], breaks: null, effort: null, reachable_from: [], reachability: null, introduced_here: null, path_certainty: null, path_why: "", reach_conflict: null });
   // Reviewer runs: the state as written, or derived for an entry from before it was.
   const runs = runsOf({ a: { busy: true, started: "t" }, b: { at: "t", count: 0 }, c: { error: "boom", at: "t" }, d: { state: "failed", error: "x" }, e: { state: "done", scope: { read: ["a.py"], checked: [], skipped: [] }, at: "t" }, f: {} });
   assert.deepEqual(Object.values(runs).map((r) => r.state), ["running", "done", "failed", "failed", "done", null]);
@@ -840,4 +840,28 @@ console.log("ok");
   for (const k of ["analysis", "security", "verify", "ask", "fix"]) assert.notEqual(recommendModel(k, {}).tier, "haiku", "never Haiku for code");
   assert.match(recommendModel("analysis", {}).why, /^the diff is of ordinary size$/);
   assert.deepEqual([tierSteps("sonnet"), tierSteps("opus")], [{ up: "opus", down: null }, { up: null, down: "sonnet" }]);
+}
+
+// Welle 5: one defect from two runs is one finding when their line ranges are near (PR #2: the security review's
+// template.yaml 14-17 and the analysis' line 18); a different claim close by stays apart, and a model's huge end
+// does not swallow the file. reach_conflict and bypasses come through.
+{
+  const { mergeFindings, withSecurity, mapReview } = await import("./pr.js");
+  const F = (id, reviewer, line, end, title, extra = {}) => ({ id, reviewer, file: "template.yaml", line, end, severity: "high", category: "security", impact: "unauthorized_access", title, detail: "", ...extra });
+  const m = mergeFindings([F("sec", "security", 14, 17, "FRONT_DESK_TOKEN never set in the template, so an empty bearer token passes auth on /remind",
+    { reach_conflict: { finding: { reachable_from: ["acc2"], reachability: "internal_only" }, threat: { id: "t1", where: { access: "acc1" }, reachability: "public" } } }),
+    F("ana", "analysis", 18, 18, "FRONT_DESK_TOKEN is not set, so the token defaults to empty"),
+    F("dlq", "security", 19, 19, "Queue has no dead-letter queue and retries repeat mails", { impact: "degraded_operation", category: "availability" }),
+    F("far", "claude", 60, 60, "FRONT_DESK_TOKEN is not set, so the token defaults to empty"),
+    F("huge", "claude", 2, 10 ** 9, "SQS send permission granted but never used", { impact: "maintainability" })]).findings;
+  const byId = Object.fromEntries(m.map((f) => [f.id, f]));
+  assert.deepEqual(m.map((f) => f.ids.sort()).sort(), [["ana", "sec"], ["dlq"], ["far"], ["huge"]], "same claim, ranges 1 line apart: one; other claims and far lines: apart");
+  const tok = m.find((f) => f.ids.includes("sec"));
+  assert.deepEqual([tok.sources.map((x) => x.reviewer).sort(), tok.reach_conflict.threat.id], [["analysis", "security"], "t1"], "both sources named, the conflict kept");
+  assert.equal(byId.huge?.end ?? m.find((f) => f.ids.includes("huge")).end, 10 ** 9, "the end itself stays; only nearness is capped");
+  const ai = withSecurity(mapReview({ architecture: { groups: [], nodes: [{ id: "h" }, { id: "c" }], edges: [{ from: "h", to: "c", in_process: true }] }, steps: [] }, []),
+    { head: "x", zones: [], crossing: [], access: [], threats: [], bypasses: [{ from: "h", to: "c", edge: "e0" }] }, null, "x");
+  assert.deepEqual([ai.bypasses, ai.arch.edges[0].in_process, ai.arch.edges[0].crosses], [[{ from: "h", to: "c", edge: "e0" }], true, undefined], "a bypass is no crossing mark");
+  assert.deepEqual(withSecurity(mapReview({ steps: [] }, []), null, null).bypasses, []);
+  console.log("ok merge by ranges");
 }
