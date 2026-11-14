@@ -567,3 +567,40 @@ console.log("ok");
   assert.deepEqual([hasEffort(m.findings), hasEffort(m.findings.slice(0, 2))], [true, false]);
   console.log("ok findings tab");
 }
+
+// Neighbouring lines: one defect when the titles make the same claim, two when they do not (the real pairs of PR #2).
+{
+  const { mergeFindings, sameClaim } = await import("./pr.js");
+  const F = (id, reviewer, file, line, title, extra = {}) => ({ id, reviewer, file, line, end: line, severity: "high", category: "bug", title, detail: "", suggestion: "", ...extra });
+  const pr2 = [
+    F("a477", "analysis", "library/consumer.py", 19, "Consumer reads loans from a per-process in-memory store"),
+    F("7413", "claude", "library/consumer.py", 20, "Consumer reads from an in-memory store the front desk does not share", { head: "h", code: "if message" }),
+    F("a83a", "analysis", "library/consumer.py", 23, "Consumer sets reminded_on directly"),
+    F("a9b8", "analysis", "library/reminders.py", 21, "Reminder is mailed inline and again by the consumer"),
+    F("43e8", "claude", "library/reminders.py", 22, "Mail is sent before the state change and event, with no atomicity", { severity: "medium" }),
+    F("29c1", "claude", "library/reminders.py", 23, "Reminder mailed twice: directly and again by the consumer"),
+    F("a03f", "analysis", "library/reminders.py", 33, "publish_overdue always raises ValueError"),
+    F("36f9", "claude", "library/reminders.py", 35, "publish_overdue always raises ValueError"),
+    F("95ea", "claude", "library/handler.py", 18, "/remind bypasses the state machine and has no input or error handling", { severity: "medium" }),
+    F("1cf1", "security", "library/handler.py", 19, "/remind skips the state machine and sends mail for any loan id", { severity: "medium" }),
+    F("a09f", "analysis", "library/handler.py", 21, "/remind mails inline and skips the state machine"),
+    F("a28d", "analysis", "library/handler.py", 6, "Front desk imports the consumer module"),
+    F("1a5f", "security", "library/handler.py", 8, "Front desk auth falls back to an empty token, so `Authorization: Bearer ` passes"),
+  ];
+  const m = mergeFindings(pr2).findings, at = (f) => `${f.file.split("/").pop()}:${f.line}-${f.end} ${f.ids.join("+")}`;
+  // 13 → 9: four pairs join; the different claims next to them stay apart (store vs. reminded_on, mailed twice vs. no
+  // atomicity, the review's wider /remind finding, the import vs. the token).
+  assert.deepEqual(m.map(at).sort(), ["consumer.py:19-20 a477+7413", "consumer.py:23-23 a83a", "handler.py:18-18 95ea", "handler.py:19-21 1cf1+a09f", "handler.py:6-6 a28d",
+    "handler.py:8-8 1a5f", "reminders.py:21-23 a9b8+29c1", "reminders.py:22-22 43e8", "reminders.py:33-35 a03f+36f9"]);
+  // The anchor is the first line; the line's code (for "line changed") only comes from a source on that line.
+  const store = m.find((f) => f.ids.includes("a477"));
+  assert.deepEqual([store.line, store.end, store.head, store.security, mergeFindings(pr2.slice(1, 2)).findings[0].head], [19, 20, undefined, false, "h"]);
+  assert.equal(m.find((f) => f.ids.includes("1cf1")).security, true, "the security source carries over");
+  // Four lines apart is too far, another file never joins, a finding without a line never joins.
+  assert.equal(mergeFindings([pr2[6], { ...pr2[7], line: 37, end: 37 }]).findings.length, 2);
+  assert.equal(mergeFindings([pr2[6], { ...pr2[7], file: "library/other.py" }]).findings.length, 2);
+  assert.equal(mergeFindings([{ ...pr2[6], line: 0 }, { ...pr2[7], line: 0 }]).findings.length, 2);
+  // The measure: the pairs above score 0.40 and more when they are one claim, 0.27 and less when they are two.
+  assert.deepEqual([sameClaim(pr2[0].title, pr2[1].title), sameClaim(pr2[1].title, pr2[2].title), sameClaim(pr2[8].title, pr2[10].title)], [true, false, false]);
+  console.log("ok neighbouring lines");
+}
