@@ -3266,15 +3266,15 @@ export const ReviewMode = {
   },
   // The picture shown: its layout with the calls' texts on their lines, a row in a card and above a call for the
   // findings there, normal or narrow cards (Fit). Memoized: the page renders often.
-  archL(fit = this.archFitOn(), labelPx = null) { // labelPx: the calls' text size (the Resilience map: 13)
+  archL(fit = this.archFitOn(), labelPx = null, more = null) { // labelPx: the calls' text size (the Resilience map: 13); more: cards with a line more (its marks)
     const a = this.ai?.arch;
     if (!a) return null;
-    const slot = labelPx ? `${fit}|${labelPx}` : fit; // its own memo
+    const slot = labelPx || more ? `${fit}|${labelPx}|${[...(more ?? [])]}` : fit; // its own memo
     const m = this.archMarksNow(), key = `${slot}|${this.archMode}|${[...m.nodes.keys()]}|${[...m.edges.keys()]}|${JSON.stringify(a)}|${JSON.stringify(this.ai?.access ?? [])}`;
     // The map as the boundary really runs (views.js mapArch): the Internet card at the way in, no zone on shared code,
     // no "‖" on a call in one process.
     const memo = (this.fitMemos ??= {});
-    if (memo[slot]?.key !== key) memo[slot] = { key, L: archLayout(mapArch(a, this.ai?.access, this.ai?.bypasses ?? []), this.archMode, (n) => (m.nodes.has(n.id) ? 1 : 0), fit, { labels: true, labelPx: labelPx ?? undefined, marked: (es) => es.some((i) => m.edges.has(i)) }) };
+    if (memo[slot]?.key !== key) memo[slot] = { key, L: archLayout(mapArch(a, this.ai?.access, this.ai?.bypasses ?? []), this.archMode, (n) => (m.nodes.has(n.id) ? 1 : 0) + (more?.has(n.id) ? 1 : 0), fit, { labels: true, labelPx: labelPx ?? undefined, marked: (es) => es.some((i) => m.edges.has(i)) }) };
     return memo[slot].L;
   },
   // ---- sideways scrollers inside the scrolling page (the architecture canvas, the flow, state-machine and blast
@@ -4085,7 +4085,7 @@ export const ReviewMode = {
     const line = res.additionsLine || `This PR adds ${adds.length} ${adds.length === 1 ? "part" : "parts"}.`;
     // A part as a short list, a line each: what it is, what it solves (and how likely that is), each cost, the simpler way.
     // R2: purpose (what it is for) first, next (what to do, a sentence with a verb) last.
-    const lines = (x) => [x.purpose && `For: ${x.purpose}`, x.solves && `Solves: ${x.solves}${x.likelihood ? ` (${resWord(x.likelihood)})` : ""}.`,
+    const lines = (x) => [x.purpose && `For: ${x.purpose}`, x.solves && `Solves: ${String(x.solves).replace(/\.$/, "")}${x.likelihood ? ` (${resWord(x.likelihood)})` : ""}.`,
       ...Object.entries(x.cost ?? {}).filter(([, v]) => v).map(([k, v]) => `Costs ${resWord(k)}: ${v}.`), x.simpler && `Simpler: ${x.simpler}`, x.next && `Next: ${x.next}`].filter(Boolean).map((l) => l.replace(/\.(\)?)\.$/, ".$1").replace(/\.\.$/, "."));
     return v_flex().id("rv-res-add").gap(4).pt(2)
       .child(h_flex().id("rv-res-add-h").gap(6).cursor_pointer().text_size(13).hover((x) => x.text_color(t.foreground)).tooltip(open ? "Fold the parts" : "For each part: what it solves here, what it costs, and the simpler way")
@@ -4101,7 +4101,9 @@ export const ReviewMode = {
   // The map, the Architecture page's own: with a path chosen, its cards and calls lit and the rest dimmed, its marks
   // (⏱ timeout, ×n, DLQ, ✕ silent …) on its cards; before the run, ○ on the cards where the run would start.
   resMap(t, a, p, start) {
-    const L = this.archL(this.archFitOn(), 13), on = new Set(p ? (Array.isArray(p.reach) ? p.reach : (p.steps ?? []).map((s) => resCardOf(s, a)).filter(Boolean)) : start); // pr.js reachOf, else places light the card of their file
+    // Every card any path marks keeps a line for it, so the cards do not grow from path to path.
+    const marked = new Set([...(this.resNow()?.paths ?? []).flatMap((x) => [...resMarksOn(x.marks, a, true).keys()]), ...(start ?? [])]); // and before the run, the ○ cards
+    const L = this.archL(this.archFitOn(), 13, marked), on = new Set(p ? (Array.isArray(p.reach) ? p.reach : (p.steps ?? []).map((s) => resCardOf(s, a)).filter(Boolean)) : start); // pr.js reachOf, else places light the card of their file
     for (const id of resTwice(p, this.resNow(), a)) on.add(id); // an effect done twice: every way to it lit (views.js resTwice)
     const fs = p ? this.openFindings().filter((f) => (p.findings ?? []).some((id) => (f.ids ?? [f.id]).includes(id))) : [];
     // R-D marksOf: a call's marks on the call (resEdgeMarks), a queue's at the queue, a place's on the card of its file.
@@ -4221,7 +4223,9 @@ export const ReviewMode = {
     const BASE = { reproduced: "breaks the same way", not_reproduced: "not reproduced", new_in_pr: "new in this PR", new: "new in this PR", unknown: "unknown", not_run: "not run" };
     // The base in words: the runner's verdict (threads.js BASE_WORDS: already on the base, new in this PR, unknown on the
     // base, not on the base), else (an older result) its status.
-    const base = typeof x.base === "object" && x.base ? `${TH.BASE_WORDS[x.base.verdict] ?? `on base: ${BASE[x.base.status] ?? resWord(x.base.status)}`}${x.base.line ? `, ${x.base.line}` : ""}` : x.base && `on base: ${x.base}`;
+    // The base's line without the runner's temporary paths (a file by its name), at most about a line long.
+    const short = (l) => { const v = String(l).replace(/(?:\/[^\s/'"()]+)+\/([^\s/'"()]+)/g, "$1"); return v.length > 140 ? `${v.slice(0, 139)}…` : v; };
+    const base = typeof x.base === "object" && x.base ? `${TH.BASE_WORDS[x.base.verdict] ?? `on base: ${BASE[x.base.status] ?? resWord(x.base.status)}`}${x.base.line ? `, ${short(x.base.line)}` : ""}` : x.base && `on base: ${x.base}`;
     // Not run: the runner never ran a script (no head, no time), with why; never "script failed".
     const notRun = done && (x.result === "not_run" || (x.result === "script_failed" && !x.head && !x.ms));
     const RES = { reproduced: ["✓", "reproduced", t.foreground], not_reproduced: ["✗", "not reproduced", t.muted], script_failed: ["!", "script failed", t.ansi3], unknown: ["?", "unknown", t.muted] };
@@ -4234,7 +4238,7 @@ export const ReviewMode = {
     const start = (_e, cx) => this.command(`probe:${x.id}`, cx), trusted = this.trustedPr();
     return v_flex().id(`rv-res-probe-${x.id}`).gap(4).p(10).rounded(6).border_1().border_color(t.border).text_size(12.5).when(Boolean(old), (e) => e.opacity(0.5))
       .when(done, (e) => e.child(h_flex().gap(8).flex_wrap().items_center().child(div().font_semibold().text_color(r[2]).child(`Probe ${r[0]} ${r[1]}`))
-        .child(div().text_color(t.muted).child((notRun ? [x.reason || x.number || "no script ran"] : [STRENGTH[x.strength] ?? x.strength, x.ms != null && `${(x.ms / 1000).toFixed(1)} s`, sandbox, x.head && String(x.head).slice(0, 7), base,
+        .child(div().min_w(0).whitespace_normal().text_color(t.muted).child((notRun ? [x.reason || x.number || "no script ran"] : [STRENGTH[x.strength] ?? x.strength, x.ms != null && `${(x.ms / 1000).toFixed(1)} s`, sandbox, x.head && String(x.head).slice(0, 7), base,
           x.pre_existing === true && "breaks the same way on the base", x.pre_existing === "unknown" && "old or new unclear: the base was not comparable"]).filter(Boolean).join(" · "))))
         .when(Boolean(x.number) && !notRun, (y) => y.child(div().whitespace_normal().child(x.number)))
         .when(notRun, (y) => y.child(h_flex().child(pill(`rv-res-again-${x.id}`, t, `Run probe again (${price})`, start).tooltip("One model call writes a script; the runner starts it against the PR head and the base, in a sandbox without network, for at most 30 s"))))
@@ -4257,13 +4261,13 @@ export const ReviewMode = {
     const WORD = { finding: ["finding", t.foreground], not_checkable: ["not checkable", t.ansi3], elsewhere: ["elsewhere", t.muted], clean: ["clean", t.ansi2] };
     const NAME = { cors: "CORS", cache_control: "Cache-Control", rollback: "Rollback", limits: "Limits", cardinality: "Metric cardinality", clocks: "Clocks", health: "Health", shutdown: "Shutdown", alarms: "Alarms" };
     const link = (at, id) => div().id(id).flex_none().text_color(t.accent).cursor_pointer().on_click((_e, cx) => this.jumpTo(at, cx)).child(`${at} ↗`);
-    const row = (c, k) => h_flex().id(`rv-res-c-${k}`).gap(10).items_start().text_size(12.5).child(div().w(150).flex_none().font_semibold().child(NAME[c.check] ?? resWord(c.check)))
+    const row = (c, k) => h_flex().id(`rv-res-c-${k}`).gap(10).items_start().text_size(12.5).child(div().w(150).flex_none().font_semibold().child(NAME[c.check] ?? resWord(c.check).replace(/^./, (ch) => ch.toUpperCase())))
       .child(div().w(100).flex_none().text_color(WORD[c.result]?.[1] ?? t.muted).child(WORD[c.result]?.[0] ?? resWord(c.result))).child(div().flex_1().min_w(0).whitespace_normal().text_color(t.muted).child(c.why ?? ""))
       .when(Boolean(c.at), (e) => e.child(link(c.at, `rv-res-c-at-${k}`)));
     const label = (s) => div().w(170).flex_none().text_size(13).font_semibold().child(s);
     const lines = (id, items, none) => v_flex().id(id).flex_1().min_w(0).gap(3).text_size(12.5).children(items.length ? items.map((x, k) => h_flex().id(`${id}-${k}`).gap(10).items_start()
       .child(div().flex_1().min_w(0).whitespace_normal().child(x.text)).when(Boolean(x.at), (e) => e.child(link(x.at, `${id}-${k}-at`)))) : [div().text_color(t.muted).child(none)]);
-    const nc = [...checks.filter((c) => c.result === "not_checkable").map((c) => ({ text: `${NAME[c.check] ?? resWord(c.check)}: ${c.why ?? ""}`, at: c.at })),
+    const nc = [...checks.filter((c) => c.result === "not_checkable").map((c) => ({ text: `${NAME[c.check] ?? resWord(c.check).replace(/^./, (ch) => ch.toUpperCase())}: ${c.why ?? ""}`, at: c.at })),
       ...(res.not_checked ?? []).filter((s) => !resToolText(s)).map((s) => ({ text: s }))];
     // Without blind spots or calls (an older block) the run's own watch list stays.
     const w = resWatch(res, this.ai?.arch), watch = w.watch.length || w.before.length || (res.blind_spots ?? []).length ? w.watch : (res.watch ?? []).map((s) => ({ text: s }));
