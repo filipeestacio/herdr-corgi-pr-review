@@ -322,7 +322,10 @@ export const runSummary = (r, count = r?.count ?? 0) => (!r?.state ? "not run" :
 // caller), "public" (reachable so, something checks the caller), "internal". What checks: `auth_kind` (none | code |
 // gateway | iam) when the analysis has it, else the first word of the free text `auth`.
 export const exposureOf = (x) => (!x?.public ? "internal" : (x.auth_kind ? x.auth_kind === "none" : /^(|none|no|nothing|unauthenticated|-|–)$/i.test(String(x.auth ?? "").trim().replace(/[\s.(:;,].*$/, ""))) ? "open" : "public");
-export const EXPOSURE = { open: "Public, no auth", public: "Public, auth", internal: "Internal" };
+export const EXPOSURE = { open: "Public, no auth", failopen: "Auth, can fail open", public: "Public, auth", internal: "Internal" };
+// A public way in whose check an unresolved finding says can be passed (impact unauthorized_access): "failopen" while
+// that finding is open, else the row's own exposure. findings: the unresolved findings at this way in.
+export const exposureNow = (x, findings = []) => (x?.exposure === "public" && findings.some((f) => f.impact === "unauthorized_access") ? "failopen" : x?.exposure ?? "internal");
 // The analysis' access rows as the ways in (entry points: everything public, and routes, endpoints and APIs) and the
 // rights granted (the rest: IAM and resource policies). Each row keeps its index `k` and gets its `exposure`; the
 // entries come most exposed first, then in the given order.
@@ -336,7 +339,7 @@ export function surfaceOf(access) {
 // How far out a finding can be reached from: the analysis' word when it has one (stated), else from the most exposed
 // way in at it (derived: open → public, public with a check → authenticated, internal → internal_only), else unknown.
 export const REACH = ["public", "authenticated", "internal_only", "unknown"];
-const FROM_EXPOSURE = { open: "public", public: "authenticated", internal: "internal_only" };
+const FROM_EXPOSURE = { open: "public", failopen: "public", public: "authenticated", internal: "internal_only" };
 export const reachLevel = (f, ways = []) => (REACH.includes(f?.reachability) ? f.reachability
   : ways.map((x) => FROM_EXPOSURE[x.exposure]).filter(Boolean).sort((a, b) => REACH.indexOf(a) - REACH.indexOf(b))[0] ?? "unknown");
 const SEV_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
@@ -525,4 +528,54 @@ export function layerAccess(access, files) {
 export function analysisAge({ head = null, exact = true, now = null, age = "" }) {
   const at = (x) => String(x).slice(0, 7), moved = !exact || Boolean(head && now && head !== now);
   return { stale: moved, text: `Analysis of ${head ? at(head) : exact ? "this diff" : "an older diff"}${age ? `, ${age}` : ""}${moved && now && head ? ` · the PR is at ${at(now)} now` : ""}` };
+}
+
+// ---- "What each run checked": the findings behind an area's "Finding"
+// ponytail: an area is matched by its words in a finding's title, effect and detail (findings name no area); a run
+// that reports areas per finding would make this exact.
+const AREA_WORDS = { authentication: /authenticat|\btoken|bearer|login|credential|session/i, authorization: /authori[sz]|access control|\brole|allowed to|any (?:caller|member|loan)/i,
+  input_validation: /input|validat|inject|saniti[sz]|unvalidated|request body/i, secrets: /secret|\btoken|api key|password|credential/i, permissions: /\biam\b|policy|permission|grant|least privilege/i,
+  personal_data: /personal|\bpii\b|e-?mail address|\bmembers?\b|\bnames?\b|\bcustomers?\b|\busers?'? (?:data|names?|e-?mails?)/i, dependencies: /dependenc|package|library version|requirements|lockfile/i,
+  error_handling: /error|exception|raises?\b|retr(?:y|ies)|fails?\b|failure/i, concurrency: /concurren|race|idempoten|redeliver|at[- ]least[- ]once|twice|duplicate|dedup/i,
+  state: /\bstate\b|status|transition/i, contracts: /contract|interface|schema|signature|requirement|acceptance/i };
+const AREA_CATEGORY = { correctness: ["bug"], tests: ["test"], contracts: ["requirement"] };
+// The findings of run `k` ("analysis" or a reviewer) that fall under `area`: by category where one fits, else by words.
+export function areaFindings(area, k, findings) {
+  const mine = (findings ?? []).filter((f) => (f.sources ?? [{ reviewer: f.reviewer }]).some((s) => s.reviewer === k));
+  const words = AREA_WORDS[area], cats = AREA_CATEGORY[area] ?? [];
+  return mine.filter((f) => cats.includes(f.category) || (words && words.test([f.title, f.effect, f.detail].filter(Boolean).join(" "))));
+}
+
+// ---- a state diagram's transitions and the findings at them
+// The unresolved findings at each transition of a state visual: one whose file and line fall on the transition's place
+// (`evidence` or `at`: "file:line" or "file:line-end"; a finding's own range counts). Returns Map(index in edges then
+// transitions -> {findings, severity: the highest}); a transition without a place has none.
+const RANK = { critical: 0, high: 1, medium: 2, low: 3 };
+export function transitionMarks(v, findings) {
+  const out = new Map(), place = (s) => /^(.+?):(\d+)(?:-(\d+))?/.exec(String(s ?? ""));
+  [...(v?.edges ?? []), ...(v?.transitions ?? [])].forEach((e, i) => {
+    const m = place(e.evidence) ?? place(e.at);
+    if (!m) return;
+    const [path, a, b] = [m[1], Number(m[2]), Number(m[3] ?? m[2])];
+    const hit = (findings ?? []).filter((f) => f.file && (f.file === path || f.file.endsWith(`/${path}`) || path.endsWith(`/${f.file}`)) && (f.line ?? 0) <= b && (f.end ?? f.line ?? 0) >= a);
+    if (hit.length) out.set(i, { findings: hit, severity: hit.map((f) => f.severity).sort((x, y) => (RANK[x] ?? 9) - (RANK[y] ?? 9))[0] });
+  });
+  return out;
+}
+
+// Where the runs' self-reports in "What each run checked" contradict each other or the findings: an area one run calls
+// clean and another finds something in ("cross"), or one a run calls clean while an unresolved security finding names
+// it in its effect, by the area's words ("effect": "personal data clean" and "they can read members' names"). tab: scopeTable;
+// open: the unresolved findings. Returns Map(area -> {kind, text, findings}).
+export function scopeConflicts(tab, open = []) {
+  const out = new Map();
+  for (const r of tab?.rows ?? []) {
+    const cells = Object.entries(r.cells).filter(([, c]) => c), clean = cells.filter(([, c]) => c.result === "clean").map(([k]) => k), found = cells.filter(([, c]) => c.result === "finding").map(([k]) => k);
+    if (!clean.length) continue;
+    if (found.length) { out.set(r.area, { kind: "cross", text: `${clean.join(", ")} ${clean.length === 1 ? "calls" : "call"} it clean, ${found.join(", ")} ${found.length === 1 ? "finds" : "find"} something here.`, findings: [] }); continue; }
+    // Only a finding about security says something an area of the security run should have seen.
+    const words = AREA_WORDS[r.area], hit = words ? open.filter((f) => (f.security || ["unauthorized_access", "data_exposure"].includes(f.impact)) && words.test(String(f.effect ?? ""))) : [];
+    if (hit.length) out.set(r.area, { kind: "effect", text: `Called clean, but ${hit.length === 1 ? "an unresolved finding names" : `${hit.length} unresolved findings name`} it in ${hit.length === 1 ? "its" : "their"} effect: ${hit.slice(0, 2).map((f) => f.title).join("; ")}.`, findings: hit });
+  }
+  return out;
 }

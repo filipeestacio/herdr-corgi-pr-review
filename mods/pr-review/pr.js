@@ -1156,3 +1156,25 @@ export function diffPath(paths, path) {
   const ends = all.filter((p) => p.endsWith(`/${path}`));
   return ends.length === 1 ? ends[0] : null;
 }
+
+// ---- which model a run should use
+// The recommended model class for a run and why, in one sentence. kind: analysis | security | verify | ask | fix.
+// data {lines: changed lines in the diff, files: changed files, rules: the security trigger's rules (related.py:
+// auth, secrets, permissions, access, route, entry, dependencies, infrastructure), risk: the analysis' merge risk,
+// security: the run is about a security finding (verify, fix)}. Sonnet is the rule, also for the security review (its
+// checks are narrow; the owner's call); Opus for a large diff, an analysis of a security-critical one, or a check or
+// fix of a security finding; never Haiku, which is too weak to reason about code. Returns {tier: "sonnet" | "opus", why}.
+export const BIG_DIFF = { lines: 1500, files: 40 };
+const CRITICAL = ["auth", "secrets", "permissions", "access"];
+export function recommendModel(kind, data = {}) {
+  const lines = Number(data.lines ?? 0), files = Number(data.files ?? 0), rules = [...new Set(data.rules ?? [])];
+  const big = lines >= BIG_DIFF.lines || files >= BIG_DIFF.files, critical = rules.filter((r) => CRITICAL.includes(r));
+  if (kind === "ask") return { tier: "sonnet", why: "one question about the code needs no larger model" };
+  if ((kind === "verify" || kind === "fix") && data.security) return { tier: "opus", why: "it is about a security finding" };
+  if (big && kind !== "fix") return { tier: "opus", why: `the diff is large (${lines} lines in ${files} ${files === 1 ? "file" : "files"})` };
+  if (kind === "analysis" && critical.length) return { tier: "opus", why: `the diff touches ${critical.join(", ")}, where a missed weakness costs most` };
+  if (kind === "analysis" && data.risk === "high" && rules.length) return { tier: "opus", why: "the merge risk is high and the diff touches security-relevant code" };
+  return { tier: "sonnet", why: big ? "a fix changes a few lines, however large the PR" : kind === "security" ? "its checks are narrow and the diff is of ordinary size" : `the diff is of ordinary size${rules.length ? " and touches nothing security-critical" : ""}` };
+}
+// One class up or down from `tier` for code, never to Haiku: {up, down} (null at the end).
+export const tierSteps = (tier) => ({ up: tier === "sonnet" ? "opus" : null, down: tier === "opus" ? "sonnet" : null });

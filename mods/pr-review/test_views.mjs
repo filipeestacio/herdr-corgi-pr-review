@@ -467,3 +467,53 @@ assert.equal(chipAt(850, 1000, [80, 100]), 0, "the one before it, a gap to the l
 assert.equal(chipAt(897, 1000, [80, 100]), -1, "the gap between them");
 assert.equal(chipAt(700, 1000, [80, 100]), -1);
 assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
+
+// ---- the findings behind an area's "Finding" in "What each run checked"
+{
+  const { areaFindings } = await import("./views.js");
+  const src = (k) => [{ reviewer: k }];
+  const list = [{ id: "t", title: "Front desk token defaults to empty", category: "security", sources: src("security") },
+    { id: "q", title: "Queue.publish never sends to SQS", category: "bug", sources: src("security") },
+    { id: "m", title: "Reminder mailed twice", category: "bug", sources: src("claude") },
+    { id: "n", title: "New behavior is untested", category: "test", sources: src("claude") }];
+  assert.deepEqual(areaFindings("authentication", "security", list).map((f) => f.id), ["t"]);
+  assert.deepEqual(areaFindings("authentication", "claude", list), [], "only that run's findings");
+  assert.deepEqual(areaFindings("correctness", "claude", list).map((f) => f.id), ["m"]);
+  assert.deepEqual(areaFindings("concurrency", "claude", list).map((f) => f.id), ["m"]);
+  assert.deepEqual(areaFindings("tests", "claude", list).map((f) => f.id), ["n"]);
+  assert.deepEqual(areaFindings("dependencies", "security", list), []);
+}
+
+// ---- findings at a state diagram's transitions
+{
+  const { transitionMarks } = await import("./views.js");
+  const v = { kind: "state_machine", nodes: [{ id: "a" }, { id: "b" }], transitions: [{ from: "a", to: "b", evidence: "library/status.py:14" }, { from: "b", to: "a", at: "status.py:29-31" }, { from: "b", to: "b" }] };
+  const f = (id, file, line, severity, end) => ({ id, file, line, end, severity });
+  const m = transitionMarks(v, [f("x", "library/status.py", 14, "medium"), f("y", "library/status.py", 30, "low"), f("z", "library/status.py", 28, "high", 29), f("w", "library/loans.py", 14, "high")]);
+  assert.deepEqual([...m].map(([i, x]) => [i, x.findings.map((g) => g.id), x.severity]), [[0, ["x"], "medium"], [1, ["y", "z"], "high"]]);
+  assert.equal(transitionMarks(v, []).size, 0); assert.equal(transitionMarks(null, null).size, 0);
+}
+
+// ---- a way in whose check an open finding can pass
+{
+  const { exposureNow, surfaceOf, EXPOSURE } = await import("./views.js");
+  const api = { exposure: "public" };
+  assert.equal(exposureNow(api, [{ impact: "unauthorized_access" }]), "failopen"); assert.equal(EXPOSURE.failopen, "Auth, can fail open");
+  assert.equal(exposureNow(api, [{ impact: "data_loss" }]), "public"); assert.equal(exposureNow(api), "public");
+  assert.equal(exposureNow({ exposure: "open" }, [{ impact: "unauthorized_access" }]), "open", "nothing checks it anyway");
+  assert.equal(exposureNow({ exposure: "internal" }, [{ impact: "unauthorized_access" }]), "internal");
+  assert.deepEqual(surfaceOf([{ resource: "a", public: true, auth: "token" }, { resource: "b", public: true, auth: "none" }]).entries.map((x) => x.resource), ["b", "a"], "the order is unchanged");
+}
+
+// ---- contradictions in "What each run checked"
+{
+  const { scopeConflicts, scopeTable } = await import("./views.js");
+  const tab = scopeTable({ checked: [{ area: "personal_data", result: "clean" }, { area: "authentication", result: "finding" }] },
+    { security: { scope: { checked: [{ area: "authentication", result: "clean" }, { area: "secrets", result: "clean" }] } } });
+  const c = scopeConflicts(tab, [{ title: "Token fails open", security: true, effect: "Anyone can list members' names and books." }, { title: "Mailed twice", effect: "Members get two mails." }]);
+  assert.deepEqual([...c.keys()], ["personal_data", "authentication"]);
+  assert.equal(c.get("authentication").kind, "cross"); assert.equal(c.get("personal_data").kind, "effect");
+  assert.match(c.get("personal_data").text, /Token fails open/);
+  assert.equal(scopeConflicts(tab, []).size, 1, "without findings only the runs' own contradiction");
+  assert.equal(scopeConflicts(null).size, 0);
+}
