@@ -1191,7 +1191,7 @@ export function diffPath(paths, path) {
 }
 
 // ---- which model a run should use
-// The recommended model class for a run and why, in one sentence. kind: analysis | security | verify | ask | fix.
+// The recommended model class for a run and why, in one sentence. kind: analysis | security | resilience | verify | ask | fix.
 // data {lines: changed lines in the diff, files: changed files, rules: the security trigger's rules (related.py:
 // auth, secrets, permissions, access, route, entry, dependencies, infrastructure), risk: the analysis' merge risk,
 // security: the run is about a security finding (verify, fix)}. Sonnet is the rule, also for the security review (its
@@ -1207,7 +1207,141 @@ export function recommendModel(kind, data = {}) {
   if (big && kind !== "fix") return { tier: "opus", why: `the diff is large (${lines} lines in ${files} ${files === 1 ? "file" : "files"})` };
   if (kind === "analysis" && critical.length) return { tier: "opus", why: `the diff touches ${critical.join(", ")}, where a missed weakness costs most` };
   if (kind === "analysis" && data.risk === "high" && rules.length) return { tier: "opus", why: "the merge risk is high and the diff touches security-relevant code" };
+  if (kind === "resilience") { // data.start: resilienceStart(); never Haiku, Opus where retries, timeouts and redelivery interact
+    const st = data.start ?? {};
+    if (st.async && st.infra) return { tier: "opus", why: "it changes asynchronous calls and infrastructure together, where retries, timeouts and redelivery interact" };
+    if (st.concurrency) return { tier: "opus", why: "it brings in concurrency, where races hide" };
+    if (st.queues >= 2 && st.retries > 0) return { tier: "opus", why: "it puts two asynchronous steps with retries in a row" };
+    return { tier: "sonnet", why: "it reads the calls, retries and effects of a diff of ordinary size" };
+  }
   return { tier: "sonnet", why: big ? "a fix changes a few lines, however large the PR" : kind === "security" ? "its checks are narrow and the diff is of ordinary size" : `the diff is of ordinary size${rules.length ? " and touches nothing security-critical" : ""}` };
 }
 // One class up or down from `tier` for code, never to Haiku: {up, down} (null at the end).
 export const tierSteps = (tier) => ({ up: tier === "sonnet" ? "opus" : null, down: tier === "opus" ? "sonnet" : null });
+
+// ---- Resilience (reviewers.py kind "resilience", block `resilience` in the findings file): the model gives facts at
+// their lines; the ladders, budgets, blockers and the sentence on top are computed here, the same way every time.
+
+// What a path breaks that blocks a merge, in the order the reason is told, with the reason in words. Alone no blocker:
+// no jitter, no alarm, no breaker, no trace context, high cardinality (they make a failure worse or harder to see).
+export const RES_BLOCKING = [
+  ["unbounded_retry", "load grows without a limit"],
+  ["no_dlq", "a message that always fails comes back until it expires"],
+  ["poison_message", "a message that always fails comes back until it expires"],
+  ["over_timeout", "the worst run outlasts its timeout and is delivered again"],
+  ["duplicate_effect", "a visible effect happens twice"],
+  ["lost_effect", "a visible effect is lost"],
+  ["swallowed_retry", "an exhausted retry drops the work without a word"],
+  ["shared_resource", "a failure reaches a resource shared across deployments"],
+  ["no_timeout_public", "a call without a timeout waits inside a public route's request"],
+  ["removed_signal", "the PR removes the signal on this path"],
+];
+const days = (s) => (s >= 86400 ? `${Math.round(s / 86400)} ${Math.round(s / 86400) === 1 ? "day" : "days"}` : s >= 3600 ? `${Math.round(s / 3600)} h` : `${Math.round(s)} s`);
+// The calls a path goes through: the deps whose edge or place is one of its steps.
+const depsOf = (path, deps) => (deps ?? []).filter((d) => (d.edge && path.steps.includes(d.edge)) || (d.at && path.steps.includes(d.at)));
+
+// How much a failure on this path multiplies: one factor per retry layer and per redelivery, with its line; the
+// product as text. A redelivery without a dead-letter queue or a receive limit has no limit until the message expires.
+export function ladderOf(path, deps) {
+  const factors = [];
+  for (const d of depsOf(path, deps)) {
+    const r = d.retry, t = d.trigger;
+    if (r?.attempts > 1) factors.push({ label: `${r.layer || "retry"}: ${r.attempts} attempts`, n: r.attempts, at: r.at || d.at });
+    if (t && (t.batch > 1) && t.partial_batch === false) factors.push({ label: `the whole batch of ${t.batch} again`, n: t.batch, at: d.at });
+    if (t && t.max_receive > 0) factors.push({ label: `redelivered up to ${t.max_receive} times, then the dead-letter queue`, n: t.max_receive, at: d.at });
+    else if (t && t.dlq === false && d.mode === "async") {
+      const until = t.retention_s ? ` (${days(t.retention_s)})` : "";
+      factors.push({ label: `redelivered until the message expires${until}`, n: null, at: d.at, until });
+    }
+  }
+  if (!factors.length) return null;
+  const open = factors.find((f) => f.n === null);
+  const text = open ? `no limit until the message expires${open.until}` : `up to ${factors.reduce((p, f) => p * f.n, 1)} times`;
+  return { factors, text };
+}
+
+// A batch's worst run against its function's timeout: batch × the longest one record can take (worst_record_s).
+export function budgetOf(path, deps) {
+  const d = depsOf(path, deps).find((x) => x.trigger?.batch > 0 && x.trigger?.worst_record_s > 0 && x.trigger?.fn_timeout_s > 0);
+  if (!d) return null;
+  const { batch, worst_record_s: w, fn_timeout_s: limit } = d.trigger, value = batch * w, over = value - limit;
+  return { value_s: value, limit_s: limit, over_s: Math.max(0, over), at: d.at,
+    text: over > 0 ? `up to ${value} s for a batch of ${batch} against a ${limit} s timeout: ${over} s over` : `up to ${value} s for a batch of ${batch}, within its ${limit} s timeout` };
+}
+
+// Whether a path blocks the merge and why, in words with the line: only a path with a finding; by what it breaks
+// (RES_BLOCKING), by a ladder without a limit, by a budget over its timeout, or when it repeats or loses effects
+// and nothing signals it.
+export function blockerOf(path, ladder, budget) {
+  // Reading state another process holds is a finding, not a blocker: what it breaks (a poison message, a lost mail)
+  // blocks in its own path. (A race and such a read exclude each other; neither is double counted.)
+  if (path.result !== "finding" || path.failing.includes("reads_foreign_state")) return null;
+  const at = path.steps.find((s) => /:\d+$/.test(s)) ?? path.limited_by ?? null;
+  const hit = RES_BLOCKING.find(([k]) => path.failing.includes(k));
+  if (hit) return { why: hit[1], at: hit[0] === "over_timeout" && budget ? budget.at : at };
+  if (ladder?.factors.some((f) => f.n === null)) return { why: "load grows without a limit", at: ladder.factors.find((f) => f.n === null).at };
+  if (budget?.over_s > 0) return { why: "the worst run outlasts its timeout and is delivered again", at: budget.at };
+  if (!path.visible && (path.kind === "effect" || path.kind === "silent")) return { why: "the path repeats or loses effects and nothing signals it", at };
+  return null;
+}
+
+const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+// The block of a run with its derived parts, at this.ai.resilience; null without one. head: today's head (older:
+// the run looked at another one).
+// findings: the findings file's (or merged) findings; a path whose findings were all there before this PR
+// (introduced_here false) is pre_existing and blocks nothing.
+export function withResilience(ai, block, head = null, findings = []) {
+  if (!ai) return ai;
+  if (!block || !Array.isArray(block.paths)) return { ...ai, resilience: null };
+  const deps = block.deps ?? [], before = new Map(findings.flatMap((f) => (f.ids ?? [f.id]).map((id) => [id, f.introduced_here === false])));
+  const paths = block.paths.map((p) => {
+    const ladder = ladderOf(p, deps), budget = budgetOf(p, deps), pre = p.findings.length > 0 && p.findings.every((id) => before.get(id) === true);
+    return { ...p, ladder, budget, pre_existing: pre, blocker: pre ? null : blockerOf(p, ladder, budget) };
+  }).sort((a, b) => Number(Boolean(b.blocker)) - Number(Boolean(a.blocker)));
+  const blockers = paths.filter((p) => p.blocker), found = paths.filter((p) => p.result === "finding"), mitigated = paths.filter((p) => p.result === "mitigated");
+  const na = paths.filter((p) => p.result === "not_assessed").length, checks = block.checks ?? [];
+  const tail = na ? `; ${na} not assessed` : "";
+  const summary = !paths.length ? "The run found no path a failure takes through this change."
+    : blockers.length ? `${blockers.length} of ${plural(paths.length, "path")} ${blockers.length === 1 ? "blocks" : "block"} the merge: ${blockers[0].blocker.why}${blockers.length > 1 ? `, and ${blockers.length - 1} more` : ""}${tail}.`
+      : found.length ? `${plural(found.length, "path")} with a finding, none blocks the merge${tail}.`
+        : mitigated.length ? `Every assessed path is limited${mitigated[0].limited_by ? `, e.g. at ${mitigated[0].limited_by}` : ""}${tail}.` : `No path was assessed${tail}.`;
+  const watch = [...new Set([
+    ...(block.blind_spots ?? []).filter((b) => b.alarm === "none" || b.alarm === "unknown").map((b) => `${b.failure} (${b.at}): nothing in the repository alarms on it`),
+    ...deps.filter((d) => d.mode === "async").map((d) => `the age of the oldest message at ${d.edge ?? d.at}`),
+  ])];
+  return { ...ai, resilience: { ...block, paths, blockers: blockers.map((p) => p.id), summary, watch, older: Boolean(block.head && head && block.head !== head),
+    counts: { paths: paths.length, blockers: blockers.length, mitigated: mitigated.length, not_assessed: na,
+      checks_clean: checks.filter((c) => c.result === "clean").length, not_checkable: checks.filter((c) => c.result === "not_checkable").length } } };
+}
+
+// Where a resilience run would start, counted from the diff without a model (files: splitPatch): queues, functions,
+// public routes and retries the PR adds, with their lines; infra, async and concurrency for recommendModel.
+const RES_SPOTS = {
+  queue: /AWS::SQS::Queue|AWS::SNS::Topic|AWS::Kinesis::Stream|aws_sqs_queue|aws_sns_topic|createQueue\(|new\s+\w*Queue\(/,
+  function: /AWS::Serverless::Function|AWS::Lambda::Function|aws_lambda_function|exports\.handler\s*=|^\s*def\s+(lambda_)?handler\(/,
+  route: /Type:\s*(HttpApi|Api)\b|AWS::ApiGateway|aws_apigatewayv2_route|@\w+\.(route|get|post|put|patch|delete)\(|\brouter?\.(get|post|put|patch|delete)\(|rawPath"?\)?\s*==|\bpath\s*==\s*["']\//,
+  retry: /\bretr(y|ies)\b|max_?attempts|backoff|tenacity|for\s+attempt\s+in|MaximumRetryAttempts|maxReceiveCount/i,
+};
+const RES_INFRA = /\.(tf|tfvars|hcl|bicep)$|(^|\/)(template|serverless|samconfig|docker-compose)[^/]*\.(ya?ml|json|toml)$|(^|\/)(k8s|helm|charts|terraform|infra|cdk)\//i;
+const RES_ASYNC = /\.publish\(|send_message|sendMessage|\bsqs\b|\bsns\b|eventbridge|kafka/i;
+const RES_CONC = /threading|ThreadPool|asyncio\.(gather|create_task)|Promise\.all|\bgo\s+func|\bLock\(|Semaphore/;
+export function resilienceStart(files = []) {
+  const spots = [];
+  let infra = false, async = false, concurrency = false;
+  for (const f of files) {
+    if (RES_INFRA.test(f.path)) infra = true;
+    for (const r of diffRows(f.lines ?? [])) {
+      if (r.kind !== "+") continue;
+      for (const [kind, rx] of Object.entries(RES_SPOTS)) if (rx.test(r.text)) spots.push({ file: f.path, line: r.number, kind });
+      if (RES_ASYNC.test(r.text)) async = true;
+      if (RES_CONC.test(r.text)) concurrency = true;
+    }
+  }
+  const n = (k) => spots.filter((s) => s.kind === k).length, c = { queues: n("queue"), functions: n("function"), routes: n("route"), retries: n("retry") };
+  const parts = [[c.queues, "queue"], [c.functions, "function"], [c.routes, "public route"], [c.retries, "retry", "retries"]].filter(([x]) => x > 0).map(([x, one, many]) => plural(x, one, many));
+  const sentence = parts.length ? `This PR adds ${parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}` : parts[0]}.` : "This PR adds no queue, function, route or retry; the run reads the changed calls only.";
+  return { ...c, spots, infra, async: async || c.queues > 0, concurrency, sentence };
+}
+// What a resilience run typically costs and takes, for runOffer before a first run: Sonnet measured on the demo PR #2
+// (3 runs with effort high: $0.21-0.31, 89-94 s); Opus scaled by its output price and not measured (measured: false).
+export const RUN_TYPICAL = { resilience: { sonnet: { usd: 0.25, s: 92, measured: true }, opus: { usd: 0.33, s: 140, measured: false } } };
