@@ -30,6 +30,8 @@ assert reviewers.review.git_hint("/w") in reviewers.findings_schema("claude", "/
 assert reviewers.review.permissions(None, "Read")[3:5] == ("--allowedTools", "Read") and reviewers.review.git_hint(None) == "", "no checkout: no git"
 import llm  # noqa: E402
 assert llm.env_for(None)["GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS"] == "1"
+assert json.loads(llm.LEAN[llm.LEAN.index("--settings") + 1])["permissions"] == {"blockReadsOutsideWorkingDirectories": True,
+    "additionalDirectories": [str(reviewers.review.SAFEGIT.parent)]}, "built-in reads stay in the checkout and the mod's folder (for safegit.py)"
 assert {"Edit", "Write", "WebFetch", "WebSearch"} <= set(denied)
 
 # The picture comes from the newest analysis of the same PR that has one; a request file next to it is no analysis.

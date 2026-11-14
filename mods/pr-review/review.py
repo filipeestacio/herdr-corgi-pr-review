@@ -46,7 +46,7 @@ LEVELS = ["high", "medium", "low"]
 # file tools and read-only git through safegit.py, fixed to this checkout (git diff with a path outside the repository
 # silently turns into --no-index and reads any file; safegit refuses such paths and the options that write a file,
 # run a program or read one, also abbreviated). git itself is denied; no network, no writes.
-SAFEGIT = pathlib.Path(__file__).with_name("safegit.py")
+SAFEGIT = pathlib.Path(__file__).resolve().with_name("safegit.py")  # as llm.py lets it through
 
 
 def git_call(root):
