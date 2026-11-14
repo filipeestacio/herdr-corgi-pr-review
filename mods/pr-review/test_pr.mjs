@@ -910,6 +910,13 @@ console.log("ok");
   assert.deepEqual([blockerOf(P("p", "effect", ["mailer"], "finding", ["duplicate_effect"]), null, null, fx)?.why, blockerOf(P("p", "effect", ["library/audit.py:3"], "finding", ["duplicate_effect"]), null, null, fx),
     blockerOf(P("p", "silent", ["events.py:20"], "finding", ["lost_effect"], { end: "no mails and no signal" }), null, null, fx)?.why],
     ["a visible effect happens twice", null, "a visible effect is lost"], "a mail twice blocks, a log line twice does not; the end can name the mail");
+  // A dead-letter queue bounds a poison message; a slow call in a request that is not redelivered fails, it does not come back.
+  const dlqDeps = [{ edge: "e6", at: "consumer.py:13", mode: "async", trigger: { batch: 5, partial_batch: true, dlq: true, max_receive: 3 } }];
+  assert.equal(blockerOf(P("p", "other", ["handler.py:21"], "finding", ["poison_message"]), null, null, [], dlqDeps), null, "the DLQ takes it after three receives");
+  assert.equal(blockerOf(P("p", "other", ["handler.py:21"], "finding", ["poison_message"]), null, null, [], [{ ...dlqDeps[0], trigger: { dlq: false } }])?.why,
+    "a message that always fails comes back until it expires", "without one it comes back");
+  assert.equal(blockerOf(P("p", "timeout", ["events.py:35"], "finding", ["over_timeout"]), null, null, [], dlqDeps), null, "a request that times out fails, nothing redelivers it");
+  assert.equal(blockerOf(P("p", "timeout", ["e6"], "finding", ["over_timeout"]), null, null, [], dlqDeps)?.why, "the worst run outlasts its timeout and is delivered again");
   // One cause blocks once: three paths behind the same missing dead-letter queue.
   const dq = withResilience(mapReview({ steps: [] }, []), { deps, effects: fx, paths: [P("p1", "retry", ["e5"], "finding", ["no_dlq"], { findings: ["dlq"] }),
     P("p2", "state", ["e5", "x.py:1"], "finding", ["poison_message"], { findings: ["dlq"] }), P("p3", "effect", ["mailer"], "finding", ["duplicate_effect"], { findings: ["twice"] })] }).resilience;

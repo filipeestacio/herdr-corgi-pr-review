@@ -1280,12 +1280,19 @@ const RES_EFFECT = new Set(["duplicate_effect", "lost_effect", "swallowed_retry"
 // A path's end that names such an effect counts too: a lost publish ends in mails nobody gets.
 const visibleOn = (path, effects) => !effects.length || RES_VISIBLE.test(path.end ?? "") || effects.some((e) => RES_VISIBLE.test(`${e.kind} ${e.id}`) &&
   (path.steps.includes(e.node) || path.steps.some((s) => String(s).split(":")[0] === String(e.at ?? "").split(":")[0])));
-export function blockerOf(path, ladder, budget, effects = []) {
+// A message that always fails is bounded when a dead-letter queue or a receive limit takes it (on the path's calls,
+// else on every queue consumer of the run); a run outlasting its timeout blocks only when it comes back (a consumer
+// with redelivery), not in a request that just fails.
+const RES_UNBOUNDED = new Set(["unbounded_retry", "no_dlq", "poison_message"]);
+export function blockerOf(path, ladder, budget, effects = [], deps = []) {
   // Reading state another process holds is a finding, not a blocker: what it breaks (a poison message, a lost mail)
   // blocks in its own path. (A race and such a read exclude each other; neither is double counted.)
   if (path.result !== "finding" || path.failing.includes("reads_foreign_state")) return null;
   const at = path.steps.find((s) => /:\d+$/.test(s)) ?? path.limited_by ?? null, seen = visibleOn(path, effects);
-  const hit = RES_BLOCKING.find(([k]) => path.failing.includes(k) && (!RES_EFFECT.has(k) || seen));
+  const mine = depsOf(path, deps), consumers = (mine.length ? mine : deps).filter((d) => d.trigger);
+  const bounded = ladder ? ladder.factors.every((f) => f.n !== null) : consumers.length > 0 && consumers.every((d) => d.trigger.dlq === true || d.trigger.max_receive > 0);
+  const redelivered = Boolean(budget) || mine.some((d) => d.trigger && d.mode === "async");
+  const hit = RES_BLOCKING.find(([k]) => path.failing.includes(k) && (!RES_EFFECT.has(k) || seen) && (!RES_UNBOUNDED.has(k) || !bounded) && (k !== "over_timeout" || redelivered));
   if (hit) return { why: hit[1], at: hit[0] === "over_timeout" && budget ? budget.at : at };
   if (ladder?.factors.some((f) => f.n === null)) return { why: "load grows without a limit", at: ladder.factors.find((f) => f.n === null).at };
   if (budget?.over_s > 0) return { why: "the worst run outlasts its timeout and is delivered again", at: budget.at };
@@ -1306,7 +1313,7 @@ export function withResilience(ai, block, head = null, findings = []) {
   const sec = new Set(findings.filter((f) => f.security || (f.sources ?? []).some((x) => x.reviewer === "security")).flatMap((f) => f.ids ?? [f.id]));
   const paths = block.paths.map((p) => {
     const ladder = ladderOf(p, deps), budget = budgetOf(p, deps), pre = p.findings.length > 0 && p.findings.every((id) => before.get(id) === true);
-    return { ...p, ladder, budget, pre_existing: pre, blocker: pre ? null : blockerOf(p, ladder, budget, block.effects ?? []), also_security: p.findings.some((id) => sec.has(id)) };
+    return { ...p, ladder, budget, pre_existing: pre, blocker: pre ? null : blockerOf(p, ladder, budget, block.effects ?? [], deps), also_security: p.findings.some((id) => sec.has(id)) };
   });
   // One cause blocks once: a blocking path with the reason of an earlier one and a finding or a call (a dep's place)
   // in common is that path again (same_cause: its id), a finding but no second blocker; the missing dead-letter queue
