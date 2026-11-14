@@ -7,6 +7,7 @@ import { levels } from "./pr.js";
 import { markLine } from "./arch.js";
 import { archLayout, archFocus, stateLayout, transitionText, sourceStyle, hasSources, pathMark, SPEC_TIP, ARCH, LABEL } from "./arch.js";
 import { flowArch, seqLayout, wrapCount, SEQ, solidOver } from "./views.js";
+import { readableFade } from "./views.js"; // wave R2: dimmed text stays readable
 
 export const STATUS_COLOR = { new: "ansi2", added: "ansi2", changed: "accent", unchanged: "muted", removed: "ansi1" };
 export const SEVERITY_COLOR = { critical: "ansi1", high: "ansi1", medium: "ansi3", low: "ansi4", minimal: "ansi2" };
@@ -77,6 +78,9 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
   // opts.zoom (the person's zoom): a line is at least one device pixel wide, or it is not drawn when zoomed far out.
   const thin = Math.max(1.5, 1 / (opts.zoom || 1)), W = (p) => (opts.hl === p.num ? thin + 1 : thin);
   const dim = (el, on, by = fade) => (on ? el.opacity(by) : el);
+  // Dimmed text (a call's text, its number, a chip, a card) stays at 4.5:1 against the background; lines go to `fade`.
+  // L.label: the text's size from the layout (the Resilience map's is larger).
+  const textFade = readableFade(t.foreground, t.background, fade), LB = L.label ?? { ...LABEL, px: 10.5 };
   // A call's own tooltip (tip: the Security picture's, what the check is and holds on) says more than its label again.
   const tipOf = (p) => [p.tip ?? p.label, sourceStyle(p.source).tip, p.evidence].filter(Boolean).join("\n");
   const hop = ARCH.HOP, els = [];
@@ -111,21 +115,21 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
     .flex().items_center().justify_center().rounded_full().border_1().border_color(bare(p) ? sevOf(bare(p)) : color(p)).bg(opts.hl === p.num ? t.accent + "33" : bare(p) ? sevOf(bare(p)) + "26" : t.background)
     .text_size(11).text_color(t.foreground).tooltip([tipOf(p), bare(p) && markTip(bare(p))].filter(Boolean).join("\n")).child(String(p.num))
     .when(Boolean(opts.onHl), (e) => e.on_hover((on, cx) => opts.onHl(on ? p.num : null, cx)))
-    .when(Boolean(p.evidence && opts.onJump), (e) => e.cursor_pointer().on_click((_e, cx) => { opts.onJump(p.evidence, cx); cx.stop_propagation(); })), dimP(p))] : []));
+    .when(Boolean(p.evidence && opts.onJump), (e) => e.cursor_pointer().on_click((_e, cx) => { opts.onJump(p.evidence, cx); cx.stop_propagation(); })), dimP(p), textFade)] : []));
   // A call's text on its line, next to its number; a mark above it. Hover lights the call, a click opens its place.
   const texts = L.paths.flatMap((p, i) => (p.text ? [dim(v_flex().id(`${id}-t${i}`).absolute().left(p.text.x).top(p.text.y).w(p.text.w).h(p.text.h).px(3).py(2).rounded(4).bg(t.background).overflow_hidden()
-    .text_size(10.5).text_color(t.foreground).tooltip(tipOf(p))
+    .text_size(LB.px).text_color(t.foreground).tooltip(tipOf(p))
     .when(Boolean(opts.onHl), (e) => e.on_hover((on, cx) => opts.onHl(on ? p.num : null, cx)))
     .when(Boolean(p.evidence && opts.onJump), (e) => e.cursor_pointer().on_click((_e, cx) => { opts.onJump(p.evidence, cx); cx.stop_propagation(); }))
     .when(Boolean(p.text.mark && pathMark(marks, p)), (e) => e.child(markRow(pathMark(marks, p), `${id}-tm${i}`, LABEL.MARK, true)))
-    .children(p.text.lines.map((l) => div().flex_none().h(LABEL.LH).line_height(LABEL.LH / 10.5).whitespace_nowrap().child(l))), dimP(p))] : []));
+    .children(p.text.lines.map((l) => div().flex_none().h(LB.LH).line_height(LB.LH / LB.px).whitespace_nowrap().child(l))), dimP(p), textFade)] : []));
   const chips = L.paths.flatMap((p, i) => (p.chip ? [dim(div().id(`${id}-c${i}`).absolute().left(p.chip.x).top(p.chip.y).w(p.chip.w).h(p.chip.h).px(5)
     .flex().items_center().gap(6).rounded(6).border_1().border_color(bare(p) ? sevOf(bare(p)) : color(p)).when(p.dashed, (e) => e.border_dashed()).bg(opts.hl === p.num ? t.accent + "33" : t.background)
     .text_size(12).text_color(t.foreground).tooltip(`Call ${p.num}: ${tipOf(p)}\nNot drawn as a line, because it would skip a column or point back: the target is elsewhere in the picture. Hover to light it up, click to focus it.`)
     .child(div().w(ARCH.BADGE - 2).h(ARCH.BADGE - 2).flex_none().flex().items_center().justify_center().rounded_full().border_1().border_color(color(p)).text_size(10.5).child(String(p.num)))
     .child(div().min_w(0).truncate().child(p.chip.text))
     .when(Boolean(opts.onHl), (e) => e.on_hover((on, cx) => opts.onHl(on ? p.num : null, cx)))
-    .when(Boolean(opts.onFocus), (e) => e.cursor_pointer().on_click((_e, cx) => { opts.onFocus(p.to, cx); cx.stop_propagation(); })), dimP(p))] : []));
+    .when(Boolean(opts.onFocus), (e) => e.cursor_pointer().on_click((_e, cx) => { opts.onFocus(p.to, cx); cx.stop_propagation(); })), dimP(p), textFade)] : []));
   // A frame: a group, or a trust zone (arch.js zoneArch: the colour of its trust level, a light tint, the level's word
   // in the header). A bare group (cards outside every zone) has no frame.
   const groups = L.groups.flatMap((g, i) => (g.bare ? [] : [div().id(`${id}-g${i}`).absolute().left(g.x).top(g.y).w(g.w).h(g.h).rounded(12).border_1().border_dashed()
@@ -173,7 +177,7 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
         .child(div().flex_1())
         .when(open && Boolean(opts.onFocus) && n.w >= ARCH.W, (e) => e.child(div().id(`${id}-o${i}`).flex_none().px(4).rounded(4).text_color(t.accent).cursor_pointer().hover((s) => s.bg(t.hover))
           .tooltip("Show this place in the diff").child("Show in diff ↗").on_click((ev, cx) => { onNode(n, ev, cx); cx.stop_propagation(); })))
-        .when(Boolean(n.status) && !(ext && n.status === "unchanged"), (e) => e.child(chip(t, n.status === "new" ? "ADDED" : n.status.toUpperCase(), c, false, `${id}-st${i}`, `Status in this PR: ${n.status === "new" ? "added" : n.status}`)))), dimN(n), Math.max(fade, 0.6));
+        .when(Boolean(n.status) && !(ext && n.status === "unchanged"), (e) => e.child(chip(t, n.status === "new" ? "ADDED" : n.status.toUpperCase(), c, false, `${id}-st${i}`, `Status in this PR: ${n.status === "new" ? "added" : n.status}`)))), dimN(n), Math.max(textFade, 0.6));
   });
   // An orchestrator's states: a lane down the card, one row each; a state that calls a component ends in "→" where its
   // line leaves the card.
@@ -182,8 +186,17 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
       .child(div().flex_none().w(14).text_color(s.source !== "existing" && (s.status === "new" || s.status === "changed") ? t.accent : t.muted).child(STATE_GLYPH[s.type] ?? "▭"))
       .child(div().flex_1().min_w(0).truncate().text_color(s.source === "spec" || s.source === "existing" ? t.muted : t.foreground).child(s.name))
       .when(s.source === "spec", (e) => e.child(specTag(t, `${id}-s${i}-${k}-sp`)))
-      .when(Boolean(s.calls), (e) => e.child(div().flex_none().text_color(t.muted).child("→"))))), dimN(n), Math.max(fade, 0.6))]));
-  return div().id(id).relative().flex_none().w(L.width + 4).h(L.height + 4).children([gridBg(t, L.width + 4, L.height + 4), ...groups, ...els, ...crossings, ...bypasses, ...nodes, ...states, ...texts, ...badges, ...chips]);
+      .when(Boolean(s.calls), (e) => e.child(div().flex_none().text_color(t.muted).child("→"))))), dimN(n), Math.max(textFade, 0.6))]));
+  // opts.edgeNotes: Map(edge index -> text), a path's marks on a call itself (the Resilience map: ⏱ 10 s, ↻ no limit),
+  // just above the call's text, else above its number.
+  const notes = !opts.edgeNotes ? [] : L.paths.flatMap((p, i) => {
+    const text = [...new Set((p.edges ?? []).filter((k) => opts.edgeNotes.has(k)).map((k) => opts.edgeNotes.get(k)))].join(" · ");
+    if (!text || !p.badge) return [];
+    const x = p.text ? p.text.x : p.badge.x + ARCH.BADGE / 2 + 4, y = (p.text ? p.text.y : p.badge.y - ARCH.BADGE / 2) - LB.LH - 6;
+    return [div().id(`${id}-en${i}`).absolute().left(x).top(y).h(LB.LH + 4).px(3).flex().items_center().rounded(4).bg(t.background).whitespace_nowrap()
+      .text_size(LB.px).font_semibold().text_color(/no limit|✕|no /.test(text) ? t.ansi1 : t.foreground).child(text)];
+  });
+  return div().id(id).relative().flex_none().w(L.width + 4).h(L.height + 4).children([gridBg(t, L.width + 4, L.height + 4), ...groups, ...els, ...crossings, ...bypasses, ...nodes, ...states, ...texts, ...badges, ...chips, ...notes]);
 }
 const FLOW_FITS = 380;
 // A layer's flow laid out by archLayout, memoized like archModel. fit: its narrow cards (the layer column is about

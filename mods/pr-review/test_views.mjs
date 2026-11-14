@@ -693,7 +693,7 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   const { resMarksOn } = await import("./views.js");
   const arch = { nodes: [{ id: "q", at: "template.yaml:11" }, { id: "c", at: "library/consumer.py:11" }], edges: [{ from: "q", to: "c" }] };
   const m = resMarksOn([{ at: "e0", mark: "no DLQ" }, { at: "e0", mark: "⏱ 10 s" }, { at: "library/consumer.py:19", mark: "✕ silent" }, { at: "x.py:1", mark: "×3" }, { node: "q", text: "batch 10" }], arch);
-  assert.deepEqual([...m], [["c", "no DLQ · ⏱ 10 s · ✕ silent"], ["q", "batch 10"]]);
+  assert.deepEqual([...m], [["q", "no DLQ · batch 10"], ["c", "⏱ 10 s · ✕ silent"]], "a queue's mark at the queue");
 }
 
 // ---- panel round 3: right and call folded, defects, operator, ways, zones passed on
@@ -738,4 +738,53 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.equal(mapArch({ ...arch, nodes: arch.nodes.map((n) => (n.id === "m" ? { ...n, runs_in: "g_rc" } : n)) }).nodes.find((n) => n.id === "m").zone, "zi", "one id still reads");
   const rows = crossingsOf({ arch: { ...arch, edges: [{ from: "m", to: "c", crosses: true }] } });
   assert.deepEqual(rows.map((r) => r.from.trust), ["public"], "a call from the library starts in its most exposed zone");
+}
+
+// ---- wave R2: words for identifiers, the verdict, before merge / watch, doubled ways, readable dimming, picture by kind
+{
+  const { resWord, resToolText, resVerdict, resWatch, resTwice, readableFade, resPicture } = await import("./views.js");
+  assert.deepEqual(["poison_message", "no_dlq", "cannot_happen", "platform_only", "brand_new"].map(resWord), ["a message that always fails", "no dead-letter queue", "cannot happen here", "the platform's own metrics only", "brand new"]);
+  assert.ok(resToolText("Runtime behaviour: nothing was executed, because Bash was denied") && !resToolText("Deployed SQS defaults (visibility timeout, retention)"));
+  const paths = [{ blocker: { reason: "load grows" } }, { blocker: { reason: "mails repeat" } }, { blocker: { reason: "load grows" } }, {}];
+  assert.equal(resVerdict(paths), "3 of 4 paths block the merge: load grows (2 paths) and mails repeat.");
+  assert.equal(resVerdict([{}]), null);
+  const arch = { nodes: [{ id: "queue", label: "LoanEvents (SQS)", at: "template.yaml:11" }, { id: "consumer", at: "library/consumer.py:11" }, { id: "reminders", at: "library/reminders.py:16" }, { id: "mailer", label: "Mailer (mailer.py)" }],
+    edges: [{ from: "queue", to: "consumer" }, { from: "reminders", to: "mailer" }, { from: "consumer", to: "mailer" }] };
+  const res = { blind_spots: [{ failure: "Mail transport failure is not visible", at: "library/mailer.py:19", signal: "none", alarm: "none" }, { failure: "Queue age is not monitored", at: "template.yaml:11", signal: "platform_only", alarm: "none" }],
+    deps: [{ edge: "e0", at: "template.yaml:32", mode: "async" }, { at: "template.yaml:40", mode: "async" }, { at: "library/handler.py:21", mode: "in_process" }] };
+  const w = resWatch(res, arch);
+  assert.deepEqual(w.before.map((x) => x.at), ["library/mailer.py:19"], "no signal at all: before the merge");
+  assert.deepEqual(w.watch.map((x) => x.text), ["Queue age is not monitored; it shows in the platform's own metrics only, no alarm"], "the same queue once");
+  assert.equal(resWatch({ deps: [{ at: "template.yaml:32", mode: "async" }] }, arch).watch[0].text, "The age of the oldest message in LoanEvents (SQS)");
+  const effects = [{ kind: "mail", node: "reminders", at: "library/reminders.py:21" }, { kind: "mail", node: "consumer", at: "library/consumer.py:21" }, { kind: "publish", node: "events" }];
+  assert.deepEqual([...resTwice({ failing: ["duplicate_effect"], steps: ["library/reminders.py:21", "queue"] }, { effects }, arch)].sort(), ["consumer", "mailer", "reminders"], "both senders and the mailer they share");
+  assert.equal(resTwice({ failing: ["lost_effect"], steps: ["library/reminders.py:21"] }, { effects }, arch).size, 0);
+  assert.equal(readableFade("#eeeeef", "#17191d"), 0.5, "dark: 2.1:1 at 25 %, 4.5:1 from 50 %");
+  assert.ok(readableFade("#1f2328", "#ffffff") >= 0.6 && readableFade("#eeeeef", "#17191d", 0.55) === 0.55 && readableFade("hsl(0,0%,90%)", "#000") === 0.6);
+  assert.equal(resPicture({ kind: "timeout", ladder: [{}] }), null, "a timeout without its budget shows no ladder of another path");
+  assert.equal(resPicture({ kind: "silent", ladder: [{}] }), "ladder", "a kind without a picture of its own takes what there is");
+}
+
+// ---- wave R2: a queue's mark at the queue, the other marks of a call on the call
+{
+  const { resMarksOn, resEdgeMarks } = await import("./views.js");
+  const arch = { nodes: [{ id: "q", at: "template.yaml:11" }, { id: "c", at: "library/consumer.py:11" }], edges: [{ from: "q", to: "c" }] };
+  const marks = [{ at: "e0", mark: "no DLQ" }, { at: "e0", mark: "⏱ 10 s" }, { at: "library/consumer.py:19", mark: "✕ silent" }];
+  assert.deepEqual([...resMarksOn(marks, arch, true)], [["q", "no DLQ"], ["c", "✕ silent"]]);
+  const p = { marks, ladder: [{ name: "batch", factor: "×10", at: "template.yaml:37" }, { name: "until it expires", factor: "no limit", at: "template.yaml:32" }] };
+  assert.deepEqual([...resEdgeMarks(p, [{ edge: "e0", at: "template.yaml:32" }])], [[0, "⏱ 10 s · ↻ no limit"]]);
+}
+
+// ---- wave R2: the run's own unseen and watch lists, and a probe that dates an unclear blocker
+{
+  const { resWatch, resByProbe, resCardOf } = await import("./views.js");
+  const arch = { nodes: [{ id: "queue", label: "LoanEvents (SQS)", at: "template.yaml:11" }, { id: "consumer", at: "library/consumer.py:11" }, { id: "mailer", label: "Mailer (mailer.py)" }], edges: [{ from: "queue", to: "consumer" }] };
+  const w = resWatch({ unseen: ["A mail is dropped (library/mailer.py:14): nothing shows it"], watch: ["Consumer failures (library/consumer.py:11): seen as platform_only, but nothing alarms on it", "the age of the oldest message at e0"] }, arch);
+  assert.deepEqual(w.before, [{ text: "A mail is dropped: nothing shows it", at: "library/mailer.py:14" }]);
+  assert.deepEqual(w.watch.map((x) => x.text), ["Consumer failures: seen as the platform's own metrics only, but nothing alarms on it", "The age of the oldest message in LoanEvents (SQS)"]);
+  assert.equal(resCardOf("library/mailer.py:14-20", arch), "mailer", "a range of lines");
+  const paths = [{ id: "p9", probe: "r1", pre_existing: "unknown", blocker: { why: "lost", unclear: true } }, { id: "p2", blocker: { why: "x" } }];
+  const done = (verdict) => [{ id: "r1", status: "done", base: { verdict } }];
+  assert.equal(resByProbe(paths, done("already_on_base"))[0].blocker, null);
+  assert.deepEqual([resByProbe(paths, done("new_in_pr"))[0].blocker.unclear, resByProbe(paths, done("unknown"))[0].blocker.unclear, resByProbe(paths, [])[1]], [false, true, paths[1]]);
 }

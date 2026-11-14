@@ -931,7 +931,8 @@ export const resOrder = (paths) => [...(paths ?? [])].sort((a, b) => RES_RANK(a)
 export function resPicture(p) {
   const has = { ladder: p?.ladder?.length > 0, budget: Boolean(p?.budget), race: (p?.race?.steps ?? []).length > 0, writers: (p?.writers ?? []).filter((w) => w.kind === "W").length >= 2 };
   const pick = { retry: "ladder", timeout: "budget", race: "race", state: "writers" }[p?.kind];
-  return pick && has[pick] ? pick : ["ladder", "budget", "race", "writers"].find((k) => has[k]) ?? null;
+  // A kind with a picture of its own shows only that one (a timeout without its budget: no ladder of another path).
+  return pick ? (has[pick] ? pick : null) : ["ladder", "budget", "race", "writers"].find((k) => has[k]) ?? null;
 }
 // A budget as a bullet bar in px: the value's bar, the limit's line, the part over it. width: the bar's room.
 export function budgetBar({ value_s, limit_s }, width = 320) {
@@ -943,18 +944,18 @@ export function budgetBar({ value_s, limit_s }, width = 320) {
 export function resPathView(p, res = {}) {
   const lad = Array.isArray(p.ladder) ? p.ladder : (p.ladder?.factors ?? []).map((f) => ({ name: f.label, factor: f.n === null || f.n === undefined ? "no limit" : `×${f.n}`, at: f.at }));
   const race = p.race ?? (res.races ?? []).find((r) => (r.findings ?? []).some((id) => (p.findings ?? []).includes(id))) ?? (p.kind === "race" ? (res.races ?? [])[0] : null) ?? null;
-  const st = p.writers ? null : (res.state ?? []).find((x) => (x.writers ?? []).length >= 2 && x.writers.some((w) => (p.steps ?? []).includes(w.node)));
+  const st = p.writers ? null : (res.state ?? []).find((x) => (x.writers ?? []).length >= 2 && x.writers.some((w) => [...(p.reach ?? []), ...(p.steps ?? [])].includes(w.node)));
   const writers = p.writers ?? (st ? [...st.writers.map((w) => ({ ...w, kind: "W", guard: w.guard ?? "none" })), ...(st.readers ?? []).map((r) => ({ ...r, kind: "R", guard: "" }))] : undefined);
   const budget = p.budget ? { ...p.budget, note: p.budget.note ?? p.budget.text } : null;
   return { ...p, ladder: lad, product: p.product ?? (Array.isArray(p.ladder) ? null : p.ladder?.text) ?? null, budget, race, writers, state: p.state ?? st?.what ?? st?.id,
-    blocker: p.blocker ? { reason: p.blocker.reason ?? p.blocker.why ?? "" } : null };
+    invariant: p.invariant ?? st?.invariant ?? null, blocker: p.blocker ? { reason: p.blocker.reason ?? p.blocker.why ?? "", unclear: Boolean(p.blocker.unclear) } : null };
 }
 // A path's step as a card of the map: a card id, or a place ("file:line") on the card of that file (the last card
 // that starts at or above the line, else the file's first); an edge id or an unknown place: null.
 export function resCardOf(step, arch) {
   const nodes = arch?.nodes ?? [], s = String(step ?? "");
   if (nodes.some((n) => n.id === s)) return s;
-  const m = /^(.+?):(\d+)$/.exec(s);
+  const m = /^(.+?):(\d+)(?:-\d+)?$/.exec(s); // a range (mailer.py:14-20) by its first line
   if (!m) return null;
   const same = (a, b) => a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`);
   const mine = nodes.map((n) => ({ id: n.id, at: /^(.+?):(\d+)/.exec(String(n.at ?? n.evidence ?? "")) })).filter((x) => x.at && same(x.at[1], m[1]));
@@ -969,10 +970,14 @@ export function resCardOf(step, arch) {
 export const resSentence = (p) => `${p.trigger}: ${/^(The|A|An|One|Every|Each|Both|No|Nothing|It|Its|Batch|Mail|Mails)\b/.test(p.end ?? "") ? p.end[0].toLowerCase() + p.end.slice(1) : p.end ?? ""}`;
 // A path's marks per card of the map: R-D's {at (node, "e<k>" or file:line), mark} or this view's {node, text}; a call's
 // mark on the card it calls, a place's on the card of its file; several on one card joined. Map(node id -> text).
-export function resMarksOn(marks, arch) {
+// A queue's mark (DLQ, no DLQ) on a call goes to the card the call starts at, the queue (wave R2); with onEdges the
+// other marks of a call stay on the call itself (views.js resEdgeMarks) and are left out here.
+export function resMarksOn(marks, arch, onEdges = false) {
   const out = new Map();
   for (const m of marks ?? []) {
-    const e = /^e(\d+)$/.exec(String(m.at ?? "")), id = m.node ?? (e ? arch?.edges?.[Number(e[1])]?.to : resCardOf(m.at, arch)), text = m.text ?? m.mark;
+    const e = /^e(\d+)$/.exec(String(m.at ?? "")), text = m.text ?? m.mark, dlq = /DLQ/.test(text ?? "");
+    if (e && onEdges && !dlq) continue;
+    const id = m.node ?? (e ? arch?.edges?.[Number(e[1])]?.[dlq ? "from" : "to"] : resCardOf(m.at, arch));
     if (id && text) out.set(id, out.has(id) ? `${out.get(id)} · ${text}` : text);
   }
   return out;
@@ -1022,4 +1027,103 @@ export function passZones(eff, arch, cond = () => null) {
     }
   }
   return out;
+}
+
+// ---- Resilience, wave R2 (op-arch): words for the run's identifiers, the verdict with every reason, what to add
+// before the merge and what to watch after it, the doubled ways, and dimmed text that stays readable.
+
+// The run's identifiers (failing, likelihood, signal, cost keys) as words; an unknown one with its underscores as spaces.
+const RES_WORDS = { poison_message: "a message that always fails", no_dlq: "no dead-letter queue", duplicate_effect: "an effect happens twice", lost_effect: "an effect is lost",
+  unbounded_retry: "retries without a limit", over_timeout: "runs over its timeout", swallowed_retry: "an exhausted retry is swallowed", silent: "nothing signals it", no_alarm: "no alarm",
+  reads_foreign_state: "reads state another process holds", n_plus_one: "one call per item", no_timeout_public: "no timeout inside a public request", shared_resource: "a shared resource",
+  removed_signal: "the PR removes a signal", no_jitter: "no jitter", no_breaker: "no circuit breaker", no_trace: "no trace context", high_cardinality: "high metric cardinality",
+  cannot_happen: "cannot happen here", possible: "possible", likely: "likely", unlikely: "unlikely",
+  alarm: "an alarm", log: "a log line", metric: "a metric", dlq: "the dead-letter queue", platform_only: "the platform's own metrics only", none: "nothing",
+  mental: "to understand", ops: "to run", money: "in money", dishonest_response: "the route answers success while the work is lost", no_throttle: "no throttle",
+  stale_cache: "a stale cache", clock: "a clock assumption", request: "request" };
+export const resWord = (k) => RES_WORDS[k] ?? String(k ?? "").replace(/_/g, " ");
+// A model's text about its own tools ("nothing was executed, because Bash was denied") is no finding about the code.
+export const resToolText = (s) => /\b(bash|tool|permission|sandbox)\b[^.]*\b(denied|refused|not allowed|blocked)\b/i.test(String(s ?? ""));
+const andJoin = (l) => (l.length > 1 ? `${l.slice(0, -1).join(", ")} and ${l.at(-1)}` : l[0] ?? "");
+// The page's sentence on top: how many paths block and every reason once, with its count ("… (2 paths)"); null
+// without a blocker (the run's own summary stays).
+export function resVerdict(paths) {
+  const b = (paths ?? []).filter((p) => p.blocker), by = new Map();
+  if (!b.length) return null;
+  for (const p of b) { const w = p.blocker.reason ?? p.blocker.why ?? ""; by.set(w, (by.get(w) ?? 0) + 1); }
+  return `${b.length} of ${paths.length} ${paths.length === 1 ? "path" : "paths"} ${b.length === 1 ? "blocks" : "block"} the merge: ${andJoin([...by].map(([w, n]) => (n > 1 ? `${w} (${n} paths)` : w)))}.`;
+}
+// What nothing will show after the merge (a blind spot with signal "none": add the signal before), and what to watch
+// (a signal without an alarm, the age of the oldest message of each queue), one entry per resource (card). Pure.
+// {before: [{text, at}], watch: [{text, at}]}.
+export function resWatch(res, arch) {
+  const before = [], watch = [], seen = new Set(), card = (at) => resCardOf(at, arch) ?? at, name = (id) => arch?.nodes?.find((n) => n.id === id)?.label ?? id;
+  // R2 data (pr.js withResilience: unseen[], watch[] as "<failure> (<at>): <what>"): taken as they are, the place as a
+  // link, an edge id by the card it starts at (the queue), a signal in words.
+  if (Array.isArray(res?.unseen)) {
+    const words = (x) => x.replace(/\bat e(\d+)\b/g, (all, k) => (arch?.edges?.[Number(k)] ? `in ${name(arch.edges[Number(k)].from)}` : all)).replace(/seen as (\w+)/, (_all, w) => `seen as ${resWord(w)}`);
+    const cap = (x) => x.charAt(0).toUpperCase() + x.slice(1);
+    const parse = (x) => { const m = /^(.*) \(([^()]*)\): (.*)$/.exec(String(x ?? "")); return m ? { text: cap(words(`${m[1]}: ${m[3]}`)), at: m[2] } : { text: cap(words(String(x ?? ""))) }; };
+    return { before: res.unseen.map(parse), watch: (res.watch ?? []).map(parse) };
+  }
+  for (const b of res?.blind_spots ?? []) {
+    if (b.signal === "none") before.push({ text: `${b.failure}: nothing shows it after the merge, so add a log line or an alarm first`, at: b.at });
+    else if (!b.alarm || b.alarm === "none" || b.alarm === "unknown") { watch.push({ text: `${b.failure}; it shows in ${resWord(b.signal ?? "platform_only")}${/alarm/i.test(b.failure ?? "") ? "" : ", no alarm"}`, at: b.at }); seen.add(card(b.at)); }
+  }
+  for (const d of res?.deps ?? []) {
+    const e = /^e(\d+)$/.exec(String(d.edge ?? "")), at = e && arch?.edges?.[Number(e[1])] ? arch.edges[Number(e[1])].from : d.at, c = card(at); // e<k>: 0-based, its queue is the source
+    if (d.mode !== "async" || seen.has(c)) continue;
+    seen.add(c);
+    watch.push({ text: `The age of the oldest message in ${name(c)}`, at: d.at });
+  }
+  return { before, watch };
+}
+// Every way to the same effect on a path that doubles one: the cards of the run's effects of that kind, and the cards
+// two of them call (the mailer both send through), so "twice" shows on the map. A Set of card ids, empty otherwise.
+export function resTwice(p, res, arch) {
+  const out = new Set();
+  if (!(p?.failing ?? []).includes("duplicate_effect")) return out;
+  const effects = res?.effects ?? [], on = (e) => (p.steps ?? []).some((s) => s === e.node || resCardOf(s, arch) === (e.node ?? resCardOf(e.at, arch)));
+  const kinds = new Set(effects.filter(on).map((e) => e.kind)), mine = effects.filter((e) => kinds.has(e.kind)).map((e) => e.node ?? resCardOf(e.at, arch)).filter(Boolean);
+  if (mine.length < 2) return out;
+  for (const id of mine) out.add(id);
+  const callees = (id) => (arch?.edges ?? []).filter((e) => e.from === id).map((e) => e.to);
+  for (const to of new Set(mine.flatMap(callees))) if (mine.filter((id) => callees(id).includes(to)).length >= 2) out.add(to);
+  return out;
+}
+// The opacity that dims a text but keeps it at a contrast of at least `min`:1 against the background (WCAG), at
+// least `from`; 0.6 when the theme's colours are not #rrggbb.
+export function readableFade(fg, bg, from = 0.25, min = 4.5) {
+  const lum = (c) => { const m = /^#?([0-9a-f]{6})/i.exec(String(c ?? "")); if (!m) return null; return [0, 2, 4].map((k) => parseInt(m[1].slice(k, k + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)).reduce((s, v, k) => s + v * [0.2126, 0.7152, 0.0722][k], 0); };
+  if (lum(fg) === null || lum(bg) === null) return Math.max(from, 0.6);
+  for (let a = from; a < 1; a += 0.05) {
+    const l1 = lum(solidOver(bg, `${String(fg).slice(0, 7)}${Math.round(a * 255).toString(16).padStart(2, "0")}`)), l2 = lum(bg);
+    if ((Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05) >= min) return Math.round(a * 100) / 100;
+  }
+  return 1;
+}
+// What a probe typically costs and takes, on the Run probe button: one Sonnet probe of the review round on PR #2 cost
+// $0.11; the agent writes the script in under a minute and the page reads the result after a minute at the earliest.
+export const PROBE_TYPICAL = { usd: 0.11, min: "1–2" };
+// A path's marks on its calls: Map(edge index -> text). A call's own marks (⏱ 10 s, ×3 on an edge e<k>, not DLQ, which
+// stands at the queue), and "↻ no limit" on the call that redelivers without a limit (the ladder's open factor, by
+// the line of its call in deps). p: views.js resPathView's shape.
+export function resEdgeMarks(p, deps) {
+  const out = new Map(), add = (k, text) => { if (k !== null && !(out.get(k) ?? "").split(" · ").includes(text)) out.set(k, out.has(k) ? `${out.get(k)} · ${text}` : text); };
+  const idx = (at) => { const e = /^e(\d+)$/.exec(String(at ?? "")); return e ? Number(e[1]) : null; };
+  for (const m of p?.marks ?? []) if (!/DLQ/.test(m.mark ?? m.text ?? "")) add(idx(m.at), m.mark ?? m.text);
+  for (const f of p?.ladder ?? []) if (f.factor === "no limit") add(idx((deps ?? []).find((d) => d.edge && d.at === f.at)?.edge), "↻ no limit");
+  return out;
+}
+// A blocker the run could not date (pre_existing "unknown", blocker.unclear) takes the word of its probe, which ran on
+// the base: already there → no blocker of this PR; new in it (or not on the base) → a blocker. byProbe: the verdict.
+// probes: review.js probesNow (status done, base.verdict). Pure; other paths as they are.
+export function resByProbe(paths, probes) {
+  return (paths ?? []).map((p) => {
+    if (!(p.blocker?.unclear || p.pre_existing === "unknown")) return p;
+    const v = (probes ?? []).find((x) => (x.id === p.probe || x.of === p.id) && x.status === "done" && x.base?.verdict)?.base.verdict;
+    if (v === "already_on_base") return { ...p, blocker: null, pre_existing: true, byProbe: v };
+    if (v === "new_in_pr" || v === "not_on_base") return { ...p, pre_existing: false, blocker: p.blocker ? { ...p.blocker, unclear: false } : p.blocker, byProbe: v };
+    return p;
+  });
 }

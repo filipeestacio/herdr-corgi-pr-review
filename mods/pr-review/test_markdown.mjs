@@ -228,3 +228,15 @@ const all = [f("m1", "medium", { breaks: { node: "c" } }), sec, f("l1", "low"), 
   assert.match(md, /## Not checkable\n\n- SMTP timeout/); assert.match(resilienceMd({ pr: {}, head: "" }), /has not run/);
   console.log("ok resilience md");
 }
+
+// ---- wave R2: the export says what the page says (words, before merge, one watch entry per queue, no tool text)
+{
+  const { resilienceMd } = await import("./markdown.js");
+  const arch = { nodes: [{ id: "queue", label: "LoanEvents", at: "template.yaml:11" }], edges: [] };
+  const res = { head: "ccddf95aa", paths: [{ id: "p1", trigger: "x", end: "y", result: "finding", steps: [], failing: ["no_dlq"], signal: "none", findings: [] }],
+    not_checked: ["Runtime behaviour: nothing was executed, because Bash was denied"], blind_spots: [{ failure: "Mail loss is not visible", at: "mailer.py:19", signal: "none" }],
+    deps: [{ at: "template.yaml:32", mode: "async" }, { at: "template.yaml:40", mode: "async" }] };
+  const md = resilienceMd({ pr: { repo: "o/r", number: 2, title: "t" }, head: "ccddf95aa", res, arch });
+  assert.match(md, /Failing: no dead-letter queue/); assert.match(md, /Seen: no, silent/); assert.doesNotMatch(md, /Bash/);
+  assert.match(md, /## Before merge, not observable\n\n- Mail loss is not visible/); assert.equal(md.match(/oldest message in LoanEvents/g)?.length, 1);
+}

@@ -6,6 +6,7 @@
 import { taskList, taskHead, verdictParts, findingCounts, componentLine, CERTAINTY, SEVERITY_SCALE, levels } from "./pr.js";
 import { transitionText } from "./arch.js";
 import { resPathView } from "./views.js";
+import { resWord, resToolText, resVerdict, resWatch } from "./views.js"; // wave R2: the page's words, verdict and watch list
 
 const STATE = { open: "Unresolved", progress: "Fix sent", fixed: "Fixed", dismissed: "Dismissed", recheck: "Unresolved, line changed" };
 const SOURCE = { analysis: "Analysis", security: "Security review", claude: "Claude code review", codex: "Codex review", ai: "AI suggestion" };
@@ -379,7 +380,7 @@ export function verifyContextMd(findings, { pr, head, ai = null, statusOf = () =
 // ---- the Resilience page: its paths (blockers first) with their ladder as text, budget, race as a Mermaid sequence,
 // the action and the probe; then other checks, not checkable and what to watch after the merge.
 const actorId = (k) => `A${k}`;
-export function resilienceMd({ pr, head, res = null, names = new Map() }) {
+export function resilienceMd({ pr, head, res = null, names = new Map(), arch = null }) {
   if (!res) return doc(prLine({ pr, head }), "", "# Resilience", "", "The resilience review has not run on this PR.");
   const name = (s) => (/^e\d+$/.test(s) ? null : names.get(s) ?? s);
   const order = [...(res.paths ?? [])].map((p) => resPathView(p, res)).sort((a, b) => Number(Boolean(b.blocker)) - Number(Boolean(a.blocker)));
@@ -390,7 +391,7 @@ export function resilienceMd({ pr, head, res = null, names = new Map() }) {
       ...p.race.steps.slice(0, 6).map(([who, text], j) => `  Note over ${actorId(Math.max(0, (p.race.actors ?? []).indexOf(who)))}: ${ent(`${j === p.race.breaks_at ? "breaks here: " : ""}${text}`, /[#"<>|:;`]/g)}`), "```"] : [];
     return [`## ${k + 1}. ${flat(p.trigger)}: ${flat(p.end)}`, "",
       `- Verdict: ${p.blocker ? `Blocker: ${flat(p.blocker.reason)}` : p.result === "mitigated" ? `limited${p.limited_by ? ` at ${p.limited_by}` : ""}` : String(p.result ?? "").replace(/_/g, " ")}`,
-      way && `- Way: ${way}`, p.failing?.length && `- Failing: ${p.failing.join(", ")}`, `- Seen: ${p.visible ? flat(p.seen || "yes") : "no, silent"}`,
+      way && `- Way: ${way}`, p.failing?.length && `- Failing: ${p.failing.map(resWord).join(", ")}`, `- Seen: ${(p.signal ? p.signal === "none" : !p.visible) ? "no, silent" : flat(p.seen_as || p.seen || (p.signal ? resWord(p.signal) : "yes"))}`,
       ...(p.ladder ?? []).map((r) => `- ${flat(r.name)}: ${flat(r.factor)}${r.at ? ` (${r.at})` : ""}${r.note ? `, ${flat(r.note)}` : ""}`),
       p.product && `- Together: ${flat(p.product)}`,
       p.budget && `- Budget: worst case ${p.budget.value_s} s against ${p.budget.limit_s} s${p.budget.at ? ` (${p.budget.at})` : ""}${p.budget.note ? `: ${flat(p.budget.note)}` : ""}`,
@@ -398,8 +399,11 @@ export function resilienceMd({ pr, head, res = null, names = new Map() }) {
       pr2 && `- Probe: ${pr2.status === "done" ? `${String(pr2.result).replace(/_/g, " ")}${pr2.number ? `, ${flat(pr2.number)}` : ""}${pr2.head ? ` at ${String(pr2.head).slice(0, 7)}` : ""}` : "not run yet"}`,
       p.note && `- Note: ${flat(p.note)}`, ...race, ""];
   };
-  const checks = (res.checks ?? []).map((c) => `- ${c.check}: ${String(c.result).replace(/_/g, " ")}${c.why ? `, ${flat(c.why)}` : ""}${c.at ? ` (${c.at})` : ""}`);
-  return doc(prLine({ pr, head }), "", "# Resilience", "", flat(res.summary ?? ""), res.head ? `Analysis of ${String(res.head).slice(0, 7)}.` : "", "", ...order.map(path),
-    checks.length ? ["## Other checks", "", ...checks, ""] : [], (res.not_checked ?? []).length ? ["## Not checkable", "", ...res.not_checked.map((x) => `- ${flat(x)}`), ""] : [],
-    (res.watch ?? []).length ? ["## After merge, watch", "", ...res.watch.map((x) => `- ${flat(x)}`)] : []);
+  const checks = (res.checks ?? []).filter((c) => c.result !== "not_checkable").map((c) => `- ${c.check}: ${String(c.result).replace(/_/g, " ")}${c.why ? `, ${flat(c.why)}` : ""}${c.at ? ` (${c.at})` : ""}`);
+  const w = resWatch(res, arch), watch = w.watch.length || w.before.length || (res.blind_spots ?? []).length ? w.watch.map((x) => x.text) : res.watch ?? [];
+  const nc = [...(res.checks ?? []).filter((c) => c.result === "not_checkable").map((c) => `${c.check}: ${c.why ?? ""}`), ...(res.not_checked ?? []).filter((x) => !resToolText(x))];
+  return doc(prLine({ pr, head }), "", "# Resilience", "", flat(resVerdict(order) ?? res.summary ?? ""), res.head ? `Analysis of ${String(res.head).slice(0, 7)}.` : "", "", ...order.map(path),
+    checks.length ? ["## Other checks", "", ...checks, ""] : [], nc.length ? ["## Not checkable", "", ...nc.map((x) => `- ${flat(x)}`), ""] : [],
+    w.before.length ? ["## Before merge, not observable", "", ...w.before.map((x) => `- ${flat(x.text)}${x.at ? ` (${x.at})` : ""}`), ""] : [],
+    watch.length ? ["## After merge, watch", "", ...watch.map((x) => `- ${flat(x)}`)] : []);
 }
