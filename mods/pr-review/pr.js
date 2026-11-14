@@ -1076,10 +1076,11 @@ export function withSecurity(ai, security = null, ctx = null, head = null) {
   }
   const zones = (security.zones ?? []).filter((z) => z?.id), zoneOf = new Map(zones.flatMap((z) => (z.nodes ?? []).map((n) => [n, z.id])));
   // A crossing call by its ends: the security run may have looked at an older picture, where e<k> is another edge.
-  const crosses = new Set((security.crossing ?? []).map((c) => `${c.from}\u0000${c.to}`));
+  const crosses = new Map((security.crossing ?? []).map((c) => [`${c.from}\u0000${c.to}`, c]));
   const arch = own.arch && { ...own.arch, zones: zones.map(({ id, name, trust, evidence }) => ({ id, name: name ?? id, trust, evidence: evidence ?? "" })),
     nodes: (own.arch.nodes ?? []).map(({ zone, ...n }) => (zoneOf.has(n.id) ? { ...n, zone: zoneOf.get(n.id) } : n)),
-    edges: (own.arch.edges ?? []).map(({ crosses: _, ...e }) => (crosses.has(`${e.from}\u0000${e.to}`) ? { ...e, crosses: true } : e)) };
+    // A crossing's gate (where and how the call is checked, when the run names it) goes with the call.
+    edges: (own.arch.edges ?? []).map(({ crosses: _, ...e }) => { const c = crosses.get(`${e.from}\u0000${e.to}`); return c ? { ...e, crosses: true, ...(c.gate ? { gate: c.gate } : {}) } : e; }) };
   const why = security.head && head && security.head !== head ? "head" : security.picture && ai.generated && security.picture !== ai.generated ? "analysis" : null;
   return { ...ai, own, arch, access: security.access ?? [], threats: security.threats ?? [], securityTrigger: trigger,
     securityFrom: { source: "security", head: security.head ?? null, at: security.at ?? null, older: Boolean(why), why } };

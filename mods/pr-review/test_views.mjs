@@ -527,3 +527,25 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.equal(effectiveZones(arch, [{ public: true, auth: "none", node: "g" }]).get("g").why, "nothing checks the caller before it");
   assert.equal(effectiveZones(arch, [{ public: false, auth_kind: "code", node: "h" }]).size, 0); assert.equal(effectiveZones(null, null).size, 0);
 }
+
+// ---- the Security page as a boundary map: crossings and the sentence over it
+{
+  const { crossingsOf, crossingChanged, secSentence } = await import("./views.js");
+  const arch = { zones: [{ id: "z1", name: "Internet", trust: "public" }, { id: "z2", name: "Front desk", trust: "authenticated" }, { id: "z3", name: "Queue", trust: "data" }],
+    nodes: [{ id: "h", label: "handler", zone: "z2" }, { id: "q", label: "queue", zone: "z3" }, { id: "s", label: "status", zone: "z2" }],
+    edges: [{ from: "h", to: "s", label: "inside" }, { from: "h", to: "q", label: "publish", crosses: true, status: "new", gate: { check: "IAM role", at: "template.yaml:20", holds_if: "the role stays scoped" } }, { from: "q", to: "h", status: "unchanged", crosses: true }] };
+  const access = [{ id: "acc1", resource: "Api", public: true, principal: "anyone", auth: "bearer token in handler.py", auth_kind: "code", node: "h", opened_by_pr: true },
+    { id: "acc2", resource: "Send policy", public: false, principal: "Front desk", actions: ["sqs:SendMessage"], node: "q", opened_by_pr: true },
+    { id: "acc3", resource: "Inner", public: false, principal: "Front desk", node: "s" }];
+  const threats = [{ where: { access: "acc2" }, result: "checked_clean", stride: "E" }, { where: { edge: "e1" }, result: "finding", findings: ["f9"], goal: "any event in the queue" }];
+  const findings = [{ id: "f1", ids: ["f1"], reachable_from: ["acc1"] }, { id: "f9", ids: ["f9"] }];
+  const rows = crossingsOf({ arch, access, threats, findings });
+  assert.deepEqual(rows.map((r) => [r.kind, r.from.name, r.to.name, r.change, r.result]),
+    [["entry", "Internet", "Front desk", "added", "finding"], ["right", "Front desk", "Queue", "added", "mitigated"], ["call", "Front desk", "Queue", "added", "finding"], ["call", "Queue", "Front desk", "unchanged", "not_assessed"]],
+    "a right inside one zone and a call inside one zone are no crossing; a threat or a finding gives the result, else not assessed");
+  assert.deepEqual([rows[0].findings.map((f) => f.id), rows[2].findings.map((f) => f.id), rows[2].goal, rows[1].stride, rows[2].check, rows[2].holds_if], [["f1"], ["f9"], "any event in the queue", "E", "IAM role", "the role stays scoped"]);
+  assert.deepEqual(rows.map(crossingChanged), [true, true, true, false]);
+  assert.equal(secSentence(rows, 2), "This PR opens 1 way in from the public side (Api, checked in the code), grants 1 right into another zone and adds or changes 1 call over a trust boundary. Of these 3 crossings, 2 have findings, 1 is mitigated. 2 security findings are unresolved.");
+  assert.equal(secSentence([], 0), "This PR opens, widens or adds no way in, right or call over a trust boundary that the data names. No security finding is unresolved.");
+  assert.deepEqual(crossingsOf({}), []);
+}
