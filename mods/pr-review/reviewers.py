@@ -44,6 +44,13 @@ TIMEOUT = 1500
 # whatever no rule allows refused), plus Agent for the slash commands that split their work.
 def permissions(worktree):
     return review.permissions(worktree, "Read", "Grep", "Glob", "Agent")
+
+
+def allowed(req):
+    """What the run is allowed to do, as rules (runs[kind].allowed; the Security page shows it)."""
+    if req["kind"] == "codex":
+        return ["codex review: sandbox_mode read-only, approval_policy never"]
+    return review.allowed_rules(permissions(req["worktree"]))
 PLACE = {"file": review.S, "line": {"type": "integer"}, "end": {"type": "integer"}, **review.PROSE}
 # A review turned from text: what its words give, nothing judged on top.
 PLAIN_FINDINGS = {"type": "object", "required": ["findings"], "properties": {"findings": {"type": "array", "items": {
@@ -384,10 +391,12 @@ def code_review_command(req):
     return f"/code-review {req.get('level') or 'medium'} origin/{req['base']}...HEAD"
 
 
-def claude_review(req, command):
-    """The slash command; when the Claude setup doesn't have it, the same review as a plain prompt. Returns the answer
-    {findings, scope?}. A command that answered in text only: that text through from_text. No answer at all is an
-    error, not an empty review."""
+def claude_review(req, command=None):
+    """The review as a plain prompt (command None), or a slash command; when the Claude setup doesn't have it, the
+    plain prompt. Returns the answer {findings, scope?}. A command that answered in text only: that text through
+    from_text. No answer at all is an error, not an empty review. ponytail: main() always runs the plain prompt now
+    (the slash commands' templates run plain git, which a run may not); the command path stays for a setup that
+    allows them."""
     def ask(text, skills):
         meta = {}
         answer = llm.claude(FEATURE[req["kind"]], text, context=req.get("context"), model=req["model"],
@@ -396,6 +405,8 @@ def claude_review(req, command):
                             extra=permissions(req["worktree"]))
         return answer, meta
     try:
+        if command is None:
+            raise RuntimeError("Unknown command: plain prompt")
         answer, meta = ask(command, True)
         if answer is None and missing_command(meta.get("result")):
             raise RuntimeError(meta.get("result"))
@@ -404,7 +415,7 @@ def claude_review(req, command):
             raise
         answer, meta = ask(review.git_hint(req["worktree"]) + PLAIN[req["kind"]].format(base=req["base"], number=req["number"]) + req.get("more", "") + ASK_JSON
                            + (ASK_SECURITY if req["kind"] == "security" else ""), False)
-        meta["fallback"] = True
+        meta["fallback"] = command is not None
     # Prose from a fork, else the main answer's own prose (a slash command that wrote its review instead of calling the
     # answer tool; a bare "Command completed" is no review).
     prose = (meta.get("text") or "").strip() or (str(meta.get("result") or "").strip() if len(str(meta.get("result") or "").strip()) > 80 else "")
@@ -442,13 +453,14 @@ def main(arg):
     wt = req["worktree"]
     git("fetch", "--quiet", "origin", req["base"], cwd=wt)  # the base for "what changed"
     started = time.monotonic()
+    # Plain prompts, not /code-review or /security-review: their templates run plain git before the model starts,
+    # and a run may call git only through safegit.py.
     if req["kind"] == "claude":
-        answer, meta = claude_review(req, code_review_command(req))
+        answer, meta = claude_review(req)
     elif req["kind"] == "security":
         pic, made = picture(req["file"])
         req = {**req, "more": picture_text(pic)}
-        answer, meta = claude_review(req, f"/security-review\n\nReview the changes of this checkout against origin/{req['base']} "
-                                          f"(git diff origin/{req['base']}...HEAD), which are PR #{req['number']}. " + review.git_hint(req["worktree"]) + req["more"] + ASK_JSON + ASK_SECURITY)
+        answer, meta = claude_review(req)
     else:
         answer, meta = codex_review(req)
     findings = normalize(answer.get("findings"), req["kind"], wt)
@@ -468,7 +480,7 @@ def main(arg):
     notes += ["The reviewer answered in text: a Haiku pass turned it into findings"] if meta.get("converted") else []
     run = {"state": "done", "cost": meta.get("cost"), "ms": int((time.monotonic() - started) * 1000), "model": meta.get("model_id"),
            "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "count": len(findings), "head": req["head"], "scope": scope(answer.get("scope"), req["kind"]),
-           **({"note": ". ".join(notes)} if notes else {}), **({"auto": req["auto"]} if req.get("auto") else {})}
+           **({"note": ". ".join(notes)} if notes else {}), **({"auto": req["auto"]} if req.get("auto") else {}), "allowed": allowed(req)}
     merge(pathlib.Path(req["file"]), req["kind"], req["head"], findings, run, security)
     print(json.dumps(run))
 
@@ -477,10 +489,11 @@ if __name__ == "__main__":
     # The panel starts this detached and follows the file: runs[kind] says busy, done or the error.
     req = json.loads(sys.argv[1])
     auto = {"auto": req["auto"]} if req.get("auto") else {}  # why it started by itself (the panel's security trigger)
-    merge(pathlib.Path(req["file"]), req["kind"], req["head"], None, {"state": "running", "busy": True, "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "pid": os.getpid(), "head": req["head"], **auto})
+    merge(pathlib.Path(req["file"]), req["kind"], req["head"], None, {"state": "running", "busy": True, "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "pid": os.getpid(), "head": req["head"],
+                                                                     "allowed": allowed(req), **auto})
     try:
         main(sys.argv[1])
     except Exception as e:  # noqa: BLE001 - the panel shows the reason
-        merge(pathlib.Path(req["file"]), req["kind"], req["head"], None, {"state": "failed", "error": str(e)[:400], "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "head": req["head"], **auto})
+        merge(pathlib.Path(req["file"]), req["kind"], req["head"], None, {"state": "failed", "error": str(e)[:400], "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "head": req["head"], "allowed": allowed(req), **auto})
         print(str(e), file=sys.stderr)
         sys.exit(1)

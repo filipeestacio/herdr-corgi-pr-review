@@ -21,14 +21,10 @@ p = reviewers.permissions("/work/check out")
 assert p[:3] == ("--restricted", "--permission-mode", "dontAsk"), "file tools confined to the checkout, its .claude settings ignored, the rest refused"
 allowed, denied = p[p.index("--allowedTools") + 1:p.index("--disallowedTools")], p[p.index("--disallowedTools") + 1:]
 git = f"Bash(python3 {reviewers.review.SAFEGIT} '/work/check out' *)"
-assert allowed[:5] == ("Read", "Grep", "Glob", "Agent", git), allowed
-assert all(a.startswith("Bash(git ") and "*" not in a for a in allowed[5:]) and "Bash(git status)" in allowed, "plain git only as the templates' fixed commands, word for word"
-import fnmatch  # noqa: E402
-hit = lambda c: [d for d in denied if d.startswith("Bash(") and fnmatch.fnmatchcase(c, d[5:-1])]  # noqa: E731
-assert not [c for c in reviewers.review.TEMPLATE_GIT if hit(c)], "the templates' commands are not denied"
-assert not [c for c in ("git log --oneline -5", "git show HEAD:lib/x.py", "git diff base..head -- lib/x.py", "git log -Sfoo") if hit(c)]
-assert all(hit(c) for c in ("git diff /etc/hosts README.md", "git diff ~/.ssh/id README.md", "git diff ../../x README.md", "git diff a/../../x b",
-                            "git diff --relative=/x", "git show HEAD:/x", "git blame --con x a.py", "git diff --ou=x", "git diff -O/x", "git blame -S x a.py"))
+assert allowed == ("Read", "Grep", "Glob", "Agent", git), allowed
+assert "Bash(git *)" in denied, "no plain git at all: only safegit.py, fixed to this checkout"
+assert reviewers.allowed({"kind": "security", "worktree": "/work/check out"}) == list(allowed), "the run records what it was allowed"
+assert reviewers.allowed({"kind": "codex", "worktree": "/w"})[0].startswith("codex review: sandbox_mode read-only")
 assert reviewers.review.git_hint("/work/check out").startswith(f"Call git only as `python3 {reviewers.review.SAFEGIT} '/work/check out' <command>")
 assert reviewers.review.git_hint("/w") in reviewers.findings_schema("claude", "/w")["description"], "a slash command's fork sees the schema"
 assert reviewers.review.permissions(None, "Read")[3:5] == ("--allowedTools", "Read") and reviewers.review.git_hint(None) == "", "no checkout: no git"
