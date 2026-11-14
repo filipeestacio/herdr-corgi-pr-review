@@ -3,9 +3,10 @@
 // Two states (views.js panelState): picking (no PR chosen yet, or back with ← in the header: reviews in progress,
 // three then "Show all", the sources and the list) and a chosen PR or the current branch (its title and actions, then
 // Diff or Walkthrough as tabs). Click a line (shift-click: a range): a composer opens under it, GitHub style; Enter
-// adds a comment for the pending review, "Ask" sends one question at once. "Send review" sends every comment as one
-// prompt: for a picked PR to the session that made it, else to this space's Claude agent (or a new one). Keys, after
-// clicking the diff: j/k change, n/p file, c comment, Esc.
+// adds a comment for the pending review, "Ask" sends one question at once. The pending comments show as a count: for
+// a PR, "Finish your review" opens the review layout's step of that name (post to GitHub or send to an agent); a
+// branch without a PR sends them as one prompt to this space's Claude agent (or a new one). Keys, after clicking the
+// diff: j/k change, n/p file, c comment, Esc.
 // "Walkthrough": the review layout's AI analysis (review.py) read in reading order; it runs only on a click, there,
 // cached in pr-data/cache. UI text is English. "Review": the PR in the review layout (review.js; this mod
 // with props {part: "bar" | "review"}). The list shows a triage line per open PR from cached data (pr.js triageOf);
@@ -121,7 +122,7 @@ export default class PrReview extends View {
     this.repos = new Map(); this.prInfo = new Map(); this.memo = new Map(); this.dirty = new Set(); this.watching = new Map(); this.heads = new Map();
     if (this.part === "review") return this.initReview(cx);
     if (visible()) this.refresh(cx);
-    // Key commands (keys.json "pr-review.<name>"): picker (the PR list), source:mine|repo|review, setup, walkthrough, review.
+    // Key commands (keys.json "pr-review.<name>"): picker (the PR list), source:mine|repo|review, merged, setup, walkthrough, review, finish.
     cx.spawn(async (cx) => {
       for (;;) {
         const c = String(await nextCommand()), [name, arg] = [c.split(":")[0], c.split(":").slice(1).join(":")];
@@ -130,6 +131,8 @@ export default class PrReview extends View {
         else if (c === "setup") { this.view = "setup"; runSetup(this, cx, false); }
         else if (c === "walkthrough") this.openWalk(cx, false);
         else if (c === "review" && this.pr?.url) startReview(this.prSel ?? this.branchTarget());
+        else if (c === "finish") this.finishReview(); // the pending comments' "Finish your review"
+        else if (c === "merged") this.showDone = !this.showDone; // the list's "Merged or closed" row (a toggle)
         else if (name === "explore") startExplore(arg || null); // pr-review.explore[:<folder>]: a topic in existing code, no PR
         // For keys and scripted demos: a listed PR's row click (pick:<number>, the shown source's list).
         else if (name === "pick") { const pr = this.listNow().find((p) => String(p.number) === arg); if (pr) this.pickTarget(pr, cx); }
@@ -435,6 +438,14 @@ export default class PrReview extends View {
     if (this.part === "review") { this.registerReview(cx); this.publish(); }
   }
 
+  // The panel's "Finish your review" (also the finish command here): the PR opens in the review layout, whose copy
+  // takes shared "pr.finish" and opens its popover of that name with these pending comments (render, part "review").
+  finishReview() {
+    if (!this.pr?.url || !this.comments.length) return;
+    setShared("pr.finish", { url: this.pr.url, at: Date.now() });
+    startReview((shared("review.open") ?? []).find((r) => r.url === this.pr.url)?.target ?? this.prSel ?? this.branchTarget());
+  }
+
   sendReview(cx) {
     if (!this.comments.length) return;
     const sent = this.comments;
@@ -546,7 +557,7 @@ export default class PrReview extends View {
   }
 
   // The Walkthrough tab: one scrolling column (so nothing overflows onto what's below at any width): title, summary,
-  // a meta line with "⋯" (the model and "Open review ↗"), the compact step list, the picked step's text and hunks.
+  // a meta line with "⋯" (the model and "Open review ↗"), the compact list of layers, the picked layer's text and hunks.
   walkView(t) {
     const w = this.walk, now = new Map((this.walkHunks ?? []).map((h) => [h.id, h])), sid = `walk-${this.uid}`;
     const scroll = (el) => div().flex_1().min_h(0).relative().child(el.id(sid).absolute().inset_0().overflow_y_scroll())
@@ -560,7 +571,7 @@ export default class PrReview extends View {
     const covered = new Set(w.steps.flatMap((s) => s.hunks));
     const left = [...now.values()].filter((h) => !covered.has(h.id));
     const steps = [...w.steps.map((s) => ({ ...s, stale: s.hunks.length > 0 && !s.hunks.some((id) => now.has(id)) }))];
-    if (left.length) steps.push({ title: `Not covered (${left.length} hunks)`, text: w.cut?.length ? `${w.cut.length} of them were too large to send to Haiku.` : "No step explains these hunks.", hunks: left.map((h) => h.id) });
+    if (left.length) steps.push({ title: `Not covered (${left.length} hunks)`, text: w.cut?.length ? `${w.cut.length} of them were too large to send to Haiku.` : "No layer explains these hunks.", hunks: left.map((h) => h.id) });
     if (w.asks.length) steps.push({ title: "Check against the task", asks: w.asks, hunks: [] });
     const cur = steps[Math.min(this.step, steps.length - 1)];
     const done = w.steps.filter((_s, i) => this.read.has(i)).length;
@@ -569,7 +580,7 @@ export default class PrReview extends View {
         .child(div().font_semibold().whitespace_normal().child(w.title || "Walkthrough"))
         .child(div().text_size(12).text_color(t.muted).whitespace_normal().child(w.summary))
         .child(h_flex().gap(8).items_center().text_size(11).text_color(t.dim)
-          .child(div().flex_1().min_w(0).truncate().child(`${done} of ${w.steps.length} read · ${modelLabel(w.model) ?? "Haiku"}${w.cost != null ? ` · $${w.cost.toFixed(3)}` : ""}${w.cut?.length ? ` · ${w.cut.length} hunks cut` : ""}`))
+          .child(div().flex_1().min_w(0).truncate().child(`${done} of ${w.steps.length} layers read · ${modelLabel(w.model) ?? "Haiku"}${w.cost != null ? ` · $${w.cost.toFixed(3)}` : ""}${w.cut?.length ? ` · ${w.cut.length} hunks cut` : ""}`))
           .when(Boolean(this.walkBusy), (e) => e.child(div().child(SPIN[0]).frames(SPIN, 90)))
           .child(pill(`walk-more-${this.uid}`, t, "⋯", (_e, cx) => { this.walkMore = !this.walkMore; cx.notify(); }, this.walkMore, "Show or hide the model choice and more options", "More walkthrough options")))
         .when(Boolean(this.walkMore), (e) => e.child(h_flex().flex_wrap().gap(8).items_center().pt(2)
@@ -577,13 +588,13 @@ export default class PrReview extends View {
           .when(Boolean(this.pr?.url), (e) => e.child(pill(`walk-redo-${this.uid}`, t, "Open review ↗", (_e, cx) => this.openWalk(cx, true), false, "Open this PR in the review layout")))))
         .when(Boolean(this.walkError), (e) => e.child(div().text_size(11).text_color(t.ansi1).whitespace_normal().child(this.walkError))))
       .child(v_flex().px(6).py(4).border_t(1).border_b(1).border_color(t.border).children(steps.map((s, i) =>
-        h_flex().id(`step-${i}-${this.uid}`).h(24).flex_none().px(8).gap(8).items_center().rounded(6).cursor_pointer().text_size(12.5).tooltip("Show this step and mark it read (✓ read, ○ unread)")
+        h_flex().id(`step-${i}-${this.uid}`).h(24).flex_none().px(8).gap(8).items_center().rounded(6).cursor_pointer().text_size(12.5).tooltip("Show this layer and mark it read (✓ read, ○ unread)")
           .when(cur === s, (e) => e.bg(t.selected)).hover((st) => st.bg(t.hover))
           .on_click((_e, cx) => { this.step = i; if (i < w.steps.length) this.read.add(i); cx.notify(); })
           .child(div().w(12).flex_none().text_color(this.read.has(i) ? t.ansi2 : t.dim).child(i >= w.steps.length ? "·" : this.read.has(i) ? "✓" : "○"))
           .child(div().flex_1().min_w(0).truncate().text_color(s.stale ? t.dim : t.foreground).child(s.title))
-          .when(Boolean(s.stale), (e) => e.child(div().id(`step-o-${i}-${this.uid}`).tooltip("The code changed since this step was written").text_size(10.5).text_color(t.ansi3).child("outdated")))
-          .when(Boolean(WEIGHT[s.weight]), (e) => e.child(div().id(`step-w-${i}-${this.uid}`).tooltip(s.weight === "key" ? "Key step: worth reading closely" : "Minor step: a skim is enough").text_size(10.5).text_color(t[WEIGHT[s.weight]?.[1]]).child(WEIGHT[s.weight]?.[0] ?? ""))))))
+          .when(Boolean(s.stale), (e) => e.child(div().id(`step-o-${i}-${this.uid}`).tooltip("The code changed since this layer was written").text_size(10.5).text_color(t.ansi3).child("outdated")))
+          .when(Boolean(WEIGHT[s.weight]), (e) => e.child(div().id(`step-w-${i}-${this.uid}`).tooltip(s.weight === "key" ? "Key layer: worth reading closely" : "Minor layer: a skim is enough").text_size(10.5).text_color(t[WEIGHT[s.weight]?.[1]]).child(WEIGHT[s.weight]?.[0] ?? ""))))))
       .child(div().px(14).py(10).text_size(12.5).whitespace_normal().child(cur?.text ?? ""))
       .children((cur?.flows ?? []).map((f, k) => div().px(12).pb(6).child(flowCard(f, t, `wf-${this.uid}-${this.step}-${k}`))))
       .children((cur?.asks ?? []).map((a, i) => h_flex().id(`ask-${i}`).px(14).py(3).gap(8).text_size(12)
@@ -892,7 +903,7 @@ export default class PrReview extends View {
         .hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => { this.allOpen = true; cx.notify(); }).child(`Show all (${list.length})`)));
   }
 
-  // The current branch's PR as a review target: no session, so "Send review" goes to this space's agent.
+  // The current branch's PR as a review target: no session, so what is sent goes to this space's agent.
   branchTarget() {
     const repo = /github\.com\/([^/]+\/[^/]+)\/pull/.exec(this.pr.url)?.[1];
     return { url: this.pr.url, number: this.pr.number, title: this.pr.title, repo, state: "open", base: this.pr.baseRefName,
@@ -936,6 +947,13 @@ export default class PrReview extends View {
     if (this.part === "review") {
       // Go to hands PRs over through "pr.goto"; the panel isn't mounted while the review layout shows, so take it here.
       if (shared("pr.goto")?.url && !this.gotoQueued) { this.gotoQueued = true; cx.timer.after(0, (cx) => { this.gotoQueued = false; this.takeGoto(cx); }); }
+      // The panel's "Finish your review" hands over through "pr.finish" ({url, at}): once that PR's comments are
+      // loaded here, the popover opens (the "finish" command, a toggle). A stale or foreign one is dropped.
+      const fin = shared("pr.finish");
+      if (fin && !this.finishQueued && (this.reviewKey === fin.url || Date.now() - fin.at > 60000)) {
+        this.finishQueued = true;
+        cx.timer.after(0, (cx) => { this.finishQueued = false; setShared("pr.finish", null); if (this.reviewKey === fin.url && !this.finishOpen) { this.command("finish", cx); cx.notify(); } });
+      }
       return this.renderReview(cx);
     }
     if (this.view === "walk" && this.walkModel && walkModel() !== this.walkModel && !this.walkBusy) this.openWalk(cx, false); // picker changed: that model's cache
@@ -967,15 +985,18 @@ export default class PrReview extends View {
     const tab = bodyTab(this.view), chosen = this.prSel ? "PR" : "branch";
     if (state === "picking" && !this.srcAsked) { this.srcAsked = true; cx.timer.after(0, (cx) => this.loadSource(cx)); } // the list, once, after this render
     const back = (_e, cx) => { this.picking = true; this.loadSource(cx); cx.notify(); };
+    const resume = this.pr?.url ? (shared("review.open") ?? []).find((r) => r.url === this.pr.url) : null; // this PR's review in progress
     // The header: picking shows the list's title (and the way back to the chosen PR); a chosen PR its title and actions.
     const header = state === "selected"
-      ? h_flex().h(42).flex_none().pl(8).pr(10).gap(6).items_center().border_b(1).border_color(t.border)
+      ? h_flex().min_h(42).flex_none().pl(8).pr(10).py(5).gap(6).items_center().border_b(1).border_color(t.border)
         .child(div().id(`pr-back-${this.uid}`).flex_none().w(26).h(26).flex().items_center().justify_center().rounded(6).cursor_pointer().text_color(t.muted)
           .hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("All PRs").on_click(back).child("←"))
-        .child(div().flex_1().min_w(0).truncate().font_semibold().child(title))
+        .child(div().id(`pr-title-${this.uid}`).tooltip(title).flex_1().min_w(0).max_h(36).overflow_hidden().whitespace_normal().line_height(1.35).font_semibold().child(title)) // two lines, then cut
         .child(pill(`pr-reload-${this.uid}`, t, this.loading ? "…" : "↻", (_e, cx) => { if (this.prSel) this.heads.delete(this.prSel.url); this.refresh(cx, true); }, false, "Reload this PR's diff and details", "Reload PR"))
-        .when(Boolean(this.pr?.url), (e) => e.child(pill(`pr-rv-${this.uid}`, t, "Review", () => startReview(this.prSel ?? this.branchTarget()), false, "Open this PR in the review layout")))
         .when(Boolean(this.pr), (e) => e.child(pill("pr-web", t, "GitHub ↗", () => openUrl(this.pr.url), false, "Open this PR on GitHub in the browser")))
+        // The way into the review is the header's one filled button; Resume once this PR's review was started.
+        .when(Boolean(this.pr?.url), (e) => e.child(div().id(`pr-rv-${this.uid}`).tooltip(resume ? "Continue this review where you left it" : "Open this PR in the review layout").flex_none().px(12).h(26).flex().items_center().rounded(6)
+          .text_size(12).font_semibold().bg(t.solid).text_color(t.solid_foreground).cursor_pointer().on_click(() => startReview(resume?.target ?? this.prSel ?? this.branchTarget())).child(resume ? "Resume" : "Review")))
       : h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
         .child(div().flex_1().min_w(0).truncate().font_semibold().child(state === "setup" ? "Setup" : "Pull requests"))
         .when(state === "picking", (e) => e.child(pill(`pr-explore-${this.uid}`, t, "Explore a topic…", () => startExplore(location().cwd ?? null), false, "Ask about a topic in this repo's code, in the review layout")))
@@ -1047,12 +1068,14 @@ export default class PrReview extends View {
         .when(tab === "walk", (e) => e.child(this.walkView(t)))
         .when(tab === "diff", (e) => e.child(files).child(diffBody)))
       .when(Boolean(this.note), (e) => e.child(div().flex_none().px(10).pt(6).text_size(11).whitespace_normal().text_color(/Could not|Not sent|Not a PR/.test(this.note ?? "") ? t.ansi1 : t.dim).child(this.note)))
+      // The pending comments: a count, not a main button. For a PR it opens the review's "Finish your review" (post to
+      // GitHub or send to an agent, after a preview); a branch without a PR has no review, so its comments go to the agent.
       .when(state === "selected" && this.comments.length > 0, (e) => e.child(h_flex().flex_none().m(8).px(10).h(32).gap(8).items_center().rounded(8).bg(t.surface).border_1().border_color(t.border)
-        .child(div().flex_1().min_w(0).truncate().text_size(12).child(`Review: ${this.comments.length} ${this.comments.length === 1 ? "comment" : "comments"}`
-          + ` in ${new Set(this.comments.map((c) => c.file)).size} ${new Set(this.comments.map((c) => c.file)).size === 1 ? "file" : "files"}`))
+        .child(div().flex_1().min_w(0).truncate().text_size(12).child(pendingText(this.comments)))
         .child(pill(`rv-drop-${this.uid}`, t, "Discard", (_e, cx) => { this.comments = []; this.persist(cx); cx.notify(); }, false, "Delete all pending comments without sending them"))
-        .child(div().id(`rv-send-${this.uid}`).tooltip("Send all pending comments to the coding agent as one prompt").flex_none().px(10).h(22).flex().items_center().rounded(6).text_size(11.5).bg(canSend ? t.solid : t.raised).text_color(canSend ? t.solid_foreground : t.dim)
-          .when(canSend, (e) => e.cursor_pointer()).on_click((_e, cx) => this.sendReview(cx)).child(this.sending ? "…" : "Send review"))));
+        .child(this.pr?.url
+          ? pill(`rv-finish-${this.uid}`, t, "Finish your review", () => this.finishReview(), false, "Open the review with a preview of these comments, then post them to GitHub or send them to an agent")
+          : pill(`rv-send-${this.uid}`, t, this.sending ? "…" : "Send to agent", (_e, cx) => { if (canSend) this.sendReview(cx); }, false, "Send all pending comments to the coding agent as one prompt"))));
   }
 
   // The inline composer (GitHub style, one at a time): where it points, the presets, the field, Cancel / Comment / Ask.
