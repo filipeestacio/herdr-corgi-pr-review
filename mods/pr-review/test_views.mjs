@@ -222,11 +222,6 @@ assert.equal(pendingText([{ file: "a.py" }, { file: "a.py" }, { file: "b.py" }])
   const ls = [L("events", 1, { severity: "high" }), L("tests", 2, { severity: "medium" }, { severity: "medium" }, { severity: "medium" }), L("docs", 3),
     L("template", 4, { severity: "high", security: true }), L("handler", 5, { severity: "high" }, { severity: "high" }), L("reminders", 6, { severity: "high" })];
   assert.deepEqual(byFocus(ls, (l) => l.fs).map((l) => l.title), ["template", "handler", "events", "reminders", "tests", "docs"]);
-  // The attention box's heading counts by decision: security, criteria not met, the other blockers.
-  const { attentionCounts } = await import("./views.js");
-  assert.deepEqual(attentionCounts([{ security: true }, { security: true }, {}, {}, {}], 3), ["⛨ 2", "3 criteria not met", "3 other blockers"]);
-  assert.deepEqual(attentionCounts([{}], 0), ["1 blocker"]);
-  assert.deepEqual(attentionCounts([{ security: true }], 1), ["⛨ 1", "1 criterion not met"]);
   // A layer's ways in and rights from the access rows at its files: public or opened by the PR; others do not count.
   const { layerAccess } = await import("./views.js");
   const acc = [{ resource: "FrontDesk Api", kind: "route", public: true, auth_kind: "code", at: "template.yaml:24" },
@@ -242,6 +237,25 @@ assert.equal(pendingText([{ file: "a.py" }, { file: "a.py" }, { file: "b.py" }])
   assert.deepEqual(analysisAge({ head: "abcdef123", exact: false, now: "9876543ff", age: "1 d ago" }), { stale: true, text: "Analysis of abcdef1, 1 d ago · the PR is at 9876543 now" });
   assert.deepEqual(analysisAge({ exact: true, age: "5 min ago" }), { stale: false, text: "Analysis of this diff, 5 min ago" }, "an analysis from before it saved its head");
   assert.equal(analysisAge({ exact: false, now: "9876543" }).text, "Analysis of an older diff");
+  // "Before merge" counted by group: criteria each once (a finding that breaks two and a criterion without a finding),
+  // resilience paths apart from what is not observable, other findings by severity; five shown, each group first.
+  const { mergeGroups, mergeFirst } = await import("./views.js");
+  const A = (id) => ({ id }), F = (id, severity = "high") => ({ id, severity });
+  const bm = [{ kind: "security", finding: F("s1") }, { kind: "security", finding: F("s2") }, { kind: "resilience", path: "p1" }, { kind: "resilience", path: "p2" }, { kind: "resilience", path: "p3" },
+    { kind: "resilience", path: null }, { kind: "criterion", finding: F("c1"), asks: [A("a1"), A("a2")] }, { kind: "criterion", finding: F("c2"), asks: [A("a1")] }, { kind: "ask", ask: A("a3"), asks: [A("a3")] },
+    { kind: "rule" }, { kind: "finding", finding: F("h1") }, { kind: "finding", finding: F("h2") }, { kind: "verify" }];
+  assert.deepEqual(mergeGroups(bm).map((g) => g.text), ["⛨ 2 security", "3 resilience paths", "1 not observable", "3 criteria", "1 check", "2 high", "1 fix to verify"]);
+  assert.deepEqual(mergeFirst(bm, 5).map((r) => bm.indexOf(r)), [0, 1, 2, 5, 6], "every security row, then one of each group in order before a second of any");
+  assert.deepEqual(mergeFirst(bm.slice(2), 5).map((r) => bm.slice(2).indexOf(r)), [0, 3, 4, 7, 8]);
+  assert.deepEqual(mergeFirst(bm.slice(0, 3), 5).length, 3);
+  assert.deepEqual(mergeGroups(bm.slice(7), [bm[6]]).map((g) => g.text), ["1 criterion", "1 check", "2 high", "1 fix to verify"], "the criteria a shown row breaks are not counted again");
+  // A finished run is offered as Re-run with its age and head, not as a first Run.
+  const { runLabel } = await import("./views.js");
+  assert.equal(runLabel(null, "about $0.27, 1 min"), "Run (about $0.27, 1 min)");
+  assert.equal(runLabel({ state: "failed" }, "about $0.27, 1 min"), "Run again (about $0.27, 1 min)");
+  assert.equal(runLabel({ state: "done", head: "ccddf9524aec" }, "about $0.27, 1 min", "1 h ago"), "Re-run (about $0.27, 1 min) · last run 1 h ago on ccddf95");
+  assert.equal(runLabel({ state: "done" }, null), "Re-run · last run");
+  assert.equal(runLabel({ state: "done", head: "ccddf95" }, "about $0.13, 1 min", "13 h ago", true), "Re-run (about $0.13, 1 min)", "the popup says the last run in its line");
   // The state hints at the top of the Analysis tab: checkout, an analysis waiting for it, reviewer runs.
   const { stateHints } = await import("./views.js");
   assert.deepEqual(stateHints({ checkout: { busy: true }, pendingRun: true, runs: { security: { busy: true }, claude: { at: "x" } }, names: { security: "Security review" } }).map((h) => [h.key, h.text, Boolean(h.spin)]),
