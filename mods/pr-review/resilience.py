@@ -23,6 +23,8 @@ ALARMS = ["in_repo", "elsewhere", "none", "unknown"]
 RESULTS = ["finding", "mitigated", "not_assessed"]
 CHECK_RESULTS = ["finding", "clean", "not_checkable", "elsewhere"]
 PATH_KINDS = ["retry", "timeout", "race", "state", "effect", "load", "silent", "other"]
+ADD_RESULTS = ["justified", "questionable", "unjustified"]
+LIKELIHOOD = ["likely", "possible", "rare", "cannot_happen"]
 PROBE_KINDS = ["retry", "redelivery", "race", "idempotency", "clock", "db_count", "telemetry", "budget"]
 STRENGTHS = ["runs_pr_code", "forced_schedule", "models_env"]
 # What a path breaks, in the words pr.js turns into a blocker's reason (pr.js RES_BLOCKING).
@@ -57,9 +59,12 @@ SCHEMA = {
         "id": S, "failure": S, "at": AT, "signal": {"enum": SIGNALS}, "alarm": {"enum": ALARMS}, **FINDS}}},
     "paths": {"type": "array", "items": {"type": "object", "required": ["id", "kind", "trigger", "steps", "end", "result", "failing", "visible"], "properties": {
         "id": S, "kind": {"enum": PATH_KINDS}, "trigger": S, "steps": STRINGS, "end": S, "result": {"enum": RESULTS}, "limited_by": AT,
-        "failing": {"type": "array", "items": {"enum": FAILING}}, "visible": BOOL, **FINDS, "probe": S, "note": S}}},
+        "failing": {"type": "array", "items": {"enum": FAILING}}, "visible": BOOL, **FINDS, "probe": S, "note": S, "action": S}}},
     "checks": {"type": "array", "items": {"type": "object", "required": ["check", "result", "why"], "properties": {
         "check": S, "result": {"enum": CHECK_RESULTS}, "at": AT, "why": S, **FINDS}}},
+    "additions": {"type": "array", "items": {"type": "object", "required": ["what", "kind", "at", "solves", "likelihood", "cost", "simpler", "result"], "properties": {
+        "what": S, "kind": S, "at": AT, "solves": S, "likelihood": {"enum": LIKELIHOOD}, "cost": {"type": "object", "properties": {"mental": S, "ops": S, "money": S}},
+        "simpler": S, "result": {"enum": ADD_RESULTS}, **FINDS}}},
     "probes": {"type": "array", "items": {"type": "object", "required": ["id", "claim", "of", "kind", "strength"], "properties": {
         "id": S, "claim": S, "of": S, "kind": {"enum": PROBE_KINDS}, "strength": {"enum": STRENGTHS}}}},
     "not_checked": STRINGS}
@@ -94,6 +99,14 @@ STEPS = (
     "code, or clearly central (elsewhere: no finding);\n"
     "- operations: rollback (migrations both ways, a flag), health and readiness, graceful shutdown, limits and quotas, "
     "new single points of failure, defaults that only bite under load.\n"
+    "- what the PR adds: every component or mechanism it brings in (queue, dead-letter queue, step function, retry "
+    "layer, breaker, bulkhead, cache, scheduler, new service or library): what failure it solves at which line, how "
+    "likely and how grave that failure is here, what it costs (parts, states and places to look; alarms, redrives, "
+    "deploys; money, latency), the simpler alternative (a direct call instead of a step function, synchronous instead of "
+    "a queue, no retry because the caller already retries) and what that would lose, and whether it fits the problem "
+    "or came in because it sounded right (not asked by the task, not usual in the repo, tied to no failing path).\n"
+    "Recommend no mechanism by default: suggest adding one only for a failing path of this PR that without it loses, "
+    "repeats or endlessly grows a visible effect; otherwise prefer to simplify.\n"
     "3. Answer with facts at their file:line, never advice without a line (\"add a circuit breaker\") and never claims about "
     "runtime you cannot read in the code; what can only be measured goes to blind_spots. Leave out what you could not "
     "confirm and say so in not_checked.")
@@ -112,7 +125,12 @@ ASK = (
     "kind, trigger, steps (node ids, edge ids e<k> or file:line, in order), end, result (finding: a finding shows it; "
     "mitigated: limited_by names the file:line that limits it; not_assessed), failing (what it breaks, from: "
     + ", ".join(FAILING) + "), visible (whether anything signals it), findings, probe (the id of a probe that would show "
-    "it), note); checks (one row for each of cors, cache_control, rollback, limits, cardinality, clocks, health, shutdown, "
+    "it), note, action (what to do about it as one sentence starting with a verb, e.g. \"Decouple: add a dead-letter queue "
+    "with maxReceiveCount\", only for this path's failure)); additions (one per component or mechanism the PR adds: what, "
+    "kind, at, solves (the failure it solves, with its line), likelihood (likely, possible, rare, cannot_happen), cost "
+    "{mental, ops, money}, simpler (the simpler alternative and what it would lose), result (justified: it solves a "
+    "failing path of this PR; questionable: small use against its cost; unjustified: it solves nothing that can happen "
+    "here), findings); checks (one row for each of cors, cache_control, rollback, limits, cardinality, clocks, health, shutdown, "
     "and any other check you made beyond the paths: result finding|clean|not_checkable|elsewhere, at, why); probes (r1, r2, …: a small "
     "script that would show a claim with stubs and a forced schedule, never sleep: claim (one sentence with the number "
     "it would show), of (a path, race, effect or blind spot id), kind, strength); not_checked. Every list may be empty.")
@@ -183,7 +201,8 @@ def view(answer, findings, pic, known):
         paths.append({"id": f"p{k}", "kind": enum(p.get("kind"), PATH_KINDS) or "other", "trigger": str(p.get("trigger") or ""),
                       "steps": [s for s in (step(x) for x in p.get("steps") or []) if s], "end": str(p.get("end") or ""), "result": result,
                       "limited_by": at(p.get("limited_by")) or None, "failing": [x for x in dict.fromkeys(p.get("failing") or []) if x in FAILING],
-                      "visible": bool(p.get("visible")), "findings": found, "probe": p.get("probe") if p.get("probe") in probe_ids else None, "note": str(p.get("note") or "")})
+                      "visible": bool(p.get("visible")), "findings": found, "probe": p.get("probe") if p.get("probe") in probe_ids else None, "note": str(p.get("note") or ""),
+                      "action": str(p.get("action") or "")})
     # As for security: a new finding on a path through a node or call this PR adds or changes is the PR's, also when its
     # own line is old (the mailer that swallowed errors before, now reached by the PR's new consumer).
     fresh = {n.get("id") for n in arch.get("nodes") or [] if n.get("status") in ("new", "changed")} | \
@@ -195,7 +214,11 @@ def view(answer, findings, pic, known):
             for fid in p["findings"]:
                 if fid in mine:
                     mine[fid]["introduced_here"] = True
-    return {"deps": deps, "effects": effects, "state": state, "races": races,
+    additions = [{"what": str(a.get("what") or ""), "kind": str(a.get("kind") or ""), "at": at(a.get("at")), "solves": str(a.get("solves") or ""),
+                  "likelihood": enum(a.get("likelihood"), LIKELIHOOD), "cost": {k: str((a.get("cost") or {}).get(k) or "") for k in ("mental", "ops", "money")},
+                  "simpler": str(a.get("simpler") or ""), "result": enum(a.get("result"), ADD_RESULTS) or "questionable", "findings": fids(a.get("findings"))}
+                 for a in lst("additions") if a.get("what")]
+    return {"deps": deps, "effects": effects, "state": state, "races": races, "additions": additions,
             "db_calls": [{"entry": str(d.get("entry") or ""), "per_request": str(d.get("per_request") or ""),
                           "calls": [{"op": c.get("op"), "target": c.get("target"), "at": at(c.get("at")), "in_loop": bool(c.get("in_loop"))} for c in d.get("calls") or [] if isinstance(c, dict)]}
                          for d in lst("db_calls")],
@@ -208,3 +231,26 @@ def view(answer, findings, pic, known):
             "checks": [{"check": str(c.get("check") or ""), "result": enum(c.get("result"), CHECK_RESULTS) or "not_checkable", "at": at(c.get("at")) or None,
                         "why": str(c.get("why") or ""), "findings": fids(c.get("findings"))} for c in lst("checks") if c.get("check")],
             "probes": probes, "not_checked": [str(x) for x in answer.get("not_checked") or []]}
+
+
+def complexity_findings(additions, head=None):
+    """An addition that solves nothing that can happen here (unjustified) and names no finding becomes a finding of its
+    own: category complexity, impact maintainability (low; never a blocker), the suggestion to remove it. Returns the
+    new findings (reviewer resilience) and links each to its addition."""
+    import hashlib
+    out = []
+    for a in additions:
+        if a["result"] != "unjustified" or a["findings"]:
+            continue
+        path, _, line = a["at"].rpartition(":")
+        if not path or not line.isdigit():
+            continue
+        title = f"{a['what']} adds a part this PR does not need"
+        fid = hashlib.sha1(f"resilience|{path}|{line}|{title}".encode()).hexdigest()[:12]
+        detail = "\n\n".join(x for x in (f"It solves: {a['solves']}" if a["solves"] else "", "It costs: " + "; ".join(v for v in a["cost"].values() if v) if any(a["cost"].values()) else "",
+                                           f"Simpler: {a['simpler']}" if a["simpler"] else "") if x)
+        out.append({"id": fid, "reviewer": "resilience", "file": path, "line": int(line), "end": int(line), "severity": "low", "category": "complexity",
+                    "impact": "maintainability", "title": title, "detail": detail, "suggestion": f"Remove it{': ' + a['simpler'] if a['simpler'] else ''}.", "code": "",
+                    "introduced_here": True, **({"head": head} if head else {})})
+        a["findings"] = [fid]
+    return out

@@ -913,7 +913,12 @@ console.log("ok");
   const r = withResilience(mapReview({ steps: [] }, []), block, "h2").resilience;
   assert.deepEqual([r.paths.map((p) => p.id), r.blockers, r.older], [["p1", "p2", "p3", "p4"], ["p1"], true], "blockers first; another head is older");
   assert.equal(r.summary, "1 of 4 paths blocks the merge: a message that always fails comes back until it expires; 1 not assessed.");
-  assert.deepEqual(r.counts, { paths: 4, blockers: 1, mitigated: 1, not_assessed: 1, checks_clean: 1, not_checkable: 1 });
+  assert.deepEqual(r.counts, { paths: 4, blockers: 1, mitigated: 1, not_assessed: 1, checks_clean: 1, not_checkable: 1, additions: { justified: 0, questionable: 0, unjustified: 0 } });
+  assert.equal(r.additionsLine, "");
+  const ad = withResilience(mapReview({ steps: [] }, []), { paths: [P("p1", "retry", [], "finding", [], { findings: ["tok"] })],
+    additions: [{ result: "justified" }, { result: "justified" }, { result: "questionable" }, { result: "unjustified" }] }, null, [{ id: "tok", security: true, sources: [] }]).resilience;
+  assert.deepEqual([ad.additionsLine, ad.counts.additions, ad.paths[0].also_security], ["This PR adds 4 parts: 2 justified, 1 questionable and 1 solves nothing here.",
+    { justified: 2, questionable: 1, unjustified: 1 }, true], "the parts weighed against their cost; a path whose finding is also security says so");
   assert.deepEqual(r.watch, ["publish never reaches SQS (events.py:20): nothing in the repository alarms on it", "the age of the oldest message at e5", "the age of the oldest message at e7"]);
   assert.equal(withResilience(mapReview({ steps: [] }, []), { paths: [P("p1", "retry", [], "mitigated", [], { limited_by: "q.yaml:4" })] }).resilience.summary, "Every assessed path is limited, e.g. at q.yaml:4.");
   const pre = withResilience(mapReview({ steps: [] }, []), { paths: [P("p1", "other", ["reminders.py:13"], "finding", ["lost_effect"], { findings: ["w"] })] }, null,
