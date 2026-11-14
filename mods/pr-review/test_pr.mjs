@@ -395,3 +395,44 @@ console.log("ok");
   assert.deepEqual(Object.keys(pruneSources({ a: { at: 1 }, b: { at: 3 }, c: { at: 2 } }, 2)), ["b", "c"]);
   console.log("ok sources");
 }
+
+// A newer analysis' fields pass through; an analysis cached before them loads with empty ones.
+{
+  const { mapReview, mergeFindings, findingFacts, runsOf, hunksOf, splitPatch } = await import("./pr.js");
+  const hs = hunksOf(splitPatch("diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1,2 +1,3 @@\n x\n+y\n z\n")).map((h, i) => ({ ...h, alias: `h${i + 1}` }));
+  const old = mapReview({ steps: [{ title: "s", hunks: ["h1"], check_questions: ["q1?"], findings: [{ file: "a.py", line: 2, title: "T", severity: "high", category: "bug" }] }],
+    asks: [{ text: "one", coverage: "seen" }, { text: "two", coverage: "absent" }, { text: "three" }] }, hs);
+  assert.deepEqual(old.asks.map((a) => [a.id, a.state, a.why, a.acceptance, a.findings]), [["c1", "met", "", null, []], ["c2", "not_done", "", null, []], ["c3", "not_done", "", null, []]]);
+  assert.deepEqual([old.unlinked, old.components, old.componentCounts, old.access, old.steps[0].questionFiles], [[], [], null, [], [""]]);
+  const of = old.steps[0].findings[0];
+  assert.match(of.id, /^a[0-9a-f]+$/);
+  assert.deepEqual(findingFacts(of), { impact: null, effect: "", preconditions: [], certainty: null, criteria: [], breaks: null });
+  const now = mapReview({ unlinked: ["c2"], components: [{ name: "Queue", status: "new" }], component_counts: { new: 1, changed: 0, no_owner: 1, codeowners: false }, access: [{ resource: "Api", public: true }],
+    steps: [{ title: "s", hunks: ["h1"], check_questions: ["", "q1?", "q2?"], question_files: ["x.py", "a.py", ""],
+      suggestions: [{ hunk: "h1", line: 2, side: "new", severity: "low", category: "availability", text: "No retry. Add one." }],
+      findings: [{ id: "a5587afa0", file: "a.py", line: 9, title: "No id", severity: "high", category: "test", impact: "breaks_requirement", effect: "Repeated mails.", preconditions: ["redelivery"],
+        certainty: "derived", criteria: ["c1"], breaks: { from: "n1", to: "n2", edge: "e5" } }, { file: "a.py", line: 9, title: "x", category: "availability", certainty: "guessed" }] }],
+    asks: [{ id: "c1", text: "one", state: "broken", why: "because", acceptance: true, findings: ["a5587afa0"], coverage: "absent" }, { id: "x1", text: "extra", state: "extra", acceptance: false, coverage: "extra" }] }, hs);
+  assert.deepEqual(now.asks.map((a) => [a.id, a.state, a.why, a.acceptance, a.findings, a.coverage]), [["c1", "broken", "because", true, ["a5587afa0"], "absent"], ["x1", "extra", "", false, [], "extra"]]);
+  assert.deepEqual([now.unlinked, now.components[0].name, now.componentCounts.codeowners, now.access[0].public], [["c2"], "Queue", false, true]);
+  assert.deepEqual([now.steps[0].questions, now.steps[0].questionFiles], [["q1?", "q2?"], ["a.py", ""]], "a question keeps its file when an empty one is dropped");
+  const [nf, nf2] = now.steps[0].findings;
+  assert.deepEqual([nf.id, nf.category, nf.impact, nf.effect, nf.preconditions, nf.certainty, nf.criteria, nf.breaks], ["a5587afa0", "test", "breaks_requirement", "Repeated mails.", ["redelivery"], "derived", ["c1"], { from: "n1", to: "n2", edge: "e5" }]);
+  assert.deepEqual([nf2.category, nf2.certainty], ["availability", null]);
+  assert.equal(now.suspects[0].category, "availability");
+  // Merged: a low suggestion about availability is a finding of its own; the facts come from the leading source,
+  // and what that one lacks (a reviewer has no criteria and no breaks) from the first source that has it.
+  const sec = { id: "s1", reviewer: "security", file: "a.py", line: 9, end: 9, severity: "high", title: "Sec", detail: "d", impact: "unauthorized_access", effect: "Anyone reads it.", certainty: "confirmed" };
+  const m = mergeFindings([sec, { ...nf, severity: "medium" }], now.suspects);
+  assert.deepEqual(m.findings.map((f) => [f.file, f.line, f.severity, f.reviewer, f.category]), [["a.py", 9, "high", "security", undefined], ["a.py", 2, "low", "ai", "availability"]]);
+  assert.deepEqual(m.notes, []);
+  assert.deepEqual(findingFacts(m.findings[0]), { impact: "unauthorized_access", effect: "Anyone reads it.", preconditions: ["redelivery"], certainty: "confirmed", criteria: ["c1"], breaks: { from: "n1", to: "n2", edge: "e5" } });
+  assert.ok(m.findings[0].ids.includes(now.asks[0].findings[0]), "an ask finds its finding through ids");
+  assert.deepEqual(findingFacts(m.findings[1]), { impact: null, effect: "", preconditions: [], certainty: null, criteria: [], breaks: null });
+  // Reviewer runs: the state as written, or derived for an entry from before it was.
+  const runs = runsOf({ a: { busy: true, started: "t" }, b: { at: "t", count: 0 }, c: { error: "boom", at: "t" }, d: { state: "failed", error: "x" }, e: { state: "done", scope: { read: ["a.py"], checked: [], skipped: [] }, at: "t" }, f: {} });
+  assert.deepEqual(Object.values(runs).map((r) => r.state), ["running", "done", "failed", "failed", "done", null]);
+  assert.deepEqual([runs.b.scope, runs.b.error, runs.b.count, runs.e.scope.read, runs.d.error], [null, null, 0, ["a.py"], "x"]);
+  assert.deepEqual(runsOf(undefined), {});
+  console.log("ok analysis fields");
+}

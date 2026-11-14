@@ -12,7 +12,7 @@
 import { div } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, TextView, v_virtual_list, VirtualListScrollHandle, ScrollHandle, Textarea, TextareaState, Input, InputState } from "gpui-base";
 import { exec, hc, run, spaces, agents, terminals, focused, pickFolder, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, nextCommand, watchFolder, openOverlay, closeOverlay, props, home } from "herdr";
-import { parseReports, findingStatus, mergeFindings, findingCounts, countLine, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
+import { parseReports, findingStatus, mergeFindings, findingCounts, countLine, runsOf, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
 import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig } from "./setup-view.js";
 import { highlightJob, highlightStep, highlightLines, langOf, colors, renderLine, refAt } from "./syntax.js";
@@ -770,7 +770,7 @@ export const ReviewMode = {
       ...extra(`In no step (${left.filter((h) => !cut.has(h.alias)).length} hunks)`, exact ? "The model put these hunks in no step." : "New since the analysis.", left.filter((h) => !cut.has(h.alias))));
     for (const s of r.steps) s.stale = s.hunks.length > 0 && !s.hunks.some((id) => this.byId.has(id));
     return { ...r, exact, diagrams: saved.diagrams ?? null, cost: saved.cost, ms: saved.ms, budget: saved.budget, model: saved.model, model_id: saved.model_id, generated: saved.generated, cut: saved.cut ?? [], task: saved.task ?? {},
-      incremental: saved.incremental ?? null, scope: saved.scope ?? null };
+      incremental: saved.incremental ?? null, scope: saved.scope ?? null, usage: saved.usage ?? null }; // scope.checked and usage: newer analyses only
   },
 
   // What the bar shows: the analysis on screen, or the one running.
@@ -854,8 +854,8 @@ export const ReviewMode = {
     const [doc, rep] = await Promise.all([readTextFile(`${base}.json`).catch(() => null), readTextFile(`${base}.jsonl`).catch(() => null)]);
     if (this.prSel?.url !== url) return;
     const d = doc ? JSON.parse(doc) : {};
-    this.find = { ...this.find, list: d.findings ?? [], runs: d.runs ?? {}, status: d.status ?? {}, reports: parseReports(rep) };
-    for (const r of Object.values(this.find.runs)) if (r.busy && Date.now() - Date.parse(r.started) > 30 * 60000) { r.busy = false; r.error = "Stopped without a result"; }
+    this.find = { ...this.find, list: d.findings ?? [], runs: runsOf(d.runs), status: d.status ?? {}, reports: parseReports(rep) };
+    for (const r of Object.values(this.find.runs)) if (r.busy && Date.now() - Date.parse(r.started) > 30 * 60000) { r.busy = false; r.state = "failed"; r.error = "Stopped without a result"; }
     setShared("review.reviewers", this.find.runs);
     cx.notify();
   },
@@ -866,7 +866,7 @@ export const ReviewMode = {
     if (!w || w.local) { this.note = !w ? "Could not run: the PR head is not checked out yet" : "Could not run: reviewers need a PR (not a branch diff)"; return cx.notify(); }
     const req = { kind, url: pr.url, number: pr.number, context: this.ctxReq(), model: model(), codexModel: shared("review.codexModel") || null, worktree: w.path, base: pr.base ?? "main",
       head: w.head, level: "medium", file: `${findDir()}/${hash(pr.url)}.json` };
-    this.find.runs[kind] = { busy: true, started: new Date().toISOString() };
+    this.find.runs[kind] = { state: "running", busy: true, started: new Date().toISOString(), scope: null, error: null };
     setShared("review.reviewers", { ...this.find.runs });
     exec("sh", ["-c", 'nohup python3 "$0" "$1" >/dev/null 2>&1 &', `${appHome()}/mods/pr-review/reviewers.py`, JSON.stringify(req)])
       .catch((e) => { this.note = `Could not start ${REVIEWERS[kind][0]}: ${e}`; cx.notify(); });
@@ -2137,7 +2137,7 @@ export const ReviewMode = {
     const sw = (k, on, label, n, tip, click) => div().id(`${id}-${k}`).tooltip(tip).px(10).h(24).flex().items_center().gap(5).rounded(12).border_1().cursor_pointer().text_size(12)
       .border_color(on ? t[SOURCE[k]] ?? t.accent : t.border).text_color(on ? t.foreground : t.dim).hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => { click(); cx.notify(); }).child(label).when(n !== null, (e) => e.child(div().text_color(t.muted).child(String(n ?? 0))));
-    const looked = Boolean(this.ai) || Object.values(this.find.runs).some((r) => r.at);
+    const looked = Boolean(this.ai) || Object.values(this.find.runs).some((r) => r.state === "done");
     const label = (k, l) => (k === "ai" && !this.findings().length ? (looked ? "Findings: none" : "Findings: not run") : l);
     return h_flex().flex_none().gap(6).items_center().child(div().text_size(12.5).text_color(t.muted).child("Show"))
       .children(TH.SHOW_KINDS.filter(([k]) => k === "ai" || counts[k] > 0).map(([k, l]) => sw(k, show[k], label(k, l), k === "ai" && !this.findings().length ? null : counts[k], `${SHOW_TIP[k]}: click to hide or show them in the diff`, () => this.toggleShow(k))))
@@ -3281,11 +3281,11 @@ export const ReviewMode = {
     const by = (...st) => all.filter((x) => st.includes(this.fstatus(x)));
     const unresolved = by("open", "recheck"), sent = by("progress");
     const name = (k) => REVIEWERS[k]?.[0] ?? k;
-    // Each source with what it found: a number, "no findings" (it ran) or "not run".
-    const ran = { analysis: Boolean(this.ai), ...Object.fromEntries(Object.keys(ALL_REVIEWERS).map((k) => [k, Boolean(runs[k]?.at)])) };
+    // Each source with what it found: a number, "no findings" (it ran), "failed" or "not run".
+    const ran = { analysis: Boolean(this.ai), ...Object.fromEntries(Object.keys(ALL_REVIEWERS).map((k) => [k, runs[k]?.state === "done"])) };
     const sources = [...new Set(["analysis", ...reviewersNow().map(([k]) => k), ...all.flatMap((x) => x.sources.map((y) => y.reviewer))])].map((k) => {
       const n = all.filter((x) => x.sources.some((y) => y.reviewer === k)).length;
-      return { k, n, text: runs[k]?.busy ? `${name(k)}: running` : n ? `${name(k)} ${n}` : ran[k] ? `${name(k)}: no findings` : `${name(k)}: not run` };
+      return { k, n, text: runs[k]?.state === "running" ? `${name(k)}: running` : n ? `${name(k)} ${n}` : runs[k]?.state === "failed" ? `${name(k)}: failed` : ran[k] ? `${name(k)}: no findings` : `${name(k)}: not run` };
     }).filter((x) => x.k !== "ai" || x.n);
     const row = (x) => {
       const st = this.fstatus(x), on = this.ffocus === x.id, col = t[SEV[x.severity]] ?? t.accent, li = this.layerOf(x), settled = st === "fixed" || st === "dismissed";
@@ -3335,7 +3335,7 @@ export const ReviewMode = {
     return v_flex().flex_1().min_h(0)
       .child(v_flex().flex_none().px(14).py(10).gap(8).border_b(1).border_color(t.border)
         .child(div().id("rv-fcount").tooltip("Unresolved findings by severity; a finding with a fix sent stays unresolved until it is verified").text_size(13.5).font_semibold().child(countLine(c)))
-        .child(h_flex().flex_wrap().gap(4).children(sources.map((x) => div().id(`rv-fsrcn-${x.k}`).tooltip(x.n ? `Findings ${name(x.k)} is a source of` : ran[x.k] ? `${name(x.k)} ran and found nothing` : `${name(x.k)} has not run on this PR`)
+        .child(h_flex().flex_wrap().gap(4).children(sources.map((x) => div().id(`rv-fsrcn-${x.k}`).tooltip(x.n ? `Findings ${name(x.k)} is a source of` : runs[x.k]?.state === "failed" ? `${name(x.k)} failed: ${runs[x.k].error ?? "no result"}` : ran[x.k] ? `${name(x.k)} ran and found nothing` : `${name(x.k)} has not run on this PR`)
           .px(8).h(22).flex().items_center().rounded(6).border_1().border_color(t.border).text_size(12).text_color(x.n ? t.foreground : t.muted).child(x.text))))
         .when(Object.values(runs).some((r) => r.busy), (e) => e.child(div().text_size(12).text_color(t.muted).child("A reviewer is running…"))))
       .when(!all.length, (e) => e.child(h_flex().flex_none().flex_wrap().px(14).py(8).gap(6).items_center().border_b(1).border_color(t.border)

@@ -254,9 +254,11 @@ export function mapReview(answer, hunks) {
   const ids = (list) => [...new Set((list ?? []).map((a) => byAlias.get(String(a).trim())?.id).filter(Boolean))];
   const steps = (answer.steps ?? []).map((s, n) => {
     const risk = OLD_SKIM.has(s.category) ? "skim" : level(s.risk);
+    // Each check question with the file it is about (question_files, "" for several files or an older analysis).
+    const asked = (s.check_questions ?? s.questions ?? []).map((q, k) => [q, String(s.question_files?.[k] ?? "")]).filter(([q]) => q).slice(0, 3);
     return { title: s.title ?? "", why: s.why_it_matters ?? s.why ?? "", text: s.explanation ?? s.text ?? "", risk, skim: risk === "skim", isNew: Boolean(s.new), visuals: visualsOf(s),
       weight: risk === "high" ? "key" : risk === "skim" ? "skim" : "normal", order: Number(s.reading_order) || n + 1,
-      questions: (s.check_questions ?? s.questions ?? []).filter(Boolean).slice(0, 3), hunks: ids(s.hunks), n,
+      questions: asked.map(([q]) => q), questionFiles: asked.map(([, f]) => f), hunks: ids(s.hunks), n,
       flows: (s.flows ?? []).slice(0, 3).map((f) => ({ function: f.function ?? "", at: f.at ?? "", inputs: f.inputs ?? [], output: f.output ?? null,
         side_effects: f.side_effects ?? [], calls: f.calls ?? [], trace: (f.trace ?? []).slice(0, 12) })) };
   }).map((st) => ({ ...st, findings: layerFindings(answer.steps[st.n].findings, stepKey(st)) })).sort((a, b) => RISKS.indexOf(a.risk) - RISKS.indexOf(b.risk) || a.order - b.order || a.n - b.n);
@@ -273,7 +275,9 @@ export function mapReview(answer, hunks) {
       severity: level(s.severity) === "skim" ? "low" : level(s.severity), reason, approx: !exact, ...(s.category ? { category: String(s.category) } : {}) });
   }
   // Newer analyses add behavior, merge risk, effort, repo rule checks, an architecture picture and the blast radius;
-  // older ones have none of them (null / empty).
+  // older ones have none of them (null / empty). Newer still: per ask an id, a state (an older one's comes from its
+  // coverage), why, whether it is an acceptance criterion (null: not said) and the findings that break it; the asks
+  // without a finding (unlinked), the components with their counts, and who can reach what (access).
   return { title: answer.title ?? "", summary: answer.summary ?? "", steps, suspects, behavior: answer.behavior ?? "",
     intent: statementsOf(answer.intent), behaviorPoints: statementsOf(answer.behavior_points),
     mergeRisk: RISK_LEVELS.includes(answer.merge_risk?.level) ? answer.merge_risk : null,
@@ -281,24 +285,40 @@ export function mapReview(answer, hunks) {
     rules: (answer.rule_checks ?? []).map((r) => ({ rule: r.rule ?? "", source: r.source ?? "", status: ["pass", "fail", "n/a"].includes(r.status) ? r.status : "n/a", where: r.where ?? null, why: r.why ?? "" }))
       .sort((a, b) => RULE_ORDER.indexOf(a.status) - RULE_ORDER.indexOf(b.status)),
     arch: answer.architecture?.nodes?.length ? answer.architecture : null, visuals: visualsOf(answer), blast: answer.blast_radius?.units?.length ? answer.blast_radius : null,
-    asks: (answer.asks ?? []).map((a) => ({ text: a.text ?? "", coverage: ["seen", "partly", "absent", "extra"].includes(a.coverage) ? a.coverage : "absent", hunks: ids(a.hunks),
-      elements: (a.elements ?? []).map(String) })) };
+    asks: (answer.asks ?? []).map((a, k) => {
+      const coverage = ["seen", "partly", "absent", "extra"].includes(a.coverage) ? a.coverage : "absent";
+      return { id: String(a.id ?? `c${k + 1}`), text: a.text ?? "", coverage, state: ASK_STATES.includes(a.state) ? a.state : STATE_OF[coverage], why: a.why ?? "",
+        acceptance: typeof a.acceptance === "boolean" ? a.acceptance : null, findings: (a.findings ?? []).map(String), hunks: ids(a.hunks), elements: (a.elements ?? []).map(String) };
+    }),
+    unlinked: (answer.unlinked ?? []).map(String), components: answer.components ?? [], componentCounts: answer.component_counts ?? null, access: answer.access ?? [] };
 }
 
-const CATEGORIES = ["structure", "security", "data", "scope", "requirement", "bug"];
+// An ask's state; an analysis from before it had one says only how far the diff covers the ask.
+export const ASK_STATES = ["met", "partly", "broken", "not_done", "extra"];
+const STATE_OF = { seen: "met", partly: "partly", absent: "not_done", extra: "extra" };
+
+const CATEGORIES = ["structure", "security", "data", "scope", "requirement", "bug", "test", "availability"];
 // A layer's architecture-review findings in the reviewer findings' shape (reviewers.py normalize). They stay in their
 // layer: the id comes from the layer's key, file and title, so a status survives when a new analysis finds the same.
 function layerFindings(list, step) {
   return (list ?? []).map((f) => ({ f, file: String(f.file ?? "").trim().replace(/^\.\//, ""), line: Number(f.line) || 0, title: String(f.title ?? "").trim() }))
     .filter((x) => x.file && x.title)
     // The id is what the finding is about (category, file, title), not its layer's hunks: those change with every push,
-    // and a finding the next analysis reports again keeps its status (Fix sent, Dismissed). `step` links it to its layer.
+    // and a finding the next analysis reports again keeps its status (Fix sent, Dismissed). A newer analysis names the
+    // id itself (the same way), so its asks can point at it. `step` links it to its layer.
     .map(({ f, file, line, title }) => ({ f, file, line, title, category: CATEGORIES.includes(f.category) ? f.category : "structure" }))
-    .map(({ f, file, line, title, category }) => ({ id: `a${hash(`${category}|${file}|${title}`)}`, reviewer: "analysis", step, file, line, end: Number(f.end) || line,
+    .map(({ f, file, line, title, category }) => ({ id: f.id ? String(f.id) : `a${hash(`${category}|${file}|${title}`)}`, reviewer: "analysis", step, file, line, end: Number(f.end) || line,
       severity: ["high", "medium", "low"].includes(f.severity) ? f.severity : "medium", category,
-      title, detail: String(f.detail ?? ""), suggestion: String(f.suggestion ?? "") }))
+      title, detail: String(f.detail ?? ""), suggestion: String(f.suggestion ?? ""), ...findingFacts(f) }))
     .filter((x, i, all) => all.findIndex((y) => y.id === x.id) === i); // the same title twice in a file: one finding
 }
+
+// What a newer analysis or reviewer says about a finding beyond its text, in one shape whoever found it (an older one
+// has none of it): impact (what the severity follows from), effect (one sentence), preconditions ([]: it always
+// happens), certainty (confirmed | derived | assumed), criteria (ids of the asks it breaks) and breaks ({node} or
+// {from, to, edge} in the architecture picture, else null).
+export const findingFacts = (f) => ({ impact: f.impact ?? null, effect: String(f.effect ?? ""), preconditions: (f.preconditions ?? []).map(String),
+  certainty: ["confirmed", "derived", "assumed"].includes(f.certainty) ? f.certainty : null, criteria: (f.criteria ?? []).map(String), breaks: f.breaks ?? null });
 
 // A suspicious line taken over as a pending review comment (rows: its hunk's or file's rows); null when not shown there.
 export function suspectComment(s, rows, id) {
@@ -416,7 +436,8 @@ const titled = (text) => { const m = /^(.{12,160}?)[.;]\s+(.+)$/s.exec(String(te
 // of its own. The id is the source's that already has a status (so "Fix sent" and its report survive a run that adds
 // a source to the line), else the leading one's; `ids` has them all.
 // → {findings: [{...the leading source, id, ids, severity, security, step, sources: [{id, reviewer, severity, title,
-// detail, suggestion}]}], notes: [suspect]}, findings by severity, then file and line.
+// detail, suggestion}]}], notes: [suspect]}, findings by severity, then file and line. The facts of a finding
+// (findingFacts) are the leading source's; one it does not have comes from the first source that does.
 export function mergeFindings(findings, suspects = [], status = {}) {
   const groups = new Map(), notes = [], raised = new Set();
   const put = (key, x) => { if (!groups.has(key)) groups.set(key, []); groups.get(key).push(x); };
@@ -427,15 +448,23 @@ export function mergeFindings(findings, suspects = [], status = {}) {
   for (const s of suspects) if (!s.old && !groups.has(at(s)) && (s.severity === "high" || RAISE.has(s.category))) { put(at(s), own(s)); raised.add(s); }
   for (const s of suspects) { if (raised.has(s)) continue; if (!s.old && groups.has(at(s))) put(at(s), own(s)); else notes.push(s); }
   const out = [...groups.values()].map((g) => {
-    const lead = [...g].sort((a, b) => rank(a) - rank(b))[0], coded = g.find((x) => x.head);
+    const lead = [...g].sort((a, b) => rank(a) - rank(b))[0], coded = g.find((x) => x.head), all = [lead, ...g].map(findingFacts);
+    const has = (v) => (Array.isArray(v) ? v.length > 0 : v !== null && v !== ""), fact = (k) => (all.find((x) => has(x[k])) ?? all[0])[k];
     const held = g.filter((x) => status[x.id]).sort((a, b) => String(status[b.id].at ?? "").localeCompare(String(status[a.id].at ?? "")))[0];
     return { ...lead, id: (held ?? lead).id, ids: g.map((x) => x.id), end: Math.max(...g.map((x) => x.end ?? x.line ?? 0)), step: g.find((x) => x.step)?.step ?? null,
       suggestion: lead.suggestion || g.find((x) => x.suggestion)?.suggestion || "", ...(coded ? { head: coded.head, code: coded.code } : {}),
+      ...Object.fromEntries(Object.keys(all[0]).map((k) => [k, fact(k)])),
       security: g.some((x) => x.reviewer === "security" || x.category === "security"),
       sources: g.map((x) => ({ id: x.id, reviewer: x.reviewer, severity: x.severity, title: x.title, detail: x.detail ?? "", suggestion: x.suggestion ?? "" })) };
   });
   return { findings: out.sort((a, b) => rank(a) - rank(b) || a.file.localeCompare(b.file) || a.line - b.line), notes };
 }
+
+// The reviewer runs of the findings file, each with its state: running | done | failed (an entry from before it had
+// one is running while busy, failed with an error, done with a finish time), what it looked at (scope: {read,
+// checked: [{area, result, note}], skipped}, or null) and its error. No entry: it never ran.
+export const runsOf = (runs) => Object.fromEntries(Object.entries(runs ?? {}).map(([k, r]) => [k, { ...r,
+  state: ["running", "done", "failed"].includes(r.state) ? r.state : r.busy ? "running" : r.error ? "failed" : r.at ? "done" : null, scope: r.scope ?? null, error: r.error ?? null }]));
 
 // The one way findings are counted (tab, bar, Overview, the Findings header): unresolved is open, recheck and fix
 // sent; high/medium/low and security count the unresolved ones, so the severities add up to `unresolved`.
