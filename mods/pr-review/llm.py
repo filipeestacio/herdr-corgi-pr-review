@@ -20,8 +20,14 @@ import time
 APP = pathlib.Path(os.environ.get("HERDR_APP_HOME") or pathlib.Path.home() / ".config/herdr-app")
 CONFIG = APP / "pr-review.config.json"
 KEEP_MONTHS = 24
+# No hooks; and the read-only commands Claude Code runs by itself (cat, ls, git log …) read only inside the working
+# directories (the checkout, --add-dir): a run reads someone else's PR and must not reach files outside it. This mod's
+# own folder is one of them, so a run can call safegit.py, its only way to git (the folder holds only the mod's code;
+# pr-data and the config lie beside it). Measured: readAllowPaths did not let the call through, a working directory does.
+SETTINGS = {"disableAllHooks": True, "permissions": {"blockReadsOutsideWorkingDirectories": True,
+                                                      "additionalDirectories": [str(pathlib.Path(__file__).resolve().parent)]}}
 LEAN = ["--no-session-persistence", "--output-format", "json",
-        "--settings", '{"disableAllHooks":true}', "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+        "--settings", json.dumps(SETTINGS), "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
         "--disable-slash-commands"]
 
 
