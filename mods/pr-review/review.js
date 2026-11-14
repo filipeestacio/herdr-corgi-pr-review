@@ -4075,8 +4075,8 @@ export const ReviewMode = {
     if (!START[kind]) return null;
     const r = this.runTier(kind), tier = r.chosen ?? r.tier, steps = tierSteps(tier), menu = this.offerMenu === kind, label = (x) => MODELS[x]?.label ?? x;
     const choose = (to, cx) => { const k = `${this.deepKey()}|${kind}`; this.offerMenu = null; this.updateDeep(cx, (d) => ({ ...d, runModels: { ...(d.runModels ?? {}), [k]: to === r.tier ? null : to } })); cx.notify(); };
-    return h_flex().id(`rv-offer-${kind}`).gap(8).items_center().flex_wrap().text_size(13)
-      .child(div().whitespace_normal().child(r.chosen && r.chosen !== r.tier ? `${NAME[kind]}: ${label(tier)}, your choice; ${label(r.tier)} is recommended because ${r.why}.` : `${NAME[kind]}: ${label(tier)} recommended because ${r.why}.`))
+    return h_flex().id(`rv-offer-${kind}`).w_full().min_w(0).gap(8).items_center().flex_wrap().text_size(13)
+      .child(div().w_full().min_w(0).whitespace_normal().child(r.chosen && r.chosen !== r.tier ? `${NAME[kind]}: ${label(tier)}, your choice; ${label(r.tier)} is recommended because ${r.why}.` : `${NAME[kind]}: ${label(tier)} recommended because ${r.why}.`))
       .child(pill(`rv-offer-run-${kind}`, t, `Run (${this.runPrice(kind, tier)})`, (_e, cx) => { this.offerMenu = null; START[kind](tier, cx); }, false, t.foreground)
         .tooltip(`One ${label(tier)} call, read-only on the PR head; it stops at $${REVIEW_CAP[tier]}`))
       .child(pill(`rv-offer-ch-${kind}`, t, menu ? "Change model ▴" : "Change model ▾", (_e, cx) => { this.offerMenu = menu ? null : kind; cx.notify(); }).tooltip("A class up or down for this run; Haiku is not offered for code"))
@@ -4261,7 +4261,7 @@ export const ReviewMode = {
     out.push(fold("nc", "Not checked", div().truncate().child(nc.text), "What no run says it checked, what rests on an assumption, and how far the security review got: click to show it", ncOpen));
     if (ncOpen) out.push(v_flex().pl(16).pr(6).gap(2).text_size(12.5)
       .child(div().truncate().child(nc.areas.length ? `Areas no run checked: ${nc.areas.join(", ")}` : "Every area was checked by at least one run."))
-      .child(h_flex().gap(8).items_center().child(div().child(`Security review: ${nc.security}`)).when(Boolean(offer), (e) => e.child(offer)))
+      .child(v_flex().w_full().min_w(0).gap(4).child(div().child(`Security review: ${nc.security}`)).when(Boolean(offer), (e) => e.child(offer)))
       .children(nc.assumptions.map((f) => finding(f, `rv-nc-${f.id}`))));
     return v_flex().flex_none().gap(2).text_size(13.5).children(out);
   },
