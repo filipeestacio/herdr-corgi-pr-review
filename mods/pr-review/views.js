@@ -489,3 +489,10 @@ export function layerAccess(access, files) {
     ...grants.map((x) => `grants ${x.principal || "someone"} ${(x.actions ?? []).join(", ") || "a right"}${x.resource ? ` on ${x.resource}` : ""}`)];
   return { entries: entries.length, grants: grants.length, text: `This layer ${say.join(", and ")}.` };
 }
+
+// The analysis' line at the top of the Analysis tab: the head it read and its age, "stale" (amber) once the PR moved
+// on (another head, or not this diff). head: the analysis file's (null: from before it said so); now: the PR's head.
+export function analysisAge({ head = null, exact = true, now = null, age = "" }) {
+  const at = (x) => String(x).slice(0, 7), moved = !exact || Boolean(head && now && head !== now);
+  return { stale: moved, text: `Analysis of ${head ? at(head) : exact ? "this diff" : "an older diff"}${age ? `, ${age}` : ""}${moved && now && head ? ` · the PR is at ${at(now)} now` : ""}` };
+}

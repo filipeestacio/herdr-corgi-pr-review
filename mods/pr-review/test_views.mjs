@@ -232,6 +232,12 @@ assert.equal(pendingText([{ file: "a.py" }, { file: "a.py" }, { file: "b.py" }])
     text: "This layer opens a public route (FrontDesk Api), and grants FrontDesk function sqs:SendMessage on Queue." });
   assert.equal(layerAccess(acc, ["infra/db.yaml", "src/a.py"]), null, "an old right the PR does not open");
   assert.equal(layerAccess([], ["a"]), null);
+  // The analysis' head and age at the top of the column, amber once the PR moved on.
+  const { analysisAge } = await import("./views.js");
+  assert.deepEqual(analysisAge({ head: "abcdef123", exact: true, now: "abcdef123", age: "2 h ago" }), { stale: false, text: "Analysis of abcdef1, 2 h ago" });
+  assert.deepEqual(analysisAge({ head: "abcdef123", exact: false, now: "9876543ff", age: "1 d ago" }), { stale: true, text: "Analysis of abcdef1, 1 d ago · the PR is at 9876543 now" });
+  assert.deepEqual(analysisAge({ exact: true, age: "5 min ago" }), { stale: false, text: "Analysis of this diff, 5 min ago" }, "an analysis from before it saved its head");
+  assert.equal(analysisAge({ exact: false, now: "9876543" }).text, "Analysis of an older diff");
 }
 // ---- a finding's facts, its card's line, the rows' heights, the sequence diagram (the diff and a layer's head)
 import { factRows, findingAnchor, wrapCount, seqLayout, IMPACT, SEVERITY_SCALE, SEQ } from "./views.js";

@@ -14,7 +14,8 @@ architecture picture, the blast radius (upstream candidates from git grep), an o
 what the PR adds (components, with owners from CODEOWNERS). Security: the findings it sees; zones, access and the threat
 model are the security reviewer's (reviewers.py). finish() links
 requirements, findings and the picture and sets each finding's severity from the fixed scale. Writes {source, model, model_id, hunks, answer, cut,
-cost, usage ({input, output, cache_read, cache_write} tokens of all passes), ms, budget, task, generated} to `out` and `latest`; `status` holds {busy, pid, started} while it runs, then
+cost, usage ({input, output, cache_read, cache_write} tokens of all passes), ms, budget, task, head (the request's: the PR head
+the diff is of, or null), generated} to `out` and `latest`; `status` holds {busy, pid, started} while it runs, then
 {done} or {error}. Every call goes to the optional usage ledger (llm.py). Texts are in the configured language. Exit 1 with the reason on stderr.
 """
 import datetime as dt
@@ -1004,7 +1005,7 @@ def main(req):
               "hunks": out_hunks, "answer": answer, "incremental": req.get("since") if prev else None, "cut": [], "scope": scope,
               "cost": cost, "usage": {k: sum((m.get("usage") or {}).get(k) or 0 for m in metas) for k in ("input", "output", "cache_read", "cache_write")},
               "ms": sum(m.get("ms") or 0 for m in metas), "budget": cap,
-              "task": {k: t[k] for k in ("title", "jira", "note")} if t else {},
+              "task": {k: t[k] for k in ("title", "jira", "note")} if t else {}, "head": req.get("head"),
               "generated": dt.datetime.now().astimezone().isoformat()}
     save(req["out"], result)
     save(req["latest"], result)

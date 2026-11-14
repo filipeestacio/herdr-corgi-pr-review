@@ -24,7 +24,7 @@ import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf,
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState, codeOf, isStale } from "./pr.js";
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible, pastTop } from "./views.js";
-import { worst, byUrgency, byFocus, attentionCounts, layerAccess } from "./views.js";
+import { worst, byUrgency, byFocus, attentionCounts, layerAccess, analysisAge } from "./views.js";
 import { archView, archLegend, visualsCard, visualCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
 import { visualPlan } from "./stack.js";
 import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCALE } from "./views.js";
@@ -748,6 +748,7 @@ export const ReviewMode = {
         req = { ...job.req, hunks: all(inc.hunks).map((h) => ({ ...h, alias: n(h.alias) })), cut: [], previous: this.aiFile,
           since: { base: this.since.base.sha, head: this.since.head }, full: job.hunks.map((h) => ({ alias: h.alias, id: h.id, path: h.path, head: h.lines[0] })) };
       }
+      req.head = this.worktree?.head ?? this.head ?? null; // saved with the analysis: the column says which head it read
       this.aiError = null; this.aiBusy = { model: m, started: Date.now(), status: job.status, incremental };
       // The request as a file: a big PR's hunks outgrow a command line.
       const reqFile = `${job.out}.req.json`;
@@ -857,7 +858,7 @@ export const ReviewMode = {
     r.steps.push(...extra(`Not analyzed (${left.filter((h) => cut.has(h.alias)).length} hunks)`, "Too large for the model: read these yourself.", left.filter((h) => cut.has(h.alias))),
       ...extra(`In no step (${left.filter((h) => !cut.has(h.alias)).length} hunks)`, exact ? "The model put these hunks in no step." : "New since the analysis.", left.filter((h) => !cut.has(h.alias))));
     for (const s of r.steps) s.stale = s.hunks.length > 0 && !s.hunks.some((id) => this.byId.has(id));
-    return withSecurity({ ...r, exact, diagrams: saved.diagrams ?? null, cost: saved.cost, ms: saved.ms, budget: saved.budget, model: saved.model, model_id: saved.model_id, generated: saved.generated, cut: saved.cut ?? [], task: saved.task ?? {},
+    return withSecurity({ ...r, exact, diagrams: saved.diagrams ?? null, cost: saved.cost, ms: saved.ms, budget: saved.budget, model: saved.model, model_id: saved.model_id, generated: saved.generated, head: saved.head ?? null, cut: saved.cut ?? [], task: saved.task ?? {},
       incremental: saved.incremental ?? null, scope: saved.scope ?? null, usage: saved.usage ?? null }, this.find.loaded === this.prSel?.url ? this.find.security : null, this.ctx, this.worktree?.head ?? this.head); // scope.checked and usage: newer analyses only
   },
 
@@ -2805,7 +2806,11 @@ export const ReviewMode = {
           .child(div().flex_1().child(`${modelLabel(this.aiBusy.model)} is reading ${this.aiBusy.incremental ? "the new changes" : "the code"}${this.aiBusy.passes ? ` · Pass ${this.aiBusy.pass} of ${this.aiBusy.passes}` : ""} · ${clock(Date.now() - this.aiBusy.started)} · cap $${CAP[tierOf(this.aiBusy.model)]}`))
           .child(pill("rv-cancel", t, "Cancel", (_e, cx) => this.cancelAi(cx), false, t.ansi1).tooltip("Stop the running analysis"))))
         .when(Boolean(this.aiError), (e) => e.child(div().text_size(12.5).text_color(t.ansi1).whitespace_normal().child(this.aiError)))
-        .when(Boolean(ai && !ai.exact), (e) => e.child(div().text_size(12.5).text_color(t.ansi3).whitespace_normal().child(canInc ? "Analysis of an older diff: re-analyze, or analyze only the new changes." : "Analysis of an older diff: re-analyze for the current state.")))
+        // Which head the analysis read and how old it is, in sight (the run's model and cost stay in Re-analyze's tooltip);
+        // amber once the PR moved on, with what to do about it.
+        .when(Boolean(ai), (e) => { const a = analysisAge({ head: ai.head, exact: ai.exact, now: this.worktree?.head ?? this.head, age: ago(ai.generated) });
+          return e.child(div().id("rv-ai-age").tooltip(last.trim() || "The analysis shown").text_size(12.5).text_color(a.stale ? t.ansi3 : t.muted).whitespace_normal()
+            .child(a.stale ? `${a.text}: ${canInc ? "re-analyze, or analyze only the new changes." : "re-analyze for the current state."}` : a.text)); })
         .when(Boolean(ai?.scope?.skimmed), (e) => e.child(div().text_size(12.5).text_color(t.muted).whitespace_normal().child(scopeLine(ai.scope)))) // only when something was not read in detail
         .when(Boolean(ai?.cut.length) && !ai?.scope, (e) => e.child(div().text_size(12.5).text_color(t.ansi3).whitespace_normal().child(`${ai.cut.length} hunks were too large for ${modelLabel(ai.model) ?? ai.model} and are not analyzed (an older analysis: re-analyze to read them).`)))
         .child(h_flex().flex_wrap().gap(6).items_center().text_size(12.5)
