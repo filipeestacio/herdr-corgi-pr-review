@@ -696,3 +696,12 @@ console.log("ok");
   assert.deepEqual(securityStart(), { start: false, offer: false, reasons: [] });
   console.log("ok security start");
 }
+
+// One path rule for every jump: the same path first, else the one path that ends in it.
+{
+  const { diffPath } = await import("./pr.js");
+  const paths = ["library/handler.py", "handler.py", "a/b/consumer.py", "c/consumer.py"];
+  assert.deepEqual([diffPath(paths, "handler.py"), diffPath(paths, "b/consumer.py"), diffPath(paths, "consumer.py"), diffPath(paths, "x.py"), diffPath(paths, ""), diffPath(new Set(paths), "library/handler.py")],
+    ["handler.py", "a/b/consumer.py", null, null, null, "library/handler.py"]);
+  console.log("ok diff path");
+}

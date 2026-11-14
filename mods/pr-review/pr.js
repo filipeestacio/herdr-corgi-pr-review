@@ -1001,3 +1001,14 @@ export function funnelShort(x) {
   return `${n(x.reported, "report")} from ${n(x.by.length, "source")}, ${x.reported > x.merged ? `${x.merged} after merging` : "none merged"}`
     + (x.security ? ` · ${x.security} on security, ${x.confirmed || "none"} confirmed by a run` : "");
 }
+
+// The diff's path for a path a model or a link names: the same path first, else the one path that ends in it
+// ("handler.py" for "library/handler.py"); null when none or several do. One rule for every jump (review.js jumpTo,
+// goDef), so the two never disagree about whether a line is in the diff.
+export function diffPath(paths, path) {
+  if (!path) return null;
+  const all = [...paths];
+  if (all.includes(path)) return path;
+  const ends = all.filter((p) => p.endsWith(`/${path}`));
+  return ends.length === 1 ? ends[0] : null;
+}
