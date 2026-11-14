@@ -916,6 +916,9 @@ console.log("ok");
   const { marksOf } = await import("./pr.js");
   assert.deepEqual(marksOf(byLines, [{ ...deps[0], timeout: { s: 10 } }, deps[1]]), [{ at: "e5", mark: "⏱ 10 s" }, { at: "e5", mark: "no DLQ" },
     { at: "library/mailer.py:14", mark: "×3" }, { at: "library/mailer.py:20", mark: "✕ silent" }]);
+  assert.deepEqual(marksOf(P("p", "timeout", ["e2", "handler.py:21"], "finding", ["no_timeout_public", "poison_message"], { visible: false }), [{ edge: "e2", at: "handler.py:20", mode: "sync" }]),
+    [{ at: "e2", mark: "⏱ no timeout" }, { at: "handler.py:21", mark: "no DLQ" }, { at: "handler.py:21", mark: "✕ silent" }], "a sync call without a timeout; what failing says where the calls say nothing");
+  assert.deepEqual(marksOf(P("p", "other", ["a.py:3"], "finding", ["no_dlq", "silent"]), []), [{ at: "a.py:3", mark: "no DLQ" }, { at: "a.py:3", mark: "✕ silent" }], "without calls, from failing alone");
   // A dead-letter queue bounds a poison message; a slow call in a request that is not redelivered fails, it does not come back.
   const dlqDeps = [{ edge: "e6", at: "consumer.py:13", mode: "async", trigger: { batch: 5, partial_batch: true, dlq: true, max_receive: 3 } }];
   assert.equal(blockerOf(P("p", "other", ["handler.py:21"], "finding", ["poison_message"]), null, null, [], dlqDeps), null, "the DLQ takes it after three receives");
