@@ -273,30 +273,52 @@ export function seqLayout(v, width) {
 // ---- the height of a Markdown text (review.js: comment and finding cards are rows of the virtual list)
 
 // What TextView.markdown takes at `width` px, in px: the list needs it before it draws, and a row that is too low
-// cuts its text. Counted by block: a paragraph or a heading by its wrapped lines (each source line on its own, which
-// is never fewer than the joined paragraph), a list by its items (indented, a little apart), a fenced code block by
+// cuts its text. Counted by block: a paragraph or a heading by its wrapped lines (a paragraph's lines joined as
+// TextView joins them, apart at hard breaks), a list by its items (indented, a little apart), a fenced code block by
 // its lines (a long one wraps) plus its frame; MD.GAP between blocks. Inline code counts as ordinary letters without
 // narrow ones. lh: the line height, size: the font size of the place. Measured on screenshots at 13.5 px.
-export const MD = { GAP: 10, CODE_LH: 24, CODE_PAD: 48, CODE_CH: 8.8, CODE_IN: 32, ITEM_IN: 24, ITEM_GAP: 4, HEAD: 1.5 };
+export const MD = { GAP: 10, CODE_LH: 24, CODE_PAD: 48, CODE_CH: 8.8, CODE_IN: 32, ITEM_IN: 24, ITEM_GAP: 4, HEAD: 1.5, HEADS: [1.5, 1.35, 1.2, 1.1, 1.1, 1.1], ROW_PAD: 13, CELL_PAD: 24, QUOTE_IN: 20 };
 const codeWide = (line) => line.replace(/`([^`]*)`/g, (_m, code) => `aa${code.replace(/\S/g, "a")}`);
 const codeRows = (line, width) => { const n = (line.length * MD.CODE_CH) / Math.max(40, width - MD.CODE_IN); return n <= 1 ? 1 : Math.ceil(n * 1.15); }; // it wraps at words
 export function mdHeight(text, width, lh = 21, size = 13.5) {
   const lines = String(text ?? "").replace(/\r/g, "").split("\n"), blocks = [];
-  let open = false; // a paragraph or a list goes on
+  // A paragraph's lines join (soft breaks), except after a hard break (two spaces or a backslash at the end); a link
+  // counts its text, not its address; emphasis marks take no room.
+  const vis = (l) => codeWide(l).replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/\*\*|__|~~/g, "");
+  let open = false, run = null; // a paragraph or a list goes on; run: the paragraph's text since its last hard break
+  const flushRun = () => { if (run) { blocks[blocks.length - 1] += lh * wrapCount(vis(run.text.trim()), width - run.indent, size); run = null; } };
   for (let i = 0; i < lines.length; i++) {
     const l = lines[i], fence = /^\s*(```|~~~)/.exec(l);
     if (fence) {
+      flushRun();
       let n = 0;
       for (i++; i < lines.length && !lines[i].trimStart().startsWith(fence[1]); i++) n += codeRows(lines[i], width);
       blocks.push(MD.CODE_PAD + Math.max(1, n) * MD.CODE_LH); open = false;
-    } else if (!l.trim()) open = false;
-    else {
-      const head = /^\s*#{1,6}\s+/.test(l), item = /^\s*(?:[-*+]|\d+[.)])\s+/.test(l), indent = item || (open && /^\s{2,}/.test(l)) ? MD.ITEM_IN : 0;
-      const h = head ? MD.HEAD * lh * wrapCount(l, width, size * MD.HEAD) : lh * wrapCount(codeWide(l), width - indent, size) + (item ? MD.ITEM_GAP : 0);
-      if (open && !head) blocks[blocks.length - 1] += h; else blocks.push(h);
-      open = !head;
+    } else if (!l.trim()) { flushRun(); open = false; }
+    else if (/^\s*\|/.test(l)) { // a table: a row per line (not the --- line), as high as its tallest cell
+      flushRun();
+      let h = 0;
+      for (; i < lines.length && /^\s*\|/.test(lines[i]); i++) {
+        if (/^\s*\|?[\s:|-]+$/.test(lines[i]) && lines[i].includes("-")) continue;
+        const cells = lines[i].trim().replace(/^\||\|$/g, "").split(/(?<!\\)\|/), w = width / Math.max(1, cells.length) - MD.CELL_PAD;
+        h += lh * Math.max(...cells.map((c) => wrapCount(vis(c.trim()), w, size))) + MD.ROW_PAD;
+      }
+      i--; blocks.push(h); open = false;
+    } else if (/^\s*>/.test(l)) { // a quote: its own Markdown, narrower
+      flushRun();
+      const q = [];
+      for (; i < lines.length && /^\s*>/.test(lines[i]); i++) q.push(lines[i].replace(/^\s*>\s?/, ""));
+      i--; blocks.push(mdHeight(q.join("\n"), width - MD.QUOTE_IN, lh, size)); open = false;
+    } else {
+      const head = /^\s*#{1,6}\s+/.test(l), level = /^\s*(#+)/.exec(l)?.[1].length ?? 0, item = /^\s*(?:[-*+]|\d+[.)])\s+/.test(l), indent = item || (open && /^\s{2,}/.test(l)) ? MD.ITEM_IN : 0;
+      if (head) { flushRun(); const k = MD.HEADS[level - 1] ?? 1.1; blocks.push(k * lh * wrapCount(l.replace(/^\s*#+\s+/, ""), width, size * k)); open = false; continue; }
+      if (item || !open) { flushRun(); if (!open) blocks.push(0); if (item) blocks[blocks.length - 1] += MD.ITEM_GAP; }
+      run = run ? { ...run, text: `${run.text} ${l.trim()}` } : { text: l, indent };
+      if (/( {2,}|\\)$/.test(l)) flushRun();
+      open = true;
     }
   }
+  flushRun();
   return Math.ceil(blocks.reduce((a, b) => a + b, lh * !blocks.length) + MD.GAP * Math.max(0, blocks.length - 1));
 }
 
@@ -766,4 +788,67 @@ export function mapArch(arch, access = []) {
   return { ...out, groups: [{ id: "\0outside", label: "Outside", kind: "" }, ...(arch.groups ?? [])],
     nodes: [{ id: "\0in", label: "Internet", type: "external", group: "\0outside", status: "unchanged", description: [...new Set(who)].join(", ") || "callers from outside" }, ...out.nodes],
     edges: [...edges, ...doors.map((x) => ({ from: "\0in", to: x.node, label: x.resource ?? "", crosses: true, status: x.change === "added" || x.opened_by_pr ? "new" : undefined, evidence: x.at }))] };
+}
+
+// ---- a GitHub comment as the review shows it (review.js item "gh")
+
+// GitHub renders the HTML in a comment; TextView.markdown shows most of it as raw text and the list's height counts
+// it too (a bot's badge line alone is hundreds of letters). ghMd turns the HTML GitHub renders into Markdown: HTML
+// comments go, <details> folds to its summary unless `open` (as on GitHub), a picture or badge becomes its alt text as a
+// chip, an image a link, <br> a line break, tables a Markdown table, <pre> a fence; a tag GitHub drops (an unknown
+// element) goes and keeps its text; code (fences, `inline`) stays as it is. A type like `Vec<T>` is no tag and stays.
+const ENTITY = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", "#39": "'", nbsp: " ", ensp: " ", emsp: " ", thinsp: " ", mdash: "—", ndash: "–", hellip: "…" };
+const entities = (s) => s.replace(/&(#\d+|#x[0-9a-f]+|[a-z]+\d*);/gi, (m, e) => ENTITY[e.toLowerCase()] ?? (e[0] === "#" ? String.fromCodePoint(e[1] === "x" || e[1] === "X" ? parseInt(e.slice(2), 16) : Number(e.slice(1))) : m));
+const GH_TAG = /<\/?(?:a|abbr|b|blockquote|br|caption|center|code|dd|del|details|div|dl|dt|em|font|h[1-6]|hr|i|img|ins|kbd|li|mark|ol|p|picture|pre|q|s|samp|small|source|span|strike|strong|sub|summary|sup|table|tbody|td|tfoot|th|thead|tr|tt|u|ul|var|[a-z]+-[a-z-]+)\b[^>]*>/gi;
+const attr = (tag, name) => new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i").exec(tag)?.slice(1).find((x) => x !== undefined) ?? "";
+const inner = (html) => entities(html.replace(GH_TAG, "")).replace(/\s+/g, " ").trim();
+function htmlTable(t) {
+  const rows = [...t.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)].map((r) => [...r[1].matchAll(/<t([hd])\b[^>]*>([\s\S]*?)<\/t[hd]>/gi)].map((c) => inner(c[2]).replace(/\|/g, "\\|")));
+  if (!rows.length) return inner(t);
+  const n = Math.max(...rows.map((r) => r.length)), line = (r) => `| ${[...r, ...Array(n - r.length).fill("")].join(" | ")} |`;
+  return `\n\n${line(rows[0])}\n|${" --- |".repeat(n)}\n${rows.slice(1).map(line).join("\n")}\n\n`;
+}
+export function ghMd(body, open = false) {
+  const keep = [], hold = (x) => `\u0000${keep.push(x) - 1}\u0000`;
+  let s = String(body ?? "").replace(/\r/g, "").replace(/<!--[\s\S]*?(-->|$)/g, "");
+  // Code first, held out of everything below: fences, <pre>, inline code.
+  s = s.replace(/^([ \t]*)(```|~~~)[^\n]*\n[\s\S]*?(?:\n[ \t]*\2[^\n]*|$)/gm, (m) => hold(m));
+  s = s.replace(/<pre\b[^>]*>([\s\S]*?)<\/pre>/gi, (_m, x) => `\n\n${hold(`\`\`\`\n${entities(x.replace(/<\/?code\b[^>]*>/gi, "")).replace(/\n$/, "")}\n\`\`\``)}\n\n`);
+  s = s.replace(/(`+)[^`\n]+?\1/g, (m) => hold(m));
+  // <details>, innermost first: its summary as a line; its content only when open.
+  for (let k = 0; k < 20 && /<details\b/i.test(s); k++) {
+    s = s.replace(/<details\b[^>]*>((?:(?!<details\b)[\s\S])*?)(<\/details>|$)/i, (_m, x) => {
+      const sum = /<summary\b[^>]*>([\s\S]*?)<\/summary>/i.exec(x), rest = sum ? x.replace(sum[0], "") : x, title = (sum && inner(sum[1])) || "Details";
+      return `\n\n**${open ? "▾" : "▸"} ${title}**\n\n${open ? `${rest}\n\n` : ""}`;
+    });
+  }
+  s = s.replace(/<table\b[^>]*>[\s\S]*?<\/table>/gi, htmlTable);
+  s = s.replace(/<picture\b[^>]*>[\s\S]*?<\/picture>/gi, (m) => { const a = attr(/<img\b[^>]*>/i.exec(m)?.[0] ?? "", "alt"); return a ? hold(`\`${a}\``) : ""; });
+  s = s.replace(/<img\b[^>]*>/gi, (m) => { const a = attr(m, "alt"), src = attr(m, "src"); return src ? `[🖼 ${a || "image"}](${src})` : a; });
+  s = s.replace(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi, (_m, a, x) => { const href = attr(`<a ${a}>`, "href"), t = x.trim(); return href && t ? `[${t}](${href})` : t; });
+  s = s.replace(/^[ \t]*<br\s*\/?>[ \t]*$/gim, "\n").replace(/<br\s*\/?>/gi, "  \n");
+  s = s.replace(/<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>/gi, (_m, n, x) => `\n\n${"#".repeat(Number(n))} ${x.trim()}\n\n`);
+  s = s.replace(/<\/?(?:strong|b)\b[^>]*>/gi, "**").replace(/<\/?(?:em|i)\b[^>]*>/gi, "*").replace(/<\/?(?:del|s|strike)\b[^>]*>/gi, "~~").replace(/<\/?(?:code|kbd|tt|samp)\b[^>]*>/gi, "`");
+  s = s.replace(/<hr\b[^>]*>/gi, "\n\n---\n\n").replace(/<li\b[^>]*>/gi, "\n- ").replace(/<\/?(?:p|div|ul|ol|blockquote|dl|center)\b[^>]*>/gi, "\n\n");
+  s = entities(s.replace(GH_TAG, ""));
+  s = s.replace(/\]\(([^)\s]+)\s+"[^"]*"\)/g, "]($1)"); // a link's title shows on hover on GitHub; here it would show as text
+  s = s.replace(/[ \t]+\n(?!\n)/g, (m) => (m.startsWith("  ") ? "  \n" : "\n")).replace(/\n{3,}/g, "\n\n").trim();
+  return s.replace(/\u0000(\d+)\u0000/g, (_m, k) => keep[Number(k)]).replace(/\u0000(\d+)\u0000/g, (_m, k) => keep[Number(k)]);
+}
+// A Markdown text cut at its fenced code blocks, which the review draws itself (their font follows the card, and
+// their height is exact): [{text}] and [{code: lines, lang}] in order; a block without its closing fence runs to the end.
+export function mdBlocks(md) {
+  const out = [], lines = String(md ?? "").split("\n");
+  let text = [];
+  const flush = () => { const t = text.join("\n").trim(); if (t) out.push({ text: t }); text = []; };
+  for (let i = 0; i < lines.length; i++) {
+    const f = /^[ \t]*(```+|~~~+)\s*([\w+-]*)/.exec(lines[i]);
+    if (!f) { text.push(lines[i]); continue; }
+    flush();
+    const code = [];
+    for (i++; i < lines.length && !lines[i].trimStart().startsWith(f[1]); i++) code.push(lines[i]);
+    out.push({ code, lang: f[2] || "" });
+  }
+  flush();
+  return out;
 }
