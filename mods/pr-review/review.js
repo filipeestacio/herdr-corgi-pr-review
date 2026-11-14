@@ -363,7 +363,7 @@ export const ReviewMode = {
     });
     this.ghPoll = pollAfter(null, true, Date.now()); // opening asks GitHub (onSource, refresh): the first tick is GH_MS later
     cx.timer.every(60000, (cx) => this.ghTick(cx)); // a time check; GitHub at most every GH_MS (ghTick)
-    cx.timer.every(10000, (cx) => this.proofTick(cx)); // Verify with an agent: its answer file, while one runs
+    cx.timer.every(10000, (cx) => { this.proofTick(cx); this.probeTick(cx); }); // Verify with an agent and the probes: their answer files, while one runs
     for (const [st, k] of [[this.draft, "draft"], [this.summary, "summary"], [this.itemEdit, "item"], [this.sendText, "send"]]) {
       st.on("focus", (_e, cx) => { this.typing = k; cx.notify(); });
       st.on("blur", (_e, cx) => { if (this.typing === k) this.typing = false; cx.notify(); });
@@ -380,7 +380,7 @@ export const ReviewMode = {
     this.askIn = InputState.new({ placeholder: "Ask about this… (Enter)" });
     this.askIn.on("submit", (_e, cx) => this.askNow(cx));
     this.deep = { threads: {}, drills: {}, pins: {}, drawer: {} }; this.askBusy = null; this.askErr = null; this.askAbout = null;
-    cx.spawn(async (cx) => { const d = JSON.parse(await readTextFile(deepFile()).catch(() => null) ?? "null"); if (d) this.deep = { threads: d.threads ?? {}, drills: d.drills ?? {}, pins: d.pins ?? {}, drawer: d.drawer ?? {}, runModels: d.runModels ?? {} }; cx.notify(); });
+    cx.spawn(async (cx) => { const d = JSON.parse(await readTextFile(deepFile()).catch(() => null) ?? "null"); if (d) this.deep = { threads: d.threads ?? {}, drills: d.drills ?? {}, pins: d.pins ?? {}, drawer: d.drawer ?? {}, runModels: d.runModels ?? {}, probes: d.probes ?? {} }; cx.notify(); });
     this.refresh(cx);
     this.fh.focus();
     cx.timer.after(400, () => this.fh.focus());
@@ -512,6 +512,7 @@ export const ReviewMode = {
     // Verify with an agent: verify-agent:<finding id>, or verify-agent:security for the unresolved security findings.
     else if (name === "fstep") { const [id, key] = String(arg).split(":"); this.fstep = id && key ? { id, key } : null; } // fstep:<finding id>:<step key>, the step's click
     else if (name === "verify-agent") this.verifyAgent(arg === "security" ? this.secOpen() : [this.findingById(arg)], cx);
+    else if (name === "probe") this.probeCmd(arg, cx); // probe:<id> starts a probe of the resilience run (or asks first); probe:<id>:yes after the question
     else if (name === "trust") this.trust("pr", cx);
     else if (name === "cmenu") { const [k, ...key] = arg.split("|"), card = this.cardByKey(key.join("|")); card?.menu[Number(k)]?.[2]?.(cx); }
     else if (name === "ask") this.setDrawer(arg === "close" ? null : arg === "fold" ? "collapsed" : "open", cx); // the Ask drawer: open | fold | close
@@ -5259,6 +5260,97 @@ export const ReviewMode = {
     const w = await git(["worktree", "add", "-b", branch, path, head]);
     if (w.code !== 0) throw new Error(w.stderr.trim().slice(0, 200));
     return { git, head };
+  },
+
+  // ---- Probes (Resilience): one suspected failure shown by a small script that runs the PR's code, in a sandbox
+  // (probe.py) and through a verify agent of the kind "probe" (threads.js probeArgs) in its own worktree at the PR head.
+  // State per probe in deep.json (`probes["<PR url>|<id>"]`): running {job, path, branch, base, head, terminal, at},
+  // then done (threads.js probeOutcome). Before it starts it asks, as a state of the probe (probeAsk), not as a popup:
+  // for someone else's PR, and for every PR when this machine has no network barrier.
+
+  probeKey(id) { return `${this.deepKey()}|${id}`; },
+  probeRunner() { return `${appHome()}/mods/pr-review/probe.py`; },
+  // The run's probes: the derived view (pr.js withResilience), else the findings file's raw block.
+  probeList() { return this.ai?.resilience?.probes ?? this.find?.resilience?.probes ?? []; },
+  // Why a probe asks before it starts, or null: someone else's PR, or no network barrier on this machine.
+  probeNeeds() {
+    if (this.probeBarrier === "none") return "Runs code from this PR on your machine for at most 30 s. This machine has no network barrier for it, so the code could reach the network.";
+    return this.trustedPr() ? null : "Runs code from this PR on your machine, without network, for at most 30 s.";
+  },
+  // A probe as the view reads it: the run's entry with status proposed | confirm | running | done, and when done the
+  // runner's result (result: reproduced | not_reproduced | script_failed, number: the one line, base, pre_existing,
+  // strength, head, ms, script, output, reason, network_barrier); older: run on another head than the PR's now.
+  probeView(p) {
+    const s = this.deep.probes?.[this.probeKey(p.id)] ?? null, done = s?.state === "done";
+    return { ...p, status: s?.state === "running" ? "running" : this.probeAsk === p.id ? "confirm" : done ? "done" : "proposed", needs: this.probeNeeds(), barrier: this.probeBarrier ?? null,
+      ...(done ? { result: s.status, number: s.line, base: s.base, pre_existing: s.pre_existing, strength: s.strength ?? p.strength, head: s.head, ms: s.ms, script: s.script, output: s.output,
+        reason: s.reason, network_barrier: s.network_barrier, at: s.at } : {}),
+      older: Boolean(done && s.head && this.headNow() && s.head !== this.headNow()), terminal: s?.state === "running" ? s.terminal : null };
+  },
+  probesNow() { return this.probeList().map((p) => this.probeView(p)); },
+  // probe:<id> → asks first when it needs to (the view shows the sentence and a button that sends probe:<id>:yes),
+  // else starts; probe:<id>:no drops the question.
+  probeCmd(arg, cx) {
+    const [id, answer] = String(arg ?? "").split(":"), p = this.probeList().find((x) => x.id === id);
+    if (answer === "no") { this.probeAsk = null; return cx.notify(); }
+    if (!p || !this.prSel) { this.note = `No probe ${id} in the resilience run of this PR.`; return cx.notify(); }
+    if (this.deep.probes?.[this.probeKey(id)]?.state === "running") return;
+    cx.spawn(async (cx) => {
+      if (this.probeBarrier === undefined) this.probeBarrier = (await exec("python3", [this.probeRunner(), "--barrier"], { timeout: 20000 }).catch(() => null))?.stdout?.trim() || "none";
+      if (this.probeNeeds() && answer !== "yes") { this.probeAsk = id; return cx.notify(); }
+      this.probeAsk = null;
+      this.startProbe(p, cx);
+    });
+  },
+  // A worktree on probe/<n>-<id> at the PR head, the agent in it; the base commit for the runner's second run is the
+  // merge base with the PR's base branch.
+  startProbe(p, cx) {
+    const base = this.fixBase();
+    if (!base) { this.note = "Not started: the PR has no local checkout to make the probe's checkout from"; return cx.notify(); }
+    const branch = TH.probeBranch(this.prSel.number, p.id), path = TH.fixPath(home(), this.prSel.repo, branch), key = this.probeKey(p.id);
+    this.updateDeep(cx, (d) => ({ ...d, probes: { ...(d.probes ?? {}), [key]: { state: "running", at: Date.now() } } }));
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        const { git, head } = await this.addWorktree(base, { branch, path, head: this.headNow() });
+        await exec("mkdir", ["-p", `${path}/${TH.PROBE_DIR}`]); // the agent may write there only, so the folder is there
+        const mb = this.prSel.base ? (await git(["merge-base", head, `origin/${this.prSel.base}`]).catch(() => null))?.stdout?.trim() || null : null;
+        const path_ = (this.ai?.resilience?.paths ?? this.find?.resilience?.paths ?? []).find((x) => x.id === p.of);
+        const findings = this.findings().filter((f) => (path_?.findings ?? p.findings ?? []).some((x) => f.ids.includes(x)));
+        const context = findings.length ? verifyContextMd(findings, { pr: this.prSel, head, ai: this.ai, statusOf: (f) => this.fstatus(f), threats: this.ai?.threats ?? null }) : "";
+        const task = TH.probePrompt({ pr: this.pr, head, base: mb, probe: p, path, runner: this.probeRunner(), context, lang: this.lang() });
+        const job = Date.now().toString(36), { agent } = this.sendAgent();
+        const r = await hc(TH.probeArgs({ parent: agent?.address ?? null, cwd: path, name: `probe-${p.id}-${job}`, env: this.ctxEnv(this.ctxId()), task, job, model: codeModel(model()), runner: this.probeRunner() }));
+        if (r.code !== 0) { await git(["worktree", "remove", "--force", path]); await git(["branch", "-D", branch]); throw new Error((r.stderr || r.stdout).trim().slice(0, 200)); }
+        this.updateDeep(cx, (d) => ({ ...d, probes: { ...(d.probes ?? {}), [key]: { state: "running", job, path, branch, base, head, terminal: JSON.parse(r.stdout).address, at: Date.now() } } }));
+        this.note = `Probe ${p.id} started: an agent writes a small script and runs it in a sandbox on ${branch}. Nothing goes to the PR.`;
+      } catch (e) {
+        this.updateDeep(cx, (d) => { const probes = { ...(d.probes ?? {}) }; delete probes[key]; return { ...d, probes }; });
+        this.note = `Probe not started: ${String(e).replace(/^Error: /, "")}`;
+      }
+      cx.notify();
+    });
+  },
+  // A running probe is over once the runner wrote its result and the agent answered, or once the agent is gone (not
+  // before a minute). Then: the result into deep.json, the agent, worktree and branch removed (script and output kept).
+  probeTick(cx) {
+    for (const [key, p] of Object.entries(this.deep.probes ?? {})) {
+      if (p?.state !== "running" || !p.path) continue;
+      const id = key.slice(key.lastIndexOf("|") + 1);
+      cx.spawn(async (cx) => {
+        const [result, answers, script] = await Promise.all([`${TH.PROBE_DIR}/${id}.result.json`, TH.VERIFY_FILE, `${TH.PROBE_DIR}/${id}.py`].map((f) => readTextFile(`${p.path}/${f}`).catch(() => "")));
+        // Over: the terminal is gone, or the agent finished its turn (it stays live, idle) and a minute has passed.
+        const all = terminals(), t = all.find((x) => x.address === p.terminal), gone = all.length > 0 && Date.now() - p.at > 60000 && (!t || t.state !== "live" || (t.status?.state ?? t.status) === "done");
+        const out = TH.probeOutcome(id, { result: result || null, answer: TH.parseProof(answers, [id])[id] ?? null, script, ended: gone });
+        if (!out || this.deep.probes?.[key]?.job !== p.job) return;
+        this.updateDeep(cx, (d) => ({ ...d, probes: { ...(d.probes ?? {}), [key]: { ...out, branch: p.branch } } }));
+        if (p.terminal) run("terminal.kill", { terminal: p.terminal });
+        const git = (args) => exec("git", ["-C", p.base, ...args], { timeout: 60000 });
+        await git(["worktree", "remove", "--force", p.path]); await git(["branch", "-D", p.branch]);
+        this.note = `Probe ${id}: ${out.status.replace("_", " ")}${out.line ? `, ${out.line}` : ""}.`;
+        cx.notify();
+      });
+    }
   },
 
   // Progress that could not be saved: what that means, and the one thing to do about it.
