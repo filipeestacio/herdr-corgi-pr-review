@@ -82,10 +82,10 @@ for (const n of [0, 3, 310]) {
     const sug = (line, severity, reason) => ({ key: `src/f0.ts:+${line}:${reason}`, hunk: v.hunks[0].id, path: "src/f0.ts", line, old: false, severity, reason });
     v.ai = { ...v.ai, suspects: [sug(2, "medium", "Unrelated change"), sug(4, "low", "a nit")] };
     const [f] = v.findings();
-    assert.deepEqual([v.findings().length, f.id, f.ids, f.security, v.sourcesOf(f)], [1, "a1", ["s1", "a1", f.ids[2]], true, "Security review: high · Analysis: high · AI suggestion: medium"]);
+    assert.deepEqual([v.findings().length, f.id, f.ids, f.security, v.sourcesOf(f)], [1, "a1", ["s1", "a1", f.ids[2]], true, "Security review: high · Analysis: high · AI note: medium"]);
     // Its card in the diff carries what the other sources say in their own words (F4).
-    assert.deepEqual(v.findRows(f).map(([l]) => l).filter((l) => ["Analysis", "Security review", "AI suggestion"].includes(l)).length, f.sources.filter((y) => y.title !== f.title || y.detail !== f.detail).length);
-    assert.ok(v.findRows(f).some(([l, x]) => l === "AI suggestion" && x.startsWith("(medium) Unrelated change")));
+    assert.deepEqual(v.findRows(f).map(([l]) => l).filter((l) => ["Analysis", "Security review", "AI note"].includes(l)).length, f.sources.filter((y) => y.title !== f.title || y.detail !== f.detail).length);
+    assert.ok(v.findRows(f).some(([l, x]) => l === "AI note" && x.startsWith("(medium) Unrelated change")));
     assert.deepEqual(v.openSugs().map((s) => s.reason), ["a nit"]);
     assert.equal(v.fstatus(f), "progress");
     assert.deepEqual([v.counts().unresolved, v.counts().sent, v.counts().security, v.openFindings().length], [1, 1, 1, 1]);
@@ -179,8 +179,8 @@ for (const n of [0, 3, 310]) {
   v.toggleSeen("src/f1.ts", cx); assert.deepEqual([v.done(one), v.done(two)], [true, false], "all its files viewed");
   assert.deepEqual(v.layerFindings(one).map((f) => f.id), ["a2", "s9"], "the reviewer's finding counts at the layer of its file");
   assert.deepEqual(v.layerFindings(two).map((f) => f.id), ["c9"]);
-  assert.deepEqual(v.attention().map((a) => [a.label, a.security, a.at]), [["Open door", true, "f1.ts:3"], ["Wrong sum", false, "f0.ts:1"], ["Rule not met: Conventional Commit title", false, ""]],
-    "the blockers by severity, security first among equals; no layers and no medium finding");
+  assert.deepEqual(v.attention().map((a) => [a.label, a.security, a.at]), [["Open door", true, "f1.ts:3"], ["Rule not met: Conventional Commit title", false, ""], ["Wrong sum", false, "f0.ts:1"]],
+    "the Overview's Before merge rows in their order (pr.js beforeMerge): security first; no layers and no medium finding");
   v.tab = "steps"; v.page = "arch";
   ok("Analysis tab beside a page: the pages on top, the attention box open", () => v.render(cx));
   const list = v.attention();
@@ -197,14 +197,16 @@ for (const n of [0, 3, 310]) {
   v.tab = "files";
   ok("Files tab: findings in words, the security mark, the ticks", () => v.render(cx));
   v.find = { ...v.find, status: { a2: { s: "progress", fixHead: "h0", at: "2024-01-01" } } };
-  assert.deepEqual(v.attention().map((a) => a.sent), [false, true, false], "a fix sent stays a blocker and says so");
+  assert.deepEqual(v.attention().map((a) => a.sent), [false, false, true], "a fix sent stays a blocker and says so");
   v.tab = "steps"; v.attFold = false;
   ok("Analysis tab: a blocker with a fix sent", () => v.render(cx));
   v.dismiss(v.findingById("s9"), cx); v.dismiss(v.findingById("a2"), cx);
-  assert.deepEqual(v.attention().map((a) => a.severity), ["medium"], "the findings settled: the title rule is left");
+  assert.deepEqual(v.attention().map((a) => [a.label, a.severity]), [["Rule not met: Conventional Commit title", null]], "the findings settled: the title rule is left (a check has no severity)");
   v.tab = "steps"; v.prSel = { ...v.prSel, title: "feat: t" };
   ok("Analysis tab without blockers", () => v.render(cx));
   assert.deepEqual(v.attention(), []);
+  // The Comments tab: a file's heading and a row's command land the diff at that file (the tab stays).
+  v.tab = "files"; v.command("cfile:src/f2.ts", cx); assert.deepEqual([v.tab, v.top?.view, v.top?.key, v.fileFocus], ["comments", "files", "src/f2.ts", "src/f2.ts"]);
   console.log("left column ok");
 }
 // The minimized review: nothing without one, an entry with Resume and ✕ with one.

@@ -22,8 +22,9 @@ export const sourceLegend = (t) => h_flex().gap(10).text_size(11.5).text_color(t
   .map(([label, c, dashed]) => h_flex().gap(4).items_center().child(div().w(16).h(0).border_t(2).border_color(c).when(dashed, (e) => e.border_dashed())).child(label)));
 
 // id + tip (optional): a hover explanation; the id must be unique on the page.
-export const chip = (t, label, color, solid = false, id = null, tip = null) => div().flex_none().px(6).py(1).rounded(5).border_1().border_color(color)
-  .when(Boolean(id && tip), (e) => e.id(id).tooltip(tip)).when(solid, (e) => e.bg(color + "26")).text_size(11).font_semibold().text_color(color).child(label);
+// A state, not a button: tinted (solid: stronger), without the frame that buttons have.
+export const chip = (t, label, color, solid = false, id = null, tip = null) => div().flex_none().px(6).py(1).rounded(5).bg(color + (solid ? "33" : "1a"))
+  .when(Boolean(id && tip), (e) => e.id(id).tooltip(tip)).text_size(11).font_semibold().text_color(color).child(label);
 
 // What a triage chip (pr.js triageOf) means, for its tooltip.
 const TRIAGE_TIP = { "High security risk": "Unresolved high-severity security findings, or a high merge risk", "Security risk": "Unresolved security findings on this PR",
