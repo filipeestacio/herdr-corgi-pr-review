@@ -832,3 +832,13 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.deepEqual(out.map((f) => certaintyText(f)), ["confirmed, platform modeled", "derived"]);
   assert.equal(withProbes(fs, paths, []), fs, "no probe done: the same list");
 }
+
+// ---- wave C2 V1: a finding's mark in a card has two lines and the layout room for them
+{
+  const { markLine, clampText, ARCH, LABEL, MARK_CARD_H, MARK_CARD_ROWS } = await import("./arch.js");
+  assert.ok(MARK_CARD_H + 3 <= MARK_CARD_ROWS * 18 && MARK_CARD_H >= 18 + 1 + 28, "the extra rows hold the chip, two lines and the card's gap");
+  assert.ok(LABEL.MARK >= 18 + 1 + 28, "above a call: the chip, then two lines");
+  const ml = markLine({ findings: [{ severity: "high", title: "Nothing ever calls send_reminders or publish_overdue: no schedule" }], n: 1 });
+  const two = clampText(ml.text, Math.floor((ARCH.W - 20) / 6), 2);
+  assert.equal(two.lines, 2); assert.ok(!two.cut, `the five words fit in two lines of a card: ${two.text}`);
+}

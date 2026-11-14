@@ -6,6 +6,7 @@ import { v_flex, h_flex } from "gpui-base";
 import { levels } from "./pr.js";
 import { markLine } from "./arch.js";
 import { archLayout, archFocus, stateLayout, transitionText, sourceStyle, hasSources, pathMark, SPEC_TIP, ARCH, LABEL } from "./arch.js";
+import { clampText, MARK_CARD_H } from "./arch.js"; // wave C2: a mark's finding in two lines
 import { flowArch, seqLayout, wrapCount, SEQ, solidOver } from "./views.js";
 import { readableFade } from "./views.js"; // wave R2: dimmed text stays readable
 
@@ -72,9 +73,11 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
   const markChip = (m, cid) => chip(t, `${cap(m.severity)} · ${m.n}`, sevOf(m), true, cid, markTip(m));
   // A mark's row: the chip and the finding it is about (arch.js markLine); a click opens that finding (opts.onFinding).
   // stacked: the finding on a line of its own under the chip (above a call's text, where the row is narrow).
-  const markRow = (m, cid, h, stacked = false) => { const ml = markLine(m); return (stacked ? v_flex().items_start() : h_flex().items_center()).id(`${cid}-r`).flex_none().h(h).gap(stacked ? 1 : 4).tooltip(markTip(m))
+  // Wave C2 V1: the finding in up to two lines, cut at a word (arch.js clampText); w: the room for its text in px.
+  const markRow = (m, cid, h, stacked = false, w = 160) => { const ml = markLine(m, 40), text = clampText(ml.text, Math.max(8, Math.floor(w / 6)), 2).text;
+    return (stacked ? v_flex().items_start() : h_flex().items_start()).id(`${cid}-r`).flex_none().h(h).gap(stacked ? 1 : 4).tooltip(markTip(m))
     .when(Boolean(opts.onFinding && ml.top), (e) => e.cursor_pointer().on_click((_e, cx) => { opts.onFinding(ml.top, cx); cx.stop_propagation(); }))
-    .child(markChip(m, cid)).child(div().when(!stacked, (e) => e.flex_1()).when(stacked, (e) => e.flex_none().h(14).line_height(1.3)).w_full().min_w(0).truncate().text_size(10.5).text_color(t.foreground).child(ml.text)); };
+    .child(markChip(m, cid)).child(div().when(!stacked, (e) => e.flex_1()).when(stacked, (e) => e.flex_none()).w_full().min_w(0).h(28).overflow_hidden().whitespace_normal().line_height(1.3).text_size(10.5).text_color(t.foreground).child(text)); };
   // opts.zoom (the person's zoom): a line is at least one device pixel wide, or it is not drawn when zoomed far out.
   const thin = Math.max(1.5, 1 / (opts.zoom || 1)), W = (p) => (opts.hl === p.num ? thin + 1 : thin);
   const dim = (el, on, by = fade) => (on ? el.opacity(by) : el);
@@ -123,7 +126,7 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
     .text_size(LB.px).text_color(t.foreground).tooltip(tipOf(p))
     .when(Boolean(opts.onHl), (e) => e.on_hover((on, cx) => opts.onHl(on ? p.num : null, cx)))
     .when(Boolean(p.evidence && opts.onJump), (e) => e.cursor_pointer().on_click((_e, cx) => { opts.onJump(p.evidence, cx); cx.stop_propagation(); }))
-    .when(Boolean(p.text.mark && pathMark(marks, p)), (e) => e.child(markRow(pathMark(marks, p), `${id}-tm${i}`, LABEL.MARK, true)))
+    .when(Boolean(p.text.mark && pathMark(marks, p)), (e) => e.child(markRow(pathMark(marks, p), `${id}-tm${i}`, LABEL.MARK, true, p.text.w - 6)))
     .children(p.text.lines.map((l) => div().flex_none().h(LB.LH).line_height(LB.LH / LB.px).whitespace_nowrap().child(l))), dimP(p), textFade)] : []));
   const chips = L.paths.flatMap((p, i) => (p.chip ? [dim(div().id(`${id}-c${i}`).absolute().left(p.chip.x).top(p.chip.y).w(p.chip.w).h(p.chip.h).px(5)
     .flex().items_center().gap(6).rounded(6).border_1().border_color(bare(p) ? sevOf(bare(p)) : color(p)).when(p.dashed, (e) => e.border_dashed()).bg(opts.hl === p.num ? t.accent + "33" : t.background)
@@ -171,7 +174,7 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
         .when(Boolean(st.chip), (e) => e.child(specTag(t, `${id}-sp${i}`))))
       .when(n.descLines > 0, (e) => e.child(div().flex_none().h(n.descLines * 15).overflow_hidden().text_size(11).line_height(1.35).whitespace_normal().text_color(t.muted).child(n.desc)))
       .children(decorate ? decorate(n) : [])
-      .when(Boolean(marks?.nodes?.get(n.id)), (e) => e.child(markRow(marks.nodes.get(n.id), `${id}-m${i}`, 15)))
+      .when(Boolean(marks?.nodes?.get(n.id)), (e) => e.child(markRow(marks.nodes.get(n.id), `${id}-m${i}`, MARK_CARD_H, true, n.w - 20)))
       .child(div().flex_1())
       // No type word here: it was cut off in most cards (the glyph's tooltip and the card's panel name the type). A
       // narrow card (Fit, a layer's flow) has no room for the link either: its panel has it.
