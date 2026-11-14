@@ -313,6 +313,12 @@ def security_view(answer, findings, pic, changed):
             row["opened_by_pr"] = line in changed.get(path, ())
         rows.append(row)
     reach(nodes, edges, pic.get("components") or [], rows, findings)
+    # A flaw reachable through a way in that this PR opens or widens is this PR's, also in old lines (an old token
+    # check that the PR's new public route now exposes).
+    opens = {r["id"] for r in rows if r.get("change") in ("added", "widened") or (r.get("change") is None and r.get("opened_by_pr"))}
+    for f in findings:
+        if opens & set(f.get("reachable_from") or []):
+            f["introduced_here"] = True
     refs = {f.pop("ref"): f["id"] for f in findings if f.get("ref")}
     status = {n.get("id"): n.get("status") for n in nodes}
 

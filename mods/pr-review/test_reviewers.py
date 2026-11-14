@@ -109,6 +109,10 @@ assert got["no place, the model's word"] == ([], "internal_only") and got["no pl
 assert got["unused grant"] == (["acc2"], "internal_only"), "an access row in the finding's own lines is its place"
 assert got["by the component above it"] == (["acc1"], "authenticated")
 assert not any("ref" in x for x in findings), "the refs are the model's, the ids stay"
+old = [f(id="o1", ref="o1", title="old check, new way in", introduced_here=False, impact="unauthorized_access"), f(id="o2", ref="o2", title="old, unreached", file="x.py", introduced_here=False)]
+reviewers.security_view(answer, old, pic, changed)
+assert [x["introduced_here"] for x in old] == [True, False], "a flaw behind a way in the PR opens is the PR's; one no new way reaches keeps the model's word"
+assert "impact" in reviewers.findings_schema("security")["properties"]["findings"]["items"]["required"], "every reviewer finding names its impact (isSecurity reads it)"
 t = v["threats"]
 assert [(x["id"], x["where"], x["result"], x.get("derived", False)) for x in t] == [
     ("t1", {"access": "acc1"}, "finding", False), ("t2", {"from": "handler", "to": "queue", "edge": "e3"}, "not_assessed", False),

@@ -308,7 +308,7 @@ assert sh["asks"][0]["short"] == "one reminder mail per loan and never ever" and
 p4 = review.prompt([], [], "PR: x", True)
 for part in ("what_changed: the change as three short lists", "read: the paths of the files outside the diff", "short (its name in at most eight words",
              "introduced_here (true when", "path_certainty (confirmed, derived or assumed", "certainty stays about the code alone",
-             "one thought in at most twelve words", "one sentence of at most 20 words"):
+             "one thought in at most twelve words", "one sentence of at most 20 words", "would be the same without the PR"):
     assert part in p4, part
 assert {"what_changed", "read"} <= set(review.SCHEMA["required"]) and {"what_changed", "read"} <= set(review.MERGE_SCHEMA["required"])
 print("ok finish")

@@ -818,6 +818,9 @@ console.log("ok");
   assert.deepEqual(Object.fromEntries(m.map((f) => [f.id, f.security])), { tok: true, store: false, sqs: false, mail: false, remind: false });
   assert.deepEqual([isSecurity({ impact: "data_exposure" }), isSecurity({ impact: "data_loss", category: "availability" }), isSecurity({ impact: "data_loss", category: "security" }),
     isSecurity({ reviewer: "security" }), isSecurity({ reviewer: "ai", category: "security" }), isSecurity({ reviewer: "claude", category: "bug" })], [true, false, true, true, true, false]);
+  // As the security run on PR #2 reports them: a batch retry and an unused grant carry ⛨ only if their impact is access or data.
+  assert.deepEqual([isSecurity({ reviewer: "security", category: "availability", impact: "degraded_operation" }), isSecurity({ reviewer: "security", category: "security", impact: "maintainability" }),
+    isSecurity({ reviewer: "security", category: "security", impact: "unauthorized_access" })], [false, false, true]);
   console.log("ok security mark");
 }
 
