@@ -27,7 +27,7 @@ import { archView, archModel, archLegend, visualsCard, visualCard, segBar, foldC
 import { visualPlan } from "./stack.js";
 import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCALE } from "./views.js";
 import { wrapCode, codeCols, sliceSpans } from "./views.js"; // long lines wrap
-import { pairRows, pairSide, HALF_GUTTER, diffModeOf } from "./views.js"; // side by side
+import { pairRows, pairSide, HALF_GUTTER, diffModeOf, oneSided } from "./views.js"; // side by side
 import { plainText } from "./pr.js";
 import { hasSources, archLayout, archBands } from "./arch.js";
 import * as TH from "./threads.js";
@@ -1264,7 +1264,7 @@ export const ReviewMode = {
   // How a file's rows are drawn: the code columns per visual line, the units top to bottom ({ri} one row; side by side
   // {ri, l, r}, ri the row the item's key names) and how many visual lines a unit takes (its longer half's).
   rowLayout(rows) {
-    const split = this.diffMode() === "split", lw = this.listW ?? 900, cw = this.codeCharW();
+    const split = this.diffMode() === "split" && !oneSided(rows), lw = this.listW ?? 900, cw = this.codeCharW();
     const cols = split ? codeCols(lw / 2, HALF_GUTTER, cw) : codeCols(lw, GUTTER, cw), n = (ri) => (ri === null ? 1 : this.wrapsOf(rows, ri, cols).length);
     const units = split ? pairRows(rows).map((p) => (p.full !== undefined ? { ri: p.full } : { ri: p.r ?? p.l, l: p.l, r: p.r })) : rows.map((_, ri) => ({ ri }));
     return { split, cols, units, parts: (u) => (u.l === undefined ? n(u.ri) : Math.max(n(u.l), n(u.r))) };

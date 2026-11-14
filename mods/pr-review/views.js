@@ -356,3 +356,6 @@ export function pairSide(x, w, l, r) {
 // list `width` px wide hold about 80 columns of code.
 export const SPLIT_COLS = 80;
 export const diffModeOf = (chosen, width, charW) => (chosen === "split" || chosen === "unified" ? chosen : codeCols(width / 2, HALF_GUTTER, charW) >= SPLIT_COLS ? "split" : "unified");
+// A file whose lines are all on one side (a new or a deleted file): side by side it keeps one column over the whole
+// width instead of an empty half.
+export const oneSided = (rows) => !rows.some((r) => r.kind === " ") && !(rows.some((r) => r.kind === "+") && rows.some((r) => r.kind === "-"));

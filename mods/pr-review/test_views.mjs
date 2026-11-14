@@ -327,3 +327,9 @@ assert.equal(diffModeOf(null, wide - 20, 7.8), "unified", "a little narrower: on
 assert.equal(diffModeOf("unified", wide * 2, 7.8), "unified", "the person's choice goes first");
 assert.equal(diffModeOf("split", 400, 7.8), "split");
 assert.equal(diffModeOf("bogus", 400, 7.8), "unified");
+import { oneSided } from "./views.js";
+const rowsOf = (s) => [{ kind: "@" }, ...[...s].map((kind) => ({ kind }))];
+assert.equal(oneSided(rowsOf("+++")), true, "a new file");
+assert.equal(oneSided(rowsOf("--")), true, "a deleted file");
+assert.equal(oneSided(rowsOf(" ++")), false, "context: a changed file");
+assert.equal(oneSided(rowsOf("-+")), false, "a line changed");
