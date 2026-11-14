@@ -565,6 +565,10 @@ console.log("ok");
   assert.equal(funnelLine(funnel([m.findings[2]], () => "open")), "analysis reported 1 and ai 1, 2 in all. Merged by file and line, that is 1 finding. 1 is unresolved, none of them on security.");
   assert.equal(funnelLine(funnel([m.findings[1]], () => "fixed")), "analysis reported 1 and claude 1, 2 in all. Merged by file and line, that is 1 finding. None are unresolved.");
   assert.equal(funnelLine(funnel([], () => "open")), "No findings reported.");
+  const { funnelShort } = await import("./pr.js");
+  assert.deepEqual([funnelShort(x), funnelShort(funnel([m.findings[0]], () => "open")), funnelShort(funnel([], () => "open"))],
+    ["7 reports from 4 sources, 4 after merging · 1 on security, 1 confirmed by a run", "2 reports from 2 sources, 1 after merging · 1 on security, 1 confirmed by a run", ""]);
+  assert.equal(funnelShort({ by: [["analysis", 1]], reported: 1, merged: 1, security: 0 }), "1 report from 1 source, none merged");
   // The owner of a finding's file, when a component there names one.
   const comps = [{ name: "Queue", at: "a.py:6", owner: null }, { name: "Event", at: "a.py:20", owner: "@platform-team" }, { name: "Other", at: "b.py:1", owner: "@web" }];
   assert.deepEqual([ownerOf({ file: "a.py" }, comps), ownerOf({ file: "b.py" }, comps), ownerOf({ file: "c.py" }, comps), ownerOf({ file: "a.py" }, undefined)], ["@platform-team", "@web", null, null]);

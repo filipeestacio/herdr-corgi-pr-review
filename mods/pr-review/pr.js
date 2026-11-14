@@ -992,3 +992,12 @@ export function publicFiles(access = [], nodes = []) {
   const file = (at) => String(at ?? "").replace(/:\d+.*$/, "");
   return new Set((access ?? []).filter((a) => a?.public).flatMap((a) => [file(a.at), file((nodes ?? []).find((n) => n.id === a.node)?.at)]).filter(Boolean));
 }
+
+// The same in one short line, under the Findings tab's count: "31 reports from 4 sources, 27 after merging · 3 on
+// security, none confirmed by a run" (the unresolved number is the count line's own).
+export function funnelShort(x) {
+  if (!x.merged) return "";
+  const n = (k, one, many = `${one}s`) => `${k} ${k === 1 ? one : many}`;
+  return `${n(x.reported, "report")} from ${n(x.by.length, "source")}, ${x.reported > x.merged ? `${x.merged} after merging` : "none merged"}`
+    + (x.security ? ` · ${x.security} on security, ${x.confirmed || "none"} confirmed by a run` : "");
+}
