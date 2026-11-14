@@ -664,3 +664,15 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.equal(resPicture({ kind: "state", writers: [{ kind: "W" }] }), null, "one writer: no matrix"); assert.equal(resPicture({ kind: "other", race: { steps: [[1]] } }), "race");
   assert.deepEqual(budgetBar({ value_s: 70, limit_s: 10 }, 308), { value: 280, limit: 40, over: 240, overS: 60 });
 }
+
+// ---- a path from R-D's derived shape reads like this view's own
+{
+  const { resPathView, resPicture } = await import("./views.js");
+  const res = { races: [{ id: "r1", actors: ["A", "B"], steps: [["A", "reads"]], breaks_at: 0, findings: ["f2"] }], state: [{ id: "s1", what: "reminded_on", writers: [{ node: "rem", at: "r.py:23" }, { node: "con", at: "c.py:23", guard: "none" }], readers: [{ node: "h", at: "h.py:21" }] }] };
+  const p = resPathView({ id: "p1", kind: "retry", steps: ["q", "con"], findings: ["f1"], ladder: { factors: [{ label: "batch of 10", n: 10, at: "t.yaml:37" }, { label: "until expiry", n: null, at: "t.yaml:11" }], text: "no limit until the message expires (4 days)" },
+    blocker: { why: "load grows without a limit", at: "t.yaml:11" }, budget: { value_s: 70, limit_s: 10, over_s: 60, text: "up to 70 s" } }, res);
+  assert.deepEqual(p.ladder.map((r) => [r.name, r.factor]), [["batch of 10", "×10"], ["until expiry", "no limit"]]);
+  assert.deepEqual([p.product, p.blocker.reason, p.budget.note, p.state, p.writers.map((w) => w.kind).join("")], ["no limit until the message expires (4 days)", "load grows without a limit", "up to 70 s", "reminded_on", "WWR"]);
+  assert.equal(resPathView({ id: "p5", kind: "race", findings: ["f2"], steps: [] }, res).race.id, "r1"); assert.equal(resPicture(resPathView({ id: "p9", kind: "other", steps: [], findings: [] }, res)), null);
+  assert.equal(resPathView({ id: "x", ladder: [{ name: "a", factor: "3" }], blocker: { reason: "r" } }).blocker.reason, "r", "the view's own shape stays");
+}

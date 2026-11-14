@@ -37,7 +37,7 @@ import { plainText } from "./pr.js";
 import { pollDue, pollAfter, windowActive } from "./pr.js"; // background fetches (ghTick)
 import { hasSources, archLayout, archBands } from "./arch.js";
 import { archMarks, transitionText } from "./arch.js";
-import { resStartOf, resOrder, resPicture, budgetBar } from "./views.js"; // the Resilience page
+import { resStartOf, resOrder, resPicture, budgetBar, resPathView } from "./views.js"; // the Resilience page
 import { transitionMarks, effectiveFrom, inProcess, mapArch, crossingsOf, crossingChanged, secSentence, TRUST_ORDER } from "./views.js";
 import { trustLegend, hasTrust } from "./stack.js";
 import { scopeTable, scopeConflicts, runSummary, AREA_NAME, areaFindings, surfaceOf, EXPOSURE, reachLevel, secOrder, extraWays } from "./views.js";
@@ -4031,7 +4031,7 @@ export const ReviewMode = {
       .when(run?.state === "running", (e) => e.child(div().id("rv-res-running").text_size(13).text_color(t.muted).child("Resilience review running: reading the code, the template and the calls between them…"))));
     if (!res) {
       // Before the run: where it would start, the offer, what it does not do.
-      const start = this.ai?.resilienceStart ?? resStartOf(a, this.ai?.access);
+      const own = this.ai?.resilienceStart, start = own ? { text: own.text ?? own.sentence, nodes: own.nodes ?? [] } : resStartOf(a, this.ai?.access);
       return [["head", head], ["start", v_flex().id("rv-res-start").gap(10).max_w(1000)
         .child(div().text_size(14).line_height(1.5).whitespace_normal().child(start.text))
         .when(run?.state !== "running", (e) => e.child(this.runOffer("resilience", t)))
@@ -4039,7 +4039,7 @@ export const ReviewMode = {
         .when(run?.state === "failed", (e) => e.child(div().text_size(12.5).text_color(t.ansi1).whitespace_normal().child(`The last run failed: ${run.error || "no error text"}.`)))],
         ...(a ? [["map", this.resMap(t, a, null, start.nodes ?? [])]] : [])];
     }
-    const paths = resOrder(res.paths ?? []), blockers = paths.filter((p) => p.blocker), cur = this.resPathOf(paths), now = this.worktree?.head ?? this.head;
+    const paths = resOrder((res.paths ?? []).map((p) => resPathView(p, res))), blockers = paths.filter((p) => p.blocker), cur = this.resPathOf(paths), now = this.worktree?.head ?? this.head;
     const stale = Boolean(res.head && now && res.head !== now), short = (h) => String(h ?? "").slice(0, 7);
     const clean = (res.checks ?? []).filter((c) => c.result === "clean").length, nc = (res.checks ?? []).filter((c) => c.result === "not_checkable").length + (res.not_checked ?? []).length;
     const verdict = res.summary || (blockers.length ? `${blockers.length} ${blockers.length === 1 ? "path stands" : "paths stand"} before the merge.` : "No path grows without limit or doubles an effect.");
@@ -5028,7 +5028,7 @@ export const ReviewMode = {
   // The Overview's "Before merge" rows (pr.js beforeMerge on mergeBlockers).
   mergeRows() {
     // The Resilience run's blockers stand with the others, one row each, right after the security rows.
-    const res = (this.resNow()?.paths ?? []).filter((p) => p.blocker).map((p) => ({ kind: "resilience", title: `${p.trigger}: ${p.end}`, why: `Blocker: ${p.blocker.reason}`, path: p.id, asks: [] }));
+    const res = (this.resNow()?.paths ?? []).filter((p) => p.blocker).map((p) => ({ kind: "resilience", title: `${p.trigger}: ${p.end}`, why: `Blocker: ${p.blocker.reason ?? p.blocker.why}`, path: p.id, asks: [] }));
     const rows = beforeMerge({ list: this.taskNow(), findings: this.findings(), statusOf: (f) => this.fstatus(f), blockers: this.blockersNow() }), sec = rows.filter((r) => r.kind === "security").length;
     return [...rows.slice(0, sec), ...res, ...rows.slice(sec)]; // after the security rows: a way a failure grows without limit is as urgent
   },

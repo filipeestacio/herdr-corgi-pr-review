@@ -5,6 +5,7 @@
 // GitHub draws it. A security finding is in here in full: this is for the person's own use, nothing is posted.
 import { taskList, taskHead, verdictParts, findingCounts, componentLine, CERTAINTY, SEVERITY_SCALE, levels } from "./pr.js";
 import { transitionText } from "./arch.js";
+import { resPathView } from "./views.js";
 
 const STATE = { open: "Unresolved", progress: "Fix sent", fixed: "Fixed", dismissed: "Dismissed", recheck: "Unresolved, line changed" };
 const SOURCE = { analysis: "Analysis", security: "Security review", claude: "Claude code review", codex: "Codex review", ai: "AI suggestion" };
@@ -381,7 +382,7 @@ const actorId = (k) => `A${k}`;
 export function resilienceMd({ pr, head, res = null, names = new Map() }) {
   if (!res) return doc(prLine({ pr, head }), "", "# Resilience", "", "The resilience review has not run on this PR.");
   const name = (s) => (/^e\d+$/.test(s) ? null : names.get(s) ?? s);
-  const order = [...(res.paths ?? [])].sort((a, b) => Number(Boolean(b.blocker)) - Number(Boolean(a.blocker)));
+  const order = [...(res.paths ?? [])].map((p) => resPathView(p, res)).sort((a, b) => Number(Boolean(b.blocker)) - Number(Boolean(a.blocker)));
   const probe = (p) => (res.probes ?? []).find((x) => x.id === p.probe || x.of === p.id);
   const path = (p, k) => {
     const pr2 = probe(p), way = [...new Set((p.steps ?? []).map(name).filter(Boolean))].join(" → ");

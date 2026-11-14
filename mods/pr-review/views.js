@@ -901,3 +901,14 @@ export function budgetBar({ value_s, limit_s }, width = 320) {
   const max = Math.max(value_s, limit_s) * 1.1 || 1, px = (s) => Math.round((s / max) * width);
   return { value: px(value_s), limit: px(limit_s), over: Math.max(0, px(value_s) - px(limit_s)), overS: Math.max(0, value_s - limit_s) };
 }
+// A path in the shape the page draws, from either shape: this view's own fixture or R-D's withResilience (blocker.why,
+// ladder {factors [{label, n, at}], text}, budget {…, text}, races[] and state[] at the top). Pure.
+export function resPathView(p, res = {}) {
+  const lad = Array.isArray(p.ladder) ? p.ladder : (p.ladder?.factors ?? []).map((f) => ({ name: f.label, factor: f.n === null || f.n === undefined ? "no limit" : `×${f.n}`, at: f.at }));
+  const race = p.race ?? (res.races ?? []).find((r) => (r.findings ?? []).some((id) => (p.findings ?? []).includes(id))) ?? (p.kind === "race" ? (res.races ?? [])[0] : null) ?? null;
+  const st = p.writers ? null : (res.state ?? []).find((x) => (x.writers ?? []).length >= 2 && x.writers.some((w) => (p.steps ?? []).includes(w.node)));
+  const writers = p.writers ?? (st ? [...st.writers.map((w) => ({ ...w, kind: "W", guard: w.guard ?? "none" })), ...(st.readers ?? []).map((r) => ({ ...r, kind: "R", guard: "" }))] : undefined);
+  const budget = p.budget ? { ...p.budget, note: p.budget.note ?? p.budget.text } : null;
+  return { ...p, ladder: lad, product: p.product ?? (Array.isArray(p.ladder) ? null : p.ladder?.text) ?? null, budget, race, writers, state: p.state ?? st?.what ?? st?.id,
+    blocker: p.blocker ? { reason: p.blocker.reason ?? p.blocker.why ?? "" } : null };
+}
