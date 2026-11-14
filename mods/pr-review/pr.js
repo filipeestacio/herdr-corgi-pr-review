@@ -496,7 +496,7 @@ export const countLine = (c) => (!c.total ? "No findings" : [`${c.unresolved} un
 // One prompt asking the PR's agent to fix findings and to report each back as a JSON line in `report`.
 export function fixPrompt(findings, pr, report, lang) {
   const items = findings.map((f, i) => [`${i + 1}. [${f.id}] ${f.severity} · ${f.reviewer} · \`${f.file}\`:${f.line}${f.end && f.end !== f.line ? `–${f.end}` : ""}: ${f.title}`,
-    f.detail, f.suggestion ? `Suggestion: ${f.suggestion}` : null].filter(Boolean).join("\n"));
+    f.detail, f.suggestion ? `Suggestion:${/\n/.test(f.suggestion) ? "\n" : " "}${f.suggestion}` : null].filter(Boolean).join("\n")); // a list or a code block starts on its own line
   return [`${pr ? `PR #${pr.number} "${pr.title}"${pr.url ? ` (${pr.url})` : ""}` : "This branch"}: please fix ${findings.length === 1 ? "this review finding" : `these ${findings.length} review findings`}.`,
     ...items,
     `Report each finding back once it is handled: append one JSON line per finding to ${report}, for example\n` +

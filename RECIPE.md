@@ -74,7 +74,7 @@ title bar (traffic lights at 12, 16):
 - On the right one virtual list of 22 px rows: the step header, then each hunk with old/new line numbers,
   `+` rows tinted `#2ea043`, `−` rows `#f85149`, and inline: AI notes (one muted line, a click opens the text;
   `a` adds it as a comment, `x` hides it) and findings, one per file and line (severity badge, its sources with
-  their severities, its state, `Add as comment`, `Discuss in chat`, `Fix`, `Dismiss finding`).
+  their severities, its state, `Add to review`, `Ask an agent…`, `Fix with agent…`, `Dismiss finding`).
 - Commenting as on GitHub's "Files changed": hovering the line numbers shows a `+`. The composer is two list rows
   under the selection's last line (168 px and 48 px, `accent` border): "Comment on lines 13–15", a fixed-height
   textarea, then `Suggestion` (inserts a GitHub suggestion block with the selected lines), `Cancel`,
@@ -85,7 +85,9 @@ title bar (traffic lights at 12, 16):
 - `Finish your review` opens a 460 px popover at the top right of the body: a summary textarea, radios
   `Comment` / `Approve` / `Request changes` with GitHub's descriptions, `Send to: GitHub | Agent session` (only
   when the PR has a session), a preview of what goes out ("Posts one review to owner/repo#n: Comment, 2 line
-  comments, 1 in the body." and the lines), `Discard pending` and a green `Submit review`.
+  comments, 1 in the body." and the lines), `Discard 1 pending comment…` (asks first) and a green `Submit review`.
+  The findings suggest a verdict next to the choice and never pick it; `Approve` over an unresolved finding of high
+  severity asks once; `Insert blockers` drafts the body from those findings; a `Dry run` chip shows `"dryRun": true`.
 - **Architecture impact** and **Security blast radius**: groups as dashed frames of cards (title up to 2 lines,
   description up to 3, type, "Open ↗" to the code, a status chip: ADDED `ansi2`, CHANGED `accent`, UNCHANGED
   `muted`, REMOVED `ansi1`). Every call points left to right. Inside a group a node sits right of its caller, so a
@@ -143,11 +145,15 @@ Explore shows Overview, Layers, Architecture and Files for a topic, without a di
   the time and the cost cap; it can take minutes. After a push, "Only new changes" analyses just the new commits.
 - `Reviews ▾` lists Claude code review, Security review and (when installed) Codex review with their last run;
   Run starts one in the background on a checkout of the PR head; findings appear inline and under Findings.
-- `Fix` sends findings to the agent, which reports back per finding. The finding reads "Fix sent" and stays
-  unresolved (in the diff, counted, a blocker when high) with the agent, branch, commit and report; after the next
-  push "Verify fixes" in the Findings tab checks them (fixed → Fixed, not fixed → Unresolved again, unclear).
-- "Discuss in chat" pastes the finding into the agent's terminal in a floating window without sending it (or
-  into a chat mod's bubble, PROVIDERS.md).
+- `Fix with agent…` sends findings to an agent, which reports back per finding. The preview names the account's
+  config folder, what the agent gets and may do, and that it cannot push (`git push` and `gh pr create` are denied).
+  `Fix several…` lets you tick which findings one agent fixes together; security findings go one at a time. The finding reads "Fix sent" and stays
+  unresolved (in the diff, counted, a blocker when high) with the agent, branch, commit and report. "Verify fixes"
+  in the Findings tab checks a reported commit on its fix branch ("Verified on the fix branch, not in the PR yet")
+  and, after the next push, the PR head (fixed → Fixed, not fixed → Unresolved again, unclear).
+- "Ask an agent…" pastes the finding into the live agent's terminal in a floating window without sending it (or
+  into a chat mod's bubble, PROVIDERS.md); without a live agent it starts one in a new tab, in manual mode, on the
+  review's checkout of the PR head. Its preview says which of these happens.
 - The analysis writes in the `language` setting; prompts are English.
 - Progress (checked layers, seen files, where you were) is kept per PR and restored on Resume.
 
@@ -156,8 +162,8 @@ about and file:line evidence; a short thread per PR is kept in pr-data/deep.json
 note on its card, edge or lines; notes never go out. Show details (one call, "Review: drill down") draws a card or a
 layer from the inside, cached per card path and diff head. Explore (one call, "Explore: walkthrough", read-only tools
 in the repo) keeps the newest 20 explorations. Every send to an agent opens a preview first. Fix starts a sub-agent
-(`hc run --parent <PR agent>`) in a worktree on fix/<pr>-<id> and tells the PR agent (`hc send`); the sub-agent's last
-step is one `hc send` to the PR agent, which cherry-picks, tests and pushes; Apply to PR cherry-picks onto a clean checkout. The
+(`hc run --parent <PR agent>`) in a worktree on fix/<pr>-<id>, started at the PR head. The sub-agent commits there and stops: it cannot
+push and hands its fix to nobody. Apply to PR cherry-picks onto a clean checkout of the PR's branch (Hand over… asks the PR agent instead). The
 GitHub submit posts only the ticked items. The analysis writes every hunk to its run folder with an index and splits
 big PRs into cohort passes and a merge pass under one cap.
 
