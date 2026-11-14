@@ -1526,7 +1526,9 @@ export const ReviewMode = {
 
   // The selected range as a comment anchor (lines, side, quoted code); null when nothing (or nothing valid) is selected.
   selAnchor() {
-    const f = this.fsel, rows = f ? this.rowsFor(f.path) : null, range = rows && rangeOf(rows, f.a, f.b);
+    // Side by side a selection is one half's lines: the other half's changed lines between its ends are not in it.
+    const f = this.fsel, all = f ? this.rowsFor(f.path) : null, drop = f?.side && this.diffMode() === "split" ? (f.side === "l" ? "+" : "-") : null;
+    const rows = all && drop ? all.filter((r) => r.kind !== drop) : all, range = rows && rangeOf(rows, f.a, f.b);
     return range ? selection(rows, range[0], range[1]) : null;
   },
 
@@ -3773,7 +3775,7 @@ export const ReviewMode = {
     const on = Boolean(this.selKeys && this.fsel?.path === it.path && this.selKeys.has(lineKey(r)) && (!side || !this.fsel.side || this.fsel.side === side));
     const tone = r.kind === "+" ? t.ansi2 : r.kind === "-" ? t.ansi1 : null, focus = it.hunk && it.hunk === this.focusHunk, newSide = side !== "l";
     if (starts[part] === undefined) return h_flex().h(ROW).when(Boolean(tone), (e) => e.bg(tint(r.kind) + "1a")).when(on, (e) => e.bg(t.selection)) // under a half's shorter line
-      .child(div().w(4).h_full().flex_none()).child(div().w(side ? 48 : 96).h_full().flex_none().when(Boolean(tone), (e) => e.bg(tint(r.kind) + "40")));
+      .child(div().w(4).h_full().flex_none().when(on, (e) => e.bg(t.accent))).child(div().w(side ? 48 : 96).h_full().flex_none().when(Boolean(tone), (e) => e.bg(tint(r.kind) + "40")));
     const num = (n) => div().w(48).h_full().flex_none().pr(8).flex().items_center().justify_end().text_color(t.muted).child(n === undefined || !first ? "" : String(n));
     const sel = on && !this.composing && this.fsel?.b === lineKey(r) && last, trace = last && newSide && r.kind !== "-" && this.traces?.get(`${it.path}:${r.n}`);
     return h_flex().h(ROW).font_family(settings().font_family ?? "JetBrains Mono").text_size(13).cursor_pointer()
