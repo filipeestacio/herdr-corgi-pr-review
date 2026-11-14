@@ -475,9 +475,22 @@ const NEAR = 3; // lines between two findings of one defect at most (PR #2: 19/2
 const SPAN = 30; // a finding's own range counts up to this many lines past its first (a model's end can be anything)
 // Lines between two findings' ranges (line..end), 0 when they overlap.
 const gap = (a, b) => { const end = (x) => Math.min(Math.max(x.end || x.line, x.line), x.line + SPAN); return Math.max(0, a.line - end(b), b.line - end(a)); };
+// The named resources a finding's title is about: an UPPER_CASE name with an underscore (an environment variable,
+// FRONT_DESK_TOKEN) or a `backticked` name. Two findings about the same resource in one file are one defect also further
+// apart (RES_NEAR: PR #2 has the token once at the env block, template.yaml:14, and once at the function, 18-20) when
+// they make the same claim or name the same impact; two titles that name only different resources are never one.
+const RES_NEAR = 20;
+export const resourcesOf = (title) => new Set([...String(title).matchAll(/`([^`\s]{2,})`|\b([A-Z][A-Z0-9]*_[A-Z0-9_]*[A-Z0-9])\b/g)].map((m) => m[1] ?? m[2]));
+export function sameDefect(x, y) {
+  const rx = resourcesOf(x.title), ry = resourcesOf(y.title), shared = [...rx].some((r) => ry.has(r));
+  if (rx.size && ry.size && !shared) return false;
+  const claim = sameClaim(x.title, y.title);
+  return (gap(x, y) <= NEAR && claim) || (shared && gap(x, y) <= RES_NEAR && (claim || (Boolean(x.impact) && x.impact === y.impact)));
+}
 
-// Findings (the reviewers' and the analysis') in one file whose line ranges are at most NEAR lines apart (overlapping too) and with
-// titles that make the same claim (sameClaim), are one finding: the highest severity leads (its title and text show),
+// Findings (the reviewers' and the analysis') in one file that are one defect (sameDefect: line ranges at most NEAR
+// lines apart, overlapping too, and the same claim (sameClaim); or the same named resource within RES_NEAR) are one
+// finding: the highest severity leads (its title and text show),
 // every source stays in `sources` with its own severity, and `security` (⛨) is true when a source is about security
 // (isSecurity: its effect is access, data or rights, not who found it). Being on the same line or in the same function is not enough: on PR #2 consumer.py 20
 // and 23, in one function, say different things. An AI suggestion joins a finding on its own line (it is worded as a
@@ -496,7 +509,7 @@ export function mergeFindings(findings, suspects = [], status = {}, publicFiles 
   // In line order, so 19, 20 and 22 can become one; a finding without a line stays alone.
   const kept = [], byLine = new Map();
   for (const x of [...findings].sort((a, b) => (a.line || 0) - (b.line || 0))) {
-    const near = x.line > 0 && kept.find((j) => j[0].file === x.file && j[0].line > 0 && j.some((y) => gap(x, y) <= NEAR && sameClaim(x.title, y.title)));
+    const near = x.line > 0 && kept.find((j) => j[0].file === x.file && j[0].line > 0 && j.some((y) => sameDefect(x, y)));
     if (near) near.push(x); else kept.push([x]);
     if (x.line > 0 && !byLine.has(at(x))) byLine.set(at(x), near || kept.at(-1));
   }
