@@ -3102,19 +3102,20 @@ export const ReviewMode = {
     const pic = (k) => [archView(L, t, `${pid}${k ? `-${k}` : ""}`, (n, _e, cx) => this.jumpTo(n.at ?? n.evidence ?? n.file, cx), decorate, opts), ...(notes ? this.pinNotes(t, L) : [])];
     if (B.length < 2) return this.hscroll(id, L.width + 4 + 40, L.height + 4, pic(0), t);
     const num = (n) => div().flex_none().w(18).h(18).flex().items_center().justify_center().rounded_full().border_1().border_color(t.muted).bg(t.background).text_size(11).text_color(t.foreground).child(String(n));
-    const turn = (m, k, end) => h_flex().id(`${pid}-turn${k}-${end}-${m.y}`).absolute().top(m.y - 9).h(18).gap(2).items_center().text_size(13).text_color(t.muted)
+    const turn = (m, k, end, y0 = 0) => h_flex().id(`${pid}-turn${k}-${end}-${m.y}`).absolute().top(m.y - y0 - 9).h(18).gap(2).items_center().text_size(13).text_color(t.muted)
       .tooltip(`Call ${m.nums.join(", ")} ${end === "out" ? (m.back ? "comes in from the row below" : "goes on in the next row, at its left edge") : m.back ? "goes on in the row above, at its right edge" : "comes from the row above"}`)
       .children(end === "out" ? [...m.nums.slice(0, 1).map(num), div().child(m.back ? "←" : "⤵")] : [div().child(m.back ? "↰" : "↳"), ...m.nums.slice(0, 1).map(num)]);
     return v_flex().id(id).w_full().gap(6)
       .on_size_change((size, cx) => { if (Math.abs(s.viewW - size.width) > 2) { s.viewW = size.width; cx.notify(); } })
       .children(B.flatMap((b, k) => {
-        const w = b.x1 - b.x0, left = b.in.length ? M : 0;
+        // y0 (arch.js archBands): the strip over the picture this band does not need (no line runs up there).
+        const w = b.x1 - b.x0, left = b.in.length ? M : 0, y0 = b.y0 ?? 0;
         return [
           ...(k ? [div().id(`${pid}-cut${k}`).w_full().h(0).border_t(1).border_dashed().border_color(t.border).tooltip("The picture goes on here: a line that leaves the row above on the right comes in on the left at the same height, with the same number")] : []),
-          div().id(`${pid}-band${k}`).w(left + w + (b.out.length ? M : 0)).h(b.h + 4).relative()
-            .child(div().absolute().top(0).left(left).w(w).h(b.h + 4).overflow_hidden().child(div().absolute().top(0).left(-b.x0).w(L.width).h(L.height + 4).children(pic(k))))
-            .children(b.in.map((m) => turn(m, k, "in").left(0)))
-            .children(b.out.map((m) => turn(m, k, "out").left(left + w + 2)))];
+          div().id(`${pid}-band${k}`).w(left + w + (b.out.length ? M : 0)).h(b.h - y0 + 4).relative()
+            .child(div().absolute().top(0).left(left).w(w).h(b.h - y0 + 4).overflow_hidden().child(div().absolute().top(-y0).left(-b.x0).w(L.width).h(L.height + 4).children(pic(k))))
+            .children(b.in.map((m) => turn(m, k, "in", y0).left(0)))
+            .children(b.out.map((m) => turn(m, k, "out", y0).left(left + w + 2)))];
       }));
   },
   // Where the unresolved findings sit on the picture (arch.js archMarks): on a card, or on a call they break.
