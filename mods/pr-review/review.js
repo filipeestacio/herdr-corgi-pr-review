@@ -4185,7 +4185,8 @@ export const ReviewMode = {
     // A blocker whose base was not comparable (pre_existing "unknown") says so at its reason; "✓ limited" only with a guard.
     // same_cause: another path's blocker (one cause blocks once); byProbe: the probe dated an unclear blocker on the base.
     const num = (id) => (this.resNums?.get(id) ?? id), dated = p.byProbe ? ` (${TH.BASE_WORDS[p.byProbe] ?? resWord(p.byProbe)}, from the probe on the base)` : "";
-    const word = p.blocker ? `${p.blocker.unclear ? "Blocker? old or new unclear" : "Blocker"}: ${p.blocker.reason}${dated}` : p.same_cause ? `same cause as path ${num(p.same_cause)}`
+    // wired (C2 D3): it cannot happen today; it blocks once the missing part is there ("blocks once wired").
+    const word = p.wired && !p.blocker ? `Blocks once wired: ${p.wired.reason}` : p.blocker ? `${p.blocker.unclear ? "Blocker? old or new unclear" : "Blocker"}: ${p.blocker.reason}${dated}` : p.same_cause ? `same cause as path ${num(p.same_cause)}`
       : p.pre_existing === true ? `finding, already on the base${dated}` : p.result === "mitigated" ? (p.limited_by ? `✓ limited at ${p.limited_by}` : "limited, no guard named")
         : p.result === "not_assessed" ? "not assessed" : "finding";
     // The way: each step's card (a call e<k> by both its ends, R2 runs name calls), each card once.
@@ -4195,13 +4196,13 @@ export const ReviewMode = {
     const fs = this.findings().filter((f) => (p.findings ?? []).some((id) => (f.ids ?? [f.id]).includes(id)));
     // What on-call sees, two states (seen / ✕ silent) from signal and seen_as (an older run: visible), the detail in the tooltip.
     const silent = p.signal ? p.signal === "none" : !p.visible, seenAs = p.seen_as || p.seen || (p.signal && p.signal !== "none" ? `It shows in ${resWord(p.signal)}.` : "");
-    const line2 = [way, (p.failing ?? []).filter((x) => x !== "silent").map(resWord).join(", "), fs.length && `${fs.length} ${fs.length === 1 ? "finding" : "findings"}`].filter(Boolean).join(" · ");
-    return v_flex().id(`rv-res-p-${p.id}`).gap(8).pl(12).pr(8).py(8).rounded(8).border_l(3).border_color(p.blocker ? t.ansi1 : p.result === "mitigated" ? t.ansi2 : t.border).bg(open ? t.selected : t.surface)
+    const line2 = [p.wired?.today && !p.blocker && String(p.wired.today).replace(/^./, (c) => c.toUpperCase()), way, (p.failing ?? []).filter((x) => x !== "silent").map(resWord).join(", "), fs.length && `${fs.length} ${fs.length === 1 ? "finding" : "findings"}`].filter(Boolean).join(" · ");
+    return v_flex().id(`rv-res-p-${p.id}`).gap(8).pl(12).pr(8).py(8).rounded(8).border_l(3).border_color(p.blocker ? t.ansi1 : p.wired ? t.ansi3 : p.result === "mitigated" ? t.ansi2 : t.border).bg(open ? t.selected : t.surface)
       .child(v_flex().id(`rv-res-ph-${p.id}`).gap(2).cursor_pointer().on_click((_e, cx) => { this.resOpen = open ? null : p.id; cx.notify(); }).tooltip(open ? "Fold this path" : "Open this path: its picture, the action and the probe, and light it on the map")
         .child(h_flex().gap(10).items_start()
           .child(div().flex_none().w(18).text_color(t.muted).child(`${k + 1}`))
           .child(div().flex_1().min_w(0).text_size(14).font_semibold().whitespace_normal().line_height(1.4).child(resSentence(p)))
-          .child(div().flex_none().max_w(320).text_size(12.5).font_semibold().whitespace_normal().text_color(p.blocker ? t.ansi1 : p.result === "mitigated" ? t.ansi2 : t.muted).child(word))
+          .child(div().flex_none().max_w(320).text_size(12.5).font_semibold().whitespace_normal().text_color(p.blocker ? t.ansi1 : p.wired ? t.ansi3 : p.result === "mitigated" ? t.ansi2 : t.muted).when(Boolean(p.wired?.today) && !p.blocker, (e) => e.id(`rv-res-wired-${p.id}`).tooltip(`Not today: ${p.wired.today}`)).child(word))
           .child(div().flex_none().text_size(12.5).text_color(ev[2]).child(`${ev[0]} ${ev[1]}`))
           .child(div().flex_none().text_color(t.muted).child(open ? "▾" : "▸")))
         .child(h_flex().pl(28).gap(8).flex_wrap().text_size(12).text_color(t.muted).child(div().min_w(0).whitespace_normal().child(line2))

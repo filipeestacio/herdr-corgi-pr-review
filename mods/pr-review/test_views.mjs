@@ -856,3 +856,13 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   const two = clampText(ml.text, Math.floor((ARCH.W - 20) / 6), 2);
   assert.equal(two.lines, 2); assert.ok(!two.cut, `the five words fit in two lines of a card: ${two.text}`);
 }
+
+// ---- wave C2 D3: a path that cannot happen today blocks once wired: after the blockers, said apart from them
+{
+  const { resVerdictParts, resOrder, resPathView } = await import("./views.js");
+  const ps = [{ id: "a", result: "finding" }, { id: "w", result: "finding", wired: { why: "x", today: "not possible today" } }, { id: "b", result: "finding", blocker: { why: "y" } }];
+  assert.deepEqual(resOrder(ps).map((p) => p.id), ["b", "w", "a"]);
+  assert.equal(resVerdictParts(ps).head, "1 of 3 paths blocks the merge. 1 path blocks once it is wired.");
+  assert.equal(resVerdictParts([ps[1]]).head, "1 path blocks once it is wired.");
+  assert.equal(resPathView(ps[1]).wired.reason, "x");
+}

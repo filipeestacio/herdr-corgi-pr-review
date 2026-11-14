@@ -924,7 +924,8 @@ export function resStartOf(arch, access = []) {
   return { text, nodes: [...new Set([...queues.map((n) => n.id), ...routes.map((x) => x.node).filter(Boolean), ...nodes.filter((n) => fns.some((g) => g.id === n.group) && (n.type === "function" || /handler|consumer/i.test(n.label ?? ""))).map((n) => n.id)])] };
 }
 // The paths in the order of the page: blockers first, then findings, not assessed, limited ones; the order otherwise kept.
-const RES_RANK = (p) => (p.blocker ? 0 : p.result === "finding" ? 1 : p.result === "not_assessed" ? 2 : 3);
+// Blockers, then the paths that block once wired (wave C2 D3: wired {why, at, today}), then findings, the rest.
+const RES_RANK = (p) => (p.blocker ? 0 : p.wired ? 1 : p.result === "finding" ? 2 : p.result === "not_assessed" ? 3 : 4);
 export const resOrder = (paths) => [...(paths ?? [])].sort((a, b) => RES_RANK(a) - RES_RANK(b));
 // The one picture of an opened path, by what it has: a ladder (retries), a budget (a timeout), a race's timeline, or
 // the writers of a shared state (two writers or more); null: none.
@@ -948,7 +949,7 @@ export function resPathView(p, res = {}) {
   const writers = p.writers ?? (st ? [...st.writers.map((w) => ({ ...w, kind: "W", guard: w.guard ?? "none" })), ...(st.readers ?? []).map((r) => ({ ...r, kind: "R", guard: "" }))] : undefined);
   const budget = p.budget ? { ...p.budget, note: p.budget.note ?? p.budget.text } : null;
   return { ...p, ladder: lad, product: p.product ?? (Array.isArray(p.ladder) ? null : p.ladder?.text) ?? null, budget, race, writers, state: p.state ?? st?.what ?? st?.id,
-    invariant: p.invariant ?? st?.invariant ?? null, blocker: p.blocker ? { reason: p.blocker.reason ?? p.blocker.why ?? "", unclear: Boolean(p.blocker.unclear) } : null };
+    invariant: p.invariant ?? st?.invariant ?? null, wired: p.wired ? { ...p.wired, reason: p.wired.reason ?? p.wired.why ?? "" } : null, blocker: p.blocker ? { reason: p.blocker.reason ?? p.blocker.why ?? "", unclear: Boolean(p.blocker.unclear) } : null };
 }
 // A path's step as a card of the map: a card id, or a place ("file:line") on the card of that file (the last card
 // that starts at or above the line, else the file's first); an edge id or an unknown place: null.
@@ -1131,6 +1132,41 @@ export function resByProbe(paths, probes) {
 // in its 15 px row) below does not touch it. In arch.js extra rows of 18 px each, with the card's 3 px gap.
 export const RES_MARK_ROW = { h: 18, below: 3 };
 export const resMarkRows = () => (RES_MARK_ROW.h + RES_MARK_ROW.below + 3) / 18;
+// The page's verdict in two parts (wave C2 V2): a short sentence ("5 of 11 paths block the merge.") and the count by
+// reason, most first ("a visible effect is lost: 2 · load grows without a limit: 1"); null without a blocker.
+export function resVerdictParts(paths) {
+  const b = (paths ?? []).filter((p) => p.blocker), w = (paths ?? []).filter((p) => p.wired).length, by = new Map();
+  if (!b.length && !w) return null;
+  for (const p of b) { const r = p.blocker.reason ?? p.blocker.why ?? ""; by.set(r, (by.get(r) ?? 0) + 1); }
+  // The paths that cannot happen today wait (wave C2 D3): said after the blockers, not counted with them.
+  const wait = w ? `${b.length ? " " : ""}${w} ${w === 1 ? "path blocks" : "paths block"} once ${w === 1 ? "it is" : "they are"} wired.` : "";
+  return { head: `${b.length ? `${b.length} of ${paths.length} ${paths.length === 1 ? "path" : "paths"} ${b.length === 1 ? "blocks" : "block"} the merge.` : ""}${wait}`,
+    counts: [...by].sort((x, y) => y[1] - x[1]).map(([r, n]) => `${r}: ${n}`) };
+}
+// Where a chosen path starts on the map: the card of its first step (a call e<k> by the card it leaves), else null.
+export function resStartCard(p, arch) {
+  for (const s of p?.steps ?? []) {
+    const e = /^e(\d+)$/.exec(String(s)), id = e ? arch?.edges?.[Number(e[1])]?.from : resCardOf(s, arch);
+    if (id) return id;
+  }
+  return p?.reach?.[0] ?? null;
+}
+// Wave C2 V3: a resilience path whose probe reproduced it (status done, result reproduced) confirms its findings:
+// certainty "confirmed", with probed {id, strength} so the word can say how ("confirmed, platform modeled" when the
+// script modeled the platform). paths: the run's paths (p.findings ids, p.probe); probes: review.js probesNow. Pure.
+export function withProbes(findings, paths, probes) {
+  const by = new Map();
+  for (const p of paths ?? []) {
+    const x = (probes ?? []).find((q) => (q.id === p.probe || q.of === p.id) && q.status === "done" && q.result === "reproduced");
+    if (x) for (const id of p.findings ?? []) by.set(id, { id: x.id, strength: x.strength ?? null });
+  }
+  if (!by.size) return findings;
+  return (findings ?? []).map((f) => { const hit = (f.ids ?? [f.id]).map((id) => by.get(id)).find(Boolean); return hit ? { ...f, certainty: "confirmed", probed: hit } : f; });
+}
+// The certainty as a word, with how a probe confirmed it ("confirmed, platform modeled").
+export const certaintyText = (f) => `${f?.certainty ?? ""}${f?.certainty === "confirmed" && f?.probed?.strength === "models_env" ? ", platform modeled" : ""}`;
+// Which probe confirmed a finding, as a sentence after its certainty (" Probe r1 reproduced it, with the platform modeled.").
+export const probedText = (f) => (f?.certainty === "confirmed" && f?.probed ? ` Probe ${f.probed.id} reproduced it${f.probed.strength === "models_env" ? ", with the platform modeled" : ""}.` : "");
 
 // "Before merge" counted by what decides it, one number per group, in the rows' order: "⛨ 2 security", "5 criteria"
 // (the criteria not met that its rows break or stand for, each once), "5 resilience paths", "14 high" (the other
@@ -1168,36 +1204,3 @@ export function runLabel(run, price = null, age = "", short = false) {
   if (run?.state === "done") return short ? `Re-run${p}` : `Re-run${p} · last run${age ? ` ${age}` : ""}${run.head ? ` on ${String(run.head).slice(0, 7)}` : ""}`;
   return `${run?.state === "failed" ? "Run again" : "Run"}${p}`;
 }
-// The page's verdict in two parts (wave C2 V2): a short sentence ("5 of 11 paths block the merge.") and the count by
-// reason, most first ("a visible effect is lost: 2 · load grows without a limit: 1"); null without a blocker.
-export function resVerdictParts(paths) {
-  const b = (paths ?? []).filter((p) => p.blocker), by = new Map();
-  if (!b.length) return null;
-  for (const p of b) { const w = p.blocker.reason ?? p.blocker.why ?? ""; by.set(w, (by.get(w) ?? 0) + 1); }
-  return { head: `${b.length} of ${paths.length} ${paths.length === 1 ? "path" : "paths"} ${b.length === 1 ? "blocks" : "block"} the merge.`,
-    counts: [...by].sort((x, y) => y[1] - x[1]).map(([w, n]) => `${w}: ${n}`) };
-}
-// Where a chosen path starts on the map: the card of its first step (a call e<k> by the card it leaves), else null.
-export function resStartCard(p, arch) {
-  for (const s of p?.steps ?? []) {
-    const e = /^e(\d+)$/.exec(String(s)), id = e ? arch?.edges?.[Number(e[1])]?.from : resCardOf(s, arch);
-    if (id) return id;
-  }
-  return p?.reach?.[0] ?? null;
-}
-// Wave C2 V3: a resilience path whose probe reproduced it (status done, result reproduced) confirms its findings:
-// certainty "confirmed", with probed {id, strength} so the word can say how ("confirmed, platform modeled" when the
-// script modeled the platform). paths: the run's paths (p.findings ids, p.probe); probes: review.js probesNow. Pure.
-export function withProbes(findings, paths, probes) {
-  const by = new Map();
-  for (const p of paths ?? []) {
-    const x = (probes ?? []).find((q) => (q.id === p.probe || q.of === p.id) && q.status === "done" && q.result === "reproduced");
-    if (x) for (const id of p.findings ?? []) by.set(id, { id: x.id, strength: x.strength ?? null });
-  }
-  if (!by.size) return findings;
-  return (findings ?? []).map((f) => { const hit = (f.ids ?? [f.id]).map((id) => by.get(id)).find(Boolean); return hit ? { ...f, certainty: "confirmed", probed: hit } : f; });
-}
-// The certainty as a word, with how a probe confirmed it ("confirmed, platform modeled").
-export const certaintyText = (f) => `${f?.certainty ?? ""}${f?.certainty === "confirmed" && f?.probed?.strength === "models_env" ? ", platform modeled" : ""}`;
-// Which probe confirmed a finding, as a sentence after its certainty (" Probe r1 reproduced it, with the platform modeled.").
-export const probedText = (f) => (f?.certainty === "confirmed" && f?.probed ? ` Probe ${f.probed.id} reproduced it${f.probed.strength === "models_env" ? ", with the platform modeled" : ""}.` : "");
