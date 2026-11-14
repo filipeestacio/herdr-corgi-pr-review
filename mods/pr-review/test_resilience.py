@@ -59,6 +59,15 @@ assert p[3]["probe"] is None and p[3]["limited_by"] == "library/x.py:4"
 assert [(c["check"], c["result"]) for c in v["checks"]] == [("cors", "clean"), ("rollback", "not_checkable")]
 assert [(x["id"], x["status"]) for x in v["probes"]] == [("r1", "proposed")] and v["not_checked"] == ["load under real traffic"]
 assert "ref" not in new[0], "the ref is the model's, the id stays"
+fresh_pic = {"architecture": {"nodes": [{"id": "consumer", "status": "new"}, {"id": "mailer", "status": "unchanged"}], "edges": [{"from": "consumer", "to": "mailer", "status": "new"}]}}
+old_line = [{"id": "m1", "ref": "r_f1", "introduced_here": False}, {"id": "m2", "ref": "r_f2", "introduced_here": False}]
+resilience.view({"paths": [{"kind": "silent", "steps": ["consumer", "library/mailer.py:14"], "result": "finding", "findings": ["r_f1"], "failing": [], "visible": False},
+                           {"kind": "other", "steps": ["mailer"], "result": "finding", "findings": ["r_f2"], "failing": [], "visible": True}]}, old_line, fresh_pic, [])
+assert [f["introduced_here"] for f in old_line] == [True, False], "on a path through the PR's new consumer the old mailer's flaw is the PR's; off it, it stays as said"
+by_file = [{"id": "m3", "ref": "r_f1", "introduced_here": False}]
+resilience.view({"paths": [{"kind": "silent", "steps": ["library/consumer.py:21", "library/mailer.py:14"], "result": "finding", "findings": ["r_f1"], "failing": [], "visible": False}]},
+                by_file, {"architecture": {"nodes": [{"id": "consumer", "status": "new", "at": "library/consumer.py:11"}], "edges": []}}, [])
+assert by_file[0]["introduced_here"] is True, "a step in the file of a new node counts as the node"
 assert resilience.view({}, [], {}, []) == {"deps": [], "effects": [], "state": [], "races": [], "db_calls": [], "caches": [], "clocks": [], "blind_spots": [], "paths": [],
                                            "checks": [], "probes": [], "not_checked": []}
 

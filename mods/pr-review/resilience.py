@@ -25,7 +25,7 @@ CHECK_RESULTS = ["finding", "clean", "not_checkable", "elsewhere"]
 PATH_KINDS = ["retry", "timeout", "race", "state", "effect", "load", "silent", "other"]
 PROBE_KINDS = ["retry", "redelivery", "race", "idempotency", "clock", "db_count", "telemetry", "budget"]
 STRENGTHS = ["runs_pr_code", "forced_schedule", "models_env"]
-# What a path breaks, in the words pr.js turns into a blocker's reason (pr.js RES_FAILING).
+# What a path breaks, in the words pr.js turns into a blocker's reason (pr.js RES_BLOCKING).
 FAILING = ["unbounded_retry", "no_dlq", "poison_message", "over_timeout", "duplicate_effect", "lost_effect", "swallowed_retry",
            "shared_resource", "no_timeout_public", "silent", "removed_signal", "reads_foreign_state", "race", "no_jitter", "no_alarm",
            "no_breaker", "no_trace", "cardinality", "n_plus_one", "unbounded_queue", "no_throttle", "stale_cache", "clock"]
@@ -105,12 +105,15 @@ ASK = (
     "at, mode, timeout {s, source}, retry {layer, attempts, backoff, jitter, on, exhausted, at}, trigger for a consumer "
     "{batch, partial_batch, fn_timeout_s, visibility_s, retention_s, dlq, max_receive, worst_record_s}, request_path, "
     "entry, throttle, context {carrier, kind, missing, receiver_logs, at}); effects; state; races (steps as [actor, text, "
-    "file:line], breaks_at the index of the step that breaks); db_calls; caches; clocks; blind_spots; paths (p1, p2, …: "
+    "file:line], breaks_at the index of the step that breaks); db_calls; caches; clocks; blind_spots; paths (one for each "
+    "distinct way a failure spreads, not only the first you find: go through every way in, every effect and every finding "
+    "in the list about availability, consistency, effects or missing signals, and give each its own path, also one that "
+    "a limit stops (mitigated) or that you could not assess; a change that adds a queue usually has several; p1, p2, …: "
     "kind, trigger, steps (node ids, edge ids e<k> or file:line, in order), end, result (finding: a finding shows it; "
     "mitigated: limited_by names the file:line that limits it; not_assessed), failing (what it breaks, from: "
     + ", ".join(FAILING) + "), visible (whether anything signals it), findings, probe (the id of a probe that would show "
-    "it), note); checks (one per check you made beyond the paths: cors, cache_control, rollback, limits, cardinality, "
-    "clocks, health, shutdown, …, result finding|clean|not_checkable|elsewhere, at, why); probes (r1, r2, …: a small "
+    "it), note); checks (one row for each of cors, cache_control, rollback, limits, cardinality, clocks, health, shutdown, "
+    "and any other check you made beyond the paths: result finding|clean|not_checkable|elsewhere, at, why); probes (r1, r2, …: a small "
     "script that would show a claim with stubs and a forced schedule, never sleep: claim (one sentence with the number "
     "it would show), of (a path, race, effect or blind spot id), kind, strength); not_checked. Every list may be empty.")
 
@@ -130,8 +133,9 @@ def hints(pic, security, findings):
 def view(answer, findings, pic, known):
     """The run's answer as the block `resilience`, checked: enums kept only when known (else dropped), a path's steps
     only the picture's node and edge ids or a file:line, edges only the picture's, findings only known ids or refs of
-    this run's new findings (mapped to their ids), probes linked from paths only when they exist. findings: this run's
-    new findings (normalized, with ref); known: ids of findings already there. Pure but for popping each ref."""
+    this run's new findings (mapped to their ids), probes linked from paths only when they exist. A new finding on a
+    path through a new or changed node or call is introduced_here. findings: this run's new findings (normalized, with
+    ref); known: ids of findings already there. Pure but for popping each ref and setting introduced_here."""
     arch = pic.get("architecture") or {}
     nodes = {n.get("id") for n in arch.get("nodes") or []}
     edges = {f"e{k}" for k in range(len(arch.get("edges") or []))}
@@ -180,6 +184,17 @@ def view(answer, findings, pic, known):
                       "steps": [s for s in (step(x) for x in p.get("steps") or []) if s], "end": str(p.get("end") or ""), "result": result,
                       "limited_by": at(p.get("limited_by")) or None, "failing": [x for x in dict.fromkeys(p.get("failing") or []) if x in FAILING],
                       "visible": bool(p.get("visible")), "findings": found, "probe": p.get("probe") if p.get("probe") in probe_ids else None, "note": str(p.get("note") or "")})
+    # As for security: a new finding on a path through a node or call this PR adds or changes is the PR's, also when its
+    # own line is old (the mailer that swallowed errors before, now reached by the PR's new consumer).
+    fresh = {n.get("id") for n in arch.get("nodes") or [] if n.get("status") in ("new", "changed")} | \
+            {f"e{k}" for k, e in enumerate(arch.get("edges") or []) if e.get("status") in ("new", "changed")}
+    fresh_files = {str(n.get("at") or "").rsplit(":", 1)[0] for n in arch.get("nodes") or [] if n.get("status") == "new" and n.get("at")}
+    mine = {f["id"]: f for f in findings}
+    for p in paths:  # a step is the node or call itself, or a line in the file of a new node
+        if fresh & set(p["steps"]) or any(str(x).rsplit(":", 1)[0] in fresh_files for x in p["steps"] if ":" in str(x)):
+            for fid in p["findings"]:
+                if fid in mine:
+                    mine[fid]["introduced_here"] = True
     return {"deps": deps, "effects": effects, "state": state, "races": races,
             "db_calls": [{"entry": str(d.get("entry") or ""), "per_request": str(d.get("per_request") or ""),
                           "calls": [{"op": c.get("op"), "target": c.get("target"), "at": at(c.get("at")), "in_loop": bool(c.get("in_loop"))} for c in d.get("calls") or [] if isinstance(c, dict)]}

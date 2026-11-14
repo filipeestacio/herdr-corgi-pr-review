@@ -547,7 +547,7 @@ def claude_review(req, command=None):
         answer = llm.claude(FEATURE[req["kind"]], text, context=req.get("context"), model=req["model"],
                             schema=findings_schema(req["kind"], req["worktree"]), budget=BUDGET[llm.tier(req["model"])], timeout=TIMEOUT, tools="Read,Grep,Glob,Agent,Bash",
                             cwd=req["worktree"], skills=skills, meta=meta,
-                            extra=permissions(req["worktree"]))
+                            extra=(*(("--effort", "high") if req["kind"] == "resilience" else ()), *permissions(req["worktree"])))  # resilience: many paths to follow
         return answer, meta
     try:
         if command is None:

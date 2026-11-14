@@ -886,3 +886,51 @@ console.log("ok");
   assert.equal(sameDefect({ file: "a", line: 1, title: "x is wrong" }, { file: "a", line: 2, title: "x is wrong" }), true, "the old rule still holds without resources");
   console.log("ok one resource, one finding");
 }
+
+// Resilience: ladders, budgets and blockers from the run's facts, the same way every time; where a run would start,
+// counted from the diff without a model; the model class for it.
+{
+  const { withResilience, ladderOf, budgetOf, blockerOf, resilienceStart, recommendModel, mapReview, splitPatch } = await import("./pr.js");
+  const deps = [{ edge: "e5", at: "library/consumer.py:14", mode: "async", trigger: { batch: 10, partial_batch: false, fn_timeout_s: 10, dlq: false, retention_s: 345600, worst_record_s: 7 } },
+    { edge: null, at: "library/mailer.py:14", mode: "in_process", retry: { layer: "mailer", attempts: 3, exhausted: "swallowed", at: "library/mailer.py:14" } },
+    { edge: "e7", at: "library/x.py:3", mode: "async", trigger: { max_receive: 5, dlq: true } }];
+  const P = (id, kind, steps, result, failing, extra = {}) => ({ id, kind, trigger: "t", steps, end: "e", result, failing, visible: true, findings: result === "finding" ? ["f"] : [], probe: null, note: "", limited_by: null, ...extra });
+  const p1 = P("p1", "retry", ["queue", "e5", "library/consumer.py:14", "library/mailer.py:14"], "finding", ["no_dlq"]);
+  assert.deepEqual(ladderOf(p1, deps), { factors: [{ label: "the whole batch of 10 again", n: 10, at: "library/consumer.py:14" },
+    { label: "redelivered until the message expires (4 days)", n: null, at: "library/consumer.py:14", until: " (4 days)" }, { label: "mailer: 3 attempts", n: 3, at: "library/mailer.py:14" }],
+    text: "no limit until the message expires (4 days)" });
+  assert.deepEqual(ladderOf(P("p", "retry", ["e7", "library/mailer.py:14"], "finding", []), deps).text, "up to 15 times", "a receive limit times the retries");
+  assert.equal(ladderOf(P("p", "retry", ["nothing"], "finding", []), deps), null);
+  assert.deepEqual(budgetOf(p1, deps), { value_s: 70, limit_s: 10, over_s: 60, at: "library/consumer.py:14", text: "up to 70 s for a batch of 10 against a 10 s timeout: 60 s over" });
+  assert.deepEqual(blockerOf(p1, ladderOf(p1, deps), budgetOf(p1, deps)), { why: "a message that always fails comes back until it expires", at: "library/consumer.py:14" });
+  assert.deepEqual(blockerOf(P("p", "timeout", ["e5"], "finding", []), null, budgetOf(p1, deps)), { why: "the worst run outlasts its timeout and is delivered again", at: "library/consumer.py:14" });
+  assert.equal(blockerOf(P("p", "load", ["e5"], "finding", ["no_jitter", "no_alarm"]), null, null), null, "missing jitter or an alarm alone blocks nothing");
+  assert.equal(blockerOf(P("p", "state", ["e5"], "finding", ["reads_foreign_state", "poison_message"]), null, null), null, "reading another process' state is a finding, its poison message blocks in its own path");
+  assert.equal(blockerOf(P("p", "retry", ["e5"], "mitigated", ["no_dlq"], { limited_by: "a.py:1" }), ladderOf(p1, deps), null), null, "only a path with a finding blocks");
+  assert.deepEqual(blockerOf(P("p", "silent", ["events.py:20"], "finding", [], { visible: false }), null, null), { why: "the path repeats or loses effects and nothing signals it", at: "events.py:20" });
+  const block = { head: "h1", deps, paths: [P("p2", "effect", ["reminders.py:20"], "finding", ["no_alarm"]), p1, P("p3", "effect", [], "mitigated", [], { limited_by: "x.py:9" }), P("p4", "race", [], "not_assessed", [])],
+    checks: [{ check: "cors", result: "clean" }, { check: "rollback", result: "not_checkable" }], blind_spots: [{ id: "b1", failure: "publish never reaches SQS", at: "events.py:20", alarm: "none" }] };
+  const r = withResilience(mapReview({ steps: [] }, []), block, "h2").resilience;
+  assert.deepEqual([r.paths.map((p) => p.id), r.blockers, r.older], [["p1", "p2", "p3", "p4"], ["p1"], true], "blockers first; another head is older");
+  assert.equal(r.summary, "1 of 4 paths blocks the merge: a message that always fails comes back until it expires; 1 not assessed.");
+  assert.deepEqual(r.counts, { paths: 4, blockers: 1, mitigated: 1, not_assessed: 1, checks_clean: 1, not_checkable: 1 });
+  assert.deepEqual(r.watch, ["publish never reaches SQS (events.py:20): nothing in the repository alarms on it", "the age of the oldest message at e5", "the age of the oldest message at e7"]);
+  assert.equal(withResilience(mapReview({ steps: [] }, []), { paths: [P("p1", "retry", [], "mitigated", [], { limited_by: "q.yaml:4" })] }).resilience.summary, "Every assessed path is limited, e.g. at q.yaml:4.");
+  const pre = withResilience(mapReview({ steps: [] }, []), { paths: [P("p1", "other", ["reminders.py:13"], "finding", ["lost_effect"], { findings: ["w"] })] }, null,
+    [{ id: "w", introduced_here: false }]).resilience;
+  assert.deepEqual([pre.paths[0].pre_existing, pre.paths[0].blocker, pre.counts.blockers], [true, null, 0], "a path made only of flaws from before this PR blocks nothing");
+  assert.deepEqual([withResilience(mapReview({ steps: [] }, []), null).resilience, withResilience(mapReview({ steps: [] }, []), { paths: [] }).resilience.summary], [null, "The run found no path a failure takes through this change."]);
+  // Before the run: what the diff adds, without a model (PR #2's template and handler).
+  const files = splitPatch(["diff --git a/template.yaml b/template.yaml", "--- a/template.yaml", "+++ b/template.yaml", "@@ -0,0 +1,6 @@", "+  LoanEvents:", "+    Type: AWS::SQS::Queue",
+    "+  FrontDesk:", "+    Type: AWS::Serverless::Function", "+        Type: HttpApi", "+    Type: AWS::Serverless::Function",
+    "diff --git a/library/mailer.py b/library/mailer.py", "--- a/library/mailer.py", "+++ b/library/mailer.py", "@@ -10,1 +10,2 @@", " x", "+        for attempt in range(3):",
+    "diff --git a/library/events.py b/library/events.py", "--- a/library/events.py", "+++ b/library/events.py", "@@ -1,0 +1,1 @@", "+    def publish(self, e): self.items.append(e)"].join("\n"));
+  const st = resilienceStart(files);
+  assert.deepEqual([st.queues, st.functions, st.routes, st.retries, st.infra, st.async, st.concurrency], [1, 2, 1, 1, true, true, false]);
+  assert.equal(st.sentence, "This PR adds 1 queue, 2 functions, 1 public route and 1 retry.");
+  assert.deepEqual(st.spots[0], { file: "template.yaml", line: 2, kind: "queue" });
+  assert.equal(resilienceStart([]).sentence, "This PR adds no queue, function, route or retry; the run reads the changed calls only.");
+  assert.deepEqual([recommendModel("resilience", { start: st }).tier, recommendModel("resilience", { start: { ...st, infra: false } }).tier,
+    recommendModel("resilience", { start: { concurrency: true } }).tier, recommendModel("resilience", { lines: 2000, start: {} }).tier], ["opus", "sonnet", "opus", "opus"]);
+  console.log("ok resilience");
+}
