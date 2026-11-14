@@ -459,3 +459,33 @@ export function solidOver(base, over) {
   const a = o[3] / 255, hex = (v) => Math.round(v).toString(16).padStart(2, "0");
   return "#" + [0, 1, 2].map((k) => hex(o[k] * a + b[k] * (1 - a))).join("");
 }
+
+// A PR row's marks in the PR list (main.js), at most three by weight: the highest open severity, with ⛨ when an open
+// finding is about security (one mark, the only red one), then the priority, then the type. Effort is left out: the
+// review itself has no "Review effort" either.
+export function rowMarks(risk, tri) {
+  return [risk?.top && { text: `${risk.security ? "⛨ " : ""}${risk.top}`, security: Boolean(risk.security), kind: "risk" },
+    tri && { text: `P${tri.priority}`, kind: "priority" }, tri?.type && { text: tri.type, kind: "type" }].filter(Boolean).slice(0, 3);
+}
+
+// A stack of PRs around this one (related.py stacked_on, stacked_above), bottom first: [{number, title, url, self}];
+// null when this PR is in no stack. The review's bar shows it as "Stack: #1 → #2".
+export function stackOf(ctx, number) {
+  const below = ctx?.stacked_on ?? null, above = ctx?.stacked_above ?? [];
+  return below || above.length ? [...(below ? [below] : []), { number, self: true }, ...above] : null;
+}
+
+// ---- "Depends on" in a layer's head (review.js item "step"): small chips at the right end of the title row
+// A text's width in px of the UI font at `size` (the estimate wrapCount uses), for chips whose clicks are placed by x.
+export const textW = (text, size = 13.5) => Math.ceil([...String(text ?? "")].reduce((w, ch) => w + CH_W(ch), 0) * (size / 13.5) * 1.04);
+// Which of the chips laid out right-aligned (the last one ending at `right`, `gap` px between) a press at x hit: its
+// index, or -1.
+export function chipAt(x, right, widths, gap = 6) {
+  let r = right;
+  for (let k = widths.length - 1; k >= 0; k--) {
+    const l = r - widths[k];
+    if (x >= l && x < r) return k;
+    r = l - gap;
+  }
+  return -1;
+}

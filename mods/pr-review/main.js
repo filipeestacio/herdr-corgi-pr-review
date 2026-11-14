@@ -22,8 +22,8 @@ import { parsePrRef, ghTarget, pruneSources, codeModel } from "./pr.js";
 import * as C from "./context.js";
 import { loadDiff, saveDiff } from "./diffcache.js";
 import { setupBanner, renderSetup, loadSetup, runSetup, openUrl, readConfig } from "./setup-view.js";
-import { chip, triageTip, PRIORITY_TIP, SEVERITY_COLOR } from "./stack.js";
-import { panelState, bodyTab, capped, IN_PROGRESS_MAX, diffTooLarge, filesToDiff, isOpenPr, byState, listRows, riskSignal, progressText, pendingText } from "./views.js";
+import { chip, PRIORITY_TIP } from "./stack.js";
+import { panelState, bodyTab, capped, IN_PROGRESS_MAX, diffTooLarge, filesToDiff, isOpenPr, byState, listRows, riskSignal, progressText, pendingText, rowMarks } from "./views.js";
 import { ReviewMode, startReview, startExplore, saveKey, flowCard, modelPills, modelLabel, renderReviews, renderAgentBar, renderKeys, renderCardMenu, renderMini } from "./review.js";
 import { highlightJob, highlightStep, langOf, colors, renderLine, editorSyntax } from "./syntax.js";
 
@@ -785,10 +785,9 @@ export default class PrReview extends View {
   // A PR row's risk signal as chips (views.js riskSignal): the highest severity among its open findings, and
   // security's own mark. Nothing without a cached analysis or findings file.
   riskChips(t, url, id) {
-    const r = this.risk?.get(url);
-    if (!r?.top) return [];
-    return [chip(t, `Highest finding: ${r.top}`, t[SEVERITY_COLOR[r.top]], false, `${id}-sev`, "The highest severity among this PR's open findings, from the cached analysis and reviews"),
-      ...(r.security ? [chip(t, `${SEC_MARK} Security`, t.ansi1, true, `${id}-sec`, "At least one open finding of this PR is about security")] : [])];
+    // One mark (views.js rowMarks): "⛨ high" in red when an open finding is about security, else the severity in grey.
+    return rowMarks(this.risk?.get(url), null).map((m) => chip(t, m.text, m.security ? t.ansi1 : t.muted, m.security, `${id}-sev`,
+      `The highest severity among this PR's open findings, from the cached analysis and reviews${m.security ? `; ${SEC_MARK}: at least one of them is about security` : ""}`));
   }
 
   // The list of the shown source, one row per PR: the ones under "In progress" are not repeated, open PRs come first
@@ -808,9 +807,11 @@ export default class PrReview extends View {
         .when(Boolean(tag), (e) => e.child(div().id(`${id}-tg`).tooltip("Agent that opened this PR").flex_none().max_w(140).truncate().px(5).rounded(4).bg(t.raised).text_size(10).child(tag)))))
       .when(Boolean(pr && (this.triage?.get(pr.url) || this.risk?.get(pr.url)?.top)), (e) => { // risk first, then the triage card: compact; the why shows on the picked PR
         const tri = this.triage?.get(pr.url);
-        return e.child(h_flex().flex_wrap().gap(4).pt(2).children(this.riskChips(t, pr.url, id))
-          .when(Boolean(tri), (e) => e.child(chip(t, `● P${tri.priority}`, tri.priority === 1 ? t.ansi1 : tri.priority === 2 ? t.ansi3 : t.muted, false, `${id}-pri`, PRIORITY_TIP))
-            .children(tri.chips.filter((c) => !/security/i.test(c)).map((c, k) => chip(t, c, t.muted, false, `${id}-tc${k}`, triageTip(c)))))) // security: the mark above says it
+        // At most three marks (views.js rowMarks): severity with ⛨, then priority and type as plain text.
+        const marks = rowMarks(this.risk?.get(pr.url), tri);
+        return e.child(h_flex().gap(8).pt(2).items_center().children(this.riskChips(t, pr.url, id))
+          .children(marks.filter((m) => m.kind !== "risk").map((m) => div().id(`${id}-${m.kind}`).tooltip(m.kind === "priority" ? PRIORITY_TIP : "The kind of change, from the PR title")
+            .text_size(11).text_color(m.kind === "priority" && tri.priority === 1 ? t.foreground : t.muted).child(m.text))))
           .when(on && Boolean(tri?.why), (e) => e.child(div().mt(3).pl(8).border_l(3).border_color(t.accent).text_size(11.5).line_height(1.4).whitespace_normal().text_color(t.foreground).child(tri.why)));
       });
     // A PR you didn't open: author, draft, review decision, +/−, age; its repo for review requests.

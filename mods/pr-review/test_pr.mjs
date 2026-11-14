@@ -353,10 +353,12 @@ console.log("ok");
 
   // Triage: type from the prefix, effort from the analysis else the size, P1 for overlap or high risk.
   const tr = triageOf({ pr: { title: "feat(x): y" }, analysis: { effort: { score: 3 }, mergeRisk: { level: "high", why: "auth" } } });
-  assert.deepEqual([tr.priority, tr.chips], [1, ["High security risk", "Feature", "Deep review", "Medium effort"]]);
+  assert.deepEqual([tr.priority, tr.chips], [1, ["High security risk", "Feature", "Medium effort"]]);
   assert.match(tr.why, /merge risk is high \(auth\)/);
+  // A high merge risk on a small PR: no "Deep review" beside "Low effort".
+  assert.ok(!triageOf({ pr: { title: "fix: a" }, size: { files: 1, lines: 5 }, analysis: { mergeRisk: { level: "high" } } }).chips.some((c) => /review|look/i.test(c)));
   const small = triageOf({ pr: { title: "docs: z" }, size: { files: 1, lines: 10 } });
-  assert.deepEqual([small.priority, small.chips, small.why], [3, ["Docs", "Quick look", "Low effort"], "A quick look should do: small and low risk."]);
+  assert.deepEqual([small.priority, small.chips, small.why], [3, ["Docs", "Low effort"], "A quick look should do: small and low risk."]);
   assert.equal(triageOf({ pr: { title: "x" }, related: { open: [{ overlap: 1 }] }, llm: { priority: 2, why: "w" } }).why, "w");
 
   // Old analyses (no merge risk, rules, pictures) still map.
@@ -526,6 +528,8 @@ console.log("ok");
   const related = { open: [{ number: 1, overlap: 4, files: ["a"], stacked: true }, { number: 5, overlap: 1, files: ["b"] }] };
   assert.deepEqual(mergeBlockers({ related }).map((b) => b.title), ["Overlaps with open PR #5"]);
   assert.equal(triageOf({ pr: { title: "x" }, related: { open: [related.open[0]] } }).priority, 3);
+  // The other way round (related.py stacked_above): PR #1 seen from below, PR #2 builds on it: no blocker either.
+  assert.deepEqual(mergeBlockers({ related: { open: [{ number: 2, overlap: 4, files: ["a"], stacked: true, above: true }] } }), []);
   console.log("ok overview");
 }
 

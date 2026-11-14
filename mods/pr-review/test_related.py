@@ -22,6 +22,10 @@ assert got[15]["title"] == "fix: guard null" and got[15]["files"] == ["src/a.py"
 others = [{"number": 1, "title": "base work", "url": "u1", "branch": "feat/a", "fork": False}, {"number": 7, "title": "fork", "url": "u7", "branch": "main", "fork": True}]
 assert related.stacked_on("feat/a", others) == {"number": 1, "title": "base work", "url": "u1"}
 assert related.stacked_on("main", others) is None and related.stacked_on(None, others) is None
+# The other way round: a PR whose base is this PR's head branch builds on this one (PR #1 under PR #2).
+others = [{"number": 2, "title": "events", "url": "u2", "branch": "feat/b", "base": "feat/a"}, {"number": 3, "title": "x", "url": "u3", "branch": "feat/c", "base": "main"}]
+assert related.stacked_above("feat/a", others) == [{"number": 2, "title": "events", "url": "u2"}]
+assert related.stacked_above(None, others) == [] and related.stacked_above("feat/z", others) == []
 
 # The security reviewer starts by itself when the diff gives a reason, and says which; no model.
 diff = lambda path, *added, removed=(): (f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1,{len(removed)} +10,{len(added)} @@\n"  # noqa: E731
