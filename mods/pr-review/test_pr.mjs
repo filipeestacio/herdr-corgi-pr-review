@@ -912,17 +912,28 @@ console.log("ok");
     ["a visible effect happens twice", null, "a visible effect is lost"], "a mail twice blocks, a log line twice does not; the end can name the mail");
   // Wave R2: a path named by its lines reaches the cards of those lines (reachOf), and a call counts when its node is one
   // of them; a call that only shares a file with a step does not (p6 reaches the consumer, never the mailer).
-  const { marksOf, reachOf } = await import("./pr.js");
+  const { marksOf, reachOf, viaOf } = await import("./pr.js");
+  const on = (q, m) => { const reach = reachOf(q, m); return { ...q, reach, ...viaOf(q, m, reach) }; };
   const map = { nodes: [{ id: "queue", at: "template.yaml:11" }, { id: "consumer", at: "library/consumer.py:11" }, { id: "mailer", at: "library/mailer.py:10" }],
     edges: [{ from: "queue", to: "consumer" }, { from: "consumer", to: "mailer" }] };
   const bound = [{ ...deps[0], edge: null, node: "consumer", at: "template.yaml:32" }, { ...deps[1], node: "mailer" }];
   const q1 = P("p1", "retry", ["e0", "library/consumer.py:21"], "finding", ["no_dlq"]), q6 = P("p6", "state", ["library/consumer.py:19", "library/api.py:15"], "finding", []);
   assert.deepEqual([[...reachOf(q1, map)], [...reachOf(q6, map)]], [["queue", "consumer"], ["consumer"]]);
   assert.deepEqual([...reachOf(P("p", "timeout", ["library/mailer.py:20"], "finding", []), { nodes: [{ id: "mailer" }] })], ["mailer"], "a card without a place by its file's name");
-  assert.equal(ladderOf({ ...q1, reach: reachOf(q1, map) }, bound).text, "10 × without limit until the message expires (4 days)", "the trigger by its consumer node; no mailer ×3");
-  assert.equal(ladderOf({ ...q6, reach: reachOf(q6, map) }, bound).factors.some((f) => f.label.startsWith("mailer")), false, "p6 has no mailer ladder");
+  assert.equal(ladderOf(on(q1, map), bound).text, "10 × without limit until the message expires (4 days)", "the trigger by its consumer node; no mailer ×3");
+  assert.equal(ladderOf(on(q6, map), bound), null, "p6 has no mailer ladder (and no redelivery: it never comes in over the queue)");
   assert.equal(ladderOf(P("p", "retry", ["library/consumer.py:21"], "finding", []), bound), null, "without the map a line alone finds no call");
-  const byLines = { ...P("p", "retry", ["library/consumer.py:21", "library/mailer.py:20"], "finding", ["no_dlq"], { visible: false }), reach: new Set(["consumer", "mailer"]) };
+  // PR #2's run: the mailer retry belongs to the consumer's call (node consumer, no edge); a record that raises at
+  // consumer.py:13 never reaches the mailer, a full batch with a failing mailer does; a direct call is no trigger.
+  const pic = { nodes: [{ id: "handler", at: "library/handler.py:18" }, { id: "queue", at: "template.yaml:11" }, { id: "consumer", at: "library/consumer.py:11" }, { id: "mailer" }],
+    edges: [{ from: "handler", to: "consumer", in_process: true }, { from: "queue", to: "consumer" }, { from: "consumer", to: "mailer", in_process: true }] };
+  const run = [{ ...deps[0], edge: null, node: "consumer", at: "template.yaml:31" }, { ...deps[1], node: "consumer", at: "library/consumer.py:21" }];
+  assert.deepEqual([ladderOf(on(P("p1", "retry", ["e1", "library/consumer.py:13"], "finding", []), pic), run).text, ladderOf(on(P("p10", "timeout", ["e1", "library/consumer.py:14", "library/mailer.py:20"], "finding", []), pic), run).text,
+    ladderOf(on(P("p2", "request", ["library/handler.py:20", "e0", "library/mailer.py:14"], "finding", []), pic), run).text],
+    ["10 × without limit until the message expires (4 days)", "30 × without limit until the message expires (4 days)", "up to 3 times"]);
+  assert.equal(ladderOf(on(P("p2", "request", ["e0", "e2"], "finding", []), pic), [{ edge: "e0", at: "library/handler.py:21", retry: { layer: "mailer", attempts: 3, at: "library/mailer.py:13-20" } },
+    { edge: "e2", at: "library/consumer.py:21", retry: { layer: "mailer", attempts: 3, at: "library/mailer.py:14" } }]).text, "up to 3 times", "one retry loop named on two calls counts once");
+  const byLines = { ...P("p", "retry", ["library/consumer.py:21", "library/mailer.py:20"], "finding", ["no_dlq"], { visible: false }), reach: new Set(["consumer", "mailer"]), entered: ["consumer"] };
   assert.deepEqual(marksOf(byLines, [{ ...bound[0], timeout: { s: 10 } }, bound[1]]), [{ at: "consumer", mark: "⏱ 10 s" }, { at: "consumer", mark: "no DLQ" },
     { at: "library/mailer.py:14", mark: "×3" }, { at: "library/mailer.py:20", mark: "✕ silent" }]);
   assert.deepEqual(marksOf(P("p", "x", ["a.py:3"], "finding", [], { signal: "platform_only", visible: false }), []), [], "a path the platform's metrics show is not silent");

@@ -248,9 +248,9 @@ def picture_text(pic):
             + "\nNodes (id: label, type, status, group, file:line, runs_in):\n"
             + "\n".join(f"- {n.get('id')}: {n.get('label')}, {n.get('type') or ''}, {n.get('status') or ''}, {n.get('group') or ''}, {n.get('at') or ''}"
                         + (f", runs in {', '.join(review.runs_in_of(n))}" if n.get("runs_in") else "") for n in arch["nodes"])
-            + "\nEdges (caller -> callee: label, status):\n"
-            + "\n".join(f"- {e.get('from')} -> {e.get('to')}: {e.get('label') or ''}, {e.get('status') or ''}" + (", in_process" if e.get("in_process") else "")
-                         for e in arch.get("edges") or []))
+            + "\nEdges (id: caller -> callee: label, status; name an edge by this id):\n"
+            + "\n".join(f"- e{k}: {e.get('from')} -> {e.get('to')}: {e.get('label') or ''}, {e.get('status') or ''}" + (", in_process" if e.get("in_process") else "")
+                         for k, e in enumerate(arch.get("edges") or [])))
 
 
 def spot(x):

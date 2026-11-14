@@ -1280,10 +1280,24 @@ const fileOf = (x) => String(x ?? "").replace(/:\d+$/, "");
 // The calls a path really reaches (wave R2: never a call that only shares a file): the call's edge is a step, its
 // node is one the path goes through, or its place is a step. path.reach: the node ids the path goes through (steps that
 // are nodes, both ends of a step edge, the card of a file:line step; reachOf); without it only the steps themselves.
+// The calls a path really makes: a call with an edge when the path takes that edge (path.via, else its edge steps); a
+// queue's trigger without an edge when the path comes into its consumer over an edge that leaves the process
+// (path.entered); another call without an edge when the path reaches its node and steps into the file of its retry
+// loop (or its own); any call by its own line. A node merely reached makes no call of it: a record that raises before
+// the mail is never multiplied by the mailer's retry.
 const depsOf = (path, deps) => {
-  const r = path.reach ?? new Set(path.steps);
-  return (deps ?? []).filter((d) => (d.edge && path.steps.includes(d.edge)) || (d.node && r.has(d.node)) || (d.at && path.steps.includes(d.at)));
+  const via = new Set(path.via ?? path.steps), entered = new Set(path.entered ?? []), r = path.reach ?? new Set(path.steps);
+  const files = new Set(path.steps.map(fileOf));
+  return (deps ?? []).filter((d) => (d.at && path.steps.includes(d.at)) || (d.edge ? via.has(d.edge)
+    : d.trigger ? entered.has(d.node) : r.has(d.node) && files.has(fileOf(d.retry?.at ?? d.at))));
 };
+// The edges a path takes (arch: ai.arch): its edge steps and every edge whose two ends it reaches; entered: the nodes
+// an edge step that leaves the process (not in_process, e.g. queue → consumer) leads into.
+export function viaOf(path, arch, reach = reachOf(path, arch)) {
+  const edges = arch?.edges ?? [], steps = new Set(path.steps ?? []);
+  return { via: edges.flatMap((e, k) => (steps.has(`e${k}`) || (reach.has(e.from) && reach.has(e.to)) ? [`e${k}`] : [])),
+    entered: edges.flatMap((e, k) => (steps.has(`e${k}`) && !e.in_process ? [e.to] : [])) };
+}
 // The node ids a path goes through on the map (arch: ai.arch): node steps, both ends of an edge step, and for a
 // file:line step the card of that file (the last that starts at or above the line, else the file's first).
 export function reachOf(path, arch) {
@@ -1331,10 +1345,11 @@ export function marksOf(path, deps) {
 // its line; the product as text: "up to 30 times", or "10 × without limit until the message expires (4 days)" when a
 // redelivery has no dead-letter queue or receive limit.
 export function ladderOf(path, deps) {
-  const factors = [];
+  const factors = [], loops = new Set();
   for (const d of depsOf(path, deps)) {
-    const r = d.retry, t = d.trigger;
-    if (r?.attempts > 1) factors.push({ label: `${r.layer || "retry"}: ${r.attempts} attempts`, n: r.attempts, at: r.at || d.at });
+    const r = d.retry, t = d.trigger, loop = String(r?.at || d.at).split(":")[0];
+    // ponytail: one retry loop per file; the mailer's loop named on the handler's and the consumer's call counts once
+    if (r?.attempts > 1 && !loops.has(loop) && loops.add(loop)) factors.push({ label: `${r.layer || "retry"}: ${r.attempts} attempts`, n: r.attempts, at: r.at || d.at });
     if (t && (t.batch > 1) && t.partial_batch === false) factors.push({ label: `the whole batch of ${t.batch} again`, n: t.batch, at: d.at });
     if (t && t.max_receive > 0) factors.push({ label: `redelivered up to ${t.max_receive} times, then the dead-letter queue`, n: t.max_receive, at: d.at });
     else if (t && t.dlq === false && d.mode === "async") {
@@ -1401,7 +1416,7 @@ export function withResilience(ai, block, head = null, findings = []) {
   // also_security: one of the path's findings is also a security finding (⛨, or found by the security run too).
   const sec = new Set(findings.filter((f) => f.security || (f.sources ?? []).some((x) => x.reviewer === "security")).flatMap((f) => f.ids ?? [f.id]));
   const paths = block.paths.map((raw) => {
-    const p = { ...raw, reach: reachOf(raw, ai.arch) }, said = p.findings.map((id) => (intro.has(id) ? intro.get(id) : null));
+    const reach = reachOf(raw, ai.arch), p = { ...raw, reach, ...viaOf(raw, ai.arch, reach) }, said = p.findings.map((id) => (intro.has(id) ? intro.get(id) : null));
     const pre = !said.length || said.includes(true) ? false : said.every((x) => x === false) ? true : "unknown";
     const ladder = ladderOf(p, deps), budget = budgetOf(p, deps), blocker = pre === true ? null : blockerOf(p, ladder, budget, block.effects ?? [], deps);
     return { ...p, reach: [...p.reach], ladder, budget, marks: marksOf(p, deps), pre_existing: pre, blocker: blocker && pre === "unknown" ? { ...blocker, unclear: true } : blocker,
