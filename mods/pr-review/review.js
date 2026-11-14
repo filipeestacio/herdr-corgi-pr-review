@@ -4089,6 +4089,7 @@ export const ReviewMode = {
     const L = this.archL(), on = new Set(p ? (p.steps ?? []).map((s) => resCardOf(s, a)).filter(Boolean) : start); // places light the card of their file
     const fs = p ? this.openFindings().filter((f) => (p.findings ?? []).some((id) => (f.ids ?? [f.id]).includes(id))) : [];
     const marks = archMarks(a, fs, this.ai?.access, this.ai?.threats ?? []), byNode = resMarksOn(p?.marks, a); // R-D marksOf: a call's mark on the card it calls
+    for (const id of byNode.keys()) on.add(id); // a card with a mark of the path is part of it (the mailer's ×3)
     const opts = { ...this.archOpts("res"), marks, keep: on.size ? on : null, zoom: settings().zoom || 1 };
     // A path chosen anew: the picture scrolls to its first card (one row; Wrap shows it all anyway).
     const key = p?.id ?? "start";
