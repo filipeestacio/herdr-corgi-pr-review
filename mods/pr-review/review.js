@@ -860,11 +860,15 @@ export const ReviewMode = {
   // The reviewers' findings (reviewers.py: pr-data/findings/<url hash>.json), the analysis' own, read live from its
   // layers (so one the newest analysis no longer has is gone everywhere), and the AI suggestions on their lines,
   // merged per file and line. Only statuses are stored. Memoized: render calls this often.
+  // A reviewer's line on an empty line, or just outside the shown rows, first moves to the next code line within its
+  // function (views.js findingAnchor), so it meets the analysis' finding there; its code then no longer belongs to it.
   merged() {
     const ai = this.ai, list = this.find.list, st = this.find.status, handled = this.prog.handled, n = Object.keys(handled).length, m = this.findMemo;
-    if (m?.ai === ai && m.list === list && m.st === st && m.handled === handled && m.n === n) return m;
-    return (this.findMemo = { ai, list, st, handled, n,
-      ...mergeFindings([...list, ...(ai?.steps ?? []).flatMap((s) => s.findings ?? [])], (ai?.suspects ?? []).filter((s) => !handled[s.key]), st) });
+    const lines = list.map((f) => (f.line > 0 ? findingAnchor(this.rowsFor(f.file, true), f.line, f.end) : f.line)), at = lines.join();
+    if (m?.ai === ai && m.list === list && m.st === st && m.handled === handled && m.n === n && m.at === at) return m;
+    const moved = list.map((f, i) => (lines[i] === f.line ? f : { ...f, line: lines[i], end: Math.max(lines[i], f.end ?? 0), head: undefined, code: undefined }));
+    return (this.findMemo = { ai, list, st, handled, n, at,
+      ...mergeFindings([...moved, ...(ai?.steps ?? []).flatMap((s) => s.findings ?? [])], (ai?.suspects ?? []).filter((s) => !handled[s.key]), st) });
   },
   findings() { return this.merged().findings; },
   findingById(id) { return this.findings().find((f) => f.ids.includes(id)) ?? null; },

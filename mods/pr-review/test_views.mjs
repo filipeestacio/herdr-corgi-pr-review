@@ -233,6 +233,12 @@ assert.equal(findingAnchor(fr, 8, 16), 9);
 assert.equal(findingAnchor(fr, 7, 9), 7);
 assert.equal(findingAnchor(fr, 10, 10), 10); // the next code is far below: it stays on its own line
 assert.equal(findingAnchor([], 3), 3);
+// Not into the next function (reminders.py:35 on PR #2 is a blank line before `def overdue`): it stays on its line.
+const fn = [{ kind: " ", number: 34, text: "    return len(late)" }, { kind: " ", number: 35, text: "" }, { kind: " ", number: 36, text: "" }, { kind: " ", number: 37, text: "def overdue(loans, on=None):" }];
+assert.deepEqual([findingAnchor(fn, 35), findingAnchor(fn, 37), findingAnchor([{ kind: "+", number: 5, text: "export async function f() {" }], 4)], [35, 37, 4]);
+// Nor out of a YAML block (template.yaml:9 is a blank line after `Timeout: 10`, before `Resources:`).
+const ym = [{ kind: " ", number: 8, text: "    Timeout: 10" }, { kind: " ", number: 9, text: "" }, { kind: " ", number: 10, text: "Resources:" }];
+assert.deepEqual([findingAnchor(ym, 9), findingAnchor([{ kind: " ", number: 7, text: "import os" }, ...ym.slice(1)], 9)], [9, 10]);
 
 // Lines of a wrapped text: at words, a long word inside, a newline always.
 assert.equal(wrapCount("", 300), 1);

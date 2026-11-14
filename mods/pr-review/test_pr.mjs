@@ -602,13 +602,12 @@ console.log("ok");
   assert.equal(mergeFindings([{ ...pr2[6], line: 0 }, { ...pr2[7], line: 0 }]).findings.length, 2);
   // The measure: the pairs above score 0.40 and more when they are one claim, 0.27 and less when they are two.
   assert.deepEqual([sameClaim(pr2[0].title, pr2[1].title), sameClaim(pr2[1].title, pr2[2].title), sameClaim(pr2[8].title, pr2[10].title)], [true, false, false]);
-  // The same line with a different claim stays apart too (consumer.py:19): the KeyError suggestion is a note, or a
-  // finding of its own when it is high or about security or availability.
+  // A suggestion joins the finding on its line whatever it says (consumer.py:19: the store finding and the KeyError
+  // suggestion), since it is worded as a fix; alone on its line it is a note, or a finding when it is high, about
+  // security or availability. The merged finding has the criteria of all its sources.
   const keyErr = { key: "k19", hunk: "h1", path: "library/consumer.py", line: 19, old: false, severity: "medium", category: "bug", reason: "A missing loan raises KeyError and fails the whole batch; handle unknown ids explicitly." };
-  const same = mergeFindings(pr2.slice(0, 2), [keyErr]);
-  assert.deepEqual([same.findings.map((f) => f.ids.length), same.notes], [[2], [keyErr]]);
-  assert.deepEqual(mergeFindings(pr2.slice(0, 2), [{ ...keyErr, category: "availability" }]).findings.map((f) => `${f.line} ${f.sources.map((y) => y.reviewer).join("+")}`), ["19 analysis+claude", "19 ai"]);
-  // A suggestion that says the same as the finding on its line still joins it.
-  assert.deepEqual(mergeFindings(pr2.slice(0, 1), [{ ...keyErr, reason: "Consumer reads loans from an in-memory store per process." }]).findings.map((f) => f.ids.length), [2]);
+  const same = mergeFindings(pr2.slice(0, 2), [keyErr, { ...keyErr, key: "k21", line: 21 }, { ...keyErr, key: "k22", line: 22, category: "availability" }, { ...keyErr, key: "k22b", line: 22, severity: "low" }]);
+  assert.deepEqual([same.findings.map((f) => `${f.line} ${f.sources.map((y) => y.reviewer).join("+")}`), same.notes.map((x) => x.key)], [["19 analysis+claude+ai", "22 ai+ai"], ["k21"]]);
+  assert.deepEqual(mergeFindings([{ ...pr2[0], criteria: ["c4"] }, { ...pr2[1], criteria: ["c2", "c4"] }]).findings[0].criteria, ["c4", "c2"]);
   console.log("ok neighbouring lines");
 }
