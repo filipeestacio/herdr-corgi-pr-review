@@ -1046,3 +1046,5 @@ export function alreadyThere(findings = []) {
   return findings.filter((f) => f.introduced_here === false).sort((a, b) => (rank[a.severity] ?? 9) - (rank[b.severity] ?? 9) || String(a.file).localeCompare(String(b.file)) || a.line - b.line)
     .map((f) => ({ severity: f.severity, title: f.title, why: `${f.file}:${f.line} · ${f.severity} finding, already there before this PR`, finding: f.id }));
 }
+// Whether Herdr's window has the platform's focus (GPUI is_window_active); true where that can't be asked (tests).
+export const windowActive = () => { try { return globalThis.window?.is_window_active?.() ?? true; } catch { return true; } };
