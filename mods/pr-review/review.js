@@ -311,7 +311,7 @@ export const ReviewMode = {
     });
     this.press = { x: 0, w: 0, shift: false }; this.items = []; this.at = {};
     // The inline composer (one at a time, under the selection) and the Finish-your-review popover's summary.
-    this.composing = false; this.finishOpen = false; this.event = "comment"; this.route = null; this.posted = null; this.gh = [];
+    this.composing = false; this.finishOpen = false; this.event = null; this.route = null; this.posted = null; this.gh = [];
     this.draft = TextareaState.new({ placeholder: "Leave a comment (⌘↩ adds it, Esc cancels)" });
     this.summary = TextareaState.new({ placeholder: "Leave a comment" });
     // Threads: sent/posted comments with their replies; the GitHub preview's ticks and inline edit; the agent preview.
@@ -439,7 +439,7 @@ export const ReviewMode = {
 
   resetReview() {
     this.reviewKey = null; this.ai = null; this.aiError = null; this.aiModel = null; this.cur = 0; this.focusHunk = null; this.fsel = null; this.sug = null;
-    this.composing = false; this.editing = null; this.finishOpen = false; this.posted = null; this.gh = []; this.route = null; this.event = "comment";
+    this.composing = false; this.editing = null; this.finishOpen = false; this.posted = null; this.gh = []; this.route = null; this.event = null;
     this.full = {}; this.gaps = {}; this.whole = new Set(); this.collapsed = new Set(); this.hunks = null;
     this.ctx = null; this.since = null; this.sinceOn = false; this.lastReviewed = null; this.page = "overview"; this.aiFile = null; this.needClone = null;
   },
@@ -1039,7 +1039,7 @@ export const ReviewMode = {
     const labels = list.map((f) => `${f.title} (${f.file}:${f.line})`), target = pool ? this.sendP?.fix?.target : null;
     this.previewFix(cx, { what: "Fix with agent", own: labels.join("\n"), ownLabel: list.length === 1 ? "FINDING" : "FINDINGS", items: list.map((f) => ({ kind: "finding", id: f.id })), labels,
       pool, alone, target,
-      prompt: (sub) => [fixPrompt(list, this.pr, report, this.lang()), sub ? TH.worktreeNote(sub.branch, sub.path, sub.head && sub.main) : null, sub ? TH.handoffNote(sub) : null].filter(Boolean).join("\n\n"),
+      prompt: (sub) => [fixPrompt(list, this.pr, report, this.lang()), sub ? TH.worktreeNote(sub.branch, sub.path) : null].filter(Boolean).join("\n\n"),
       sent: (cx) => { for (const f of list) this.setFinding(f, "progress", cx, { fixHead: this.headNow() }); } });
   },
   // "Fix several…": the reviewer picks which unresolved findings one agent fixes together. Security findings are not
@@ -1578,16 +1578,16 @@ export const ReviewMode = {
   threadButtons(th, v = this.threadOfView(th)) {
     const fv = this.fixView(this.fixOf(th.id));
     const fix = !fv ? [{ label: "Fix…", act: (cx) => this.fixComments([th.id], cx) }]
-      : [...(fv.job.terminal ? [{ label: "Go to fix", act: () => this.goFix(fv.job) }] : []), ...(fv.commit && fv.job.target === "sub" ? [{ label: "Apply to PR", primary: !fv.handed, act: (cx) => this.applyFix(fv.job, cx) }] : []),
+      : [...(fv.job.terminal ? [{ label: "Go to fix", act: () => this.goFix(fv.job) }] : []), ...(fv.commit && fv.job.target === "sub" ? [{ label: "Apply to PR", primary: true, act: (cx) => this.applyFix(fv.job, cx) }] : []),
         ...(fv.job.target === "sub" ? [{ label: "Discard fix", act: (cx) => this.discardFix(fv.job, cx) }] : [])];
-    return [...fix, { label: "Reply", primary: !fv?.commit || fv.handed, act: (cx) => { this.replyTo = th.id; this.replyIn.set_value(""); cx.timer.after(0, () => this.replyIn.focus()); } },
+    return [...fix, { label: "Reply", primary: !fv?.commit, act: (cx) => { this.replyTo = th.id; this.replyIn.set_value(""); cx.timer.after(0, () => this.replyIn.focus()); } },
       ...(v.fixedIn || v.entries.some((e) => e.commit) ? [{ label: `Open ${String(v.fixedIn ?? [...v.entries].reverse().find((e) => e.commit).commit).slice(0, 7)}`, act: () => this.openCommit(v.fixedIn ?? [...v.entries].reverse().find((e) => e.commit).commit) }] : []),
       ...(th.url ? [{ label: "On GitHub ↗", act: () => openUrl(th.url) }] : []),
       ...(v.status === "fixed" ? [{ label: "Fold", act: () => this.openThreads.delete(th.id) }] : [])];
   },
   // ---- Fix: comments (pending or sent) and findings to a sub-agent in its own worktree (default) or the main agent,
-  // always through the preview; the sub-agent never pushes: when done it hands its branch to the PR's agent (hc send),
-  // which cherry-picks, tests and pushes; without a live PR agent "Apply to PR" brings it to the PR's checkout.
+  // always through the preview; the sub-agent never pushes and hands its fix to nobody: it stays on its branch until
+  // the reviewer picks "Apply to PR" (cherry-pick onto the PR's checkout) or "Hand over…" (the main agent takes it).
 
   selected() { return TH.selectedOf(this.threadDoc, this.threadKey()); },
   toggleSel(id, cx) { const key = this.threadKey(); this.updateThreads(cx, (d) => TH.toggleSelected(d, key, id)); },
@@ -1597,14 +1597,13 @@ export const ReviewMode = {
   // (which may be on another branch: the fix still starts at the PR head, threads.js fixStart), the branch's repo, else
   // the review's checkout of the PR head.
   fixBase() { return this.prSel?.cwd ?? (this.prSel?.space ? this.root : null) ?? this.worktree?.path ?? null; },
-  // A job's state for its rows: running (with its agent's status), ready (a fixed report with a commit), handed (ready
-  // and reported to the PR's agent), main.
+  // A job's state for its rows: running (with its agent's status), ready (a fixed report with a commit), main.
   fixView(job) {
     const commit = job && TH.fixCommit(job, this.replies, this.find.reports);
     // agents() has only terminals shown in a pane; a sub-agent runs in the background, so terminals() (hc ls) too.
     const agent = job?.terminal ? agents().find((a) => a.address === job.terminal) ?? terminals().find((x) => x.address === job.terminal && x.state === "live") : null;
     const status = agent?.status === "blocked" ? "waits for your OK" : agent?.status;
-    return job ? { job, commit, handed: Boolean(commit && job.handoff), status: status ?? (job.target === "main" ? "main agent" : "ended") } : null;
+    return job ? { job, commit, status: status ?? (job.target === "main" ? "main agent" : "ended") } : null;
   },
   // Comments by id: the pending ones and the sent threads.
   commentsById(ids) {
@@ -1624,15 +1623,14 @@ export const ReviewMode = {
         this.updateThreads(cx, (d) => TH.clearSelected(TH.addThreads(d, key, pending, how)));
       } });
   },
-  // The preview with the target choice; prompt(sub) gives the text for a sub-agent (sub: {branch, path, head, main}: its
-  // worktree, the PR head it starts from, the PR agent it hands the fix to) or, with null, for the main agent. The head is
-  // read first so the text names the exact cherry-pick range.
+  // The preview with the target choice; prompt(sub) gives the text for a sub-agent (sub: {branch, path, head}: its
+  // worktree and the PR head it starts from) or, with null, for the main agent.
   previewFix(cx, { what, own, ownLabel, items, labels, prompt, sent, pool = null, alone = 0, target = null }) {
     const ids = items.map((x) => x.id), branch = TH.fixBranch(this.prSel?.number, ids), path = TH.fixPath(home(), this.prSel?.repo, branch), base = this.fixBase();
     cx.spawn(async (cx) => {
       const at = base ? (await exec("git", ["-C", base, "rev-parse", "HEAD"], { timeout: 20000 }).catch(() => null))?.stdout?.trim() || null : null;
       const head = TH.fixStart({ local: Boolean(this.worktree?.local), prHead: this.headNow(), checkoutHead: at });
-      const { agent, label } = this.sendAgent(), sub = { branch, path, head, main: agent?.address ?? null };
+      const { label } = this.sendAgent(), sub = { branch, path, head };
       this.previewSend(cx, { what, own, ownLabel, prompt: prompt(sub), onSent: (cx) => {
         const job = { id: `${Date.now().toString(36)}`, items, target: "main", at: Date.now(), state: "running" };
         this.updateThreads(cx, (d) => TH.addFix(d, this.threadKey(), job));
@@ -1652,8 +1650,8 @@ export const ReviewMode = {
     f.target = target;
     this.sendText.set_value(f.prompt(target === "sub" ? f : null));
   },
-  // A new Claude as a sub-agent of the PR's agent, in a fresh worktree on the fix branch from the PR head the preview
-  // named; the PR's agent gets a short start notice (hc send; a busy Claude queues it), the sub-agent reports back itself.
+  // A new Claude in a fresh worktree on the fix branch from the PR head the preview named (shown under the PR's agent
+  // when one runs). Nothing is typed into another session: the fix stays on its branch until the reviewer applies it.
   startSubFix(p, text, cx) {
     const f = p.fix, base = this.fixBase(), key = this.threadKey(), trusted = this.trustedPr(); // trust of the PR the prompt is for
     if (!base) { this.note = "Not started: the PR has no local checkout to branch the fix from"; return cx.notify(); }
@@ -1671,11 +1669,10 @@ export const ReviewMode = {
         const id = Date.now().toString(36), { agent } = this.sendAgent();
         const r = await hc(TH.subAgentArgs({ parent: agent?.address ?? null, cwd: f.path, name: `fix-${id}`, env: this.ctxEnv(this.ctxId()), task: text, job: id, auto: trusted }));
         if (r.code !== 0) { await git(["worktree", "remove", "--force", f.path]); await git(["branch", "-D", f.branch]); throw new Error((r.stderr || r.stdout).trim().slice(0, 200)); }
-        const terminal = JSON.parse(r.stdout).address, handoff = f.main && text.includes(`hc send ${f.main} `) ? f.main : null; // the text may have been edited
-        this.updateThreads(cx, (d) => TH.addFix(d, key, { id, branch: f.branch, path: f.path, base, head, items: f.items, terminal, target: "sub", handoff, at: Date.now(), state: "running" }));
+        const terminal = JSON.parse(r.stdout).address;
+        this.updateThreads(cx, (d) => TH.addFix(d, key, { id, branch: f.branch, path: f.path, base, head, items: f.items, terminal, target: "sub", at: Date.now(), state: "running" }));
         f.sent(cx, { route: "agent", agent: `Fix sub-agent · ${f.branch}` });
-        const told = handoff && (await hc(["send", handoff, TH.startNotice({ pr: this.pr, branch: f.branch, path: f.path, terminal, labels: f.labels ?? [] })]).catch(() => null))?.code === 0;
-        this.note = `Fix started: a sub-agent works on ${f.branch} in its own worktree${handoff ? `; it hands the fix to the PR's agent when done${told ? "" : " (the start notice did not go through)"}` : ""}`;
+        this.note = `Fix started: a sub-agent works on ${f.branch} in its own worktree. Its fix stays there until you apply it.`;
       } catch (e) { this.note = `Not started: ${String(e).replace(/^Error: /, "")}`; }
       finally { this.sending = false; cx.notify(); }
     });
@@ -1693,15 +1690,15 @@ export const ReviewMode = {
     // The same order as on the card in the diff: Add, Ask, Fix, Dismiss.
     if (!fv) return [add(true), ask, pill(`rv-ffx-${x.id}`, t, "Fix with agent…", (_e, cx) => this.fix([x], cx)).tooltip("Have an agent fix this: a preview first says where it works, what it may do and that it never pushes"), dismiss];
     const sub = fv.job.target === "sub", ready = Boolean(fv.commit) && sub, checked = v?.branch ? v.result : null;
-    return [badge(t, fv.handed ? "Handed to PR agent" : fv.commit ? `Fix ready on ${fv.job.branch ?? "the PR"}` : `Fixing · ${fv.status}`, fv.commit ? t.ansi2 : t.ansi3).id(`rv-ffb-${x.id}`).tooltip("The fix agent's progress on this finding"),
+    return [badge(t, fv.commit ? `Fix ready on ${fv.job.branch ?? "the PR"}` : `Fixing · ${fv.status}`, fv.commit ? t.ansi2 : t.ansi3).id(`rv-ffb-${x.id}`).tooltip("The fix agent's progress on this finding"),
       ...(fv.job.terminal ? [pill(`rv-fgo-${x.id}`, t, "Go to fix", () => this.goFix(fv.job), false, !ready || checked === "not_fixed" ? lit : undefined).tooltip("Show the fix agent's terminal")] : []),
-      ...(ready ? [pill(`rv-fap-${x.id}`, t, "Apply to PR", (_e, cx) => this.applyFix(fv.job, cx), false, checked === "fixed" && !fv.handed ? t.ansi2 : undefined)
-        .tooltip(fv.handed ? "The PR's agent got this fix to take over; cherry-pick it onto the local checkout yourself only if it doesn't (not pushed)" : "Cherry-pick the fix commits onto the local checkout of the PR's branch; nothing is pushed")] : []),
+      ...(ready ? [pill(`rv-fap-${x.id}`, t, "Apply to PR", (_e, cx) => this.applyFix(fv.job, cx), false, checked === "fixed" ? t.ansi2 : undefined)
+        .tooltip("Cherry-pick the fix commits onto the local checkout of the PR's branch; nothing is pushed")] : []),
       add(false), ask,
       ...(sub ? [pill(`rv-fdc-${x.id}`, t, "Discard fix", (_e, cx) => this.discardFix(fv.job, cx)).tooltip("Delete the fix's worktree and branch")] : []), dismiss];
   },
   goFix(job) { if (job?.terminal) run("terminal.peek", { terminal: job.terminal }); },
-  // Apply to PR (secondary once the sub-agent handed the fix to the PR's agent): the branch's commits cherry-picked onto
+  // Apply to PR: the branch's commits cherry-picked onto
   // the PR's checkout, only when it is clean (else the main agent can do it, through the preview); then the worktree and
   // branch go. Nothing is pushed here.
   applyFix(job, cx) {
@@ -1778,15 +1775,15 @@ export const ReviewMode = {
     }
     if (it.k === "th") {
       const v = this.threadOfView(o), fv = this.fixView(this.fixOf(o.id)), agent = o.agent?.split(" · ")[0] || "Agent";
-      const status = fv?.handed ? ["Handed to PR agent", "ansi2"] : fv?.commit ? ["Fix ready", "ansi2"] : fv ? [`Fixing · ${fv.status}`, "ansi3"] : v.status === "fixed" ? [`Reported fixed${v.fixedIn ? ` in ${v.fixedIn.slice(0, 7)}` : ""}`, "ansi2"]
+      const status = fv?.commit ? ["Fix ready", "ansi2"] : fv ? [`Fixing · ${fv.status}`, "ansi3"] : v.status === "fixed" ? [`Reported fixed${v.fixedIn ? ` in ${v.fixedIn.slice(0, 7)}` : ""}`, "ansi2"]
         : v.status === "wontfix" ? ["Declined", "muted"] : v.status === "answered" || v.status === "question" ? ["Agent replied", "accent"]
         : o.route === "github" ? [o.dry ? "Dry run: not posted" : "Posted", "ansi4"] : ["Sent to agent", "ansi6"];
-      const action = fv?.commit && fv.job.target === "sub" && !fv.handed ? ["Apply to PR", (cx) => this.applyFix(fv.job, cx)] : fv ? ["Go to fix", () => this.goFix(fv.job)] : ["Fix", (cx) => this.fixComments([o.id], cx)];
+      const action = fv?.commit && fv.job.target === "sub" ? ["Apply to PR", (cx) => this.applyFix(fv.job, cx)] : fv ? ["Go to fix", () => this.goFix(fv.job)] : ["Fix", (cx) => this.fixComments([o.id], cx)];
       return { key: `th:${o.id}`, id: o.id, src: "mine", author: "You", time: hm(o.sentAt), sel: true, status, text: o.text, action,
         folded: v.collapsed ? `You: ${plain(o.text)} · ${status[0]}` : null,
         replies: v.entries.filter((e) => this.show().agents || e.who !== "agent").map((e) => ({ author: e.who === "you" ? "You" : e.who === "agent" ? agent : e.who, src: e.who === "you" ? "mine" : e.who === "agent" ? "agents" : "github",
           text: e.text, status: e.status ? [{ fixed: `Reported fixed${e.commit ? ` in ${String(e.commit).slice(0, 7)}` : ""}`, wontfix: "Declined", answered: "Answered", question: "Question" }[e.status] ?? e.status, THREAD_COLOR[e.status] ?? "muted"] : null })),
-        menu: [["Reply", false, (cx) => this.startReply(o.id, cx)], ...(fv?.job.terminal ? [["Go to fix", false, () => this.goFix(fv.job)]] : []), ...(fv?.handed && fv.job.target === "sub" ? [["Apply to PR", false, (cx) => this.applyFix(fv.job, cx)]] : []),
+        menu: [["Reply", false, (cx) => this.startReply(o.id, cx)], ...(fv?.job.terminal ? [["Go to fix", false, () => this.goFix(fv.job)]] : []),
           ...(fv?.job.target === "sub" ? [["Discard fix", true, (cx) => this.discardFix(fv.job, cx)]] : []), ...(v.status === "fixed" || v.status === "wontfix" ? [[this.openThreads.has(o.id) ? "Fold" : "Unfold", false, () => { if (this.openThreads.has(o.id)) this.openThreads.delete(o.id); else this.openThreads.add(o.id); }]] : []),
           ["Select", false, (cx) => this.toggleSel(o.id, cx)], ...(o.url ? [["Open on GitHub", false, () => openUrl(o.url)]] : []), ["Copy position", false, () => copyText(where(o))]] };
     }
@@ -1837,7 +1834,7 @@ export const ReviewMode = {
         .child(div().flex_none().text_color(t.muted).child(c.time)).child(pillC(c.status).id(`rv-chs-${c.key}`).tooltip(`Where this comment stands: ${c.status[0]}`))
         .when(this.staleNow().has(c.id), (e) => e.child(pillC(["STALE", "ansi3"]).id(`rv-chst-${c.key}`).tooltip(STALE_TIP)))
         .child(div().flex_1())
-        .when(Boolean(c.action), (e) => e.child(div().id(`rv-cha-${c.key}`).tooltip(c.action[0] === "Fix" ? "Fix this with an agent: a preview first; a sub-agent never pushes, the PR's agent takes the fix over and pushes" : c.action[0] === "Apply to PR" ? "Cherry-pick the fix onto the PR's checkout; nothing is pushed" : c.action[0] === "Go to fix" ? "Show the fix agent's terminal" : "Turn this note into a pending comment").accessibility_label(c.action[0]).w(z.action[1] - z.action[0]).h(22).flex_none().flex().items_center().justify_center().gap(4).rounded(5)
+        .when(Boolean(c.action), (e) => e.child(div().id(`rv-cha-${c.key}`).tooltip(c.action[0] === "Fix" ? "Fix this with an agent: a preview first; a sub-agent works on its own branch and never pushes" : c.action[0] === "Apply to PR" ? "Cherry-pick the fix onto the PR's checkout; nothing is pushed" : c.action[0] === "Go to fix" ? "Show the fix agent's terminal" : "Turn this note into a pending comment").accessibility_label(c.action[0]).w(z.action[1] - z.action[0]).h(22).flex_none().flex().items_center().justify_center().gap(4).rounded(5)
           .text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground)).child(c.action[0] === "Fix" ? "✦ Fix" : c.action[0])))
         .child(div().id(`rv-chm-${c.key}`).tooltip("More actions for this comment").accessibility_label("More actions").w(24).h(22).flex_none().flex().items_center().justify_center().rounded(5).text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground)).child("⋯"))));
     }
@@ -1975,15 +1972,17 @@ export const ReviewMode = {
     const sent = gh ? this.ghPlanNow().picked : TH.withIds(this.comments);
     const done = (cx, how) => {
       const ids = new Set(sent.map((c) => c.id));
-      this.comments = TH.withIds(this.comments).filter((c) => !ids.has(c.id)); this.summary.set_value(""); this.event = "comment"; this.off = new Set(); this.summaryOn = true;
+      this.comments = TH.withIds(this.comments).filter((c) => !ids.has(c.id)); this.summary.set_value(""); this.event = null; this.off = new Set(); this.summaryOn = true;
       this.updateThreads(cx, (d) => TH.addThreads(d, key, sent, how));
       this.persist(cx); this.registerReview(cx, { status: "sent", sentAt: Date.now() });
     };
-    if (gh) return this.postGh(sent, this.event, this.summaryOn ? summary : "", cx, done);
+    const event = this.verdict();
+    if (!event) { this.note = "Not sent: choose Comment, Approve or Request changes first"; return cx.notify(); }
+    if (gh) return this.postGh(sent, event, this.summaryOn ? summary : "", cx, done);
     if (!sent.length) { this.note = "Nothing to send: add a comment first"; return cx.notify(); }
     const { label } = this.sendAgent();
     this.previewSend(cx, { what: "Review", own: [summary.trim(), ...sent.map((c) => `${c.file} ${uiLine(c)}: ${c.text}`)].filter(Boolean).join("\n\n"),
-      prompt: buildReview({ pr: this.pr, base: this.base, comments: sent, lang: this.lang(), event: this.event, summary, replies: this.repliesFile(), contract: TH.repliesContract }),
+      prompt: buildReview({ pr: this.pr, base: this.base, comments: sent, lang: this.lang(), event, summary, replies: this.repliesFile(), contract: TH.repliesContract }),
       onSent: (cx) => done(cx, { route: "agent", agent: label }) });
   },
   // The gh login that posts for this PR's context (its env picks the account), asked once per context.
@@ -1999,7 +1998,7 @@ export const ReviewMode = {
   },
   ghPlanNow() {
     const repo = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(this.prSel?.url ?? "");
-    return TH.ghPlan({ comments: this.comments, off: this.off, summary: this.summary.value(), summaryOn: this.summaryOn, event: this.event, commit: this.head,
+    return TH.ghPlan({ comments: this.comments, off: this.off, summary: this.summary.value(), summaryOn: this.summaryOn, event: this.verdict(), commit: this.head,
       lines: this.diffLines ?? new Map(), repo: repo ? `${repo[1]}#${repo[2]}` : null, login: this.ghLogin?.[this.ctxId()] ?? null });
   },
 
@@ -2105,6 +2104,8 @@ export const ReviewMode = {
 
   // The submit button. An approval while a finding of high severity is unresolved is asked about once: the first
   // click only says what is open, the second one submits.
+  // The verdict in force (threads.js verdictOf): null while a high finding is unresolved and nothing is picked.
+  verdict() { return TH.verdictOf(this.event, this.counts()); },
   submitClick(cx) {
     if (this.event === "approve" && this.counts().high > 0 && !this.approveAsk) { this.approveAsk = true; return cx.notify(); }
     this.approveAsk = false;
@@ -2124,10 +2125,10 @@ export const ReviewMode = {
     const label = { comment: "Comment", approve: "Approve", request_changes: "Request changes" };
     // What the review found, next to what is about to go out: the findings suggest a verdict (threads.js
     // suggestVerdict) and never pick it; an approval over unresolved high findings is asked about once (submitClick).
-    const fc = this.counts(), sug = TH.suggestVerdict(fc), risky = this.event === "approve" && fc.high > 0;
+    const fc = this.counts(), sug = TH.suggestVerdict(fc), ev = this.verdict(), risky = ev === "approve" && fc.high > 0;
     const radio = (k, what) => h_flex().id(`rv-ev-${k}`).gap(10).px(6).py(4).rounded(6).items_start().cursor_pointer().hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => { this.event = k; this.approveAsk = false; cx.notify(); })
-      .child(div().w(16).flex_none().text_color(this.event === k ? t.accent : t.muted).child(this.event === k ? "◉" : "○"))
+      .child(div().w(16).flex_none().text_color(ev === k ? t.accent : t.muted).child(ev === k ? "◉" : "○"))
       .child(v_flex().flex_1().min_w(0).child(h_flex().gap(8).items_center().child(div().font_semibold().child(label[k]))
         .when(sug?.event === k, (e) => e.child(div().id(`rv-ev-sug-${k}`).tooltip("A suggestion from the findings, which are a model's claims. The choice is yours.").text_size(12).text_color(t.ansi3).child(`Suggested: ${sug.why}`))))
         .child(div().text_size(12).text_color(t.muted).whitespace_normal().child(what)));
@@ -2153,7 +2154,7 @@ export const ReviewMode = {
             : div().text_size(12.5).line_height(1.45).text_color(on ? t.foreground : t.muted).child(TextView.markdown(`rv-fim-${c.id}`, c.text))));
     };
     const summary = this.summary.value().trim(), repo = plan ? /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(this.prSel?.url ?? "") : null;
-    const ready = !this.sending && (gh ? plan.ready : n > 0);
+    const ready = !this.sending && Boolean(ev) && (gh ? plan.ready : n > 0);
     return v_flex().id("rv-finish").absolute().top(8).right(12).w(520).max_h(760).p(14).gap(10).rounded(10).border_1().border_color(t.border).bg(t.popover).shadow_lg()
       .text_size(13).text_color(t.foreground).on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .child(h_flex().gap(8).items_center().child(div().font_semibold().text_size(14).child("Finish your review"))
@@ -2204,7 +2205,7 @@ export const ReviewMode = {
         .child(div().flex_1())
         .when(!this.discardAsk, (e) => e.child(div().id("rv-submit").tooltip(this.cfg?.dryRun && gh ? DRY_TIP : "Sends only what is listed above, to the target shown; nothing leaves before this click").px(14).h(32).flex().items_center().rounded(8).text_size(13).font_semibold().bg(ready ? GH_GREEN : t.raised)
           .text_color(ready ? "#ffffff" : t.muted).when(ready, (e) => e.cursor_pointer())
-          .on_click((_e, cx) => { if (ready) this.submitClick(cx); }).child(this.sending ? "Submitting…" : risky && this.approveAsk ? "Approve anyway" : gh ? plan.label : "Send to agent…"))));
+          .on_click((_e, cx) => { if (ready) this.submitClick(cx); }).child(this.sending ? "Submitting…" : !ev ? "Choose a verdict first" : risky && this.approveAsk ? "Approve anyway" : gh ? plan.label : "Send to agent…"))));
   },
 
   // The preview before an agent starts or anything is typed into a session: what it is about (the finding or the
@@ -2213,8 +2214,8 @@ export const ReviewMode = {
   // the exact text, editable. Only the button at the bottom sends.
   sendPopover(t) {
     const p = this.sendP, fix = p.fix, sub = fix?.target === "sub", kind = fix ? fix.target : p.ask?.kind ?? null, short = (x) => (x ? String(x).replace(home(), "~") : null);
-    const live = this.sendAgent().agent, name = live ? p.agent.split(" · ")[0] : null, handoff = sub && fix.main && fix.head ? name : null;
-    const facts = kind ? TH.sendFacts({ kind, account: accountOf(this.ctxId()), trusted: this.trustedPr(), branch: fix?.branch, name: p.ask?.name ?? name, chat: p.ask?.chat, where: short(p.ask?.where), handoff }) : [];
+    const live = this.sendAgent().agent, name = live ? p.agent.split(" · ")[0] : null;
+    const facts = kind ? TH.sendFacts({ kind, account: accountOf(this.ctxId()), trusted: this.trustedPr(), branch: fix?.branch, name: p.ask?.name ?? name, chat: p.ask?.chat, where: short(p.ask?.where) }) : [];
     const picking = Boolean(fix?.pool), n = fix?.items.length ?? 0, some = !picking || n > 0, ready = !this.sending && some, text = this.sendText.value();
     const go = this.sending ? "Sending…" : sub ? (picking && n ? `Start fix agent for ${n} ${n === 1 ? "finding" : "findings"}` : "Start fix agent") : fix ? "Send to main agent"
       : p.ask ? { new: "Start agent", resume: "Resume its session", live: p.ask.chat ? "Draft in chat" : "Paste to agent" }[p.ask.kind] : "Send to agent";
@@ -2239,8 +2240,7 @@ export const ReviewMode = {
       .when(!picking && Boolean(p.own), (e) => e.child(v_flex().gap(4).child(head(p.ownLabel))
         .child(div().max_h(110).overflow_hidden().p(8).rounded(6).border_l(3).border_color(t.accent).bg(t.surface).text_size(12.5).line_height(1.45).whitespace_normal().child(p.own))))
       .when(Boolean(fix) && some, (e) => e.child(v_flex().gap(1).child(head("WHO FIXES IT"))
-        .child(choice("sub", "Sub-agent", `A new agent in a separate checkout, on the new branch ${fix.branch} from ${this.worktree?.local ? "this branch's head" : "the PR head"}${fix.head ? ` ${fix.head.slice(0, 7)}` : ""}. It works apart from the PR's checkout`
-          + (handoff ? `. When it is done it hands the fix to ${handoff}, and that session applies and pushes it.` : "; the fix stays on that branch until you apply it.")))
+        .child(choice("sub", "Sub-agent", `A new agent in a separate checkout, on the new branch ${fix.branch} from ${this.worktree?.local ? "this branch's head" : "the PR head"}${fix.head ? ` ${fix.head.slice(0, 7)}` : ""}. It works apart from the PR's checkout and hands its fix to nobody: nothing reaches the PR until you apply it.`))
         .when(this.mainOffered(), (x) => x.child(choice("main", "Main agent", `${name}, the PR's own agent session. It changes the PR's checkout directly, with its own permissions; nothing separates the fix from the PR.`)))
         .when(!this.mainOffered(), (x) => x.child(div().pl(32).text_size(12).text_color(t.dim).whitespace_normal()
           .child(`The PR's own agent is not offered: ${this.trustedPr() ? "this PR has no live agent session" : "this is someone else's PR, so its code is only changed in a separate checkout"}.`)))))
@@ -2346,7 +2346,7 @@ export const ReviewMode = {
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .child(div().flex_none().text_size(13).font_semibold().child(`${n} selected`))
       .child(div().w(1).h(18).flex_none().bg(t.border))
-      .child(div().id("rv-selfix").tooltip("Fix the selected comments with an agent; a preview first, then the PR's agent takes the fix over and pushes").flex_none().px(14).h(28).flex().items_center().rounded_full().bg(t.accent).text_color(t.accent_foreground).text_size(13).font_semibold().cursor_pointer()
+      .child(div().id("rv-selfix").tooltip("Fix the selected comments with an agent; a preview first. A sub-agent works on its own branch and never pushes").flex_none().px(14).h(28).flex().items_center().rounded_full().bg(t.accent).text_color(t.accent_foreground).text_size(13).font_semibold().cursor_pointer()
         .on_click((_e, cx) => this.fixComments(this.selected(), cx)).child(`✦ Fix selected (${n})`))
       .child(div().flex_1())
       .child(div().id("rv-selx").w(28).h(28).flex_none().flex().items_center().justify_center().rounded_full().text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
@@ -2386,7 +2386,7 @@ export const ReviewMode = {
       .when(Boolean(pr), (e) => e.child(div().id("rv-bar-repo").tooltip("Repository and PR number").flex_none().text_size(12).text_color(t.muted).child(`${pr.repo ?? ""}#${pr.number ?? ""}`))
         .child(badge(t, `PR ${pr.state ?? "?"}`, t[{ open: "ansi2", draft: "dim", merged: "ansi5", closed: "ansi1" }[pr.state]] ?? t.dim).id("rv-bar-state").tooltip("The PR's state on GitHub"))
         .when(C.tagged(ctxDoc()), (e) => e.child(badge(t, C.labelOf(ctxDoc(), prCtx(pr)), C.colorOf(ctxDoc(), prCtx(pr), t)).id("rv-bar-ctx").tooltip("The context this PR belongs to"))))
-      .when(selected > 0, (e) => e.child(div().id("rv-bar-fixsel").tooltip("Fix the selected comments with an agent; a preview first, then the PR's agent takes the fix over and pushes").flex_none().px(14).h(32).flex().items_center().rounded(7).bg(t.accent).text_color(t.accent_foreground)
+      .when(selected > 0, (e) => e.child(div().id("rv-bar-fixsel").tooltip("Fix the selected comments with an agent; a preview first. A sub-agent works on its own branch and never pushes").flex_none().px(14).h(32).flex().items_center().rounded(7).bg(t.accent).text_color(t.accent_foreground)
         .text_size(13).font_semibold().cursor_pointer().on_mouse_down("left", stop).on_click(() => run("pr-review.fix")).child(`✦ Fix selected (${selected})`)))
       // Until a reviewer ran, the deep review is the button to find: green, like Finish your review.
       .child(runs.some((r) => r.at || r.busy) ? pill("rv-reviews-btn", t, runLabel, openRuns).tooltip("Run Claude or security reviews of this PR, read-only; see each run's status").flex_none()

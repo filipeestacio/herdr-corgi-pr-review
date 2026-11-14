@@ -107,7 +107,7 @@ export function agentLabel(agent, fallback) {
 export function ghPlan({ comments, off = new Set(), summary = "", summaryOn = true, event = "comment", commit, lines, repo, login = null }) {
   const picked = withIds(comments).filter((c) => !off.has(c.id));
   const { payload, outside } = ghReview({ comments: picked, event, summary: summaryOn ? summary : "", commit, lines });
-  const n = payload.comments.length, word = { comment: "Comment", approve: "Approve", request_changes: "Request changes" }[event] ?? "Comment";
+  const n = payload.comments.length, word = { comment: "Comment", approve: "Approve", request_changes: "Request changes" }[event] ?? (event === null ? "no verdict chosen yet" : "Comment");
   const ready = n > 0 || Boolean(payload.body) || payload.event !== "COMMENT";
   const what = [n ? `${n} ${n === 1 ? "comment" : "comments"}` : null, payload.body ? "a review body" : null].filter(Boolean).join(" and ") || "a review";
   // label: the button (short); target: the line above it, which says who posts where (it wraps, never clipped).
@@ -137,8 +137,8 @@ export const toggleSelected = (doc, key, id, now = Date.now()) => {
 export const clearSelected = (doc, key, now = Date.now()) => bound(doc, key, threadsOf(doc, key), now, { selected: [] });
 
 // Fix jobs: {id, branch, path (its worktree), base (the PR's checkout), head (where the branch starts), items: [{kind:
-// "comment" | "finding", id}], terminal, target: "sub" | "main", handoff (the PR agent the sub-agent reports to, else
-// null), at, state: "running" | "applied" | "discarded"}. A running job with a commit and a handoff reads "handed".
+// "comment" | "finding", id}], terminal, target: "sub" | "main", at, state: "running" | "applied" | "discarded"}.
+// A sub-agent's fix stays on its branch until the reviewer applies it; nothing hands it on by itself.
 export const fixesOf = (doc, key) => doc?.[key]?.fixes ?? [];
 export const addFix = (doc, key, job, now = Date.now()) => bound(doc, key, threadsOf(doc, key), now, { fixes: [...fixesOf(doc, key).filter((f) => f.id !== job.id), job].slice(-MAX_FIXES) });
 export const setFix = (doc, key, id, change, now = Date.now()) => bound(doc, key, threadsOf(doc, key), now, { fixes: fixesOf(doc, key).map((f) => (f.id === id ? { ...f, ...change } : f)) });
@@ -195,33 +195,21 @@ export function checkText(v, short = false) {
   return short ? head[0].toLowerCase() + head.slice(1) : `${head} (${v.branch} at ${at})${why}`;
 }
 
-// What the sub-agent is told on top of the comments or findings: its worktree, its branch, commit there, never push
-// (main: the PR's agent takes the fix over, see handoffNote; without one the reviewer applies it).
-export const worktreeNote = (branch, path, main = null) => `You work in your own git worktree ${path} on branch ${branch}, started from the PR head. ` +
-  `Make the change there, commit it on ${branch} (one commit per point is fine), and never push: ${main ? "the PR's agent takes it over (last step below)" : "the reviewer applies it to the PR"}.`;
+// What the sub-agent is told on top of the comments or findings: its worktree, its branch, commit there, and that
+// this is where its work ends: it never pushes and never hands the fix on. The reviewer decides what happens to it.
+export const worktreeNote = (branch, path) => `You work in your own git worktree ${path} on branch ${branch}, started from the PR head. ` +
+  `Make the change there, commit it on ${branch} (one commit per point is fine), then stop: never push, and do not hand the fix to another agent or session. ` +
+  `It stays on ${branch} until the reviewer applies it to the PR.`;
 
-// What the PR's agent does with a ready fix: cherry-pick, tests, push, then the fix worktree and branch go.
+// What the PR's agent does with a ready fix once the reviewer hands it over ("Hand over…", applyPrompt): cherry-pick,
+// tests, push, then the fix worktree and branch go.
 const takeOver = ({ branch, head, path }) => `Please take it over: on your PR branch run git cherry-pick ${head}..${branch}, resolve conflicts if any, run the tests, ` +
   `and push to the PR branch. Then remove the fix worktree and branch: git worktree remove ${path} && git branch -D ${branch}`;
-// The sub-agent's last step: one hc send to the PR's agent (main: its terminal address) with the result and takeOver.
-// Without a live PR agent (or the head) there is no such step and Apply to PR stays the way in.
-export function handoffNote({ main, branch, path, head }) {
-  if (!main || !head) return null;
-  return `Last step, after the commit and the report line: hand the fix to the PR's agent with exactly one message (no double quotes inside the text):\n` +
-    `hc send ${main} "Fix ready: branch ${branch}, commit <sha>, worktree ${path}. <one line: what you changed>. Tests: <passed | failed: what | not run>. ${takeOver({ branch, head, path })}"\n` +
-    `Never push yourself. If hc send fails, check with hc read ${main} --lines 30 whether it arrived before you try once more; if it still fails, stop: the reviewer can apply the fix from the review.`;
-}
-// The mod's notice to the PR's agent when a fix sub-agent starts (labels: the items, short).
-export const startNotice = ({ pr, branch, path, terminal, labels }) => `${pr ? `PR #${pr.number}` : "This PR"}: the reviewer started a fix sub-agent (${terminal}) ` +
-  `on branch ${branch}, worktree ${path}, for: ${labels.map((l) => String(l).replace(/\s+/g, " ").slice(0, 80)).join("; ")}. ` +
-  `It reports back here when done; nothing to do yet.`;
-
 // The comments as one fix task, with ids and the replies contract (each point answered with status fixed and the commit).
-export function fixCommentsPrompt({ pr, comments, file, lang, branch = null, path = null, head = null, main = null }) {
+export function fixCommentsPrompt({ pr, comments, file, lang, branch = null, path = null }) {
   const items = withIds(comments).map((c, i) => [`${i + 1}. [${c.id}] \`${c.file}\`${c.start === undefined ? "" : ` ${lineLabel(c)}`}`, c.hunk ? "```diff\n" + c.hunk + "\n```" : null, c.text.trim()].filter(Boolean).join("\n"));
   return [`${pr ? `PR #${pr.number} "${pr.title}"${pr.url ? ` (${pr.url})` : ""}` : "This branch"}: please fix ${comments.length === 1 ? "this review comment" : `these ${comments.length} review comments`}.`,
-    branch ? worktreeNote(branch, path, head && main) : null, ...items, repliesContract(file, withIds(comments)[0]?.id),
-    branch ? handoffNote({ main, branch, path, head }) : null].filter(Boolean).join("\n\n") + answerIn(lang);
+    branch ? worktreeNote(branch, path) : null, ...items, repliesContract(file, withIds(comments)[0]?.id)].filter(Boolean).join("\n\n") + answerIn(lang);
 }
 
 // hc run for the sub-agent: under the PR's agent (parent) so it shows there, in its worktree, on the PR's context
@@ -230,10 +218,10 @@ export function subAgentArgs({ parent, cwd, name, env = [], task, job, auto = fa
   return ["run", "--bg", "--json", "--no-notify", "--name", name, "--cwd", cwd, ...(parent ? ["--parent", parent] : ["--no-parent"]),
     "--label", `pr-review.fix=${job}`, "--", ...env, "claude", "--disallowedTools", ...NO_PUSH, ...permissionArgs(auto), task];
 }
-// A fix agent never pushes and never opens a PR: the task says so, and these deny rules refuse the commands in any
-// permission mode. The list takes any number of rules, so an option with one value has to follow it (permissionArgs).
+// A fix agent never pushes, never opens a PR and never hands its fix to another session (hc send): the task says so,
+// and these deny rules refuse the commands in any permission mode. The list takes any number of rules, so an option with one value has to follow it (permissionArgs).
 // ponytail: a guard for the plain commands, not a sandbox (a push wrapped in a script gets past it).
-export const NO_PUSH = ["Bash(git push)", "Bash(git push *)", "Bash(gh pr create *)", "Bash(gh pr merge *)"];
+export const NO_PUSH = ["Bash(git push)", "Bash(git push *)", "Bash(gh pr create *)", "Bash(gh pr merge *)", "Bash(hc send *)"];
 // A trusted PR: auto (the classifier approves the harmless commands, reads, edits, commit, tests, and asks about risky
 // ones). An untrusted one: the task quotes its text and findings, which may carry injected instructions, and its
 // checkout's .claude/settings.json could allow anything or run hooks, so: manual, said outright (not left to the
@@ -252,7 +240,7 @@ export function applyPlan({ status, head, branch, onHead = true, where = null })
   if (dirty.length) return { ok: false, reason: `The PR's checkout has ${dirty.length} uncommitted ${dirty.length === 1 ? "change" : "changes"}: Apply needs a clean checkout.` };
   return { ok: true, args: ["cherry-pick", `${head}..${branch}`] };
 }
-// The hand-over when the checkout isn't clean: the main agent takes it over (as after a sub-agent's handoff).
+// The hand-over when the checkout isn't clean: the reviewer asks the main agent to take the fix over, through a preview.
 export const applyPrompt = (job) => `The reviewer's fix is ready on branch ${job.branch} (worktree ${job.path}). ${takeOver(job)}.`;
 
 // ---- the Comments tab and the Show switch
@@ -320,8 +308,7 @@ export const showCounts = ({ rows, findings = 0, agents = 0 }) => ({ mine: rows.
 // whether it can push, what comes back and what it costs. kind: "sub" (a fix agent in its own checkout), "main" (the
 // PR's live agent session), "new" (a new agent tab for a question), "live" (a question put into a live agent's
 // input: nothing starts), "resume" (the PR's session, resumed in a new tab), anything else: a live session.
-// handoff: the PR's live agent a sub-agent hands its fix to (handoffNote); that session, not this agent, pushes.
-export function sendFacts({ kind, account, trusted = false, branch = null, name = null, chat = false, where = null, handoff = null }) {
+export function sendFacts({ kind, account, trusted = false, branch = null, name = null, chat = false, where = null }) {
   const own = kind === "sub" || kind === "new", who = name ?? "the agent";
   const starts = { new: `A new agent in a new tab, in the review's checkout of the PR head${where ? ` (${where})` : ""}.`,
     live: `Nothing new. The text goes into the ${chat ? "chat box" : "terminal"} of ${who} as a draft, and you send it there.`,
@@ -329,14 +316,14 @@ export function sendFacts({ kind, account, trusted = false, branch = null, name 
   const may = kind === "sub" ? (trusted ? "Edit files, run commands and commit in its checkout without asking (auto mode). Risky commands still ask you."
     : "Nothing without your OK: this is someone else's PR, so it asks before every edit and command.")
     : kind === "new" ? "Read and answer. It asks you before every edit and command (manual mode)." : "Whatever that session allows, in the PR's checkout itself.";
-  const result = kind === "sub" ? `A commit on ${branch ?? "its branch"} and a report here. ${handoff ? `${handoff} then applies it to the PR.` : "Nothing changes in the PR until you apply it."}`
+  const result = kind === "sub" ? `A commit on ${branch ?? "its branch"} and a report here. Nothing reaches the PR until you apply it.`
     : kind === "main" ? "Commits in the PR's checkout and a report here." : `An answer in ${kind === "new" ? "the new tab" : "that session"}. The finding stays as it is.`;
   return [
     starts && ["Starts", starts],
     ["Runs as", own ? account : `${name ?? "The PR's session"}, on its own account and with its own permissions.`],
     ["Gets", own ? "The text below and every file it opens in its checkout. All of it goes to the provider." : "The text below. The session reads what it needs in its own checkout."],
     ["May", may],
-    ["Push", kind === "sub" ? (handoff ? `Not by this agent: git push and gh pr create are denied. ${handoff} pushes once it took the fix over.` : "Never: git push and gh pr create are denied, and the task forbids them.") : kind === "new" ? "Only if you approve the command." : "Possible. Nothing here prevents it."],
+    ["Push", kind === "sub" ? "Never: git push and gh pr create are denied, and the task forbids them." : kind === "new" ? "Only if you approve the command." : "Possible. Nothing here prevents it."],
     ["Result", result],
     ["Cost", own ? `Not capped and not estimated; billed to that account.${kind === "sub" ? " One finding usually takes a few minutes." : ""}` : "Billed to that session's account."],
   ].filter(Boolean);
@@ -352,6 +339,9 @@ export function suggestVerdict(c) {
   if (c?.unresolved) return { event: "comment", why: `${c.unresolved} ${are(c.unresolved)} unresolved, none of high severity` };
   return null;
 }
+// The verdict in force (picked: the reviewer's choice or null; c: findingCounts): the pick, else "comment" as on
+// GitHub. While a finding of high severity is unresolved nothing is chosen for the reviewer: null, and Submit waits.
+export const verdictOf = (picked, c) => picked ?? (c?.high > 0 ? null : "comment");
 // "Insert blockers": the unresolved findings from high up as a review body to edit. It starts with a sentence that
 // counts them, then one line per finding with its file and line. A security finding goes in with its title only (no
 // place, no detail): the text is public once it is posted. AI notes are not findings and never part of it.

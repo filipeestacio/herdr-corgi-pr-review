@@ -144,6 +144,7 @@ assert.match(off.reason, /on feat\/other.*abcdef0.*git cherry-pick abcdef0\.\.fi
 }
 // A fix agent cannot push: deny rules before the permission mode, the task last.
 assert.deepEqual(args.slice(args.indexOf("claude") + 1, args.indexOf("--permission-mode")), ["--disallowedTools", ...TH.NO_PUSH]);
+assert.ok(TH.NO_PUSH.includes("Bash(hc send *)"), "no hand-over to another session by itself");
 assert.ok(TH.NO_PUSH.includes("Bash(git push *)") && untrusted.includes("Bash(git push *)") && untrusted.at(-1) === "x");
 // The target choice: the sub-agent's text names its worktree, the main agent's doesn't; the preview sends that text.
 const sub = TH.fixCommentsPrompt({ pr: { number: 7, title: "T" }, comments: [{ id: "c1", file: "a.py", start: 3, end: 3, text: "Warum?" }], file: "/r.jsonl", branch: "fix/7-c1", path: "/w" });
@@ -151,20 +152,12 @@ const main = TH.fixCommentsPrompt({ pr: { number: 7, title: "T" }, comments: [{ 
 assert.ok(sub.includes("own git worktree /w on branch fix/7-c1") && sub.includes("[c1]") && sub.includes(">> /r.jsonl"));
 assert.ok(!main.includes("worktree") && main.includes("[c1]"));
 assert.equal(TH.confirm(TH.preview({ what: "Fix", agent: "x", prompt: sub })).text, sub);
-assert.ok(!sub.includes("hc send") && sub.includes("the reviewer applies it"), "no live PR agent: no send step");
-assert.ok(!main.includes("hc send"), "the main agent itself: no handoff");
-// The handoff: with the PR agent's address the sub-agent's last step is one hc send to it; the main agent pushes.
-const handed = TH.fixCommentsPrompt({ pr: { number: 7, title: "T" }, comments: [{ id: "c1", file: "a.py", start: 3, end: 3, text: "Warum?" }], file: "/r.jsonl", branch: "fix/7-c1", path: "/w", head: "abc", main: "t3" });
-assert.ok(handed.includes('hc send t3 "Fix ready: branch fix/7-c1, commit <sha>, worktree /w.'), "the send to the PR agent's address");
-assert.ok(handed.indexOf("hc send t3") > handed.indexOf(">> /r.jsonl"), "after the report line");
-assert.ok(handed.includes("git cherry-pick abc..fix/7-c1") && handed.includes("push to the PR branch"), "the PR agent cherry-picks and pushes");
-assert.ok(handed.includes("git worktree remove /w && git branch -D fix/7-c1"), "then the worktree and branch go");
-assert.ok(handed.includes("never push") && handed.includes("Never push yourself"), "the sub-agent never pushes");
-assert.equal(TH.handoffNote({ main: null, branch: "b", path: "/w", head: "abc" }), null, "no address: no send step");
-assert.equal(TH.handoffNote({ main: "t3", branch: "b", path: "/w", head: null }), null, "no head: no send step");
+assert.ok(!sub.includes("hc send") && sub.includes("until the reviewer applies it") && sub.includes("never push") && sub.includes("do not hand the fix to another agent"), "it stops after the commit: no push, no hand-over");
+assert.ok(!main.includes("hc send"), "the main agent itself: nothing to hand on");
+// A live PR agent changes nothing about that: no hand-over step, whoever runs.
+assert.equal(TH.fixCommentsPrompt({ pr: { number: 7, title: "T" }, comments: [{ id: "c1", file: "a.py", start: 3, end: 3, text: "Warum?" }], file: "/r.jsonl", branch: "fix/7-c1", path: "/w", head: "abc", main: "t3" }), sub);
+assert.equal(TH.handoffNote, undefined); assert.equal(TH.startNotice, undefined);
 assert.ok(TH.applyPrompt(job).includes("push to the PR branch") && TH.applyPrompt(job).includes("git worktree remove"), "Hand over…: the same take-over");
-const notice = TH.startNotice({ pr: { number: 7 }, branch: "fix/7-c1", path: "/w", terminal: "t9", labels: ["a.py L3: Warum\nso?", "b.py L1: x"] });
-assert.equal(notice, "PR #7: the reviewer started a fix sub-agent (t9) on branch fix/7-c1, worktree /w, for: a.py L3: Warum so?; b.py L1: x. It reports back here when done; nothing to do yet.");
 console.log("threads ok");
 // ---- the Comments tab: rows, summary, filters
 {
@@ -212,11 +205,9 @@ console.log("threads ok");
 {
   const sub = Object.fromEntries(TH.sendFacts({ kind: "sub", account: "Claude Code (Anthropic) · account in ~/.claude", trusted: true, branch: "fix/7-f1" }));
   assert.equal(sub["Runs as"], "Claude Code (Anthropic) · account in ~/.claude");
-  assert.match(sub.May, /auto mode/); assert.match(sub.Push, /^Never/); assert.match(sub.Result, /fix\/7-f1.*until you apply it/);
+  assert.match(sub.May, /auto mode/); assert.match(sub.Push, /^Never/); assert.match(sub.Result, /fix\/7-f1.*Nothing reaches the PR until you apply it/);
   assert.equal(sub.Starts, undefined, "the choice above says where it starts");
   assert.match(Object.fromEntries(TH.sendFacts({ kind: "sub", account: "a", trusted: false })).May, /someone else's PR.*asks before every edit/);
-  const handed = Object.fromEntries(TH.sendFacts({ kind: "sub", account: "a", trusted: true, branch: "fix/7-f1", handoff: "PR #7" }));
-  assert.match(handed.Push, /^Not by this agent.*PR #7 pushes/); assert.match(handed.Result, /PR #7 then applies it/);
   const main = Object.fromEntries(TH.sendFacts({ kind: "main", account: "a", name: "PR #7" }));
   assert.match(main["Runs as"], /^PR #7, on its own account/); assert.match(main.Push, /^Possible/);
   const live = Object.fromEntries(TH.sendFacts({ kind: "live", account: "a", name: "PR #7", chat: true }));
@@ -226,6 +217,11 @@ console.log("threads ok");
   assert.deepEqual(TH.suggestVerdict({ unresolved: 3, high: 1 }), { event: "request_changes", why: "1 unresolved finding is of high severity" });
   assert.equal(TH.suggestVerdict({ unresolved: 2, high: 0 }).event, "comment");
   assert.equal(TH.suggestVerdict({ unresolved: 0, high: 0 }), null, "nothing unresolved: no suggestion, an approval is the reviewer's call");
+  assert.equal(TH.verdictOf(null, { unresolved: 3, high: 1 }), null, "an unresolved high finding: nothing chosen, Submit waits");
+  assert.equal(TH.verdictOf("approve", { unresolved: 3, high: 1 }), "approve", "the reviewer's pick goes first");
+  assert.equal(TH.verdictOf(null, { unresolved: 2, high: 0 }), "comment", "no high finding: Comment as before");
+  assert.equal(TH.verdictOf(null, null), "comment");
+  assert.match(TH.ghPlan({ comments: [], event: null, commit: "c", lines: new Map() }).target, /no verdict chosen yet$/);
   assert.equal(TH.blockersDraft([{ severity: "high", title: "Mails twice", file: "a.py", line: 3 }, { severity: "high", security: true, title: "Empty token passes", file: "h.py", line: 8 }, { severity: "medium", title: "m", file: "b", line: 1 }]),
     "2 findings need a change before this can merge.\n\n- `a.py:3`: Mails twice\n- Security: Empty token passes");
   assert.match(TH.blockersDraft([{ severity: "high", title: "T", file: "a.py", line: 3 }]), /^1 finding needs a change before this can merge\./);
