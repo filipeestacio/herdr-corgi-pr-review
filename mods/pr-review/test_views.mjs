@@ -245,9 +245,17 @@ assert.equal(pendingText([{ file: "a.py" }, { file: "a.py" }, { file: "b.py" }])
     { kind: "resilience", path: null }, { kind: "criterion", finding: F("c1"), asks: [A("a1"), A("a2")] }, { kind: "criterion", finding: F("c2"), asks: [A("a1")] }, { kind: "ask", ask: A("a3"), asks: [A("a3")] },
     { kind: "rule" }, { kind: "finding", finding: F("h1") }, { kind: "finding", finding: F("h2") }, { kind: "verify" }];
   assert.deepEqual(mergeGroups(bm).map((g) => g.text), ["⛨ 2 security", "3 resilience paths", "1 not observable", "3 criteria", "1 check", "2 high", "1 fix to verify"]);
-  assert.deepEqual(mergeFirst(bm, 5).map((r) => bm.indexOf(r)), [0, 2, 5, 6, 9], "one of each group in order before a second of any");
+  assert.deepEqual(mergeFirst(bm, 5).map((r) => bm.indexOf(r)), [0, 1, 2, 5, 6], "every security row, then one of each group in order before a second of any");
+  assert.deepEqual(mergeFirst(bm.slice(2), 5).map((r) => bm.slice(2).indexOf(r)), [0, 3, 4, 7, 8]);
   assert.deepEqual(mergeFirst(bm.slice(0, 3), 5).length, 3);
   assert.deepEqual(mergeGroups(bm.slice(7), [bm[6]]).map((g) => g.text), ["1 criterion", "1 check", "2 high", "1 fix to verify"], "the criteria a shown row breaks are not counted again");
+  // A finished run is offered as Re-run with its age and head, not as a first Run.
+  const { runLabel } = await import("./views.js");
+  assert.equal(runLabel(null, "about $0.27, 1 min"), "Run (about $0.27, 1 min)");
+  assert.equal(runLabel({ state: "failed" }, "about $0.27, 1 min"), "Run again (about $0.27, 1 min)");
+  assert.equal(runLabel({ state: "done", head: "ccddf9524aec" }, "about $0.27, 1 min", "1 h ago"), "Re-run (about $0.27, 1 min) · last run 1 h ago on ccddf95");
+  assert.equal(runLabel({ state: "done" }, null), "Re-run · last run");
+  assert.equal(runLabel({ state: "done", head: "ccddf95" }, "about $0.13, 1 min", "13 h ago", true), "Re-run (about $0.13, 1 min)", "the popup says the last run in its line");
   // The state hints at the top of the Analysis tab: checkout, an analysis waiting for it, reviewer runs.
   const { stateHints } = await import("./views.js");
   assert.deepEqual(stateHints({ checkout: { busy: true }, pendingRun: true, runs: { security: { busy: true }, claude: { at: "x" } }, names: { security: "Security review" } }).map((h) => [h.key, h.text, Boolean(h.spin)]),

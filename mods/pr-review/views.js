@@ -1143,10 +1143,21 @@ export function mergeGroups(rows, seen = []) {
   }
   return [...groups].filter(([, n]) => n > 0).map(([key, n]) => ({ key, n, text: say[key] ? say[key](n) : `${n} ${key.slice(4)}` }));
 }
-// The rows shown of "Before merge" (and the box over the layers): at most n, the first of each group before a
-// second of any, in the rows' order, so a criterion is not pushed out by security and resilience rows. of(x): the row.
+// The rows shown of "Before merge" (and the box over the layers): at most n, every security row first, then the first
+// of each other group before a second of any, in the rows' order, so a criterion is not pushed out by resilience
+// rows. of(x): the row.
 export function mergeFirst(items, n = 5, of = (x) => x) {
-  const pick = new Set(), round = (k) => { const seen = new Set(); for (const x of items) { if (pick.size >= n) return; const g = mergeKey(of(x)); if (!pick.has(x) && !seen.has(g) && [...pick].filter((y) => mergeKey(of(y)) === g).length < k) { seen.add(g); pick.add(x); } } };
+  const pick = new Set(items.filter((x) => mergeKey(of(x)) === "security").slice(0, n)), round = (k) => { const seen = new Set(); for (const x of items) { if (pick.size >= n) return; const g = mergeKey(of(x)); if (!pick.has(x) && !seen.has(g) && [...pick].filter((y) => mergeKey(of(y)) === g).length < k) { seen.add(g); pick.add(x); } } };
   for (let k = 1; pick.size < Math.min(n, items.length); k++) round(k);
   return items.filter((x) => pick.has(x));
+}
+
+// The button that starts a run (run: the findings file's runs[kind]): "Run (about $0.27, 1 min)" before a first run,
+// "Run again (…)" after a failed one, and after a finished one "Re-run (about $0.27, 1 min) · last run 1 h ago on
+// ccddf95", so a done run does not read like one still to buy. price: null when not known (Codex); age: "1 h ago";
+// short: without the last run (a place that says it next to the button).
+export function runLabel(run, price = null, age = "", short = false) {
+  const p = price ? ` (${price})` : "";
+  if (run?.state === "done") return short ? `Re-run${p}` : `Re-run${p} · last run${age ? ` ${age}` : ""}${run.head ? ` on ${String(run.head).slice(0, 7)}` : ""}`;
+  return `${run?.state === "failed" ? "Run again" : "Run"}${p}`;
 }
