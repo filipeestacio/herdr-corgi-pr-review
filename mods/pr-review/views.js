@@ -469,3 +469,10 @@ export function byFocus(steps, open) {
     .sort((a, b) => rank(a.w) - rank(b.w) || Number(Boolean(b.w?.security)) - Number(Boolean(a.w?.security)) || (b.w?.count ?? 0) - (a.w?.count ?? 0) || a.s.order - b.s.order)
     .map((x) => x.s);
 }
+
+// The "Needs your attention" heading counts by decision, not by severity: "⛨ 2 · 3 criteria not met · 4 other
+// blockers". list: the box's items ({security}); notMet: the task's criteria broken or not done.
+export function attentionCounts(list, notMet = 0) {
+  const sec = list.filter((a) => a.security).length, rest = list.length - sec;
+  return [sec && `⛨ ${sec}`, notMet && `${notMet} ${notMet === 1 ? "criterion" : "criteria"} not met`, rest && `${rest} ${sec ? "other " : ""}${rest === 1 ? "blocker" : "blockers"}`].filter(Boolean);
+}

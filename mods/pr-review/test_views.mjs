@@ -218,6 +218,11 @@ assert.equal(pendingText([{ file: "a.py" }, { file: "a.py" }, { file: "b.py" }])
   const ls = [L("events", 1, { severity: "high" }), L("tests", 2, { severity: "medium" }, { severity: "medium" }, { severity: "medium" }), L("docs", 3),
     L("template", 4, { severity: "high", security: true }), L("handler", 5, { severity: "high" }, { severity: "high" }), L("reminders", 6, { severity: "high" })];
   assert.deepEqual(byFocus(ls, (l) => l.fs).map((l) => l.title), ["template", "handler", "events", "reminders", "tests", "docs"]);
+  // The attention box's heading counts by decision: security, criteria not met, the other blockers.
+  const { attentionCounts } = await import("./views.js");
+  assert.deepEqual(attentionCounts([{ security: true }, { security: true }, {}, {}, {}], 3), ["⛨ 2", "3 criteria not met", "3 other blockers"]);
+  assert.deepEqual(attentionCounts([{}], 0), ["1 blocker"]);
+  assert.deepEqual(attentionCounts([{ security: true }], 1), ["⛨ 1", "1 criterion not met"]);
 }
 // ---- a finding's facts, its card's line, the rows' heights, the sequence diagram (the diff and a layer's head)
 import { factRows, findingAnchor, wrapCount, seqLayout, IMPACT, SEVERITY_SCALE, SEQ } from "./views.js";

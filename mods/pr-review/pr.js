@@ -732,7 +732,8 @@ export function preMergeChecks({ title, rules = [], ctx = null }) {
 }
 
 // What stands between the PR and a merge, most severe first: conflicts, failing CI, failed rules, high/critical
-// unresolved findings (sent(f): a fix is out for it, which does not resolve it), fixes not verified on this head,
+// unresolved findings and security findings of any severity (at their own severity; sent(f): a fix is out for it,
+// which does not resolve it), fixes not verified on this head,
 // overlapping open PRs (not the one this PR is stacked on: that is its base, the merge order is given).
 export function mergeBlockers({ checks = [], findings = [], unverified = 0, related = null, sent = () => false }) {
   const out = [];
@@ -740,7 +741,7 @@ export function mergeBlockers({ checks = [], findings = [], unverified = 0, rela
   const ci = checks.filter((c) => c.ci && c.ok === false);
   if (ci.length) out.push({ severity: "high", title: `${ci.length} CI ${ci.length === 1 ? "check is" : "checks are"} failing`, why: ci.map((c) => c.name.replace(/^CI: /, "")).join(", ") });
   for (const c of checks.filter((x) => (x.rule || x.name === "Conventional Commit title") && x.ok === false)) out.push({ severity: "medium", title: `Rule not met: ${c.name}`, why: c.why ?? "", where: c.where });
-  for (const f of findings.filter((x) => x.severity === "high" || x.severity === "critical")) out.push({ severity: "high", title: f.title, why: `${f.file}:${f.line} · unresolved ${f.severity} finding${sent(f) ? " · fix sent, not verified" : ""}`, finding: f.id });
+  for (const f of findings.filter((x) => x.severity === "high" || x.severity === "critical" || x.security)) out.push({ severity: x2(f.severity), title: f.title, why: `${f.file}:${f.line} · unresolved ${f.severity} finding${sent(f) ? " · fix sent, not verified" : ""}`, finding: f.id });
   if (unverified) out.push({ severity: "medium", title: `${unverified} ${unverified === 1 ? "fix is" : "fixes are"} not verified`, why: "Sent to Fix before the last push: verify them on the new head." });
   for (const p of related?.open ?? []) if (p.overlap > 0 && !p.stacked) out.push({ severity: "low", title: `Overlaps with open PR #${p.number}`, why: `Both change ${p.overlap} ${p.overlap === 1 ? "file" : "files"} (${(p.files ?? []).slice(0, 3).join(", ")}): agree on the merge order.`, url: p.url });
   return out;
@@ -988,3 +989,6 @@ export function securityStart({ trigger = null, trusted = false, head = null, ct
   const due = Boolean(trigger?.run) && known && Boolean(head) && ctxHead === head && run?.head !== head && run?.state !== "running";
   return { start: due && trusted && ready, offer: due && !trusted, reasons };
 }
+
+// A blocker's severity for a finding: critical counts as high; a security finding below high keeps its own.
+const x2 = (s) => (s === "critical" ? "high" : s);

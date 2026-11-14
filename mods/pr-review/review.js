@@ -24,7 +24,7 @@ import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf,
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState, codeOf, isStale } from "./pr.js";
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible, pastTop } from "./views.js";
-import { worst, byUrgency, byFocus } from "./views.js";
+import { worst, byUrgency, byFocus, attentionCounts } from "./views.js";
 import { archView, archLegend, visualsCard, visualCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
 import { visualPlan } from "./stack.js";
 import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCALE } from "./views.js";
@@ -2704,10 +2704,10 @@ export const ReviewMode = {
   asked(s, q, k) { const f = s.questionFiles?.[k]; return f ? `${f.split("/").pop()} — ${q}` : q; },
 
   // What stands in the way of a merge, most urgent first: the merge blockers (pr.js mergeBlockers, the Overview's
-  // list) by severity, security first among equals. No layers: those are the list below.
+  // list), security findings first, then by severity. No layers: those are the list below.
   attention() {
-    const of = (b) => (b.finding ? this.findingById(b.finding) : null);
-    return byUrgency(this.blockersNow(), (b) => Boolean(of(b)?.security)).map((b) => {
+    const of = (b) => (b.finding ? this.findingById(b.finding) : null), sec = (b) => Boolean(of(b)?.security), ranked = byUrgency(this.blockersNow(), sec);
+    return [...ranked.filter(sec), ...ranked.filter((b) => !sec(b))].map((b) => {
       const f = of(b);
       return { severity: b.severity, label: b.title, why: b.why ?? "", security: Boolean(f?.security), finding: Boolean(f), sent: Boolean(f) && this.fstatus(f) === "progress", at: f ? `${f.file.split("/").pop()}:${f.line}` : "",
         go: (cx) => { if (f) this.openFinding(f); else if (b.where) this.jumpTo(b.where, cx); else this.page = "overview"; } };
@@ -2723,7 +2723,8 @@ export const ReviewMode = {
         .on_click((_e, cx) => { this.attFold = !folded; cx.notify(); })
         .child(div().flex_none().w(10).text_color(t.ansi3).child(folded ? "▸" : "▾"))
         .child(div().flex_1().font_semibold().text_color(t.ansi3).child("NEEDS YOUR ATTENTION"))
-        .child(div().flex_none().text_color(t.muted).child(worst(list).words)))
+        .child(h_flex().flex_none().gap(4).text_color(t.muted).children(attentionCounts(list, this.taskNow().rows.filter((r) => ["broken", "not_done"].includes(r.ask.state)).length)
+          .flatMap((p, k) => [...(k ? [div().text_color(t.dim).child("·")] : []), div().when(p.startsWith("⛨"), (e) => e.text_color(t.ansi1)).child(p)]))))
       .when(!folded, (e) => e.children(list.slice(0, SHOWN).map((a, k) => h_flex().id(`rv-att-${k}`).tooltip(a.why || "Go to this item").h(26).px(4).gap(8).items_center().rounded(5).cursor_pointer().hover((s) => s.bg(t.hover))
         .on_click((_e, cx) => { a.go(cx); cx.notify(); })
         .child(badge(t, a.severity, t[SEV[a.severity]] ?? t.ansi1))

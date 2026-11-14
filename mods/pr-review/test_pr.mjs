@@ -350,6 +350,9 @@ console.log("ok");
     related: { open: [{ number: 9, overlap: 2, files: ["a", "b"] }, { number: 10, overlap: 0 }] } });
   assert.deepEqual(bl.map((x) => x.title), ["Code conflicts need to be resolved", "1 CI check is failing", "Rule not met: Conventional Commit title", "Rule not met: No secrets", "SQL injection", "2 fixes are not verified", "Overlaps with open PR #9"]);
   assert.equal(bl[4].why, "a:1 · unresolved high finding · fix sent, not verified");
+  // A security finding blocks at any severity, at its own.
+  assert.deepEqual(mergeBlockers({ findings: [{ id: "s", title: "Open route", severity: "medium", security: true, file: "a", line: 2 }, { id: "m", title: "Edge", severity: "medium", file: "a", line: 3 }] })
+    .map((b) => [b.title, b.severity]), [["Open route", "medium"]]);
 
   // Triage: type from the prefix, effort from the analysis else the size, P1 for overlap or high risk.
   const tr = triageOf({ pr: { title: "feat(x): y" }, analysis: { effort: { score: 3 }, mergeRisk: { level: "high", why: "auth" } } });
