@@ -947,3 +947,16 @@ export function withSecurity(ai, security = null, ctx = null, head = null) {
   return { ...ai, own, arch, access: security.access ?? [], threats: security.threats ?? [], securityTrigger: trigger,
     securityFrom: { source: "security", head: security.head ?? null, at: security.at ?? null, older: Boolean(why), why } };
 }
+
+// Whether the security review starts by itself after the analysis (review.js securityNow): related.py's trigger says
+// the diff gives a reason, the context is of this head, and no security run of this head exists in any state (a
+// failed one counts: once per head). Only for a trusted PR (review.js trustedPr): the reviewer is an agent that reads
+// the PR's code and text, and someone else's PR may carry instructions to it. Someone else's PR with a reason gets it
+// offered instead: the reasons and a button, nothing runs. known: the findings file of this PR is loaded (else its
+// runs are not known yet). ready: the analysis is there and done, and the head is a PR checkout. -> {start, offer,
+// reasons: the trigger's texts}.
+export function securityStart({ trigger = null, trusted = false, head = null, ctxHead = null, run = null, known = false, ready = false } = {}) {
+  const reasons = (trigger?.reasons ?? []).map((x) => String(x?.text ?? "")).filter(Boolean);
+  const due = Boolean(trigger?.run) && known && Boolean(head) && ctxHead === head && run?.head !== head && run?.state !== "running";
+  return { start: due && trusted && ready, offer: due && !trusted, reasons };
+}

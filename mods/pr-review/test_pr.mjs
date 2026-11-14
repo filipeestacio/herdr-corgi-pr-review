@@ -621,3 +621,21 @@ console.log("ok");
   assert.deepEqual([m.reachable_from, m.reachability, m.effort], [["acc1"], "public", "moderate"]);
   console.log("ok security view");
 }
+
+// The security review starts by itself only on a trusted PR; on someone else's it is offered with the reasons.
+{
+  const { securityStart } = await import("./pr.js");
+  const trigger = { run: true, reasons: [{ text: "template.yaml changes IAM policies or permissions" }, { text: "library/handler.py touches auth or token code" }] };
+  const base = { trigger, head: "h2", ctxHead: "h2", run: null, known: true, ready: true };
+  assert.deepEqual(securityStart({ ...base, trusted: true }), { start: true, offer: false, reasons: trigger.reasons.map((x) => x.text) });
+  assert.deepEqual(securityStart({ ...base, trusted: false }), { start: false, offer: true, reasons: trigger.reasons.map((x) => x.text) }, "someone else's PR: offered, never started");
+  assert.equal(securityStart({ ...base, trusted: false, ready: false }).offer, true, "offered before the analysis is there");
+  assert.equal(securityStart({ ...base, trusted: true, ready: false }).start, false, "after the analysis");
+  for (const run of [{ head: "h2", state: "failed" }, { head: "h2", state: "done" }, { state: "running" }])
+    assert.deepEqual([securityStart({ ...base, trusted: true, run }).start, securityStart({ ...base, run }).offer], [false, false], "once per head");
+  assert.equal(securityStart({ ...base, trusted: true, run: { head: "h1", state: "done" } }).start, true, "a new head starts again");
+  assert.deepEqual([securityStart({ ...base, trusted: true, ctxHead: "h1" }).start, securityStart({ ...base, trusted: true, known: false }).start], [false, false]);
+  assert.deepEqual(securityStart({ ...base, trusted: true, trigger: { run: false, reasons: [], why_not: "Only documentation changed." } }), { start: false, offer: false, reasons: [] });
+  assert.deepEqual(securityStart(), { start: false, offer: false, reasons: [] });
+  console.log("ok security start");
+}

@@ -20,7 +20,7 @@ import { findingSteps, funnel, funnelLine, ownerOf, quickFirst, hasEffort } from
 import { overviewMd, findingMd, findingsMd, layerMd, architectureMd, securityMd, verifyContextMd } from "./markdown.js"; // Copy this page as Markdown
 import { highlightJob, highlightStep, highlightLines, langOf, colors, renderLine, refAt } from "./syntax.js";
 import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js";
-import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf, codeModel, priceOf, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch, withSecurity } from "./pr.js";
+import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf, codeModel, priceOf, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch, withSecurity, securityStart } from "./pr.js";
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState, codeOf, isStale } from "./pr.js";
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible, pastTop } from "./views.js";
@@ -153,7 +153,7 @@ export function renderReviews() {
     .children(reviewersNow().map(([k, [label, c]]) => {
       const r = runs[k], n = r?.count ?? 0, done = r?.state === "done";
       const line = TH.runLine(r, n ? 0 : total, { running: r?.started ? clock(Date.now() - Date.parse(r.started)) : "", took: r?.ms ? clock(r.ms) : null, ago: r?.at ? ago(r.at) : null })
-        + (k === "codex" ? (done ? " · Codex does not report its price" : "") : !r?.state ? ` · capped at $${cap}` : "");
+        + (k === "codex" ? (done ? " · Codex does not report its price" : "") : !r?.state ? ` · capped at $${cap}` : "") + (k === "security" && mine && meta.securityOffer ? `. ${meta.securityOffer}` : "");
       return row(k, label, c, line, r?.state === "failed", r?.state === "running" ? div().flex_none().child(SPIN[0]).frames(SPIN, 90)
         : pill(`rv-rrun-${k}`, t, r?.state ? "Run again" : "Run", () => { run(`pr-review.reviewer:${k}`); closeOverlay(props().overlay); }).flex_none()
           .tooltip(k === "codex" ? "Run the codex CLI read-only on the PR head, with its own login; its price is not reported" : `One read-only review of the PR head with ${modelLabel(model())}, capped at $${cap}`));
@@ -868,7 +868,7 @@ export const ReviewMode = {
       shown: a ? { model: a.model, model_id: a.model_id, cost: a.cost, exact: a.exact, mergeRisk: a.mergeRisk, effort: a.effort } : null,
       checks: this.prSel ? this.checksNow().reduce((n, c) => ({ ok: n.ok + (c.ok === true), fail: n.fail + (c.ok === false) }), { ok: 0, fail: 0 }) : null,
       // For the bar's "Dry run" chip and the "Run review" popup (findings: all, and the analysis' own).
-      dry: Boolean(this.cfg?.dryRun), findings: this.prSel ? { total: this.findings().length, analysis: this.findings().filter((f) => f.sources.some((y) => y.reviewer === "analysis")).length } : null });
+      dry: Boolean(this.cfg?.dryRun), securityOffer: this.secOfferText(), findings: this.prSel ? { total: this.findings().length, analysis: this.findings().filter((f) => f.sources.some((y) => y.reviewer === "analysis")).length } : null });
   },
 
   // The AI steps in risk order or in reading order (the toggle); without an analysis one step with every hunk.
@@ -958,15 +958,21 @@ export const ReviewMode = {
   },
 
   // The security run's view on the analysis (pr.js withSecurity) once the findings file or the context changed, and
-  // the security review started by itself: once per head, after the analysis, when related.py's security_trigger
-  // says the diff gives a reason. A run of this head in any state (also a failed one) means it already started.
+  // the security review started by itself (pr.js securityStart): once per head, after the analysis, when related.py's
+  // security_trigger gives a reason, and only on a trusted PR. On someone else's PR it is offered (this.secStart.offer:
+  // the reasons and a button on the Security page and in the Reviews popup), never started.
   securityNow(cx) {
+    const w = this.worktree, head = w?.head ?? this.head, mine = this.find.loaded === this.prSel?.url; // the findings file of this PR, not the one before
+    this.secStart = securityStart({ trigger: this.ctx?.security_trigger, trusted: this.trustedPr(), head, ctxHead: this.ctx?.head, run: this.find.runs.security, known: mine,
+      ready: Boolean(this.ai) && !this.exMode && !this.aiBusy && Boolean(w) && !w.local });
     if (this.exMode || !this.ai) return;
-    const w = this.worktree, head = w?.head ?? this.head, t = this.ctx?.security_trigger, r = this.find.runs.security;
-    const mine = this.find.loaded === this.prSel?.url; // the findings file of this PR, not the one before
     this.ai = withSecurity(this.ai, mine ? this.find.security : null, this.ctx, head);
-    if (!t?.run || this.aiBusy || !w || w.local || this.ctx.head !== head || !mine || r?.head === head || r?.state === "running") return;
-    this.runReviewer("security", cx, (t.reasons ?? []).slice(0, 3).map((x) => x.text).join("; "));
+    if (this.secStart.start) this.runReviewer("security", cx, this.secStart.reasons.slice(0, 3).join("; "));
+  },
+  // Why the security review would run, for someone else's PR where it does not start by itself; null otherwise.
+  secOfferText() {
+    const o = this.secStart?.offer && this.find.runs.security?.state !== "running" ? this.secStart : null;
+    return o ? `The diff gives reasons for a security review: ${o.reasons.slice(0, 3).join("; ")}${o.reasons.length > 3 ? `, and ${o.reasons.length - 3} more` : ""}. It does not start by itself on someone else's PR, because the reviewer reads the PR's code and text.` : null;
   },
 
   runReviewer(kind, cx, auto = null) { // auto: why it started by itself (securityNow)
@@ -3656,7 +3662,10 @@ export const ReviewMode = {
       .on_size_change((_s, cx) => this.loadVisibility(cx)) // once the page is laid out: is the repo public (for "Add as comment")
       .child(h_flex().gap(10).items_center().flex_wrap().child(div().flex_1().text_size(20).font_semibold().child("Security"))
         .child(chip(t, `⛨ Security · ${open.length}`, open.length ? t.ansi1 : t.muted, true, "rv-bl-secn", "Unresolved security findings, from every source"))
-        .when(!empty, (e) => e.child(pill("rv-bl-run", t, sr?.state === "running" ? "Security review running…" : sr?.state ? "Run security review again" : "Run security review", (_e, cx) => this.runReviewer("security", cx)).tooltip("Run the security reviewer on the PR head, read-only: one model call; its findings and what it checked show here"))));
+        .when(!empty, (e) => e.child(pill("rv-bl-run", t, sr?.state === "running" ? "Security review running…" : sr?.state ? "Run security review again" : "Run security review", (_e, cx) => this.runReviewer("security", cx)).tooltip("Run the security reviewer on the PR head, read-only: one model call; its findings and what it checked show here"))))
+      // Someone else's PR with reasons (pr.js securityStart offer): why the Run button is there, with its cap.
+      .when(!empty && Boolean(this.secOfferText()), (e) => e.child(div().id("rv-sec-offer").text_size(13).whitespace_normal().line_height(1.5).text_color(t.ansi3)
+        .child(`${this.secOfferText()} Run security review: capped at $${REVIEW_CAP[tierOf(model())]}.`)));
     if (empty) return [["head", head], ["empty", this.secEmpty(t)]];
     return [["head", head], ...(a ? [["map", this.secMap(t, a, ctx)]] : []), ["findings", this.secIntro(t, sec, open)], ...order.map(({ f }) => [`f:${f.id}`, this.secFinding(t, f, ctx)]),
       ["surface", this.secSurface(t, title, ctx)], ["scope", this.secScope(t, title)], ...(surface.grants.length ? [["access", this.secAccess(t, title, surface.grants)]] : [])];
@@ -3774,9 +3783,10 @@ export const ReviewMode = {
   },
   // No security data at all: why, and the run that makes it, with its price (the last run's, else the model's name).
   secEmpty(t) {
-    const c = this.find.runs.security?.cost, price = c > 0 ? `about $${Number(c).toFixed(2)}` : `one ${modelLabel(model())} call`;
+    const c = this.find.runs.security?.cost, price = c > 0 ? `about $${Number(c).toFixed(2)}` : `capped at $${REVIEW_CAP[tierOf(model())]}`, offer = this.secOfferText();
     return v_flex().id("rv-sec-empty").gap(10).p(16).rounded(10).border_1().border_color(t.border).bg(t.surface).max_w(760)
       .child(div().text_size(13.5).whitespace_normal().line_height(1.5).child("Nothing here yet: the security review has not run on this PR, and it does not start by itself for every PR."))
+      .when(Boolean(offer), (e) => e.child(div().id("rv-sec-offer").text_size(13).whitespace_normal().line_height(1.5).text_color(t.ansi3).child(offer ?? "")))
       .child(h_flex().child(pill("rv-sec-empty-run", t, `Run security review (${price})`, (_e, cx) => this.runReviewer("security", cx), false, t.foreground)
         .tooltip(`One ${modelLabel(model())} call reads the PR head, read-only: ways in, trust zones, rights, and security findings with what it checked`)));
   },
