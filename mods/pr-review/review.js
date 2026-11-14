@@ -5252,7 +5252,7 @@ export const ReviewMode = {
       : layer && !layer.pseudo ? [`The layer "${plain(layer.title)}" is`, layerMd(layer, { ...base, n: this.cur + 1, files: this.filesOf(layer), findings: this.layerFindings(layer), statusOf })]
       : this.tab === "steps" && this.page === "arch" ? ["The architecture is", architectureMd({ ...base, ai, findings, statusOf })]
       : this.tab === "steps" && this.page === "blast" ? ["The Security page is", securityMd({ ...base, ai, findings, statusOf, runs: this.find.runs })]
-      : this.tab === "steps" && this.page === "res" ? ["The Resilience page is", resilienceMd({ ...base, res: this.resNow(), names: new Map((ai?.arch?.nodes ?? []).map((n) => [n.id, n.label ?? n.id])) })]
+      : this.tab === "steps" && this.page === "res" ? ["The Resilience page is", resilienceMd({ ...base, res: this.resNow(), arch: ai?.arch ?? null, names: new Map((ai?.arch?.nodes ?? []).map((n) => [n.id, n.label ?? n.id])) })]
       : ["The Overview is", overviewMd({ ...base, ai, findings, statusOf, checks: this.checksNow(), related: this.ctx })];
     copyText(text);
     this.note = `${what} on the clipboard as Markdown (${text.trim().split("\n").length} lines), nothing was posted.`;
