@@ -313,12 +313,14 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
   paths.forEach((p, k) => { p.num = k + 1; p.mark = circled(k + 1); });
   const srcCol = (p) => col.get(p.from[0]);
   // The text on a line: up to LABEL.LINES lines next to the number; a marked path keeps a row for its mark above it.
+  // opts.labelPx: the text's size (default 10.5 px); the Resilience map draws it at 13 px, the base text (wave R2 V5).
+  const px = opts.labelPx ?? 10.5, LB = { ...LABEL, px, CHW: (LABEL.CHW * px) / 10.5, LH: Math.round((LABEL.LH * px) / 10.5) };
   for (const p of paths) {
     const mark = Boolean(opts.marked?.(p.edges));
     if (!opts.labels || (p.kind !== "next" && p.kind !== "long") || !(p.label || mark)) continue;
-    const all = labelLines(p.label, LABEL.CH), cut = all.length > LABEL.LINES;
-    const lines = cut ? [...all.slice(0, LABEL.LINES - 1), `${all[LABEL.LINES - 1].slice(0, LABEL.CH - 1)}…`] : all;
-    p.text = { lines, cut, mark, w: Math.round(Math.max(mark ? LABEL.CH : 0, ...lines.map((l) => l.length)) * LABEL.CHW + 8), h: lines.length * LABEL.LH + (mark ? LABEL.MARK : 0) + 4 };
+    const all = labelLines(p.label, LB.CH), cut = all.length > LB.LINES;
+    const lines = cut ? [...all.slice(0, LB.LINES - 1), `${all[LB.LINES - 1].slice(0, LB.CH - 1)}…`] : all;
+    p.text = { lines, cut, mark, w: Math.round(Math.max(mark ? LB.CH : 0, ...lines.map((l) => l.length)) * LB.CHW + 8), h: lines.length * LB.LH + (mark ? LB.MARK : 0) + 4 };
   }
 
   // 4. Ports per card side: incoming on the left (a bus's target end, a fan branch), outgoing on the right (a bus
@@ -507,7 +509,7 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
     .sort((a, b) => gIds.indexOf(a.id) - gIds.indexOf(b.id));
   const width = ncol ? colX[ncol - 1] + cw[ncol - 1] + gw[ncol - 1] : 0;
   const height = bottom + (longP.length ? 14 + longP.length * LANE : 0);
-  return { groups: outGroups, nodes, paths, trunks, hops, width, height };
+  return { groups: outGroups, nodes, paths, trunks, hops, width, height, label: LB };
 }
 
 // Where the unresolved findings sit on the picture. One that breaks the flow says where (`breaks`: {node}, or {from,

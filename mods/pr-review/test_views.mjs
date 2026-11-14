@@ -739,3 +739,28 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   const rows = crossingsOf({ arch: { ...arch, edges: [{ from: "m", to: "c", crosses: true }] } });
   assert.deepEqual(rows.map((r) => r.from.trust), ["public"], "a call from the library starts in its most exposed zone");
 }
+
+// ---- wave R2: words for identifiers, the verdict, before merge / watch, doubled ways, readable dimming, picture by kind
+{
+  const { resWord, resToolText, resVerdict, resWatch, resTwice, readableFade, resPicture } = await import("./views.js");
+  assert.deepEqual(["poison_message", "no_dlq", "cannot_happen", "platform_only", "brand_new"].map(resWord), ["a message that always fails", "no dead-letter queue", "cannot happen here", "the platform's own metrics only", "brand new"]);
+  assert.ok(resToolText("Runtime behaviour: nothing was executed, because Bash was denied") && !resToolText("Deployed SQS defaults (visibility timeout, retention)"));
+  const paths = [{ blocker: { reason: "load grows" } }, { blocker: { reason: "mails repeat" } }, { blocker: { reason: "load grows" } }, {}];
+  assert.equal(resVerdict(paths), "3 of 4 paths block the merge: load grows (2 paths) and mails repeat.");
+  assert.equal(resVerdict([{}]), null);
+  const arch = { nodes: [{ id: "queue", label: "LoanEvents (SQS)", at: "template.yaml:11" }, { id: "consumer", at: "library/consumer.py:11" }, { id: "reminders", at: "library/reminders.py:16" }, { id: "mailer", label: "Mailer (mailer.py)" }],
+    edges: [{ from: "queue", to: "consumer" }, { from: "reminders", to: "mailer" }, { from: "consumer", to: "mailer" }] };
+  const res = { blind_spots: [{ failure: "Mail transport failure is not visible", at: "library/mailer.py:19", signal: "none", alarm: "none" }, { failure: "Queue age is not monitored", at: "template.yaml:11", signal: "platform_only", alarm: "none" }],
+    deps: [{ edge: "e0", at: "template.yaml:32", mode: "async" }, { at: "template.yaml:40", mode: "async" }, { at: "library/handler.py:21", mode: "in_process" }] };
+  const w = resWatch(res, arch);
+  assert.deepEqual(w.before.map((x) => x.at), ["library/mailer.py:19"], "no signal at all: before the merge");
+  assert.deepEqual(w.watch.map((x) => x.text), ["Queue age is not monitored; it shows in the platform's own metrics only, no alarm"], "the same queue once");
+  assert.equal(resWatch({ deps: [{ at: "template.yaml:32", mode: "async" }] }, arch).watch[0].text, "The age of the oldest message in LoanEvents (SQS)");
+  const effects = [{ kind: "mail", node: "reminders", at: "library/reminders.py:21" }, { kind: "mail", node: "consumer", at: "library/consumer.py:21" }, { kind: "publish", node: "events" }];
+  assert.deepEqual([...resTwice({ failing: ["duplicate_effect"], steps: ["library/reminders.py:21", "queue"] }, { effects }, arch)].sort(), ["consumer", "mailer", "reminders"], "both senders and the mailer they share");
+  assert.equal(resTwice({ failing: ["lost_effect"], steps: ["library/reminders.py:21"] }, { effects }, arch).size, 0);
+  assert.equal(readableFade("#eeeeef", "#17191d"), 0.5, "dark: 2.1:1 at 25 %, 4.5:1 from 50 %");
+  assert.ok(readableFade("#1f2328", "#ffffff") >= 0.6 && readableFade("#eeeeef", "#17191d", 0.55) === 0.55 && readableFade("hsl(0,0%,90%)", "#000") === 0.6);
+  assert.equal(resPicture({ kind: "timeout", ladder: [{}] }), null, "a timeout without its budget shows no ladder of another path");
+  assert.equal(resPicture({ kind: "silent", ladder: [{}] }), "ladder", "a kind without a picture of its own takes what there is");
+}
