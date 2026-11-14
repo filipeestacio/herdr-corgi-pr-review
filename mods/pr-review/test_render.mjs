@@ -123,6 +123,9 @@ for (const n of [0, 3, 310]) {
     v.ai = { ...v.ai, suspects: [sug(2, "medium", "Unrelated change"), sug(4, "low", "a nit")] };
     const [f] = v.findings();
     assert.deepEqual([v.findings().length, f.id, f.ids, f.security, v.sourcesOf(f)], [1, "a1", ["s1", "a1", f.ids[2]], true, "Security review: high · Analysis: high · AI suggestion: medium"]);
+    // Its card in the diff carries what the other sources say in their own words (F4).
+    assert.deepEqual(v.findRows(f).map(([l]) => l).filter((l) => ["Analysis", "Security review", "AI suggestion"].includes(l)).length, f.sources.filter((y) => y.title !== f.title || y.detail !== f.detail).length);
+    assert.ok(v.findRows(f).some(([l, x]) => l === "AI suggestion" && x.startsWith("(medium) Unrelated change")));
     assert.deepEqual(v.openSugs().map((s) => s.reason), ["a nit"]);
     assert.equal(v.fstatus(f), "progress");
     assert.deepEqual([v.counts().unresolved, v.counts().sent, v.counts().security, v.openFindings().length], [1, 1, 1, 1]);

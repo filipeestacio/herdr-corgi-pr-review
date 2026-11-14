@@ -916,7 +916,12 @@ export const ReviewMode = {
   findOpen(f) { return this.fopen?.get(f.id) ?? Boolean(f.security && ["critical", "high"].includes(f.severity)); },
   // An open card's rows under its title: what the finding claims (views.js factRows), its text and its suggestion.
   // The texts are Markdown (inline code, paragraphs, a code block in a suggestion) and are drawn as such.
-  findRows(f) { return [...factRows(f), f.detail && ["Detail", f.detail], f.suggestion && ["Suggestion", f.suggestion]].filter(Boolean); },
+  // A card's rows: the facts, its text and suggestion, and what each other source says in its own words when that
+  // differs (on PR #2 the CodeUri note inside the token finding at template.yaml:14).
+  findRows(f) {
+    const others = (f.sources ?? []).filter((y) => y.title !== f.title || y.detail !== f.detail).map((y) => [REVIEWERS[y.reviewer]?.[0] ?? y.reviewer, `(${y.severity}) ${plain(y.title)}${y.detail ? `. ${y.detail}` : ""}`]);
+    return [...factRows(f), f.detail && ["Detail", f.detail], f.suggestion && ["Suggestion", f.suggestion], ...others].filter(Boolean);
+  },
   // The index (in steps()) of the layer an analysis finding belongs to, or -1.
   layerOf(f) { return f.step ? this.steps().findIndex((s) => s.findings?.some((x) => f.ids.includes(x.id))) : -1; },
   // A layer's findings: the ones the analysis filed in it, and every other finding in one of its files (a reviewer's).
