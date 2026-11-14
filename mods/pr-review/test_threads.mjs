@@ -107,6 +107,8 @@ assert.equal(args[args.indexOf("--cwd") + 1], "/w", "in its own worktree");
 assert.deepEqual(args.slice(args.indexOf("--") + 1, args.indexOf("claude") + 1), ["env", "CLAUDE_CONFIG_DIR=/c", "claude"], "on the PR's context");
 assert.deepEqual(args.slice(args.indexOf("--permission-mode")), ["--permission-mode", "auto", "Fix it"], "in auto mode");
 assert.ok(TH.subAgentArgs({ parent: null, cwd: "/w", name: "n", task: "x", job: "j" }).includes("--no-parent"));
+assert.deepEqual(args.slice(args.indexOf("--strict-mcp-config"), args.indexOf("--strict-mcp-config") + 3), ["--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}'], "no MCP server of the context");
+assert.ok(args.indexOf("--strict-mcp-config") < args.indexOf("--disallowedTools"), "before the deny list, which takes any number of values");
 const untrusted = TH.subAgentArgs({ parent: null, cwd: "/w", name: "n", task: "x", job: "j" });
 assert.deepEqual(untrusted.slice(untrusted.indexOf("--permission-mode")), ["--permission-mode", "manual", "--setting-sources", "user", "x"], "an untrusted PR: manual, said outright, without the checkout's settings");
 assert.equal(TH.applyPlan({ status: " M src/a.ts\n?? x", head: "abc", branch: "fix/7-c1" }).ok, false, "a dirty checkout: refused");
@@ -145,7 +147,7 @@ assert.match(off.reason, /on feat\/other.*abcdef0.*git cherry-pick abcdef0\.\.fi
   assert.equal(TH.checkText(null, true), "not verified");
 }
 // A fix agent cannot push: deny rules before the permission mode, the task last.
-assert.deepEqual(args.slice(args.indexOf("claude") + 1, args.indexOf("--permission-mode")), ["--model", "opus", "--disallowedTools", ...TH.NO_PUSH]);
+assert.deepEqual(args.slice(args.indexOf("claude") + 1, args.indexOf("--permission-mode")), ["--model", "opus", ...TH.NO_MCP, "--disallowedTools", ...TH.NO_PUSH]);
 assert.ok(TH.NO_PUSH.includes("Bash(hc send *)"), "no hand-over to another session by itself");
 assert.ok(TH.NO_PUSH.includes("Bash(git push *)") && untrusted.includes("Bash(git push *)") && untrusted.at(-1) === "x");
 // The target choice: the sub-agent's text names its worktree, the main agent's doesn't; the preview sends that text.
