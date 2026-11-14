@@ -516,3 +516,14 @@ assert.equal(chipAt(850, 1000, [80, 100]), 0, "the one before it, a gap to the l
 assert.equal(chipAt(897, 1000, [80, 100]), -1, "the gap between them");
 assert.equal(chipAt(700, 1000, [80, 100]), -1);
 assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
+
+// ---- the zone a card is really reachable from
+{
+  const { effectiveZones } = await import("./views.js");
+  const arch = { zones: [{ id: "z1", trust: "public" }, { id: "z2", name: "Front desk", trust: "authenticated" }, { id: "z3", trust: "internal" }], nodes: [{ id: "h", zone: "z2" }, { id: "g", zone: "z3" }, { id: "p", zone: "z1" }] };
+  const e = effectiveZones(arch, [{ public: true, auth: "bearer token checked in handler.py", auth_kind: "code", node: "h" }, { public: true, auth_kind: "gateway", node: "g" }, { public: true, auth: "none", node: "p" }]);
+  assert.deepEqual([...e.keys()], ["h"], "a check in the card's own code; a gateway check or a public card is no deviation");
+  assert.deepEqual([e.get("h").trust, e.get("h").drawn], ["public", "authenticated"]);
+  assert.equal(effectiveZones(arch, [{ public: true, auth: "none", node: "g" }]).get("g").why, "nothing checks the caller before it");
+  assert.equal(effectiveZones(arch, [{ public: false, auth_kind: "code", node: "h" }]).size, 0); assert.equal(effectiveZones(null, null).size, 0);
+}

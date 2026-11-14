@@ -35,7 +35,7 @@ import { pairRows, pairSide, HALF_GUTTER, diffModeOf, oneSided, stackOf, chipAt,
 import { plainText } from "./pr.js";
 import { hasSources, archLayout, archBands } from "./arch.js";
 import { archMarks, zoneArch, transitionText } from "./arch.js";
-import { transitionMarks } from "./views.js";
+import { transitionMarks, effectiveZones } from "./views.js";
 import { trustLegend, hasTrust } from "./stack.js";
 import { scopeTable, scopeConflicts, runSummary, AREA_NAME, areaFindings, surfaceOf, exposureNow, EXPOSURE, reachLevel, secOrder, extraWays, zoneRights, blastLine } from "./views.js";
 import * as TH from "./threads.js";
@@ -3002,7 +3002,8 @@ export const ReviewMode = {
     if (!a) return out([["head", this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams")], ["none", div().text_size(13.5).text_color(t.muted).child(this.ai ? "This analysis has no architecture picture (older analysis, or the PR touches no architecture). Re-analyze for one." : "No analysis yet: Analyze in the left column.")],
       ...(this.ai?.visuals?.length > 0 ? [["views", div().max_w(760).child(more())]] : [])]);
     const groups = new Set(a.nodes.map((n) => n.group)).size, L = this.archL(), fit = this.archFitOn(), marks = this.archMarksNow();
-    const opts = { ...this.archOpts("arch"), marks, zoom: settings().zoom || 1 }, count = (...st) => L.nodes.filter((n) => st.includes(n.status)).length; // of the cards shown (Before hides the added ones)
+    // The frames are the systems; a card's trust zone is a dot on it, ringed when it is really reachable from further out.
+    const opts = { ...this.archOpts("arch"), marks, zoom: settings().zoom || 1, zones: a.zones ?? [], effective: effectiveZones(a, this.ai?.access) }, count = (...st) => L.nodes.filter((n) => st.includes(n.status)).length; // of the cards shown (Before hides the added ones)
     return out([
       ["head", h_flex().gap(12).items_center().flex_wrap().child(div().text_size(20).font_semibold().child("Architecture impact")).child(this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams"))
         .when(this.drawerState() !== "open", (e) => e.child(pill("rv-ask-open", t, "Ask", (_e, cx) => this.setDrawer("open", cx, null)).tooltip("Ask one model question about the architecture picture")))],
@@ -3010,7 +3011,7 @@ export const ReviewMode = {
         .child(div().flex_none().text_size(13).text_color(t.muted).child(`${groups} ${groups === 1 ? "system" : "systems"} | ${(a.edges ?? []).length} edges`))
         .child(div().flex_none().child(legend(t, { unchanged: count("unchanged"), changed: count("changed"), added: count("new", "added"), removed: count("removed") })))
         .when(hasSources(a) || (this.ai.visuals ?? []).some(hasSources), (e) => e.child(div().flex_none().child(sourceLegend(t))))
-        .when(hasTrust(L), (e) => e.child(div().flex_none().child(trustLegend(L, t))))
+        .when(hasTrust(L), (e) => e.child(div().flex_none().child(trustLegend(L, t, a.zones))))
         .child(h_flex().flex_none().gap(2).p(2).rounded(7).border_1().border_color(t.border).child(seg("diff", "Structural diff")).child(seg("before", "Before")).child(seg("after", "After")))
         .child(div().id("rv-av-fit").flex_none().px(10).h(28).flex().items_center().rounded(7).border_1().border_color(fit ? t.accent : t.border).cursor_pointer().text_size(12.5)
           .text_color(fit ? t.foreground : t.muted).tooltip("Narrow cards with shorter texts, so more of the picture fits a row").on_click((_e, cx) => { this.archFit = !fit; this.hsOf("rv-arch-canvas").x = 0; cx.notify(); }).child("Fit"))
@@ -3205,7 +3206,7 @@ export const ReviewMode = {
     const a = this.ai?.arch;
     if (!a) return null;
     const m = this.archMarksNow(), fit = this.archFitOn(), key = `${fit}|${this.archMode}|${[...m.nodes.keys()]}|${[...m.edges.keys()]}|${JSON.stringify(a)}`;
-    if (this.fitMemo?.key !== key) this.fitMemo = { key, L: archLayout(zoneArch(a), this.archMode, (n) => (m.nodes.has(n.id) ? 1 : 0), fit, { labels: true, marked: (es) => es.some((i) => m.edges.has(i)) }) };
+    if (this.fitMemo?.key !== key) this.fitMemo = { key, L: archLayout(a, this.archMode, (n) => (m.nodes.has(n.id) ? 1 : 0), fit, { labels: true, marked: (es) => es.some((i) => m.edges.has(i)) }) };
     return this.fitMemo.L;
   },
   // ---- sideways scrollers inside the scrolling page (the architecture canvas, the flow, state-machine and blast

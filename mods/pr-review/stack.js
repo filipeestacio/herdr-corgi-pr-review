@@ -125,9 +125,11 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
     .border_color(g.trust ? trustColor(t, g.trust) : t.border).when(Boolean(g.trust), (e) => e.bg(trustColor(t, g.trust) + "0f")).child(h_flex().px(PAD_IN).h(26).items_center().gap(6).text_size(11.5)
       .child(div().flex_1().min_w(0).truncate().font_semibold().text_color(t.foreground).child(g.label ?? ""))
       .child(div().flex_none().text_color(g.trust ? trustColor(t, g.trust) : t.muted).child(g.kind ?? "")))]));
-  // A call over a trust boundary: two bars across its line, before the arrow.
+  // A call over a trust boundary: two bars across its line, before the arrow; the tooltip names both zones (opts.zones).
+  const zoneById = new Map((opts.zones ?? []).map((z) => [z.id, z])), zoneOfN = (nid) => zoneById.get(L.nodes.find((x) => x.id === nid)?.zone);
+  const zoneName = (z) => (z ? `${z.name ?? z.id} (${z.trust})` : "an unnamed zone");
   const crossings = L.paths.flatMap((p, i) => (p.crosses ? [dim(div().id(`${id}-x${i}`).absolute().left(p.arrow.x - 24).top(p.arrow.y - 9).w(12).h(18).flex().items_center().justify_center()
-    .text_size(13).font_semibold().text_color(t.ansi3).tooltip(`Crosses a trust boundary${typeof p.crosses === "string" ? `: ${p.crosses}` : ""}`).child("‖"), dimP(p))] : []));
+    .text_size(13).font_semibold().text_color(t.ansi3).tooltip(zoneById.size ? `Crosses a trust boundary: from ${zoneName(zoneOfN(p.from[0]))} to ${zoneName(zoneOfN(p.to))}` : `Crosses a trust boundary${typeof p.crosses === "string" ? `: ${p.crosses}` : ""}`).child("‖"), dimP(p))] : []));
   const nodes = L.nodes.map((n, i) => {
     const st = sourceStyle(n.source), c = st.tone === "muted" ? t.muted : t[STATUS_COLOR[n.status] ?? "muted"];
     const live = st.tone !== "muted" && n.status && n.status !== "unchanged", lit = hlNodes.has(n.id) || opts.focus === n.id;
@@ -143,6 +145,10 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
       .when(Boolean(opts.onHover), (e) => e.on_hover((on, cx) => opts.onHover(on ? n.id : null, cx)))
       .child(h_flex().gap(6).items_start().text_size(12.5)
         .child(div().id(`${id}-gl${i}`).flex_none().h(17).text_color(t.muted).when(Boolean(n.type), (e) => e.tooltip(`Type: ${n.type}`).accessibility_label(`Type: ${n.type}`)).child(GLYPH[n.type] ?? "◇"))
+        // Its trust zone as a small dot (opts.zones); ringed when it is really reachable from further out (opts.effective).
+        .when(Boolean(zoneById.get(n.zone)), (e) => { const z = zoneById.get(n.zone), eff = opts.effective?.get(n.id);
+          return e.child(div().id(`${id}-z${i}`).flex_none().mt(4).w(9).h(9).rounded_full().bg(trustColor(t, z.trust)).when(Boolean(eff), (x) => x.border_2().border_color(t.ansi1))
+            .tooltip(`Trust zone: ${zoneName(z)}${eff ? `\nReachable as ${eff.trust}: ${eff.why}.` : ""}`).accessibility_label(`Trust zone ${z.trust}`)); })
         .child(div().flex_1().min_w(0).h(n.titleLines * 17).overflow_hidden().whitespace_normal().line_height(1.35).font_semibold().child(n.title))
         .when(n.spots > 0, (e) => e.child(div().id(`${id}-sn${i}`).flex_none().tooltip(`${n.spots} changed ${n.spots === 1 ? "spot" : "spots"} in the code`).text_size(11).text_color(t.muted).child(`</> ${n.spots}`)))
         .when(Boolean(st.chip), (e) => e.child(specTag(t, `${id}-sp${i}`))))
@@ -186,13 +192,16 @@ const cap = (s) => String(s ?? "").replace(/^./, (c) => c.toUpperCase());
 // Trust zones (arch.js zoneArch): a colour per trust level, none of them the severity red.
 const TRUST = { public: "ansi3", authenticated: "ansi4", internal: "ansi6", data: "ansi5" };
 const trustColor = (t, trust) => t[TRUST[trust] ?? "ansi6"];
-// Whether a picture has something about trust to explain: zones as frames, or a call over a boundary.
-export const hasTrust = (L) => Boolean(L) && (L.groups.some((g) => g.trust) || L.paths.some((p) => p.crosses));
-// That explanation, in one row: the trust levels of the frames shown, and the mark of a call over a boundary.
-export function trustLegend(L, t) {
-  const levels = [...new Set(L.groups.map((g) => g.trust).filter(Boolean))];
+// Whether a picture has something about trust to explain: zones as frames or as dots on cards, or a call over a boundary.
+export const hasTrust = (L) => Boolean(L) && (L.groups.some((g) => g.trust) || L.nodes.some((n) => n.zone) || L.paths.some((p) => p.crosses));
+// That explanation, in one row: the trust levels shown (frames: squares; zones only as a dot on cards: dots), and the
+// mark of a call over a boundary. zones: the analysis' zones, for the dots.
+export function trustLegend(L, t, zones = []) {
+  const framed = L.groups.some((g) => g.trust), byId = new Map((zones ?? []).map((z) => [z.id, z.trust]));
+  const levels = [...new Set(framed ? L.groups.map((g) => g.trust).filter(Boolean) : L.nodes.map((n) => byId.get(n.zone)).filter(Boolean))];
+  const swatch = (z) => (framed ? div().w(10).h(10).rounded(3).border_1().border_dashed().border_color(trustColor(t, z)).bg(trustColor(t, z) + "33") : div().w(9).h(9).rounded_full().bg(trustColor(t, z)));
   return h_flex().gap(10).text_size(11.5).text_color(t.muted)
-    .when(levels.length > 0, (e) => e.child("Trust zones:").children(levels.map((z) => h_flex().gap(4).items_center().child(div().w(10).h(10).rounded(3).border_1().border_dashed().border_color(trustColor(t, z)).bg(trustColor(t, z) + "33")).child(z))))
+    .when(levels.length > 0, (e) => e.child("Trust zones:").children(levels.map((z) => h_flex().gap(4).items_center().child(swatch(z)).child(z))))
     .when(L.paths.some((p) => p.crosses), (e) => e.child(h_flex().gap(4).items_center().child(div().font_semibold().text_color(t.ansi3).child("‖")).child("call over a trust boundary")));
 }
 // What a mark's chip says in full: the count by kind, then the titles (at most five).

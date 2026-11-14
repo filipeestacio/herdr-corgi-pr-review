@@ -579,3 +579,17 @@ export function analysisAge({ head = null, exact = true, now = null, age = "" })
   const at = (x) => String(x).slice(0, 7), moved = !exact || Boolean(head && now && head !== now);
   return { stale: moved, text: `Analysis of ${head ? at(head) : exact ? "this diff" : "an older diff"}${age ? `, ${age}` : ""}${moved && now && head ? ` · the PR is at ${at(now)} now` : ""}` };
 }
+
+// ---- the zone a card is really reachable from (derived, not the model's word)
+// A card behind a public way in whose check sits in the card's own code (auth_kind "code") or that nothing checks is
+// reachable from the public side, whatever zone the analysis draws it in. Returns Map(node id -> {trust: "public",
+// drawn: the drawn zone's trust, zone, why}) for the cards where the two differ.
+export function effectiveZones(arch, access) {
+  const zones = new Map((arch?.zones ?? []).map((z) => [z.id, z])), out = new Map();
+  for (const x of access ?? []) {
+    const n = (arch?.nodes ?? []).find((m) => m.id === x?.node), z = zones.get(n?.zone), open = exposureOf(x) === "open";
+    if (!x?.public || !n || !z || z.trust === "public" || !(x.auth_kind === "code" || open) || out.has(n.id)) continue;
+    out.set(n.id, { trust: "public", drawn: z.trust, zone: z, why: open ? "nothing checks the caller before it" : `its only check (${x.auth || "in the code"}) is in its own code, so every request from the internet reaches it` });
+  }
+  return out;
+}
