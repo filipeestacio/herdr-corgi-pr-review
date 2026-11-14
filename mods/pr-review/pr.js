@@ -1458,7 +1458,10 @@ export function withResilience(ai, block, head = null, findings = []) {
   const addParts = [[by("justified"), "justified"], [by("questionable"), "questionable"], [by("unjustified"), "solves nothing here", "solve nothing here"]].filter(([n]) => n)
     .map(([n, one, many]) => `${n} ${n === 1 || !many ? one : many}`);
   const additionsLine = adds.length ? `This PR adds ${plural(adds.length, "part")}: ${addParts.length > 1 ? `${addParts.slice(0, -1).join(", ")} and ${addParts.at(-1)}` : addParts[0]}.` : "";
-  return { ...ai, resilience: { ...block, paths, blockers: blockers.map((p) => p.id), summary, watch, unseen, additionsLine, older: Boolean(block.head && head && block.head !== head),
+  // A run from before the prompt named the edges by id counted them itself, mostly from 1: its e<k> may point one call
+  // off. Not safely correctable, so it is said (edgeNote) instead of guessed.
+  const edgeNote = !block.edge_ids && (deps.some((d) => d.edge) || paths.some((p) => p.steps.some((s) => /^e\d+$/.test(s)))) ? "run predates edge ids: re-run" : null;
+  return { ...ai, resilience: { ...block, paths, blockers: blockers.map((p) => p.id), summary, watch, unseen, additionsLine, edgeNote, older: Boolean(block.head && head && block.head !== head),
     counts: { paths: paths.length, blockers: blockers.length, mitigated: mitigated.length, not_assessed: na,
       checks_clean: checks.filter((c) => c.result === "clean").length, not_checkable: checks.filter((c) => c.result === "not_checkable").length,
       additions: { justified: by("justified"), questionable: by("questionable"), unjustified: by("unjustified") } } } };

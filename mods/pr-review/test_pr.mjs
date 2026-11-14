@@ -976,6 +976,8 @@ console.log("ok");
   const pre = withResilience(mapReview({ steps: [] }, []), { paths: [P("p1", "other", ["reminders.py:13"], "finding", ["lost_effect"], { findings: ["w"] })] }, null,
     [{ id: "w", introduced_here: false }]).resilience;
   assert.deepEqual([pre.paths[0].pre_existing, pre.paths[0].blocker, pre.counts.blockers], [true, null, 0], "a path made only of flaws from before this PR blocks nothing");
+  assert.deepEqual([withResilience(mapReview({ steps: [] }, []), { deps, paths: [p1] }).resilience.edgeNote, withResilience(mapReview({ steps: [] }, []), { deps, paths: [p1], edge_ids: true }).resilience.edgeNote,
+    withResilience(mapReview({ steps: [] }, []), { paths: [P("p", "x", ["a.py:1"], "finding", [])] }).resilience.edgeNote], ["run predates edge ids: re-run", null, null], "an old run's edge ids are said to be unsure, not guessed");
   const unk = withResilience(mapReview({ steps: [] }, []), { deps, paths: [{ ...p1, findings: ["w"] }] }, null, [{ id: "w", introduced_here: null }]).resilience;
   assert.deepEqual([unk.paths[0].pre_existing, unk.paths[0].blocker?.unclear, unk.counts.blockers], ["unknown", true, 1], "base not comparable: the blocker stays, marked unclear");
   const two = withResilience(mapReview({ steps: [] }, []), { deps, paths: [{ ...p1, action: "Add a dead-letter queue." },
