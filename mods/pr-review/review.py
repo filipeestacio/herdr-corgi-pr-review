@@ -740,7 +740,8 @@ def introduced(f, changed, breaks_requirement=False):
     (an old status write that the PR's new rule forbids). Otherwise the model's word, and without one true (a blocker
     stays one)."""
     path, line = str(f.get("file") or "").strip().removeprefix("./"), int(f.get("line") or 0)
-    if breaks_requirement or changed is not None and line and set(range(line, max(line, int(f.get("end") or line)) + 1)) & set(changed.get(path, ())):
+    end = max(line, int(f.get("end") or line))  # the model's end: compared with, never enumerated
+    if breaks_requirement or changed is not None and line and any(line <= n <= end for n in changed.get(path, ())):
         f["introduced_here"] = True
     elif not isinstance(f.get("introduced_here"), bool):
         f["introduced_here"] = True
