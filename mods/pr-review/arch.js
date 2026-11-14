@@ -152,7 +152,7 @@ export function archFocus(L, id) {
 // carries a mark (a finding breaks the flow there) keeps a row for it above its text}. A labelled path has `text`
 // {x, y, w, h, lines: [strings], cut, mark}; one whose text did not fit next to its line has none (the legend lists it).
 export const FIT = { W: 160, TITLE_CH: 19, DESC_CH: 25, DESC_LINES: 2 };
-export const LABEL = { CH: 20, LINES: 3, CHW: 6.2, LH: 13, MARK: 20, LONG: 3 };
+export const LABEL = { CH: 20, LINES: 3, CHW: 6.2, LH: 13, MARK: 40, LONG: 3 }; // MARK: a mark above a call's text, its chip and a line with the finding
 export function archLayout(arch, view = "diff", extra = () => 0, fit = false, opts = {}) {
   const { PAD, HEAD, GAP_Y, GAP_G, LANE, GAP_MIN, BADGE, PORT, STUB, CHIP_H, CHIP_GAP, CH, FAN, ROW } = ARCH;
   const { W, TITLE_CH, DESC_CH } = fit ? FIT : ARCH, DESC_LINES = fit ? FIT.DESC_LINES : 3;
@@ -537,7 +537,7 @@ export function zoneArch(arch) {
 }
 
 // A picture wider than the view, cut into bands stacked top to bottom instead of one long row to scroll sideways:
-// cuts go through a gap no card, badge, chip or text covers, each band as wide as fits the view. Lines
+// cuts go through a gap no card, badge, chip, text or frame covers, each band as wide as fits the view. Lines
 // crossing a cut run on in the next band at the same height. Returns [{x0, x1, h, in, out}], h: how far down that
 // band's frames and lines reach (a band is not as tall as the tallest one); out and in: the lines that cross its right
 // and its left cut, [{y, nums: the paths' numbers, back: the line runs right to left (a long line)}], so both ends of a
@@ -551,6 +551,10 @@ export function archBands(L, viewW) {
   const gaps = [];
   let end = -Infinity;
   for (const [a, b] of boxes) { if (a > end + 8 && end > 0) gaps.push({ lo: Math.round(end + 2), hi: Math.round(Math.min(a, ...L.groups.map((g) => g.x).filter((x) => x > end + 2 && x <= a)) - 2) }); end = Math.max(end, b); }
+  // No cut through a frame: a frame goes whole into the next band (one wider than the view is a band of its own).
+  const inFrame = (x) => L.groups.some((g) => !g.bare && g.x < x && x < g.x + g.w);
+  for (const g of gaps) if (inFrame(g.hi)) g.hi = g.lo;
+  gaps.splice(0, gaps.length, ...gaps.filter((g) => !inFrame(g.lo)));
   const cuts = [];
   let x0 = 0;
   while (L.width - x0 > viewW) {
@@ -768,4 +772,14 @@ export function stateLayout(v, width = SM.W) {
   const right = Math.max(width, ...out.map((n) => n.x + n.w), ...stubs.map((s) => s.chip.x + s.chip.w), ...loops.map((l) => l.x + 17 + l.w),
     ...edges.flatMap((e) => [...e.segments.map((g) => Math.max(g.x1, g.x2)), ...(e.text && e.labelAt && !e.labelAt.left ? [e.labelAt.x + Math.min(e.labelAt.w, e.text.length * 6 + 4)] : [])]));
   return { nodes: out, edges, backs, loops, stubs, width: Math.ceil(right + 2), height: Math.max(0, y - SM.GAP_Y) };
+}
+
+// What a mark on a card or call says next to its chip: the finding itself, its title cut to about five words, and how
+// many more there are ("Front desk token defaults to empty… and 1 more"). top: the most severe finding (a click opens it).
+const RANK = { critical: 0, high: 1, medium: 2, low: 3 };
+export function markLine(m, words = 5) {
+  const top = [...(m?.findings ?? [])].sort((a, b) => (RANK[a.severity] ?? 9) - (RANK[b.severity] ?? 9))[0] ?? null;
+  if (!top) return { text: "", top: null };
+  const w = String(top.title ?? "").replace(/[`*]/g, "").split(/\s+/).filter(Boolean), more = (m.n ?? m.findings.length) - 1;
+  return { text: `${w.slice(0, words).join(" ")}${w.length > words ? "…" : ""}${more > 0 ? ` and ${more} more` : ""}`, top };
 }

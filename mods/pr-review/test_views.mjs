@@ -185,6 +185,10 @@ assert.deepEqual(riskSignal({ analysis: layers, findings: reviewers }), { top: "
 assert.deepEqual(riskSignal({ analysis: layers, findings: reviewers, status: { r1: { s: "fixed" }, a2: { s: "progress" } } }), { top: "high", open: 4, security: true });
 assert.deepEqual(riskSignal({ analysis: layers, findings: reviewers, status: { r1: { s: "dismissed" }, a2: { s: "fixed" } } }), { top: "medium", open: 3, security: false });
 assert.deepEqual(riskSignal({ analysis: { steps: [] }, findings: [] }), { top: null, open: 0, security: false });
+// ⛨ as in the review (pr.js isSecurity): by the finding's effect when it has one, not by who found it.
+assert.equal(riskSignal({ findings: [{ id: "s", reviewer: "security", severity: "high", impact: "edge_case", category: "bug" }] }).security, false, "the security reviewer's bug is no security finding");
+assert.equal(riskSignal({ findings: [{ id: "c", reviewer: "claude", severity: "high", impact: "unauthorized_access", category: "bug" }] }).security, true, "access without permission is, whoever found it");
+assert.equal(riskSignal({ findings: [{ id: "d", reviewer: "claude", severity: "high", impact: "data_loss", category: "data" }] }).security, false, "data loss only with the category security");
 // An analysis cached before layers had findings still loads.
 assert.deepEqual(riskSignal({ analysis: {} }), { top: null, open: 0, security: false });
 
@@ -211,6 +215,48 @@ assert.equal(pendingText([{ file: "a.py" }, { file: "a.py" }, { file: "b.py" }])
   const bs = [{ severity: "medium", title: "rule" }, { severity: "high", title: "bug" }, { severity: "low", title: "overlap" }, { severity: "high", title: "auth", finding: "s1" }, { severity: "high", title: "bug 2" }];
   assert.deepEqual(byUrgency(bs, (b) => b.finding === "s1").map((b) => b.title), ["auth", "bug", "bug 2", "rule", "overlap"]);
   assert.deepEqual(byUrgency(bs).map((b) => b.title), ["bug", "auth", "bug 2", "rule", "overlap"]);
+  // "By focus" follows what the rows show: "Tests · 3 medium" after "SAM template · 1 high ⛨" (it came first by the
+  // hidden field risk), security first among equals, then more findings, then reading order, no findings last.
+  const { byFocus } = await import("./views.js");
+  const L = (title, order, ...fs) => ({ title, order, fs });
+  const ls = [L("events", 1, { severity: "high" }), L("tests", 2, { severity: "medium" }, { severity: "medium" }, { severity: "medium" }), L("docs", 3),
+    L("template", 4, { severity: "high", security: true }), L("handler", 5, { severity: "high" }, { severity: "high" }), L("reminders", 6, { severity: "high" })];
+  assert.deepEqual(byFocus(ls, (l) => l.fs).map((l) => l.title), ["template", "handler", "events", "reminders", "tests", "docs"]);
+  // The attention box's heading counts by decision: security, criteria not met, the other blockers.
+  const { attentionCounts } = await import("./views.js");
+  assert.deepEqual(attentionCounts([{ security: true }, { security: true }, {}, {}, {}], 3), ["⛨ 2", "3 criteria not met", "3 other blockers"]);
+  assert.deepEqual(attentionCounts([{}], 0), ["1 blocker"]);
+  assert.deepEqual(attentionCounts([{ security: true }], 1), ["⛨ 1", "1 criterion not met"]);
+  // A layer's ways in and rights from the access rows at its files: public or opened by the PR; others do not count.
+  const { layerAccess } = await import("./views.js");
+  const acc = [{ resource: "FrontDesk Api", kind: "route", public: true, auth_kind: "code", at: "template.yaml:24" },
+    { resource: "Queue", kind: "queue", principal: "FrontDesk function", actions: ["sqs:SendMessage"], public: false, opened_by_pr: true, at: "template.yaml:20" },
+    { resource: "Old table", kind: "table", principal: "Job", actions: ["read"], public: false, at: "infra/db.yaml:3" }];
+  assert.deepEqual(layerAccess(acc, ["deploy/template.yaml"]), { entries: 1, grants: 1,
+    text: "This layer opens a public route (FrontDesk Api), and grants FrontDesk function sqs:SendMessage on Queue." });
+  assert.equal(layerAccess(acc, ["infra/db.yaml", "src/a.py"]), null, "an old right the PR does not open");
+  assert.equal(layerAccess([], ["a"]), null);
+  // The analysis' head and age at the top of the column, amber once the PR moved on.
+  const { analysisAge } = await import("./views.js");
+  assert.deepEqual(analysisAge({ head: "abcdef123", exact: true, now: "abcdef123", age: "2 h ago" }), { stale: false, text: "Analysis of abcdef1, 2 h ago" });
+  assert.deepEqual(analysisAge({ head: "abcdef123", exact: false, now: "9876543ff", age: "1 d ago" }), { stale: true, text: "Analysis of abcdef1, 1 d ago · the PR is at 9876543 now" });
+  assert.deepEqual(analysisAge({ exact: true, age: "5 min ago" }), { stale: false, text: "Analysis of this diff, 5 min ago" }, "an analysis from before it saved its head");
+  assert.equal(analysisAge({ exact: false, now: "9876543" }).text, "Analysis of an older diff");
+  // The state hints at the top of the Analysis tab: checkout, an analysis waiting for it, reviewer runs.
+  const { stateHints } = await import("./views.js");
+  assert.deepEqual(stateHints({ checkout: { busy: true }, pendingRun: true, runs: { security: { busy: true }, claude: { at: "x" } }, names: { security: "Security review" } }).map((h) => [h.key, h.text, Boolean(h.spin)]),
+    [["checkout", "Checking out the PR head: the analysis starts once it is there…", true], ["run-security", "Security review is running…", true]]);
+  assert.deepEqual(stateHints({ checkout: { error: "no such ref" }, pendingRun: true }).map((h) => [h.text, Boolean(h.error)]), [["Could not check out the PR head: no such ref", true]]);
+  assert.deepEqual(stateHints({ pendingRun: true }).map((h) => h.key), ["wait"]);
+  assert.deepEqual(stateHints({}), []);
+  // A note about an action: an error stays (no ttl), anything else goes after NOTE_TTL.
+  const { noteRule, NOTE_TTL } = await import("./views.js");
+  for (const e of ["Could not verify: no checkout", "Not posted: GitHub takes line comments only on lines of the PR diff.", "Nothing to send: add a comment first",
+    "Select a line first (click its number; shift-click: a range)", "No loan_id on a.py:3", "Line 4 of a.py is not in the shown diff", "Opened it, but Could not save"])
+    assert.deepEqual(noteRule(e), { error: true, ttl: null }, e);
+  for (const ok of ["Posted to GitHub: https://x", "Dismissed \"x\" (Analysis). It stays in the Findings tab under Dismissed", "Dry run: nothing posted, the payload is in ~/x",
+    "No fix to verify yet: no fix agent has reported a commit", "Marked done: it leaves the open reviews"])
+    assert.deepEqual(noteRule(ok), { error: false, ttl: NOTE_TTL }, ok);
 }
 // ---- a finding's facts, its card's line, the rows' heights, the sequence diagram (the diff and a layer's head)
 import { factRows, findingAnchor, wrapCount, seqLayout, IMPACT, SEVERITY_SCALE, SEQ } from "./views.js";
@@ -417,4 +463,122 @@ assert.equal(oneSided(rowsOf("-+")), false, "a line changed");
     assert.equal(solidOver("#000", "#fff"), "#ffffff");
     assert.equal(solidOver("rgb(0,0,0)", "#ffffff80"), "#ffffff80", "an unknown base: unchanged");
   }
+}
+
+// ---- the PR list: at most three marks, security first
+import { rowMarks } from "./views.js";
+assert.deepEqual(rowMarks({ top: "high", security: true }, { priority: 1, type: "Feature", chips: ["High security risk", "Feature", "Low effort"] }).map((m) => m.text), ["⛨ high", "P1", "Feature"]);
+assert.deepEqual(rowMarks({ top: "medium", security: false }, null).map((m) => [m.text, m.security]), [["medium", false]]);
+assert.deepEqual(rowMarks(null, { priority: 3, type: "Docs" }).map((m) => m.text), ["P3", "Docs"]);
+assert.equal(rowMarks({ top: "low" }, { priority: 2, type: "Fix" }).length, 3);
+
+// ---- the stack in the review's bar
+import { stackOf } from "./views.js";
+assert.deepEqual(stackOf({ stacked_on: { number: 1, url: "u1" } }, 2).map((p) => [p.number, Boolean(p.self)]), [[1, false], [2, true]], "PR #2 on top of #1");
+assert.deepEqual(stackOf({ stacked_above: [{ number: 2, url: "u2" }] }, 1).map((p) => [p.number, Boolean(p.self)]), [[1, true], [2, false]], "PR #1 under #2");
+assert.equal(stackOf({ stacked_on: null, stacked_above: [] }, 3), null);
+assert.equal(stackOf(null, 3), null, "no context yet");
+
+// ---- a layer's "Depends on" chips: clicks placed by x from the right end
+import { chipAt, textW } from "./views.js";
+assert.equal(chipAt(950, 1000, [80, 100]), 1, "the last chip ends at the right end");
+assert.equal(chipAt(850, 1000, [80, 100]), 0, "the one before it, a gap to the left");
+assert.equal(chipAt(897, 1000, [80, 100]), -1, "the gap between them");
+assert.equal(chipAt(700, 1000, [80, 100]), -1);
+assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
+
+// ---- the findings behind an area's "Finding" in "What each run checked"
+{
+  const { areaFindings } = await import("./views.js");
+  const src = (k) => [{ reviewer: k }];
+  const list = [{ id: "t", title: "Front desk token defaults to empty", category: "security", sources: src("security") },
+    { id: "q", title: "Queue.publish never sends to SQS", category: "bug", sources: src("security") },
+    { id: "m", title: "Reminder mailed twice", category: "bug", sources: src("claude") },
+    { id: "n", title: "New behavior is untested", category: "test", sources: src("claude") }];
+  assert.deepEqual(areaFindings("authentication", "security", list).map((f) => f.id), ["t"]);
+  assert.deepEqual(areaFindings("authentication", "claude", list), [], "only that run's findings");
+  assert.deepEqual(areaFindings("correctness", "claude", list).map((f) => f.id), ["m"]);
+  assert.deepEqual(areaFindings("concurrency", "claude", list).map((f) => f.id), ["m"]);
+  assert.deepEqual(areaFindings("tests", "claude", list).map((f) => f.id), ["n"]);
+  assert.deepEqual(areaFindings("dependencies", "security", list), []);
+}
+
+// ---- findings at a state diagram's transitions
+{
+  const { transitionMarks } = await import("./views.js");
+  const v = { kind: "state_machine", nodes: [{ id: "a" }, { id: "b" }], transitions: [{ from: "a", to: "b", evidence: "library/status.py:14" }, { from: "b", to: "a", at: "status.py:29-31" }, { from: "b", to: "b" }] };
+  const f = (id, file, line, severity, end) => ({ id, file, line, end, severity });
+  const m = transitionMarks(v, [f("x", "library/status.py", 14, "medium"), f("y", "library/status.py", 30, "low"), f("z", "library/status.py", 28, "high", 29), f("w", "library/loans.py", 14, "high")]);
+  assert.deepEqual([...m].map(([i, x]) => [i, x.findings.map((g) => g.id), x.severity]), [[0, ["x"], "medium"], [1, ["y", "z"], "high"]]);
+  assert.equal(transitionMarks(v, []).size, 0); assert.equal(transitionMarks(null, null).size, 0);
+}
+
+// ---- a way in whose check an open finding can pass
+{
+  const { exposureNow, surfaceOf, EXPOSURE } = await import("./views.js");
+  const api = { exposure: "public" };
+  assert.equal(exposureNow(api, [{ impact: "unauthorized_access" }]), "failopen"); assert.equal(EXPOSURE.failopen, "Auth, can fail open");
+  assert.equal(exposureNow(api, [{ impact: "data_loss" }]), "public"); assert.equal(exposureNow(api), "public");
+  assert.equal(exposureNow({ exposure: "open" }, [{ impact: "unauthorized_access" }]), "open", "nothing checks it anyway");
+  assert.equal(exposureNow({ exposure: "internal" }, [{ impact: "unauthorized_access" }]), "internal");
+  assert.deepEqual(surfaceOf([{ resource: "a", public: true, auth: "token" }, { resource: "b", public: true, auth: "none" }]).entries.map((x) => x.resource), ["b", "a"], "the order is unchanged");
+}
+
+// ---- contradictions in "What each run checked"
+{
+  const { scopeConflicts, scopeTable } = await import("./views.js");
+  const tab = scopeTable({ checked: [{ area: "personal_data", result: "clean" }, { area: "authentication", result: "finding" }] },
+    { security: { scope: { checked: [{ area: "authentication", result: "clean" }, { area: "secrets", result: "clean" }] } } });
+  const c = scopeConflicts(tab, [{ title: "Token fails open", security: true, effect: "Anyone can list members' names and books." }, { title: "Mailed twice", effect: "Members get two mails." }]);
+  assert.deepEqual([...c.keys()], ["personal_data", "authentication"]);
+  assert.equal(c.get("authentication").kind, "cross"); assert.equal(c.get("personal_data").kind, "effect");
+  assert.match(c.get("personal_data").text, /Token fails open/);
+  assert.equal(scopeConflicts(tab, []).size, 1, "without findings only the runs' own contradiction");
+  assert.equal(scopeConflicts(null).size, 0);
+}
+// ---- the zone a card is really reachable from
+{
+  const { effectiveZones } = await import("./views.js");
+  const arch = { zones: [{ id: "z1", trust: "public" }, { id: "z2", name: "Front desk", trust: "authenticated" }, { id: "z3", trust: "internal" }], nodes: [{ id: "h", zone: "z2" }, { id: "g", zone: "z3" }, { id: "p", zone: "z1" }] };
+  const e = effectiveZones(arch, [{ public: true, auth: "bearer token checked in handler.py", auth_kind: "code", node: "h" }, { public: true, auth_kind: "gateway", node: "g" }, { public: true, auth: "none", node: "p" }]);
+  assert.deepEqual([...e.keys()], ["h"], "a check in the card's own code; a gateway check or a public card is no deviation");
+  assert.deepEqual([e.get("h").trust, e.get("h").drawn], ["public", "authenticated"]);
+  assert.equal(effectiveZones(arch, [{ public: true, auth: "none", node: "g" }]).get("g").why, "nothing checks the caller before it");
+  assert.equal(effectiveZones(arch, [{ public: false, auth_kind: "code", node: "h" }]).size, 0); assert.equal(effectiveZones(null, null).size, 0);
+}
+
+// ---- the Security page as a boundary map: crossings and the sentence over it
+{
+  const { crossingsOf, crossingChanged, secSentence } = await import("./views.js");
+  const arch = { zones: [{ id: "z1", name: "Internet", trust: "public" }, { id: "z2", name: "Front desk", trust: "authenticated" }, { id: "z3", name: "Queue", trust: "data" }],
+    nodes: [{ id: "h", label: "handler", zone: "z2" }, { id: "q", label: "queue", zone: "z3" }, { id: "s", label: "status", zone: "z2" }],
+    edges: [{ from: "h", to: "s", label: "inside" }, { from: "h", to: "q", label: "publish", crosses: true, status: "new", gate: { check: "IAM role", at: "template.yaml:20", holds_if: "the role stays scoped" } }, { from: "q", to: "h", status: "unchanged", crosses: true }] };
+  const access = [{ id: "acc1", resource: "Api", public: true, principal: "anyone", auth: "bearer token in handler.py", auth_kind: "code", node: "h", opened_by_pr: true },
+    { id: "acc2", resource: "Send policy", public: false, principal: "Front desk", actions: ["sqs:SendMessage"], node: "q", opened_by_pr: true },
+    { id: "acc3", resource: "Inner", public: false, principal: "Front desk", node: "s" }];
+  const threats = [{ where: { access: "acc2" }, result: "checked_clean", stride: "E" }, { where: { edge: "e1" }, result: "finding", findings: ["f9"], goal: "any event in the queue" }];
+  const findings = [{ id: "f1", ids: ["f1"], reachable_from: ["acc1"] }, { id: "f9", ids: ["f9"] }];
+  const rows = crossingsOf({ arch, access, threats, findings });
+  assert.deepEqual(rows.map((r) => [r.kind, r.from.name, r.to.name, r.change, r.result]),
+    [["entry", "anyone", "Front desk", "added", "finding"], ["right", "Front desk", "Queue", "added", "mitigated"], ["call", "Front desk", "Queue", "added", "finding"], ["call", "Queue", "Front desk", "unchanged", "not_assessed"]],
+    "a right inside one zone and a call inside one zone are no crossing; a threat or a finding gives the result, else not assessed");
+  assert.deepEqual([rows[0].findings.map((f) => f.id), rows[2].findings.map((f) => f.id), rows[2].goal, rows[1].stride, rows[2].check, rows[2].holds_if], [["f1"], ["f9"], "any event in the queue", "E", "IAM role", "the role stays scoped"]);
+  assert.deepEqual(rows.map(crossingChanged), [true, true, true, false]);
+  assert.equal(secSentence(rows, 2), "This PR opens 1 way in from the public side (Api, checked in the code), grants 1 right into another zone and adds or changes 1 call over a trust boundary. Of these 3 crossings, 2 have findings, 1 is mitigated. 2 security findings are unresolved.");
+  assert.equal(secSentence([], 0), "This PR opens, widens or adds no way in, right or call over a trust boundary that the data names. No security finding is unresolved.");
+  assert.deepEqual(crossingsOf({}), []);
+}
+
+// ---- the security run's gates and effective zones
+{
+  const { crossingsOf, effectiveFrom } = await import("./views.js");
+  const arch = { zones: [{ id: "z1", name: "Internet", trust: "public" }, { id: "z2", name: "Front desk", trust: "authenticated" }, { id: "z3", name: "Store", trust: "data" }],
+    nodes: [{ id: "fd", zone: "z2" }, { id: "st", zone: "z3" }], edges: [{ from: "fd", to: "st", crosses: true }] };
+  const rows = crossingsOf({ arch, access: [{ id: "acc1", public: true, principal: "anyone", auth: "bearer token", node: "fd", change: "added" }],
+    gates: [{ where: { access: "acc1" }, check: "token", source: "code", at: "library/handler.py:16", holds_if: "TOKEN is set", carries: ["body.id"] }, { where: { from: "fd", to: "st", edge: "e0" }, check: "iam", source: "config" }],
+    threats: [{ where: { edge: "e0" }, result: "not_assessed", derived: true, threat: "No threat was named for this crossing." }] });
+  assert.deepEqual(rows.map((r) => [r.check, r.at, r.holds_if, r.result, r.threats.length]), [["token, in the code", "library/handler.py:16", "TOKEN is set", "not_assessed", 0], ["iam, in the config", null, null, "not_assessed", 0]]);
+  assert.deepEqual(rows[0].carries, ["body.id"]);
+  const e = effectiveFrom([{ node: "fd", drawn: "authenticated", effective: "public", where: "library/handler.py:16" }, { node: "st", drawn: "data", effective: "data" }], arch);
+  assert.deepEqual([...e.keys()], ["fd"]); assert.equal(e.get("fd").why, "its first check is at library/handler.py:16"); assert.equal(effectiveFrom(null, arch).size, 0);
 }

@@ -108,6 +108,16 @@ for (const n of [0, 3, 310]) {
   ok(`${n} files: the same layer open in the Layers view`, () => v.render(cx));
   // Its picture is a row of the diff list, right after the layer's head; a question names the file the analysis gives.
   assert.deepEqual(v.items.slice(v.at.s1, v.at.s1 + 2).map((it) => it.t), ["step", "vis"], "a layer's picture sits over its code");
+  // A state diagram over the code: open with its transitions as rows while a finding sits at one, folded otherwise.
+  const sm = { kind: "state_machine", title: "Loan", nodes: [{ id: "s1", label: "S1", evidence: "src/a.ts:1" }, { id: "s2", label: "S2" }], transitions: [{ from: "s1", to: "s2", event: "go", evidence: "src/f0.ts:2" }, { from: "s2", to: "s1", event: "back" }] };
+  v.ai.steps[1].visuals = [sm];
+  const steps = () => S.lists.find((l) => l.id === "rv-list-steps"), rows = () => { const l = steps(); if (l) l.render({ start: 0, end: l.n }, cx); };
+  ok(`${n} files: a state diagram with a finding at a transition`, () => { v.render(cx); rows(); });
+  assert.deepEqual(v.items.slice(v.at.s1 + 1, v.at.s1 + 4).map((it) => it.t), ["vis", "vtr", "vtr"]);
+  v.toggleVis("vis|1|0");
+  ok(`${n} files: the state diagram folded`, () => { v.render(cx); rows(); });
+  assert.deepEqual(v.items.slice(v.at.s1 + 1, v.at.s1 + 2).map((it) => it.t), ["visfold"]);
+  v.ai.steps[1].visuals = [{ kind: "flow", title: "f", nodes: [{ id: "n1", label: "N1", at: "src/a.ts:3" }, { id: "n2", label: "N2" }], edges: [{ from: "n1", to: "n2", label: "y" }] }];
   assert.deepEqual([v.asked({ questionFiles: ["src/a.ts", ""] }, "q?", 0), v.asked({ questionFiles: ["src/a.ts", ""] }, "q?", 1), v.asked({}, "q?", 0)], ["a.ts — q?", "q?", "q?"]);
   // Its analysis finding: in the layer above, and in the Findings tab (read live from the analysis, linked to its layer).
   assert.deepEqual(v.findings().map((f) => f.id), ["a1"]); assert.equal(v.layerOf(v.findings()[0]), 1);
@@ -123,6 +133,9 @@ for (const n of [0, 3, 310]) {
     v.ai = { ...v.ai, suspects: [sug(2, "medium", "Unrelated change"), sug(4, "low", "a nit")] };
     const [f] = v.findings();
     assert.deepEqual([v.findings().length, f.id, f.ids, f.security, v.sourcesOf(f)], [1, "a1", ["s1", "a1", f.ids[2]], true, "Security review: high · Analysis: high · AI suggestion: medium"]);
+    // Its card in the diff carries what the other sources say in their own words (F4).
+    assert.deepEqual(v.findRows(f).map(([l]) => l).filter((l) => ["Analysis", "Security review", "AI suggestion"].includes(l)).length, f.sources.filter((y) => y.title !== f.title || y.detail !== f.detail).length);
+    assert.ok(v.findRows(f).some(([l, x]) => l === "AI suggestion" && x.startsWith("(medium) Unrelated change")));
     assert.deepEqual(v.openSugs().map((s) => s.reason), ["a nit"]);
     assert.equal(v.fstatus(f), "progress");
     assert.deepEqual([v.counts().unresolved, v.counts().sent, v.counts().security, v.openFindings().length], [1, 1, 1, 1]);
@@ -137,6 +150,17 @@ for (const n of [0, 3, 310]) {
     ok("the Findings tab: a step's details open, an owner, sorted by effort", () => v.render(cx));
     v.command("finding-step:sent", cx); assert.equal(v.fstep, null, "the step's click again folds it");
     v.command("findings-sort:", cx); assert.equal(v.fsort, false);
+    // A finding outside the diff opens its file read-only (as a definition does); a jump that failed says so until the next one.
+    { const calls = [], go = v.goDef, wt = v.worktree, ps = v.prSel; v.goDef = (d) => calls.push([d.path, d.line]); v.worktree = { ...wt, path: "/checkout" };
+      v.jumpTo("library/loans.py:41", cx); v.jumpTo("src/f0.ts:1", cx); v.worktree = null; v.prSel = { ...v.prSel, space: false }; v.jumpTo("nowhere.py:3", cx);
+      assert.deepEqual([calls, v.note], [[["library/loans.py", 41]], "Could not find nowhere.py:3 in the diff"]);
+      v.jumpTo("src/f0.ts:1", cx); assert.equal(v.note, null, "the next jump clears it");
+      // A jump from goDef never goes back to goDef, whatever the two make of the path (no loop).
+      v.jumpTo("library/loans.py:41", cx, { fromDef: true }); assert.equal(calls.length, 1); assert.match(v.note, /^Could not find library\/loans.py:41/);
+      v.jumpTo("src/f0.ts:1", cx);
+      v.defFile = { path: "library/loans.py", line: 41, from: 0, lines: [], spans: [] }; v.command("file:src/f0.ts", cx); assert.equal(v.defFile, null, "a jump to a file shows the diff again");
+      v.defFile = { path: "x", line: 1, from: 0, lines: [], spans: [] }; v.command("page:overview", cx); assert.equal(v.defFile, null); v.page = null; v.tab = "findings";
+      v.goDef = go; v.worktree = wt; v.prSel = ps; }
     v.tab = "files"; v.page = null; v.sug = v.openSugs()[0].key;
     ok("the diff: the finding's card and the note, opened", () => { v.render(cx); layout(0); });
     assert.deepEqual(v.items.filter((it) => ["find", "fact", "sug"].includes(it.t)).map((it) => it.t), ["find", "fact", "sug"], "a fix sent stays in the diff; one note, no buttons");

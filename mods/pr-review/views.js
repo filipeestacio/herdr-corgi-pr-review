@@ -1,6 +1,7 @@
 // Pure helpers for the panel's state (main.js) and a layer's flow picture (stack.js visualCard). No gpui imports, so
 // node tests them (test_views.mjs).
 import { transitionText } from "./arch.js";
+import { isSecurity } from "./pr.js";
 
 // The panel is either picking a PR (none chosen yet, or PRs ▾ open) or showing the chosen one (its diff or walkthrough).
 // chosen: a PR, or the current branch picked from the list.
@@ -36,7 +37,7 @@ export function riskSignal({ analysis = null, findings = null, status = null } =
   if (!analysis && !findings) return null;
   const open = [...(findings ?? []), ...(analysis?.steps ?? []).flatMap((s) => s.findings ?? [])].filter((f) => !["fixed", "dismissed"].includes(status?.[f.id]?.s));
   return { top: SEVERITIES.find((s) => open.some((f) => f.severity === s)) ?? null, open: open.length,
-    security: open.some((f) => f.reviewer === "security" || f.category === "security") };
+    security: open.some(isSecurity) }; // as the review's ⛨ (pr.js isSecurity): what it does, not who found it
 }
 
 // "0/6 layers · 2/9 files · 1 comment · 11 open findings" for a review in progress (open-reviews.json `progress`,
@@ -322,7 +323,10 @@ export const runSummary = (r, count = r?.count ?? 0) => (!r?.state ? "not run" :
 // caller), "public" (reachable so, something checks the caller), "internal". What checks: `auth_kind` (none | code |
 // gateway | iam) when the analysis has it, else the first word of the free text `auth`.
 export const exposureOf = (x) => (!x?.public ? "internal" : (x.auth_kind ? x.auth_kind === "none" : /^(|none|no|nothing|unauthenticated|-|–)$/i.test(String(x.auth ?? "").trim().replace(/[\s.(:;,].*$/, ""))) ? "open" : "public");
-export const EXPOSURE = { open: "Public, no auth", public: "Public, auth", internal: "Internal" };
+export const EXPOSURE = { open: "Public, no auth", failopen: "Auth, can fail open", public: "Public, auth", internal: "Internal" };
+// A public way in whose check an unresolved finding says can be passed (impact unauthorized_access): "failopen" while
+// that finding is open, else the row's own exposure. findings: the unresolved findings at this way in.
+export const exposureNow = (x, findings = []) => (x?.exposure === "public" && findings.some((f) => f.impact === "unauthorized_access") ? "failopen" : x?.exposure ?? "internal");
 // The analysis' access rows as the ways in (entry points: everything public, and routes, endpoints and APIs) and the
 // rights granted (the rest: IAM and resource policies). Each row keeps its index `k` and gets its `exposure`; the
 // entries come most exposed first, then in the given order.
@@ -336,7 +340,7 @@ export function surfaceOf(access) {
 // How far out a finding can be reached from: the analysis' word when it has one (stated), else from the most exposed
 // way in at it (derived: open → public, public with a check → authenticated, internal → internal_only), else unknown.
 export const REACH = ["public", "authenticated", "internal_only", "unknown"];
-const FROM_EXPOSURE = { open: "public", public: "authenticated", internal: "internal_only" };
+const FROM_EXPOSURE = { open: "public", failopen: "public", public: "authenticated", internal: "internal_only" };
 export const reachLevel = (f, ways = []) => (REACH.includes(f?.reachability) ? f.reachability
   : ways.map((x) => FROM_EXPOSURE[x.exposure]).filter(Boolean).sort((a, b) => REACH.indexOf(a) - REACH.indexOf(b))[0] ?? "unknown");
 const SEV_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
@@ -458,4 +462,231 @@ export function solidOver(base, over) {
   if (!b || !o) return over;
   const a = o[3] / 255, hex = (v) => Math.round(v).toString(16).padStart(2, "0");
   return "#" + [0, 1, 2].map((k) => hex(o[k] * a + b[k] * (1 - a))).join("");
+}
+
+// A PR row's marks in the PR list (main.js), at most three by weight: the highest open severity, with ⛨ when an open
+// finding is about security (one mark, the only red one), then the priority, then the type. Effort is left out: the
+// review itself has no "Review effort" either.
+export function rowMarks(risk, tri) {
+  return [risk?.top && { text: `${risk.security ? "⛨ " : ""}${risk.top}`, security: Boolean(risk.security), kind: "risk" },
+    tri && { text: `P${tri.priority}`, kind: "priority" }, tri?.type && { text: tri.type, kind: "type" }].filter(Boolean).slice(0, 3);
+}
+
+// A stack of PRs around this one (related.py stacked_on, stacked_above), bottom first: [{number, title, url, self}];
+// null when this PR is in no stack. The review's bar shows it as "Stack: #1 → #2".
+export function stackOf(ctx, number) {
+  const below = ctx?.stacked_on ?? null, above = ctx?.stacked_above ?? [];
+  return below || above.length ? [...(below ? [below] : []), { number, self: true }, ...above] : null;
+}
+
+// ---- "Depends on" in a layer's head (review.js item "step"): small chips at the right end of the title row
+// A text's width in px of the UI font at `size` (the estimate wrapCount uses), for chips whose clicks are placed by x.
+export const textW = (text, size = 13.5) => Math.ceil([...String(text ?? "")].reduce((w, ch) => w + CH_W(ch), 0) * (size / 13.5) * 1.04);
+// Which of the chips laid out right-aligned (the last one ending at `right`, `gap` px between) a press at x hit: its
+// index, or -1.
+export function chipAt(x, right, widths, gap = 6) {
+  let r = right;
+  for (let k = widths.length - 1; k >= 0; k--) {
+    const l = r - widths[k];
+    if (x >= l && x < r) return k;
+    r = l - gap;
+  }
+  return -1;
+}
+
+// "By focus": the layers by what their rows show (worst): the highest unresolved severity first, a layer with a
+// security finding first among equals, then more findings, then reading order; layers without one last.
+// open(s): a layer's unresolved findings.
+export function byFocus(steps, open) {
+  const rank = (w) => (w ? (SEVERITIES.indexOf(w.severity) + 1 || SEVERITIES.length + 1) : SEVERITIES.length + 2);
+  return steps.map((s) => ({ s, w: worst(open(s)) }))
+    .sort((a, b) => rank(a.w) - rank(b.w) || Number(Boolean(b.w?.security)) - Number(Boolean(a.w?.security)) || (b.w?.count ?? 0) - (a.w?.count ?? 0) || a.s.order - b.s.order)
+    .map((x) => x.s);
+}
+
+// The "Needs your attention" heading counts by decision, not by severity: "⛨ 2 · 3 criteria not met · 4 other
+// blockers". list: the box's items ({security}); notMet: the task's criteria broken or not done.
+export function attentionCounts(list, notMet = 0) {
+  const sec = list.filter((a) => a.security).length, rest = list.length - sec;
+  return [sec && `⛨ ${sec}`, notMet && `${notMet} ${notMet === 1 ? "criterion" : "criteria"} not met`, rest && `${rest} ${sec ? "other " : ""}${rest === 1 ? "blocker" : "blockers"}`].filter(Boolean);
+}
+
+// A layer's ways in and rights: the access rows (the analysis' or the security run's) at one of its files that are
+// public or opened by this PR, with the sentence for the mark at its row ("This layer opens a public route (Api)."),
+// so a layer that adds a way in shows it without a finding. null: none.
+export function layerAccess(access, files) {
+  const at = (x) => String(x.at ?? "").replace(/:\d+(?:-\d+)?$/, ""), has = (p) => files.some((f) => f === p || f.endsWith(`/${p}`) || p.endsWith(`/${f}`));
+  const rows = (access ?? []).filter((x) => (x.public || x.opened_by_pr) && at(x) && has(at(x)));
+  if (!rows.length) return null;
+  const { entries, grants } = surfaceOf(rows);
+  const say = [...entries.map((x) => `opens ${x.public ? "a public" : "a"} ${x.kind || "way in"}${x.resource ? ` (${x.resource})` : ""}`),
+    ...grants.map((x) => `grants ${x.principal || "someone"} ${(x.actions ?? []).join(", ") || "a right"}${x.resource ? ` on ${x.resource}` : ""}`)];
+  return { entries: entries.length, grants: grants.length, text: `This layer ${say.join(", and ")}.` };
+}
+
+// The analysis' line at the top of the Analysis tab: the head it read and its age, "stale" (amber) once the PR moved
+// on (another head, or not this diff). head: the analysis file's (null: from before it said so); now: the PR's head.
+export function analysisAge({ head = null, exact = true, now = null, age = "" }) {
+  const at = (x) => String(x).slice(0, 7), moved = !exact || Boolean(head && now && head !== now);
+  return { stale: moved, text: `Analysis of ${head ? at(head) : exact ? "this diff" : "an older diff"}${age ? `, ${age}` : ""}${moved && now && head ? ` · the PR is at ${at(now)} now` : ""}` };
+}
+
+// ---- "What each run checked": the findings behind an area's "Finding"
+// ponytail: an area is matched by its words in a finding's title, effect and detail (findings name no area); a run
+// that reports areas per finding would make this exact.
+const AREA_WORDS = { authentication: /authenticat|\btoken|bearer|login|credential|session/i, authorization: /authori[sz]|access control|\brole|allowed to|any (?:caller|member|loan)/i,
+  input_validation: /input|validat|inject|saniti[sz]|unvalidated|request body/i, secrets: /secret|\btoken|api key|password|credential/i, permissions: /\biam\b|policy|permission|grant|least privilege/i,
+  personal_data: /personal|\bpii\b|e-?mail address|\bmembers?\b|\bnames?\b|\bcustomers?\b|\busers?'? (?:data|names?|e-?mails?)/i, dependencies: /dependenc|package|library version|requirements|lockfile/i,
+  error_handling: /error|exception|raises?\b|retr(?:y|ies)|fails?\b|failure/i, concurrency: /concurren|race|idempoten|redeliver|at[- ]least[- ]once|twice|duplicate|dedup/i,
+  state: /\bstate\b|status|transition/i, contracts: /contract|interface|schema|signature|requirement|acceptance/i };
+const AREA_CATEGORY = { correctness: ["bug"], tests: ["test"], contracts: ["requirement"] };
+// The findings of run `k` ("analysis" or a reviewer) that fall under `area`: by category where one fits, else by words.
+export function areaFindings(area, k, findings) {
+  const mine = (findings ?? []).filter((f) => (f.sources ?? [{ reviewer: f.reviewer }]).some((s) => s.reviewer === k));
+  const words = AREA_WORDS[area], cats = AREA_CATEGORY[area] ?? [];
+  return mine.filter((f) => cats.includes(f.category) || (words && words.test([f.title, f.effect, f.detail].filter(Boolean).join(" "))));
+}
+
+// ---- a state diagram's transitions and the findings at them
+// The unresolved findings at each transition of a state visual: one whose file and line fall on the transition's place
+// (`evidence` or `at`: "file:line" or "file:line-end"; a finding's own range counts). Returns Map(index in edges then
+// transitions -> {findings, severity: the highest}); a transition without a place has none.
+const RANK = { critical: 0, high: 1, medium: 2, low: 3 };
+export function transitionMarks(v, findings) {
+  const out = new Map(), place = (s) => /^(.+?):(\d+)(?:-(\d+))?/.exec(String(s ?? ""));
+  [...(v?.edges ?? []), ...(v?.transitions ?? [])].forEach((e, i) => {
+    const m = place(e.evidence) ?? place(e.at);
+    if (!m) return;
+    const [path, a, b] = [m[1], Number(m[2]), Number(m[3] ?? m[2])];
+    const hit = (findings ?? []).filter((f) => f.file && (f.file === path || f.file.endsWith(`/${path}`) || path.endsWith(`/${f.file}`)) && (f.line ?? 0) <= b && (f.end ?? f.line ?? 0) >= a);
+    if (hit.length) out.set(i, { findings: hit, severity: hit.map((f) => f.severity).sort((x, y) => (RANK[x] ?? 9) - (RANK[y] ?? 9))[0] });
+  });
+  return out;
+}
+
+// Where the runs' self-reports in "What each run checked" contradict each other or the findings: an area one run calls
+// clean and another finds something in ("cross"), or one a run calls clean while an unresolved security finding names
+// it in its effect, by the area's words ("effect": "personal data clean" and "they can read members' names"). tab: scopeTable;
+// open: the unresolved findings. Returns Map(area -> {kind, text, findings}).
+export function scopeConflicts(tab, open = []) {
+  const out = new Map();
+  for (const r of tab?.rows ?? []) {
+    const cells = Object.entries(r.cells).filter(([, c]) => c), clean = cells.filter(([, c]) => c.result === "clean").map(([k]) => k), found = cells.filter(([, c]) => c.result === "finding").map(([k]) => k);
+    if (!clean.length) continue;
+    if (found.length) { out.set(r.area, { kind: "cross", text: `${clean.join(", ")} ${clean.length === 1 ? "calls" : "call"} it clean, ${found.join(", ")} ${found.length === 1 ? "finds" : "find"} something here.`, findings: [] }); continue; }
+    // Only a finding about security says something an area of the security run should have seen.
+    const words = AREA_WORDS[r.area], hit = words ? open.filter((f) => (f.security || ["unauthorized_access", "data_exposure"].includes(f.impact)) && words.test(String(f.effect ?? ""))) : [];
+    if (hit.length) out.set(r.area, { kind: "effect", text: `Called clean, but ${hit.length === 1 ? "an unresolved finding names" : `${hit.length} unresolved findings name`} it in ${hit.length === 1 ? "its" : "their"} effect: ${hit.slice(0, 2).map((f) => f.title).join("; ")}.`, findings: hit });
+  }
+  return out;
+}
+
+// The state hints at the top of the Analysis tab, where they are seen instead of a grey line under the page: the PR
+// head's checkout, an analysis waiting for it, reviewer runs. checkout: {busy} | {error} | null; runs: the findings
+// file's runs (busy while one runs); names: kind -> label. -> [{key, text, spin, error}]
+export function stateHints({ checkout = null, pendingRun = false, runs = {}, names = {} }) {
+  return [
+    checkout?.busy && { key: "checkout", spin: true, text: `Checking out the PR head${pendingRun ? ": the analysis starts once it is there" : ""}…` },
+    checkout?.error && { key: "checkout", error: true, text: `Could not check out the PR head: ${checkout.error}` },
+    pendingRun && !checkout && { key: "wait", text: "The analysis starts once the PR head is checked out." },
+    ...Object.entries(runs ?? {}).filter(([, r]) => r?.busy).map(([k]) => ({ key: `run-${k}`, spin: true, text: `${names[k] ?? k} is running…` })),
+  ].filter(Boolean);
+}
+
+// How the line under the right pane shows a note about an action just taken: an error (it did not happen) in red with
+// a mark, kept until it is closed or the next action; anything else in the text color, gone by itself after ttl ms.
+export const NOTE_TTL = 8000;
+const NOTE_ERROR = /^(Could not|Not |Nothing to |Select a line|Line \d+ of .* is not in)|^No \S+ on |Could not/;
+export const noteRule = (text) => (NOTE_ERROR.test(String(text ?? "")) ? { error: true, ttl: null } : { error: false, ttl: NOTE_TTL });
+// ---- the zone a card is really reachable from (derived, not the model's word)
+// A card behind a public way in whose check sits in the card's own code (auth_kind "code") or that nothing checks is
+// reachable from the public side, whatever zone the analysis draws it in. Returns Map(node id -> {trust: "public",
+// drawn: the drawn zone's trust, zone, why}) for the cards where the two differ.
+export function effectiveZones(arch, access) {
+  const zones = new Map((arch?.zones ?? []).map((z) => [z.id, z])), out = new Map();
+  for (const x of access ?? []) {
+    const n = (arch?.nodes ?? []).find((m) => m.id === x?.node), z = zones.get(n?.zone), open = exposureOf(x) === "open";
+    if (!x?.public || !n || !z || z.trust === "public" || !(x.auth_kind === "code" || open) || out.has(n.id)) continue;
+    out.set(n.id, { trust: "public", drawn: z.trust, zone: z, why: open ? "nothing checks the caller before it" : `its only check (${x.auth || "in the code"}) is in its own code, so every request from the internet reaches it` });
+  }
+  return out;
+}
+
+// ---- the Security page as a boundary map (panel-secview): the crossings of trust boundaries
+// Every crossing the data names: a way in from the public side (an access row that is public), a right that reaches
+// into another zone (an access row whose principal is a zone or a card of one), and a call over a boundary (an edge
+// with `crosses`). Each row: {key, kind: entry | right | call, from, to: {name, trust} (the zones), identity, check, at,
+// holds_if, carries, change: added | widened | narrowed | changed | removed | unchanged | null (not said), result:
+// finding | mitigated | not_assessed, findings (unresolved, at it), threats (from threats[]), stride, goal, ends:
+// {from, to} (card ids, null for the outside), access?, edge?}. A row says "not assessed" when nothing names a result.
+export const TRUST_ORDER = ["public", "authenticated", "internal", "data"];
+// A gate's check in words: its kind and where it sits ("token, in the code"); null without a check.
+const checkText = (g) => (g?.check ? `${g.check}${g.source ? `, in the ${g.source === "code" ? "code" : "config"}` : ""}` : null);
+const CHANGED = ["added", "widened", "narrowed", "changed", "removed"];
+// gates: the security run's checks per crossing ({where: {access} | {from, to, edge}, principal, check, at, source,
+// holds_if, carries}); a gate on the row itself (x.gate, e.gate) is the older place. A threat with `derived` is a
+// placeholder ("no threat was named") and names no result.
+export function crossingsOf({ arch = null, access = [], threats = [], findings = [], gates = [] } = {}) {
+  const zones = arch?.zones ?? [], nodes = arch?.nodes ?? [], norm = (s) => String(s ?? "").trim().toLowerCase().replace(/\s+/g, "");
+  const zone = (id) => zones.find((z) => z.id === id) ?? null, zoneOfNode = (nid) => zone(nodes.find((n) => n.id === nid)?.zone);
+  const label = (nid) => nodes.find((n) => n.id === nid)?.label ?? nid;
+  const zoneOfPrincipal = (p) => zones.find((z) => norm(z.name) === norm(p) || norm(z.id) === norm(p)) ?? zoneOfNode(nodes.find((n) => norm(n.label) === norm(p) || norm(n.id) === norm(p))?.id);
+  const outside = zones.find((z) => z.trust === "public") ?? { name: "Internet", trust: "public" };
+  const z = (x) => (x ? { name: x.name ?? x.id, trust: x.trust ?? null } : { name: "not named", trust: null });
+  const RESULT = { finding: "finding", mitigated: "mitigated", checked_clean: "mitigated", not_assessed: "not_assessed", not_checked: "not_assessed" };
+  const row = (base, match) => {
+    const ts = (threats ?? []).filter(match.threat), at = (findings ?? []).filter(match.finding);
+    const ids = new Set(ts.flatMap((t) => t.findings ?? [])), fs = [...at, ...(findings ?? []).filter((f) => !at.includes(f) && (f.ids ?? [f.id]).some((i) => ids.has(i)))];
+    const named = ts.filter((t) => !t.derived).map((t) => RESULT[t.result]).filter(Boolean);
+    const result = fs.length || named.includes("finding") ? "finding" : named.includes("mitigated") ? "mitigated" : "not_assessed";
+    return { ...base, result, findings: fs, threats: ts.filter((t) => !t.derived), stride: [...new Set(ts.map((t) => t.stride).filter(Boolean))].join(""), goal: ts.map((t) => t.goal).find(Boolean) ?? null };
+  };
+  const changeOf = (x) => x.change ?? (x.opened_by_pr === true ? "added" : x.opened_by_pr === false ? "unchanged" : null);
+  const rows = [];
+  for (const x of access ?? []) {
+    const to = zoneOfNode(x.node), gate = (gates ?? []).find((g) => g.where?.access === x.id) ?? x.gate ?? {};
+    // A way in starts outside: its caller (the principal) on the public side; a right starts in its principal's zone.
+    const from = x.public ? outside : zoneOfPrincipal(x.principal);
+    if (!x.public && from && to && from.id === to.id) continue; // a right inside one zone crosses nothing
+    const start = x.public ? { name: x.principal || outside.name || "Internet", trust: "public" } : from ? z(from) : { name: `${x.principal ?? "unnamed"} (no zone named)`, trust: null };
+    rows.push(row({ key: `a:${x.id ?? x.resource}`, kind: x.public ? "entry" : "right", from: start, to: z(to), identity: gate.principal ?? x.principal ?? null,
+      check: checkText(gate) ?? x.auth ?? null, at: gate.at ?? x.at ?? null, holds_if: gate.holds_if ?? null, carries: gate.carries ?? null, change: changeOf(x),
+      ends: { from: null, to: x.node ?? null }, access: x, what: x.resource ?? "", actions: x.actions ?? [] },
+    { threat: (t) => t.where?.access === x.id, finding: (f) => (f.reachable_from ?? []).includes(x.id) }));
+  }
+  (arch?.edges ?? []).forEach((e, i) => {
+    const a = zoneOfNode(e.from), b = zoneOfNode(e.to);
+    if (!e.crosses && !(a && b && a.id !== b.id)) return;
+    const gate = (gates ?? []).find((g) => g.where?.edge === `e${i}` || (g.where?.from === e.from && g.where?.to === e.to)) ?? e.gate ?? {}, st = e.status === "new" ? "added" : e.status === "changed" || e.changed ? "changed" : e.status === "unchanged" ? "unchanged" : null;
+    rows.push(row({ key: `e:${i}`, kind: "call", from: z(a), to: z(b), identity: gate.principal ?? label(e.from), check: checkText(gate), at: gate.at ?? null,
+      holds_if: gate.holds_if ?? null, carries: gate.carries ?? null, change: st, ends: { from: e.from, to: e.to }, edge: i, what: e.label ?? "" },
+    { threat: (t) => t.where?.edge === `e${i}` || (t.where?.from === e.from && t.where?.to === e.to),
+      finding: (f) => f.breaks?.edge === `e${i}` || (f.breaks?.from === e.from && f.breaks?.to === e.to) }));
+  });
+  return rows;
+}
+// Whether a crossing is new or changed in this PR (not said counts as such: better shown than hidden).
+export const crossingChanged = (r) => r.change === null || CHANGED.includes(r.change);
+
+// The sentence over the Security page, from the data: what the PR opens, grants and adds over a boundary, where the
+// ways in are checked, and how many crossings have a finding, are mitigated or are not assessed; then the unresolved
+// security findings. "Security · 0" is never alone.
+export function secSentence(rows, openSecurity = 0) {
+  const now = (rows ?? []).filter(crossingChanged), n = (k) => now.filter((r) => r.kind === k);
+  const many = (c, one, more) => `${c} ${c === 1 ? one : more}`;
+  const where = (r) => { const k = r.access?.auth_kind; return k === "code" ? "checked in the code" : k === "gateway" ? "checked at the gateway" : k === "iam" ? "checked by IAM" : k === "none" || /^none\b/i.test(r.check ?? "") ? "not checked" : r.check ? `checked by ${r.check}` : "check not assessed"; };
+  const parts = [n("entry").length && `opens ${many(n("entry").length, "way in", "ways in")} from the public side (${n("entry").map((r) => `${r.what || r.to.name}, ${where(r)}`).join("; ")})`,
+    n("right").length && `grants ${many(n("right").length, "right", "rights")} into another zone`, n("call").length && `adds or changes ${many(n("call").length, "call", "calls")} over a trust boundary`].filter(Boolean);
+  const res = (k) => now.filter((r) => r.result === k).length;
+  const first = parts.length ? `This PR ${parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}` : parts[0]}.` : "This PR opens, widens or adds no way in, right or call over a trust boundary that the data names.";
+  const second = now.length ? ` Of these ${many(now.length, "crossing", "crossings")}, ${[res("finding") && `${res("finding")} ${res("finding") === 1 ? "has a finding" : "have findings"}`, res("mitigated") && `${res("mitigated")} ${res("mitigated") === 1 ? "is" : "are"} mitigated`, res("not_assessed") && `${res("not_assessed")} ${res("not_assessed") === 1 ? "is" : "are"} not assessed`].filter(Boolean).join(", ")}.` : "";
+  return `${first}${second} ${openSecurity ? `${many(openSecurity, "security finding is", "security findings are")} unresolved.` : "No security finding is unresolved."}`;
+}
+
+// The security run's effective zones ([{node, drawn, effective, where}], derived from its gates) in the shape of
+// effectiveZones: Map(node id -> {trust, drawn, zone, why}); empty list: none.
+export function effectiveFrom(list, arch) {
+  const zones = arch?.zones ?? [], zoneOf = (nid) => zones.find((z) => z.id === (arch?.nodes ?? []).find((n) => n.id === nid)?.zone) ?? null, out = new Map();
+  for (const x of list ?? []) if (x?.node && x.effective && x.effective !== x.drawn) out.set(x.node, { trust: x.effective, drawn: x.drawn, zone: zoneOf(x.node) ?? { name: x.drawn, trust: x.drawn }, why: x.where ? `its first check is at ${x.where}` : "its first check is in its own code" });
+  return out;
 }

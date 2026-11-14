@@ -497,5 +497,21 @@ const mail = { groups: [{"id": "fd", "label": "Front desk Lambda"}, {"id": "core
   assert.deepEqual(za.edges, zoned.edges, "the calls keep their indexes: findings find their call");
   assert.equal(zoneArch(mail), mail); assert.equal(zoneArch(null), null);
   assert.ok(archLayout(mail).paths.every((p) => p.crosses === null));
+  // Wrapped, no band cuts through a frame: a wide zone goes whole into the next band.
+  const ZL = archLayout(za, "diff", () => 0, false, { labels: true }), app = ZL.groups.find((g) => g.label === "Application");
+  for (const view of [300, 500, 700, 900]) for (const b of archBands(ZL, view)) for (const g of ZL.groups.filter((x) => !x.bare))
+    assert.ok(!(g.x < b.x0 && b.x0 < g.x + g.w), `a band at ${view} px cuts ${g.label} at ${b.x0}`);
+  assert.ok(archBands(ZL, Math.round(app.w * 0.6)).length > 1, "a frame wider than the view still wraps around it");
 }
 console.log("ok");
+
+// ---- a mark names its finding
+{
+  const { markLine } = await import("./arch.js");
+  const f = (title, severity) => ({ title, severity });
+  assert.deepEqual(markLine({ n: 1, findings: [f("Front desk token defaults to empty, so an empty bearer token authenticates", "high")] }).text, "Front desk token defaults to…");
+  const two = markLine({ n: 2, findings: [f("Minor thing", "low"), f("No SQS publisher", "high")] });
+  assert.deepEqual([two.text, two.top.title], ["No SQS publisher and 1 more", "No SQS publisher"]);
+  assert.equal(markLine({ n: 1, findings: [f("`Queue.publish` never sends", "high")] }).text, "Queue.publish never sends");
+  assert.deepEqual(markLine(null), { text: "", top: null });
+}
