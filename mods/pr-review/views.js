@@ -15,6 +15,45 @@ export function capped(list, all = false, max = IN_PROGRESS_MAX) {
   return all ? { shown: list, more: 0 } : { shown: list.slice(0, max), more: Math.max(0, list.length - max) };
 }
 
+// ---- the PR list (main.js picker)
+
+// Open and draft PRs first; merged and closed ones are their own group, folded, without a way into the review.
+export const isOpenPr = (p) => p.state === "open" || p.state === "draft";
+export const byState = (list) => ({ open: list.filter(isOpenPr), done: list.filter((p) => !isOpenPr(p)) });
+
+// One row per PR: the ones shown under "In progress" leave the list (above: how many). started: the review in
+// progress of a PR by url, so a row that stays (over the cap there) resumes instead of starting again.
+export function listRows(list, inProgress, shown) {
+  const top = new Set(shown.map((r) => r.url)), rest = list.filter((p) => !top.has(p.url));
+  return { list: rest, above: list.length - rest.length, started: new Map(inProgress.map((r) => [r.url, r])) };
+}
+
+// A row's risk signal, from cached files only (null without any): the highest severity among the open findings, and
+// whether one of them is about security. analysis: a mapReview result (its layers' findings); findings and status:
+// the reviewers' findings file. A fixed or dismissed finding is settled; a fix that was only sent is not.
+const SEVERITIES = ["critical", "high", "medium", "low"];
+export function riskSignal({ analysis = null, findings = null, status = null } = {}) {
+  if (!analysis && !findings) return null;
+  const open = [...(findings ?? []), ...(analysis?.steps ?? []).flatMap((s) => s.findings ?? [])].filter((f) => !["fixed", "dismissed"].includes(status?.[f.id]?.s));
+  return { top: SEVERITIES.find((s) => open.some((f) => f.severity === s)) ?? null, open: open.length,
+    security: open.some((f) => f.reviewer === "security" || f.category === "security") };
+}
+
+// "0/6 layers · 2/9 files · 1 comment · 11 open findings" for a review in progress (open-reviews.json `progress`,
+// whose fields keep their names: steps, stepsChecked).
+export function progressText(p = {}) {
+  const n = (count, one, many) => (count ? `${count} ${count === 1 ? one : many}` : null);
+  return [p.steps ? `${p.stepsChecked ?? 0}/${p.steps} layers` : null, p.files ? `${p.filesViewed ?? 0}/${p.files} files` : null,
+    n(p.comments, "comment", "comments"), n(p.replies, "reply", "replies"), p.fixedThreads ? `${p.fixedThreads} fixed` : null,
+    n(p.findingsOpen, "open finding", "open findings")].filter(Boolean).join(" · ");
+}
+
+// "3 pending comments in 2 files": what "Finish your review" would take along.
+export function pendingText(comments) {
+  const n = comments.length, files = new Set(comments.map((c) => c.file)).size;
+  return `${n} pending ${n === 1 ? "comment" : "comments"} in ${files} ${files === 1 ? "file" : "files"}`;
+}
+
 // A flow (or a layer's architecture) visual as archLayout's input: its groups, else one implicit group for all nodes;
 // a node's note is its card's description; `changed` becomes status "changed"; an edge's text is its label (or
 // "event [guard] / action"). Sources (implemented, existing, spec) pass through, so the cards style the same way.

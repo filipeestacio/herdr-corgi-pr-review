@@ -16,13 +16,13 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, Editor, EditorState, TextView } from "gpui-base";
 import { spaces, panes, focused, agents, exec, hc, run, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, home, layout, props, watchFolder, nextCommand } from "herdr";
-import { diffRows, buildPrompt, splitPatch, selection, nextChange, lineLabel, anchorRow, buildReview, hunksOf, hash, uiLine, reviewRequest, mapReview, progressLine, triageOf } from "./pr.js";
+import { diffRows, buildPrompt, splitPatch, selection, nextChange, lineLabel, anchorRow, buildReview, hunksOf, hash, uiLine, reviewRequest, mapReview, triageOf } from "./pr.js";
 import { parsePrRef, ghTarget, pruneSources } from "./pr.js";
 import * as C from "./context.js";
 import { loadDiff, saveDiff } from "./diffcache.js";
 import { setupBanner, renderSetup, loadSetup, runSetup, openUrl, readConfig } from "./setup-view.js";
-import { chip, triageTip, PRIORITY_TIP } from "./stack.js";
-import { panelState, bodyTab, capped, IN_PROGRESS_MAX, diffTooLarge, filesToDiff } from "./views.js";
+import { chip, triageTip, PRIORITY_TIP, SEVERITY_COLOR } from "./stack.js";
+import { panelState, bodyTab, capped, IN_PROGRESS_MAX, diffTooLarge, filesToDiff, isOpenPr, byState, listRows, riskSignal, progressText, pendingText } from "./views.js";
 import { ReviewMode, startReview, startExplore, saveKey, flowCard, modelPills, modelLabel, renderReviews, renderAgentBar, renderKeys, renderCardMenu, renderMini } from "./review.js";
 import { highlightJob, highlightStep, langOf, colors, renderLine, editorSyntax } from "./syntax.js";
 
@@ -38,7 +38,7 @@ const IGNORED = /\/(node_modules|target|dist|build|\.venv|__pycache__)\/|\/\.git
 const cacheDir = () => `${appHome()}/pr-data/cache`;
 // The model for walkthroughs and the review analysis: the review layout's picker (shared), Sonnet by default.
 const walkModel = () => { const m = shared("review.model"); return typeof m === "string" && m ? m : "sonnet"; }; // as review.js model()
-const STATE = { open: "ansi2", draft: "dim", merged: "ansi5", closed: "ansi1" };
+const STATE = { open: "ansi2", draft: "muted", merged: "ansi5", closed: "ansi1" };
 const WEIGHT = { key: ["key", "ansi3"], skim: ["skim", "dim"] };
 const COVER = { seen: ["done", "ansi2"], partly: ["partly", "ansi3"], absent: ["missing", "ansi1"] };
 const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -54,6 +54,7 @@ const SOURCE_MS = 3 * 60 * 1000, SOURCE_KEEP = 20, PICKED_KEEP = 20;
 const GH_FIELDS = "number,title,author,headRefName,headRefOid,baseRefName,updatedAt,isDraft,reviewDecision,additions,deletions,url";
 const REVIEW = { APPROVED: ["approved", "ansi2"], CHANGES_REQUESTED: ["changes requested", "ansi1"], REVIEW_REQUIRED: ["review required", "ansi3"] };
 const BRANCH = "branch"; // shared "pr.selected": the current branch was picked (not a PR)
+const SEC_MARK = "⛨"; // security's own mark in a PR row (a shield), next to the word
 const age = (iso) => { const m = Math.round((Date.now() - Date.parse(iso)) / 60000); return !Number.isFinite(m) ? "" : m < 60 ? `${m}m` : m < 2880 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`; };
 
 function location() {
@@ -634,7 +635,7 @@ export default class PrReview extends View {
       const now = this.sourceNow();
       if (now === "mine") { this.loadTriage(cx); return cx.notify(); }
       const sr = this.spaceSlug, key = now === "repo" ? (sr ? `repo:${sr.slug}` : null) : "review";
-      if (!key) { this.srcLists.repo = { key: null, prs: [], error: "The active space is not a GitHub repo" }; return cx.notify(); }
+      if (!key) { this.srcLists.repo = { key: null, prs: [] }; this.loadTriage(cx); return cx.notify(); } // no GitHub repo here: the list says what to do
       const before = await readTextFile(sourcesFile()).catch(() => null), doc = JSON.parse(before ?? "{}");
       if (!force && doc[key] && Date.now() - doc[key].at < SOURCE_MS) { this.srcLists[now] = { key, ...doc[key] }; this.loadTriage(cx); return cx.notify(); }
       this.srcLists[now] = { key, prs: doc[key]?.prs ?? [], at: doc[key]?.at, loading: true }; cx.notify();
@@ -690,7 +691,7 @@ export default class PrReview extends View {
     setShared("goto.handlers.review", [{ pattern: "github\\.com/([\\w.-]+)/([\\w.-]+)/pull/(\\d+)", title: "Review PR #{number} · {title}",
       subtitle: "{owner}/{repo}", run: [["goto.set", open]] }]);
     setShared("goto.items.review", (shared("review.open") ?? []).map((r) => ({ id: `review:${r.url}`, title: `Resume review #${r.number} ${r.title ?? ""}`,
-      subtitle: [r.repo, progressLine(r.progress)].filter(Boolean).join(" · "), tag: "Review", url: r.url, keywords: [String(r.number), r.repo ?? ""],
+      subtitle: [r.repo, progressText(r.progress)].filter(Boolean).join(" · "), tag: "Review", url: r.url, keywords: [String(r.number), r.repo ?? ""],
       run: [["goto.set", { key: "pr.goto", value: { url: r.url } }]] })));
   }
 
@@ -729,22 +730,28 @@ export default class PrReview extends View {
   }
 
   // The open PRs' triage (pr.js triageOf) from what is cached: the latest analysis, findings, related PRs, diff size,
-  // and triage.py's why/priority. Reads files only (no gh, no LLM); when the list opens.
+  // and triage.py's why/priority; and each row's risk signal (views.js riskSignal), also for the reviews in progress
+  // that are not in the list. Reads files only (no gh, no LLM); when the list opens.
   loadTriage(cx) {
-    const open = this.listNow().filter((p) => p.state === "open" || p.state === "draft").slice(0, TRIAGE_MAX), m = walkModel();
+    const open = this.listNow().filter(isOpenPr).slice(0, TRIAGE_MAX), listed = new Set(open.map((p) => p.url)), m = walkModel();
+    const rest = (shared("review.open") ?? []).filter((r) => shownIn(r) && !listed.has(r.url)).map((r) => r.target ?? r);
     cx.spawn(async (cx) => {
       const llm = JSON.parse(await readTextFile(triageFile()).catch(() => null) ?? "{}"), read = (f) => readTextFile(f).then((x) => (x ? JSON.parse(x) : null)).catch(() => null);
-      const out = new Map();
-      await Promise.all(open.map(async (pr) => {
+      const out = new Map(), risk = new Map();
+      await Promise.all([...open, ...rest].map(async (pr) => {
         const h = hash(pr.url), head = pr.headSha ?? hash(`${pr.updatedAt}|${pr.head}`);
-        const [an, fd, ctx, diff] = await Promise.all([read(`${cacheDir()}/rv-${h}-${m}.json`), read(`${appHome()}/pr-data/findings/${h}.json`),
-          pr.headSha ? read(`${cacheDir()}/ctx-${h}-${pr.headSha}.json`) : null, read(`${cacheDir()}/diff-${h}-${head}.json`)]);
-        const files = diff ? splitPatch(diff.text) : null;
+        const [an, fd] = await Promise.all([read(`${cacheDir()}/rv-${h}-${m}.json`), read(`${appHome()}/pr-data/findings/${h}.json`)]);
+        const analysis = an?.answer ? mapReview(an.answer, []) : null;
+        risk.set(pr.url, riskSignal({ analysis, findings: fd?.findings, status: fd?.status }));
+        if (!listed.has(pr.url)) return;
+        // The diff's size from its cache (in parts, diffcache.js); a missing one leaves the effort to the analysis.
+        const [ctx, diff] = await Promise.all([pr.headSha ? read(`${cacheDir()}/ctx-${h}-${pr.headSha}.json`) : null, loadDiff(`${cacheDir()}/diff-${h}-${head}`, pr.url, head, readTextFile)]);
+        const files = diff ? splitPatch(diff) : null;
         const security = (fd?.findings ?? []).filter((f) => f.reviewer === "security" && !["fixed", "dismissed"].includes(fd.status?.[f.id]?.s));
-        out.set(pr.url, triageOf({ pr, analysis: an?.answer ? mapReview(an.answer, []) : null, size: files && { files: files.length, lines: files.reduce((n, f) => n + f.add + f.del, 0) },
+        out.set(pr.url, triageOf({ pr, analysis, size: files && { files: files.length, lines: files.reduce((n, f) => n + f.add + f.del, 0) },
           security, related: ctx, llm: llm[pr.url] ?? null }));
-      }));
-      this.triage = out; cx.notify();
+      }).map((one) => one.catch(() => null))); // a broken cache file costs that row its chips, not the whole list
+      this.triage = out; this.risk = risk; cx.notify();
     });
   }
 
@@ -763,30 +770,56 @@ export default class PrReview extends View {
     cx.notify();
   }
 
+  // A PR row's risk signal as chips (views.js riskSignal): the highest severity among its open findings, and
+  // security's own mark. Nothing without a cached analysis or findings file.
+  riskChips(t, url, id) {
+    const r = this.risk?.get(url);
+    if (!r?.top) return [];
+    return [chip(t, `Highest finding: ${r.top}`, t[SEVERITY_COLOR[r.top]], false, `${id}-sev`, "The highest severity among this PR's open findings, from the cached analysis and reviews"),
+      ...(r.security ? [chip(t, `${SEC_MARK} Security`, t.ansi1, true, `${id}-sec`, "At least one open finding of this PR is about security")] : [])];
+  }
+
+  // The list of the shown source, one row per PR: the ones under "In progress" are not repeated, open PRs come first
+  // with one way into the review each (Resume once started), merged and closed ones are folded under their own row.
   picker(t) {
-    const src = this.sourceNow(), list = this.listNow(), sl = this.srcLists[src];
+    const src = this.sourceNow(), sl = this.srcLists[src], inProgress = (shared("review.open") ?? []).filter(shownIn);
+    const { list, above, started } = listRows(this.listNow(), inProgress, capped(inProgress, this.allOpen).shown), { open, done } = byState(list);
     const item = (id, on, top, sub, state, tag, click, pr) => v_flex().id(id).flex_none().px(8).py(4).rounded(7).cursor_pointer().tooltip(pr ? "Select this PR to see its diff" : "Use the diff of the focused pane's branch")
       .when(on, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click(click)
-      .child(h_flex().gap(6).child(div().flex_1().min_w(0).truncate().child(top)).when(Boolean(state), (e) => e.child(div().id(`${id}-st`).tooltip(`PR state: ${state}`).flex_none().text_size(10.5).text_color(t[STATE[state]] ?? t.dim).child(state)))
-        .when(Boolean(pr), (e) => e.child(pill(`${id}-rv`, t, "Review", (_e, cx) => { cx.stop_propagation(); this.pickTarget(pr, cx, true); }, false, "Open this PR in the review layout"))))
-      .when(Boolean(sub), (e) => e.child(h_flex().gap(6).text_size(11).text_color(t.dim).child(div().id(`${id}-sub`).tooltip(src === "mine" ? "Repository and the session that opened it" : "Author, review status, lines added and removed, last update").flex_1().min_w(0).truncate().child(sub))
+      .child(h_flex().gap(6).child(div().flex_1().min_w(0).truncate().child(top)).when(Boolean(state), (e) => e.child(div().id(`${id}-st`).tooltip(`PR state: ${state}`).flex_none().text_size(10.5).text_color(t[STATE[state]] ?? t.muted).child(state)))
+        .when(Boolean(pr && isOpenPr(pr)), (e) => { // the one way into the review; a merged or closed PR has none
+          const r = started.get(pr.url);
+          return e.child(r ? pill(`${id}-rv`, t, "Resume", (_e, cx) => { cx.stop_propagation(); startReview(r.target ?? r); }, false, "Continue this review where you left it")
+            : pill(`${id}-rv`, t, "Review", (_e, cx) => { cx.stop_propagation(); this.pickTarget(pr, cx, true); }, false, "Open this PR in the review layout"));
+        }))
+      .when(Boolean(sub), (e) => e.child(h_flex().gap(6).text_size(11).text_color(t.muted).child(div().id(`${id}-sub`).tooltip(src === "mine" ? "Repository and the session that opened it" : "Author, review status, lines added and removed, last update").flex_1().min_w(0).truncate().child(sub))
         .when(Boolean(tag), (e) => e.child(div().id(`${id}-tg`).tooltip("Agent that opened this PR").flex_none().max_w(140).truncate().px(5).rounded(4).bg(t.raised).text_size(10).child(tag)))))
-      .when(Boolean(pr && this.triage?.get(pr.url)), (e) => { // the triage card: compact; the why shows on the picked PR
-        const tri = this.triage.get(pr.url);
-        return e.child(h_flex().flex_wrap().gap(4).pt(2).child(chip(t, `● P${tri.priority}`, tri.priority === 1 ? t.ansi1 : tri.priority === 2 ? t.ansi3 : t.muted, false, `${id}-pri`, PRIORITY_TIP))
-          .children(tri.chips.map((c, k) => chip(t, c, /security/i.test(c) ? t.ansi1 : t.muted, false, `${id}-tc${k}`, triageTip(c)))))
-          .when(on && Boolean(tri.why), (e) => e.child(div().mt(3).pl(8).border_l(3).border_color(t.accent).text_size(11.5).line_height(1.4).whitespace_normal().text_color(t.foreground).child(tri.why)));
+      .when(Boolean(pr && (this.triage?.get(pr.url) || this.risk?.get(pr.url)?.top)), (e) => { // risk first, then the triage card: compact; the why shows on the picked PR
+        const tri = this.triage?.get(pr.url);
+        return e.child(h_flex().flex_wrap().gap(4).pt(2).children(this.riskChips(t, pr.url, id))
+          .when(Boolean(tri), (e) => e.child(chip(t, `● P${tri.priority}`, tri.priority === 1 ? t.ansi1 : tri.priority === 2 ? t.ansi3 : t.muted, false, `${id}-pri`, PRIORITY_TIP))
+            .children(tri.chips.filter((c) => !/security/i.test(c)).map((c, k) => chip(t, c, t.muted, false, `${id}-tc${k}`, triageTip(c)))))) // security: the mark above says it
+          .when(on && Boolean(tri?.why), (e) => e.child(div().mt(3).pl(8).border_l(3).border_color(t.accent).text_size(11.5).line_height(1.4).whitespace_normal().text_color(t.foreground).child(tri.why)));
       });
     // A PR you didn't open: author, draft, review decision, +/−, age; its repo for review requests.
     const other = (p) => [src === "review" ? p.repo : null, p.author ? `@${p.author}` : null, REVIEW[p.review]?.[0],
       p.add != null ? `+${p.add} −${p.del}` : null, p.updatedAt ? age(p.updatedAt) : null].filter(Boolean).join(" · ");
+    const row = (p) => (src === "mine"
+      ? item(`pick-${p.url}`, this.prSel?.url === p.url, `#${p.number} ${p.title ?? ""}`,
+        `${p.repo.split("/").pop()} · ${p.sessionTitle ?? p.session.slice(0, 8)}`, p.state, p.agent && `↳ ${p.agent}`, (_e, cx) => this.choose(p, cx), p)
+      : item(`pick-${src}-${p.url}`, this.prSel?.url === p.url, `#${p.number} ${p.title ?? ""}`, other(p), p.state, null, (_e, cx) => this.pickTarget(p, cx), p));
+    const inView = C.tagged(ctxDoc()) ? " (in this view)" : "", n = open.filter((p) => this.triage?.has(p.url)).length; // triaged rows of this list
+    // One sentence for an empty list: what is going on, or what to do.
+    const empty = src === "mine" ? (this.scanning ? "Searching transcripts for PRs…" : "No PRs from Claude sessions") : sl?.loading ? "Asking GitHub…"
+      : src === "repo" && sl?.key === null ? "Open a space on a GitHub repo to list its PRs."
+      : above ? "Every open PR here is in progress above." : src === "repo" ? `No open PRs in this repo${inView}` : `No open review requests${inView}`;
     return v_flex().flex_none().p(6)
         .child(h_flex().flex_none().px(4).py(2).gap(6).items_center()
           .child(h_flex().gap(2).p(2).rounded(7).border_1().border_color(t.border).children(SOURCES.map(([k, label]) =>
             div().id(`pr-src-${k}-${this.uid}`).tooltip(SRC_TIP[k]).px(8).h(22).flex().items_center().rounded(5).cursor_pointer().text_size(11.5)
               .bg(src === k ? t.selected : t.chrome).text_color(src === k ? t.foreground : t.muted)
               .on_click((_e, cx) => { setShared("pr.source", k); this.loadSource(cx); cx.notify(); }).child(label))))
-          .child(div().id(`pr-srcinfo-${this.uid}`).tooltip(src === "repo" ? "Repository these PRs come from" : "How long ago this list was fetched from GitHub").flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim)
+          .child(div().id(`pr-srcinfo-${this.uid}`).tooltip(src === "repo" ? "Repository these PRs come from" : "How long ago this list was fetched from GitHub").flex_1().min_w(0).truncate().text_size(10.5).text_color(t.muted)
             .child(src === "repo" ? this.spaceSlug?.slug ?? "" : sl?.loading ? "loading…" : sl?.at ? `${age(new Date(sl.at).toISOString())} ago` : ""))
           .when(src !== "mine", (e) => e.child(pill(`pr-src-reload-${this.uid}`, t, sl?.loading ? "…" : "↻", (_e, cx) => this.loadSource(cx, true), false, "Fetch this list from GitHub again", "Reload PR list"))))
         .child(h_flex().flex_none().px(4).py(2).gap(6).items_center()
@@ -794,17 +827,18 @@ export default class PrReview extends View {
             .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.openRefInput).h_full().text_size(11.5).text_color(t.foreground)))
           .child(pill(`pr-openref-go-${this.uid}`, t, "Open", (_e, cx) => this.openRef(cx), false, "Open the PR typed on the left")))
         .when(Boolean(sl?.error) && src !== "mine", (e) => e.child(div().px(8).py(4).text_size(11).text_color(t.ansi1).whitespace_normal().child(sl.error)))
+        // The triage line only says something when PRs were triaged; without any, only Setup is left of it.
         .child(h_flex().flex_none().px(8).py(4).gap(6).items_center()
-          .child(div().id(`pr-triage-info-${this.uid}`).tooltip("Priority and chips come from cached data; no GitHub or AI call").flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(this.triage?.size ? `${this.triage.size} open PRs triaged from cached data` : "Triage: loading…"))
-          .child(pill(`pr-triage-${this.uid}`, t, this.triaging ? "Triaging…" : "Triage PRs", (_e, cx) => this.runTriage(cx), false, "Rank the listed open PRs with one small AI call per context"))
+          .child(div().id(`pr-triage-info-${this.uid}`).tooltip("Priority and chips come from cached data; no GitHub or AI call").flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).child(n ? `${n} open ${n === 1 ? "PR" : "PRs"} triaged from cached data` : ""))
+          .when(n > 0, (e) => e.child(pill(`pr-triage-${this.uid}`, t, this.triaging ? "Triaging…" : "Triage PRs", (_e, cx) => this.runTriage(cx), false, "Rank the listed open PRs with one small AI call per context")))
           .child(pill(`pr-setup-${this.uid}`, t, "Setup", (_e, cx) => { this.picking = false; this.view = "setup"; runSetup(this, cx, false); cx.notify(); }, false, "Check which programs this mod needs are installed")))
         .child(item("pick-branch", Boolean(this.branchPicked && !this.prSel), "Current branch", "Diff of the focused pane", null, null, (_e, cx) => this.choose(null, cx)))
-        .children(list.map((p) => (src === "mine"
-          ? item(`pick-${p.url}`, this.prSel?.url === p.url, `#${p.number} ${p.title ?? ""}`,
-            `${p.repo.split("/").pop()} · ${p.sessionTitle ?? p.session.slice(0, 8)}`, p.state, p.agent && `↳ ${p.agent}`, (_e, cx) => this.choose(p, cx), p)
-          : item(`pick-${src}-${p.url}`, this.prSel?.url === p.url, `#${p.number} ${p.title ?? ""}`, other(p), p.state, null, (_e, cx) => this.pickTarget(p, cx), p))))
-        .when(!list.length, (e) => e.child(div().p(8).text_color(t.dim).child(src === "mine" ? (this.scanning ? "Searching transcripts for PRs…" : "No PRs from Claude sessions")
-          : sl?.loading ? "Asking GitHub…" : src === "repo" ? `No open PRs in this repo${C.tagged(ctxDoc()) ? " (in this view)" : ""}` : `No open review requests${C.tagged(ctxDoc()) ? " (in this view)" : ""}`)));
+        .children(open.map(row))
+        .when(done.length > 0, (e) => e.child(h_flex().id(`pr-done-${this.uid}`).flex_none().mt(4).px(8).h(24).gap(6).items_center().rounded(6).cursor_pointer().text_size(11.5).text_color(t.muted)
+          .tooltip(this.showDone ? "Hide the merged and closed PRs" : "Show the merged and closed PRs").hover((s) => s.bg(t.hover).text_color(t.foreground))
+          .on_click((_e, cx) => { this.showDone = !this.showDone; cx.notify(); }).child(div().w(10).flex_none().child(this.showDone ? "▾" : "▸")).child(`Merged or closed (${done.length})`)))
+        .when(done.length > 0 && Boolean(this.showDone), (e) => e.children(done.map(row)))
+        .when(!list.length, (e) => e.child(div().p(8).whitespace_normal().text_color(t.muted).child(empty)));
   }
 
   diffRow(row, i, t, plain = false) {
@@ -837,19 +871,23 @@ export default class PrReview extends View {
   }
 
   // Reviews started and not done (shared "review.open", written by the review layout): Resume goes back to exactly
-  // where it was. Only the contexts the view shows, each tagged when there are several.
+  // where it was, a click on the row shows the PR's diff here like a row of the list. Under the title the risk signal
+  // and the progress, wrapped; when it was last touched is in the row's tooltip. Only the contexts the view shows,
+  // each tagged when there are several.
   openReviews(t) {
     const ago = (ms) => { const m = Math.round((Date.now() - ms) / 60000); return m < 60 ? `${m} min ago` : m < 2880 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`; };
     const list = (shared("review.open") ?? []).filter(shownIn), { shown, more } = capped(list, this.allOpen);
     return v_flex().flex_none().px(10).pt(8).pb(4).gap(2).border_b(1).border_color(t.border)
       .child(h_flex().px(4).gap(8).items_center().child(div().flex_1().text_size(11).font_semibold().text_color(t.muted).child("In progress"))
         .when(Boolean(this.allOpen) && list.length > IN_PROGRESS_MAX, (e) => e.child(pill(`pr-open-less-${this.uid}`, t, "Show fewer", (_e, cx) => { this.allOpen = false; cx.notify(); }, false, "Show only the most recent reviews"))))
-      .children(shown.map((r) => h_flex().id(`pr-open-${r.url}`).gap(8).px(4).py(3).rounded(6).items_center().hover((s) => s.bg(t.hover))
-        .child(v_flex().flex_1().min_w(0)
+      .children(shown.map((r) => [r, this.riskChips(t, r.url, `pr-open-${r.url}`)]).map(([r, risk]) => h_flex().id(`pr-open-${r.url}`).gap(8).px(4).py(3).rounded(6).items_start().cursor_pointer().tooltip(`Select this PR to see its diff. Last touched ${ago(r.lastTouched)}.`)
+        .when(this.prSel?.url === r.url, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.pickTarget(r.target ?? r, cx))
+        .child(v_flex().flex_1().min_w(0).gap(2)
           .child(div().truncate().text_size(12.5).child(`#${r.number} ${r.title ?? ""}`))
-          .child(div().truncate().text_size(11).text_color(t.muted).child([r.status === "sent" ? "sent" : null, progressLine(r.progress), ago(r.lastTouched)].filter(Boolean).join(" · "))))
+          .when(risk.length > 0, (e) => e.child(h_flex().flex_wrap().gap(4).children(risk)))
+          .child(div().whitespace_normal().text_size(11).text_color(t.muted).child([r.status === "sent" ? "sent" : null, progressText(r.progress)].filter(Boolean).join(" · "))))
         .when(C.tagged(ctxDoc()), (e) => e.child(ctxTag(t, prCtx(r), r.url)))
-        .child(pill(`pr-resume-${r.url}`, t, "Resume", () => startReview(r.target ?? r), false, "Continue this review where you left it"))))
+        .child(pill(`pr-resume-${r.url}`, t, "Resume", (_e, cx) => { cx.stop_propagation(); startReview(r.target ?? r); }, false, "Continue this review where you left it"))))
       .when(more > 0, (e) => e.child(div().id(`pr-open-all-${this.uid}`).px(4).py(3).text_size(11.5).text_color(t.accent).cursor_pointer().tooltip("List every review in progress")
         .hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => { this.allOpen = true; cx.notify(); }).child(`Show all (${list.length})`)));
   }

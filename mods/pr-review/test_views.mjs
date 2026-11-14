@@ -1,6 +1,6 @@
 // Run: node test_views.mjs  (the panel's picking / selected state, the in-progress cap, a flow visual as archLayout input)
 import assert from "node:assert/strict";
-import { panelState, bodyTab, capped, flowArch, IN_PROGRESS_MAX, wheelStep, GESTURE_MS } from "./views.js";
+import { panelState, bodyTab, capped, flowArch, IN_PROGRESS_MAX, wheelStep, GESTURE_MS, byState, listRows, riskSignal, progressText, pendingText } from "./views.js";
 import { archLayout } from "./arch.js";
 
 // Picking until something is chosen; PRs ▾ goes back to picking without dropping the choice.
@@ -137,3 +137,44 @@ assert.ok(filesToDiff([{ filename: "i.png", status: "modified" }]).includes("No 
   assert.equal(hsVisible(300, 380), 100);
   console.log("hscroll ok");
 }
+
+// ---- the PR list (main.js picker)
+
+// Mine mixes open and merged PRs: open and draft ones first, the rest in their own group; only open ones get a way
+// into the review.
+const mine = [{ url: "m1", state: "merged" }, { url: "o1", state: "open" }, { url: "c1", state: "closed" }, { url: "d1", state: "draft" }, { url: "m2", state: "merged" }];
+assert.deepEqual(byState(mine).open.map((p) => p.url), ["o1", "d1"]);
+assert.deepEqual(byState(mine).done.map((p) => p.url), ["m1", "c1", "m2"]);
+assert.deepEqual(byState([]), { open: [], done: [] });
+
+// One row per PR: a PR shown under "In progress" leaves the list below; one that is in progress but not shown there
+// (over the cap) stays, and its row resumes instead of starting again.
+const started = [{ url: "o1" }, { url: "x" }, { url: "y" }, { url: "d1" }];
+const rows = listRows(mine, started, started.slice(0, 3));
+assert.deepEqual(rows.list.map((p) => p.url), ["m1", "c1", "d1", "m2"]);
+assert.equal(rows.above, 1);
+assert.equal(rows.started.get("d1"), started[3]);
+assert.equal(rows.started.has("m1"), false);
+assert.deepEqual(listRows(mine, [], []).list, mine);
+
+// The risk signal of a row comes from cached files only: the highest severity among the open findings (the analysis'
+// own and the reviewers'), and whether one of them is about security. Nothing cached: nothing shown.
+assert.equal(riskSignal({}), null);
+assert.equal(riskSignal({ analysis: null, findings: undefined }), null);
+const layers = { steps: [{ findings: [{ id: "a1", severity: "medium", category: "bug" }, { id: "a2", severity: "high", category: "security" }] }, { findings: [{ id: "a3", severity: "low", category: "structure" }] }, {}] };
+const reviewers = [{ id: "r1", reviewer: "security", severity: "critical" }, { id: "r2", reviewer: "claude", severity: "medium" }];
+assert.deepEqual(riskSignal({ analysis: layers, findings: reviewers }), { top: "critical", open: 5, security: true });
+// A fixed or dismissed finding no longer counts; one with a fix sent (progress) still does.
+assert.deepEqual(riskSignal({ analysis: layers, findings: reviewers, status: { r1: { s: "fixed" }, a2: { s: "progress" } } }), { top: "high", open: 4, security: true });
+assert.deepEqual(riskSignal({ analysis: layers, findings: reviewers, status: { r1: { s: "dismissed" }, a2: { s: "fixed" } } }), { top: "medium", open: 3, security: false });
+assert.deepEqual(riskSignal({ analysis: { steps: [] }, findings: [] }), { top: null, open: 0, security: false });
+// An analysis cached before layers had findings still loads.
+assert.deepEqual(riskSignal({ analysis: {} }), { top: null, open: 0, security: false });
+
+// The progress of a review in progress says "layers", like the review's tab, and leaves out what is zero.
+assert.equal(progressText({ steps: 6, stepsChecked: 0, files: 9, filesViewed: 2, comments: 1, replies: 0, fixedThreads: 0, findingsOpen: 11 }), "0/6 layers · 2/9 files · 1 comment · 11 open findings");
+assert.equal(progressText({ steps: 1, stepsChecked: 1, comments: 2, replies: 1, fixedThreads: 3, findingsOpen: 1 }), "1/1 layers · 2 comments · 1 reply · 3 fixed · 1 open finding");
+assert.equal(progressText(), "");
+
+assert.equal(pendingText([{ file: "a.py" }]), "1 pending comment in 1 file");
+assert.equal(pendingText([{ file: "a.py" }, { file: "a.py" }, { file: "b.py" }]), "3 pending comments in 2 files");
