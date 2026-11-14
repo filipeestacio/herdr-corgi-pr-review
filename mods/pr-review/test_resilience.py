@@ -68,7 +68,7 @@ by_file = [{"id": "m3", "ref": "r_f1", "introduced_here": False}]
 resilience.view({"paths": [{"kind": "silent", "steps": ["library/consumer.py:21", "library/mailer.py:14"], "result": "finding", "findings": ["r_f1"], "failing": [], "visible": False}]},
                 by_file, {"architecture": {"nodes": [{"id": "consumer", "status": "new", "at": "library/consumer.py:11"}], "edges": []}}, [])
 assert by_file[0]["introduced_here"] is True, "a step in the file of a new node counts as the node"
-assert resilience.view({}, [], {}, []) == {"deps": [], "effects": [], "state": [], "races": [], "db_calls": [], "caches": [], "clocks": [], "blind_spots": [], "paths": [],
+assert resilience.view({}, [], {}, []) == {"deps": [], "effects": [], "state": [], "races": [], "additions": [], "db_calls": [], "caches": [], "clocks": [], "blind_spots": [], "paths": [],
                                            "checks": [], "probes": [], "not_checked": []}
 
 # The block lands in the findings file next to the security view; another run keeps it.
@@ -77,4 +77,21 @@ reviewers.merge(file, "resilience", "h", [], {"state": "done"}, None, {"resilien
 reviewers.merge(file, "security", "h", [], {"state": "done"}, {"threats": []})
 doc = json.loads(file.read_text())
 assert doc["resilience"] == {"paths": []} and doc["security"] == {"threats": []}
+# Complexity against use: each part the PR adds, with what it solves and the simpler way; an unjustified one that
+# names no finding becomes a low complexity finding (never a blocker), the suggestion to remove it.
+adds = resilience.view({"additions": [
+    {"what": "Step Function for one call", "kind": "step_function", "at": "template.yaml:40", "solves": "nothing that fails here", "likelihood": "cannot_happen",
+     "cost": {"mental": "a state machine to read", "ops": "its own alarms", "money": ""}, "simpler": "call the Lambda directly", "result": "unjustified"},
+    {"what": "DLQ", "kind": "dlq", "at": "template.yaml:12", "solves": "the poison message of p1 at consumer.py:14", "likelihood": "likely", "cost": {}, "simpler": "none", "result": "justified"},
+    {"what": "Cache", "kind": "cache", "at": "x.py", "solves": "", "likelihood": "often", "cost": {}, "simpler": "", "result": "unjustified"},
+    {"kind": "no what"}]}, [], {}, [])["additions"]
+assert [(a["what"], a["result"], a["likelihood"]) for a in adds] == [("Step Function for one call", "unjustified", "cannot_happen"), ("DLQ", "justified", "likely"), ("Cache", "unjustified", None)]
+made = resilience.complexity_findings(adds, "h1")
+assert [(f["file"], f["line"], f["category"], f["impact"], f["severity"], f["title"]) for f in made] == [("template.yaml", 40, "complexity", "maintainability", "low", "Step Function for one call adds a part this PR does not need")]
+assert made[0]["suggestion"] == "Remove it: call the Lambda directly." and "It costs: a state machine to read; its own alarms" in made[0]["detail"] and adds[0]["findings"] == [made[0]["id"]]
+assert adds[2]["findings"] == [], "without a line no finding"
+assert resilience.complexity_findings(adds) == [], "once linked, no second finding"
+plain2 = reviewers.PLAIN["resilience"].format(base="b", number=2)
+assert "Recommend no mechanism by default" in plain2 and "came in because it sounded right" in plain2 and "additions (one per component" in resilience.ASK and "action (what to do" in resilience.ASK
+assert "complexity" in reviewers.review.CATEGORIES
 print("ok")

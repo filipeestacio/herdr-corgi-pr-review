@@ -631,6 +631,7 @@ def main(arg):
         blocks["resilience"] = {"head": req["head"], "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "model": meta.get("model_id"), "picture": made,
                                 "hints_used": {"architecture": bool((pic.get("architecture") or {}).get("nodes")), "security": bool(doc.get("security")), "findings": bool(known)},
                                 **resilience.view(answer, findings, pic, [f["id"] for f in known])}
+        findings += resilience.complexity_findings(blocks["resilience"]["additions"])  # an unjustified part becomes a finding, never a blocker
     if req["kind"] == "security":
         security = {"head": req["head"], "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "picture": made, **security_view(answer, findings, pic, changed, wt)}
     for f in findings:
