@@ -304,7 +304,7 @@ export const ReviewMode = {
     this.press = { x: 0, w: 0, shift: false }; this.items = []; this.at = {};
     // The inline composer (one at a time, under the selection) and the Finish-your-review popover's summary.
     this.composing = false; this.finishOpen = false; this.event = "comment"; this.route = null; this.posted = null; this.gh = [];
-    this.draft = TextareaState.new({ placeholder: "Leave a comment (⌘↩ adds it, Esc cancels)" });
+    this.draft = TextareaState.new({ placeholder: "Leave a comment" });
     this.summary = TextareaState.new({ placeholder: "Leave a comment" });
     // Threads: sent/posted comments with their replies; the GitHub preview's ticks and inline edit; the agent preview.
     this.threadDoc = {}; this.replies = {}; this.openThreads = new Set(); this.off = new Set(); this.summaryOn = true; this.editItem = null; this.replyTo = null; this.sendP = null;
@@ -368,6 +368,10 @@ export const ReviewMode = {
     // Scripts and tests: the composer's text, then its "Post now / Send to agent…" button; the preview's "Send to agent".
     else if (name === "draft") { this.draft.set_value(arg); }
     else if (name === "single") this.singleComment(cx);
+    // The same as their clicks: the ▾ beside the composer's main button, and a finding's card in the diff
+    // (finding-card:<finding id> opens or folds it).
+    else if (name === "compose-more") this.toggleComposeMore();
+    else if (name === "finding-card") { const f = this.findingById(arg); if (f) (this.fopen ??= new Map()).set(f.id, !this.findOpen(f)); }
     else if (name === "send") this.sendConfirmed(cx);
     else if (name === "route") this.route = arg; // github | agent: where Submit and single comments go
     else if (name === "fix") this.fixComments(arg ? arg.split(",") : this.selected(), cx); // fix:<comment id>[,<id>…], else the selected ones (the preview opens)
@@ -1776,17 +1780,20 @@ export const ReviewMode = {
   },
 
   closeComposer(cx) {
-    this.composing = false; this.editing = null; this.draft.set_value(""); this.fh.focus(); cx.notify();
+    this.composing = false; this.editing = null; this.composeMore = false; this.draft.set_value(""); this.fh.focus(); cx.notify();
   },
 
-  // The composer's buttons, left to right: x from the list's left edge (clicks are placed by x, see onItem).
+  // The composer's buttons, left to right: x from the list's left edge (clicks are placed by x, see onItem). The main
+  // button adds to the pending review. Posting this one comment to GitHub at once is public and cannot be taken back,
+  // so it waits behind the ▾ beside the main button (composeMore) instead of sitting next to it.
   composeButtons() {
+    const now = this.routeNow() === "github" ? [["▾", 28, "toggleComposeMore"], ...(this.composeMore ? [["Post now to GitHub", 160, "singleComment"]] : [])] : [["Send to agent…", 160, "singleComment"]];
     const list = this.editing ? [["Suggestion", 104, "insertSuggestion"], ["Cancel", 80, "closeComposer"], ["Update comment", 140, "addDraft", true]]
-      : [["Suggestion", 104, "insertSuggestion"], ["Cancel", 80, "closeComposer"], [this.routeNow() === "github" ? "Post now to GitHub" : "Send to agent…", 160, "singleComment"],
-        [this.comments.length ? "Add review comment" : "Start a review", 160, "addDraft", true]];
+      : [["Suggestion", 104, "insertSuggestion"], ["Cancel", 80, "closeComposer"], [this.comments.length ? "Add review comment" : "Start a review", 160, "addDraft", true], ...now];
     let x = GUTTER + 16; // the card's 4 px border and 12 px padding
-    return list.map(([label, w, act, primary], i) => { const b = { label, w, act, primary, x: x + (i === 1 ? 24 : 0) }; x = b.x + w + BTN_GAP; return b; });
+    return list.map(([label, w, act, primary], i) => { const b = { label, w, act, primary, x: x + (i === 1 ? 24 : 0) }; x = b.x + w + (list[i + 1]?.[2] === "toggleComposeMore" ? 2 : BTN_GAP); return b; });
   },
+  toggleComposeMore() { this.composeMore = !this.composeMore; },
 
   // A ```suggestion block with the selected lines, for GitHub's "Commit suggestion".
   insertSuggestion() {
@@ -3500,22 +3507,20 @@ export const ReviewMode = {
     }
     if (it.t === "compose") {
       const c = this.editing, a = c ?? this.selAnchor(), out = Boolean(a) && this.routeNow() === "github" && !inDiff(this.diffLines ?? new Map(), { file: this.fsel?.path, ...a });
-      const now = this.routeNow() === "github" ? (shared("review.hintPostNow") ? "Post now: one comment to GitHub at once" : "Tip: Post now to GitHub posts this one comment at once; Start a review collects them for one review")
-        : "Send to agent…: shows what goes to the agent first";
       return div().w_full().h(COMPOSE).pl(GUTTER).pr(16).pt(6).child(v_flex().size_full().px(12).pt(8).pb(4).gap(6).border_l(4).border_r(1).border_t(1)
-        .border_color(t.accent).bg(t.surface).rounded_tl(4).rounded_tr(4)
+        .border_color(t.muted).bg(t.surface).rounded_tl(4).rounded_tr(4)
         .child(h_flex().h(18).gap(8).items_center().text_size(12)
           .child(div().font_semibold().text_color(t.foreground).child(c ? `Edit comment · ${uiLine(c)}` : a ? `Comment on ${uiLine(a)}` : "Comment"))
           .when(out, (e) => e.child(badge(t, "not in the diff: will go into the review body", t.ansi3).id("rv-compose-out").tooltip("GitHub cannot attach a line comment outside the diff, so it goes into the review body")))
-          .child(div().flex_1().min_w(0).truncate().text_right().text_color(t.muted).child(c ? "⌘↩ saves · Esc cancels" : `⌘↩ adds to the review · Esc cancels · ${now}`)))
+          .child(div().flex_1().min_w(0).truncate().text_right().text_color(t.muted).child(`⌘↩: ${this.composeButtons().find((b) => b.primary).label} · Esc: Cancel`)))
         .child(div().flex_1().min_h(0).px(10).py(6).rounded(6).border_1().border_color(this.typing === "draft" ? t.accent : t.border).bg(t.background).cursor_text()
           .child(Textarea.new(this.draft).size_full().text_size(13.5).text_color(t.foreground))));
     }
     if (it.t === "composeact") {
       const bs = this.composeButtons();
       return div().w_full().h(ACT + 4).pl(GUTTER).pr(16).pb(6).child(h_flex().size_full().px(12).items_center().border_l(4).border_r(1).border_b(1)
-        .border_color(t.accent).bg(t.surface).rounded_bl(4).rounded_br(4)
-        .children(bs.map((b, i) => div().id(`rv-cb-${b.act}`).tooltip(COMPOSE_TIP[b.act]).w(b.w).h(28).flex_none().ml(i === 0 ? 0 : b.x - bs[i - 1].x - bs[i - 1].w)
+        .border_color(t.muted).bg(t.surface).rounded_bl(4).rounded_br(4)
+        .children(bs.map((b, i) => div().id(`rv-cb-${b.act}`).tooltip(COMPOSE_TIP[b.act] ?? (this.composeMore ? "Hide Post now to GitHub" : "Another way to send this comment: post it to GitHub at once, outside the review")).w(b.w).h(28).flex_none().ml(i === 0 ? 0 : b.x - bs[i - 1].x - bs[i - 1].w)
           .flex().items_center().justify_center().rounded(6).border_1().border_color(b.primary ? t.solid : t.border).bg(b.primary ? t.solid : t.background)
           .text_size(12.5).text_color(b.primary ? t.solid_foreground : t.foreground).when(Boolean(b.primary), (e) => e.font_semibold())
           .child(this.sending && b.act !== "closeComposer" && b.act !== "insertSuggestion" ? "…" : b.label))));
