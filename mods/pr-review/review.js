@@ -899,7 +899,16 @@ export const ReviewMode = {
   // function (views.js findingAnchor), so it meets the analysis' finding there; its code then no longer belongs to it.
   merged() {
     const ai = this.ai, list = this.find.list, st = this.find.status, handled = this.prog.handled, n = Object.keys(handled).length, m = this.findMemo;
-    const lines = list.map((f) => (f.line > 0 ? findingAnchor(this.rowsFor(f.file, true), f.line, f.end) : f.line)), at = lines.join();
+    // A reviewer's line moved to the next line of code (views.js findingAnchor), remembered per row array: this runs
+    // for every lookup of a finding while a view draws, and scanning every file's rows each time timed the render out.
+    const anchor = (f) => {
+      const rows = this.rowsFor(f.file, true), key = `${f.line}:${f.end}`;
+      let memo = (this.anchorMemo ??= new WeakMap()).get(rows);
+      if (!memo) this.anchorMemo.set(rows, (memo = new Map()));
+      if (!memo.has(key)) memo.set(key, findingAnchor(rows, f.line, f.end));
+      return memo.get(key);
+    };
+    const lines = list.map((f) => (f.line > 0 ? anchor(f) : f.line)), at = lines.join();
     if (m?.ai === ai && m.list === list && m.st === st && m.handled === handled && m.n === n && m.at === at) return m;
     const moved = list.map((f, i) => (lines[i] === f.line ? f : { ...f, line: lines[i], end: Math.max(lines[i], f.end ?? 0), head: undefined, code: undefined }));
     const m2 = mergeFindings([...moved, ...(ai?.steps ?? []).flatMap((s) => s.findings ?? [])], (ai?.suspects ?? []).filter((s) => !handled[s.key]), st);
