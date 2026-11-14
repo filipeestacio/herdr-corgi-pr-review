@@ -71,10 +71,17 @@ VISUAL = {"type": "object", "required": ["kind", "title", "nodes", "edges"], "pr
     "transitions": {"type": "array", "maxItems": 16, "items": TRANSITION}}}
 VISUALS = {"type": "array", "maxItems": 3, "items": VISUAL}
 STATUS = {"enum": ["new", "changed", "unchanged", "removed"]}
-ARCHITECTURE = {"type": "object", "required": ["groups", "nodes", "edges"], "properties": {
+# Trust zones of the picture: who can reach what stands in them. A node names its zone; place() marks the edges that
+# cross from one trust level to another, and says for security findings from where their place can be reached.
+TRUST = ["public", "authenticated", "internal", "data"]
+AUTH_KINDS = ["none", "code", "gateway", "iam"]
+REACH = ["public", "authenticated", "internal_only", "unknown"]
+ARCHITECTURE = {"type": "object", "required": ["groups", "nodes", "edges", "zones"], "properties": {
+    "zones": {"type": "array", "maxItems": 8, "items": {"type": "object", "required": ["id", "name", "trust", "evidence"], "properties": {
+        "id": S, "name": S, "trust": {"enum": TRUST}, "evidence": S}}},
     "groups": {"type": "array", "maxItems": 5, "items": {"type": "object", "required": ["id", "label", "kind"], "properties": {"id": S, "label": S, "kind": S}}},
     "nodes": {"type": "array", "maxItems": 12, "items": {"type": "object", "required": ["id", "group", "label", "description", "type", "status"], "properties": {
-        "id": S, "group": S, "label": S, "description": S, "details": S, "type": S, "status": STATUS, "at": S, "source": SOURCE, "evidence": S,
+        "id": S, "group": S, "label": S, "description": S, "details": S, "type": S, "status": STATUS, "at": S, "source": SOURCE, "evidence": S, "zone": S,
         "states": {"type": "array", "maxItems": 10, "items": {"type": "object", "required": ["name", "type"], "properties": {
             "name": S, "type": {"enum": STATE_TYPES}, "calls": S, "status": STATUS, "source": SOURCE, "evidence": S}}}}}},
     "edges": {"type": "array", "maxItems": 16, "items": {"type": "object", "required": ["from", "to", "label"], "properties": {
@@ -147,7 +154,7 @@ def checked_schema(areas):
 # layer (no findings file); finish() gives it the id the UI uses and its severity; reviewer "analysis".
 FINDING = {"type": "object", "required": ["file", "line", "title", "detail", "suggestion", *JUDGED, "criteria"], "properties": {
     "file": S, "line": {"type": "integer"}, "end": {"type": "integer"}, **PROSE, **JUDGED,
-    "criteria": STRINGS, "breaks": {"type": "object", "properties": {"node": S, "from": S, "to": S}}}}
+    "criteria": STRINGS, "breaks": {"type": "object", "properties": {"node": S, "from": S, "to": S}}, "reachability": {"enum": REACH}}}
 ASK_STATES = ["met", "partly", "broken", "not_done", "extra"]
 SCHEMA = {"type": "object", "required": ["title", "summary", "behavior", "merge_risk", "effort", "rule_checks", "architecture", "blast_radius", "steps", "asks",
                                         "components", "access", "checked"], "properties": {
@@ -162,8 +169,8 @@ SCHEMA = {"type": "object", "required": ["title", "summary", "behavior", "merge_
         "id": S, "text": S, "acceptance": {"type": "boolean"}, "state": {"enum": ASK_STATES}, "why": S, "hunks": STRINGS, "elements": STRINGS}}},
     "components": {"type": "array", "maxItems": 16, "items": {"type": "object", "required": ["name", "kind", "status", "at", "operate"], "properties": {
         "name": S, "kind": S, "status": {"enum": ["new", "changed"]}, "at": S, "node": S, "operate": STRINGS}}},
-    "access": {"type": "array", "maxItems": 16, "items": {"type": "object", "required": ["resource", "kind", "principal", "actions", "public", "auth", "at"], "properties": {
-        "resource": S, "kind": S, "principal": S, "actions": STRINGS, "public": {"type": "boolean"}, "auth": S, "used": {"type": "boolean"}, "at": S, "node": S}}},
+    "access": {"type": "array", "maxItems": 16, "items": {"type": "object", "required": ["resource", "kind", "principal", "actions", "public", "auth", "auth_kind", "at"], "properties": {
+        "resource": S, "kind": S, "principal": S, "actions": STRINGS, "public": {"type": "boolean"}, "auth": S, "auth_kind": {"enum": AUTH_KINDS}, "used": {"type": "boolean"}, "at": S, "node": S}}},
     "checked": checked_schema(AREAS_SECURITY + AREAS_CODE),
     "steps": {"type": "array", "items": {"type": "object", "required": ["title", "risk", "why_it_matters", "explanation", "reading_order", "hunks", "check_questions", "question_files"], "properties": {
         "title": S, "risk": {"enum": LEVELS + ["skim"]}, "why_it_matters": S, "explanation": S, "reading_order": {"type": "integer"},
@@ -340,7 +347,8 @@ INVENTORY_TEXT = (
     "grant or entry point, at most 16: resource (its name in the template), kind (e.g. queue, function, route, bucket, table), "
     "principal (who gets it: a function, a role, \"anyone on the internet\"), actions (e.g. sqs:SendMessage, \"call GET "
     "/items\"), public (true when it is reachable without credentials of the cloud account), auth (what checks the caller: "
-    "none, IAM, an authorizer, or e.g. \"bearer token checked in handler.py\"), used (false when nothing in the code uses "
+    "none, IAM, an authorizer, or e.g. \"bearer token checked in handler.py\"), auth_kind (none: nothing checks the caller; "
+    "code: a check in the application's code; gateway: an authorizer or key at the gateway; iam: the cloud's IAM), used (false when nothing in the code uses "
     "the grant), at (file:line), node (the id of its architecture node, if any); empty list when the PR has no infrastructure "
     "code. checked: your own report of what you looked at, one row for each of these areas: "
     + ", ".join(AREAS_SECURITY + AREAS_CODE) + "; each with " + CHECKED_TEXT + ".")
@@ -376,7 +384,9 @@ def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None,
             "criteria (the ids of the requirements in asks that this finding breaks; empty when it breaks none), breaks "
             "(where it breaks the flow on the architecture picture: node (the id of the node whose code is wrong), or from and to "
             "(the ends of the edge, when the call, event or data between two nodes is what fails or is missing); name it for every "
-            "finding whose code is a node or an edge of the picture, leave it out only when the picture has no such place); "
+            "finding whose code is a node or an edge of the picture, leave it out only when the picture has no such place), "
+            "reachability (security findings only: who can reach the flaw: public, authenticated, internal_only, or unknown "
+            "when the code does not show it); "
             "one finding per defect: report it once, in the layer and at the line of its cause, and say in detail where else "
             "it shows; two different defects are two findings, also when they sit in the same lines; a line that a finding "
             "already covers is not also a suggestion; "
@@ -424,7 +434,17 @@ def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None,
             "service, orchestration, status new/changed/unchanged/removed, at: file:line; an orchestrator such as a Step Functions "
             "state machine may list its states in order (name, type task/choice/parallel/map/wait/pass/fail/succeed, calls: the id "
             "of the node a task state invokes, status), each call is then drawn from that state's row), edges (from, to, label: "
-            "what happens, e.g. \"Creates invitation\"; draw them in call direction, caller to callee); at most 12 nodes, empty "
+            "what happens, e.g. \"Creates invitation\"; draw them in call direction, caller to callee), zones (the trust zones "
+            "that the code and the infrastructure code show, at most 8, none from guessing: id, name (e.g. \"Internet\", "
+            "\"HTTP API\", \"Orders function\", \"Orders queue\"), trust (public: anyone reaches it without credentials; "
+            "authenticated: reached only after the caller was checked, at a gateway or in code; internal: reached only by the "
+            "system's own parts, through IAM or the network; data: where state is kept, e.g. a queue, table, bucket or store), "
+            "evidence (file:line)): typically the caller from outside and an entry that nothing guards are public, a deployed "
+            "unit whose code checks the caller is authenticated, one that only the system's own queue or schedule triggers "
+            "is internal, and queues, tables and stores are data; every node gets zone (a zone's id) when the code shows "
+            "where it runs (a module takes the zone of the unit it runs in), and none otherwise; "
+            "when the code or the template opens a way in from outside (a route, a function URL, a public bucket), the caller "
+            "and the entry are nodes too (type external and gateway), so the way in is on the picture; at most 12 nodes, empty "
             "lists when the PR touches no architecture. visuals (optional, at most 3): pictures of the whole PR the architecture "
             "doesn't show, same form as a layer's (e.g. a sequence across several layers; a state diagram goes into the layer "
             "that changes the state machine, not here). blast_radius: units (the changed "
@@ -652,6 +672,87 @@ def place(answer):
     for row in [*(answer.get("components") or []), *(answer.get("access") or [])]:
         if row.get("node") not in nodes:
             row.pop("node", None)
+    zones(answer)
+    reach(answer)
+
+
+def zones(answer):
+    """Trust zones made consistent: only zones with a known trust, a node's zone only when the list has it, and
+    crosses: true on every edge whose ends lie in zones of different trust (derived, never asked)."""
+    arch = answer.get("architecture") or {}
+    trust = {z.get("id"): z.get("trust") for z in arch.get("zones") or [] if z.get("trust") in TRUST}
+    if "zones" in arch:
+        arch["zones"] = [z for z in arch["zones"] or [] if z.get("id") in trust]
+    of = {}
+    for n in arch.get("nodes") or []:
+        if n.get("zone") in trust:
+            of[n.get("id")] = trust[n["zone"]]
+        else:
+            n.pop("zone", None)
+    for e in arch.get("edges") or []:
+        e.pop("crosses", None)
+        if e.get("from") in of and e.get("to") in of and of[e["from"]] != of[e["to"]]:
+            e["crosses"] = True
+
+
+def reach(answer):
+    """From where each security finding's place can be reached, derived from the picture and the access rows (each
+    gets an id, acc1..): reachable_from, the ids of the access rows that sit in the finding's own lines; else of those
+    at the finding's node (breaks; else the nearest place of the picture above its line: a node's, component's or
+    access row's `at` in the same file); else, when that node has none, at the nearest nodes that call it (edges
+    backwards). reachability is the most exposed of them: public (a public row that nothing checks, or the finding is
+    the broken check itself: impact unauthorized_access), authenticated (a public row behind a check), internal_only.
+    Without any row the model's own reachability stays (reachable_from is then empty), else unknown.
+    ponytail: one node per finding and breadth-first over call edges; a finding on an edge counts at its callee."""
+    arch, rows = answer.get("architecture") or {}, answer.get("access") or []
+    for k, r in enumerate(rows, 1):
+        r["id"] = f"acc{k}"
+    callers = {}
+    for e in arch.get("edges") or []:
+        callers.setdefault(e.get("to"), []).append(e.get("from"))
+    at = lambda n: [r for r in rows if r.get("node") == n]  # noqa: E731
+
+    def spot(x):  # (file, line) of an `at`, line 0 when it names none
+        path, _, line = str(x.get("at") or "").removeprefix("./").rpartition(":")
+        m = re.match(r"\d+", line)
+        return (path, int(m[0])) if m else (path or line, 0)
+    anchors = [(*spot(x), x.get("id") if x in (arch.get("nodes") or []) else x.get("node")) for x in [*(arch.get("nodes") or []), *(answer.get("components") or []), *rows]]
+    for f in (f for st in answer.get("steps") or [] for f in st.get("findings") or []):
+        if f.get("category") != "security":
+            f.pop("reachability", None)
+            continue
+        b, file, line = f.get("breaks") or {}, str(f.get("file") or "").removeprefix("./"), int(f.get("line") or 0)
+        here = sorted((n, node) for path, n, node in anchors if path == file and node)
+        start = b.get("node") or b.get("to") or next((node for n, node in reversed(here) if n <= line), here[0][1] if here else None)
+        found = [r for r in rows if spot(r)[0] == file and line and line <= spot(r)[1] <= int(f.get("end") or line)]
+        layer, seen = [start] if start and not found else [], set()
+        while layer and not found:
+            seen.update(layer)
+            found = [r for n in layer for r in at(n)]
+            layer = [c for n in layer for c in callers.get(n, []) if c not in seen]
+        level = lambda r: ("public" if r.get("auth_kind") == "none" or f.get("impact") == "unauthorized_access" else "authenticated") if r.get("public") else "internal_only"  # noqa: E731
+        f["reachable_from"] = [r["id"] for r in found]
+        if found:
+            f["reachability"] = min((level(r) for r in found), key=REACH.index)
+        elif f.get("reachability") not in REACH:
+            f["reachability"] = "unknown"
+
+
+def changed_lines(hunks):
+    """{path: the new-side line numbers the diff adds} from hunks [{path, lines}]."""
+    out = {}
+    for h in hunks:
+        new = 0
+        for line in h.get("lines") or []:
+            m = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)", line)
+            if m:
+                new = int(m[1])
+            elif line[:1] == "+":
+                out.setdefault(h["path"], set()).add(new)
+                new += 1
+            elif line[:1] == " ":
+                new += 1
+    return out
 
 
 def seat_state_diagrams(answer, path_of):
@@ -674,14 +775,16 @@ OLD_STATE = {"seen": "met", "partly": "partly", "absent": "not_done", "extra": "
 COVERAGE = {"met": "seen", "partly": "partly", "broken": "absent", "not_done": "absent", "extra": "extra"}
 
 
-def finish(answer, root=None, path_of=None):
+def finish(answer, root=None, path_of=None, changed=None):
     """The answer made consistent, in place. Requirements (asks): id, state (older ones: from coverage), coverage (from
     state, for readers of the older field), findings (ids of the findings that break it; a "met" one with findings is
     partly). answer.unlinked: the ids of the requirements that are partly, broken or not_done although no finding names
     them (the model owes one; the UI can say so instead of showing an empty list). Findings: id (the UI's: "a" + fnv(category|file|title)), severity by the scale (judge), criteria only
     those asks has, breaks only when the picture has it (place). Check questions: question_files as long as the
     questions, a path only when it is a file of the diff (path_of: {hunk alias: path}) or the checkout. State diagrams
-    sit in the layer of their state machine (seat_state_diagrams). Components: owner from CODEOWNERS (None:
+    sit in the layer of their state machine (seat_state_diagrams). Zones, crossing edges and reachability: zones(),
+    reach(). Access rows: opened_by_pr, true when the row's place is a line this diff adds (changed: changed_lines();
+    None, as in a follow-up analysis that sees only the newest hunks: left as it was). Components: owner from CODEOWNERS (None:
     nobody), and component_counts {new, changed, no_owner, codeowners: the repo has such a file}.
     ponytail: a big PR's cohort passes don't know the requirements or the picture, so their findings carry no
     criteria and no breaks; let the merge pass assign them when big PRs need the links."""
@@ -711,6 +814,9 @@ def finish(answer, root=None, path_of=None):
         a["coverage"] = COVERAGE[a["state"]]
     answer["unlinked"] = [a["id"] for a in asks if a["state"] in ("partly", "broken", "not_done") and not a["findings"]]
     place(answer)
+    for r in (answer.get("access") or []) if changed is not None else []:
+        path, _, line = str(r.get("at") or "").removeprefix("./").rpartition(":")
+        r["opened_by_pr"] = bool(re.match(r"\d+", line)) and int(re.match(r"\d+", line)[0]) in changed.get(path, ())
     comps = answer.get("components")
     if comps is not None:
         rules = code_owners(root)
@@ -996,7 +1102,7 @@ def main(req):
     scope["checked"] = checked(answer.pop("checked", None), AREAS_SECURITY + AREAS_CODE)
     if prev:
         out_hunks, answer = merge_incremental(prev, answer, hunks, req["full"])
-    finish(answer, wt if tools else None, {h["alias"]: h["path"] for h in (req["full"] if prev else hunks)})
+    finish(answer, wt if tools else None, {h["alias"]: h["path"] for h in (req["full"] if prev else hunks)}, None if prev else changed_lines(hunks))
     cost = sum(m.get("cost") or 0 for m in metas) if any(m.get("cost") is not None for m in metas) else None
     result = {"source": req.get("source") or req.get("pr"), "model": model, "model_id": next((m["model_id"] for m in metas if m.get("model_id")), model),
               "hunks": out_hunks, "answer": answer, "incremental": req.get("since") if prev else None, "cut": [], "scope": scope,
