@@ -4642,7 +4642,7 @@ export const ReviewMode = {
         .child(div().w(22).flex_none().font_semibold().text_color(t[MARK[r.ok][1]]).child(MARK[r.ok][0]))
         .child(div().flex_1().min_w(0).truncate().child(r.name))))
         .when(!ctx, (x) => x.child(div().pl(100).text_size(12).text_color(t.muted).child("CI checks and mergeability load in the background…"))))
-      .when(related.length > 0, (e) => e.child(line("rv-ov-related", "Related PRs", div().child(`${related.length} touch the same files ${this.relOpen ? "▾" : "▸"}`), "Other PRs that change the same files, and the ones that build on this PR: click to show them",
+      .when(related.length > 0, (e) => e.child(line("rv-ov-related", "Related PRs", div().child(`${[related.some((p) => p.above) && `${related.filter((p) => p.above).length} on top of this PR`, related.some((p) => !p.above) && `${related.filter((p) => !p.above).length} touch the same files`].filter(Boolean).join(" · ")} ${this.relOpen ? "▾" : "▸"}`), "Other PRs that change the same files, and the ones that build on this PR: click to show them",
         (_e, cx) => { this.relOpen = !this.relOpen; cx.notify(); }))
         .when(Boolean(this.relOpen), (x) => x.children(related.map((p) => h_flex().id(`rv-rel-${p.number}`).tooltip("Open this related PR in its own review").gap(8).items_center().pl(100).pr(6).py(2).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
           .on_click((_e, cx) => this.openRelated(p, cx))
