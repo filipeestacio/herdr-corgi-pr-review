@@ -15,7 +15,7 @@ import { exec, hc, run, spaces, agents, terminals, focused, pickFolder, theme, s
 import { parseReports, findingStatus, mergeFindings, findingCounts, countLine, runsOf, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
 import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig } from "./setup-view.js";
-import { taskList, taskHead, verdictParts, reviewState, certaintyLine, severityTip, componentLine } from "./pr.js"; // the Overview page
+import { taskList, taskHead, verdictParts, reviewState, certaintyLine, severityTip, componentLine, doesList, checkGroups, costLine } from "./pr.js"; // the Overview page
 import { findingSteps, funnel, funnelLine, ownerOf, quickFirst, hasEffort } from "./pr.js"; // the Findings tab
 import { overviewMd, findingMd, findingsMd, layerMd, architectureMd, securityMd, verifyContextMd } from "./markdown.js"; // Copy this page as Markdown
 import { highlightJob, highlightStep, highlightLines, langOf, colors, renderLine, refAt } from "./syntax.js";
@@ -2569,12 +2569,11 @@ export const ReviewMode = {
     const sep = () => div().flex_none().text_color(t.dim).child("·"), cap = (x) => x[0].toUpperCase() + x.slice(1);
     const link = (id, child, click) => h_flex().id(id).flex_none().gap(4).items_center().px(6).h(26).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground)).on_click(click).child(child);
     const menu = (id, items, w = 230) => (_e, cx) => { openOverlay({ mod: "pr-review", props: { part: "cmenu", key: id, items }, kind: "popup", width: w, height: 12 + 30 * items.length }); cx.stop_propagation(); };
-    // Without an analysis the risk still comes from what there is: the reviewers' unresolved findings, said so.
-    const fc = this.prSel ? this.counts() : { unresolved: 0 }, top = ["high", "medium", "low"].find((k) => fc[k]);
+    // The verdict's excerpt ("⛨ 2 high · 0/5 criteria"), from the same parts as the Overview's verdict line.
+    const vd = this.prSel ? this.verdictNow() : [];
     const facts = [
-      ai?.mergeRisk && div().id("rv-mr").flex_none().tooltip(ai.mergeRisk.why || "").child(h_flex().gap(4).child("Merge risk:").child(div().text_color(t[SEVERITY_COLOR[ai.mergeRisk.level]] ?? t.muted).child(cap(ai.mergeRisk.level)))),
-      !ai?.mergeRisk && top && link("rv-mr", h_flex().gap(4).child("Risk from findings:").child(div().text_color(t[SEVERITY_COLOR[top]] ?? t.muted).child(cap(top))).child(`(${fc[top]} ${top}, no analysis)`),
-        (_e, cx) => { this.tab = "findings"; cx.notify(); }).tooltip("No analysis has rated the merge risk; this is the highest severity among the unresolved findings. Click for the Findings tab"),
+      vd.length > 0 && link("rv-mr", h_flex().gap(6).children(vd.flatMap((p, k) => [k > 0 && div().text_color(t.dim).child("·"), div().when(p.tone === "security", (e) => e.text_color(t.ansi1)).child(p.short)].filter(Boolean))),
+        (_e, cx) => { this.tab = "steps"; this.page = "overview"; cx.notify(); }).tooltip(`${vd.map((p) => p.text).join(" · ")}. Click for the Overview.`),
       ck && link("rv-ck", h_flex().gap(4).children(ck.parts.map(([text, bad]) => div().when(bad, (e) => e.text_color(t.ansi1)).child(text))),
         (_e, cx) => { this.tab = "steps"; this.page = "overview"; this.pagePart("checks", cx); cx.notify(); }).tooltip(ck.tip),
     ].filter(Boolean);
@@ -2839,71 +2838,33 @@ export const ReviewMode = {
       .when(Boolean(s.note), (e) => e.child(div().text_size(12).text_color(t.ansi3).whitespace_normal().child(s.note)));
   },
 
-  // The Overview, top to bottom: the title, the verdict in the title's size (security first), what this PR sits on and
-  // adds, the task check as one list (asksPane), what changed and the behavior as running text of about 85 characters
-  // a line, the rules and checks by name, related PRs. Each fact once: the PR's state and the merge risk are in the
-  // bar. It returns its parts by name ([[name, element]]: top, task, changed, checks, related) for pageView.
+  // The Overview answers one question: can this be merged, and what has to change? At the top the title, the verdict
+  // counted by what decides (security, the task's criteria, blockers; only the security part red) and one line of
+  // context (size, stack, which head the analysis read and when, model and cost). Below, two columns when the page is
+  // wide enough, else one under the other: on the left the decision (asksPane: Security, the criteria, what is not in
+  // the task, the other findings), on the right the understanding (doesPane: what the PR does, new parts, repo rules,
+  // related PRs). It returns its parts by name ([[name, element]]: top, main) for pageView.
   overviewPage(t) {
-    const pr = this.prSel ?? {}, ai = this.ai, task = ai?.task ?? {}, ctx = this.ctx, fc = this.counts(), list = this.taskNow(), W = 560;
-    const checks = this.checksNow(), TONE = { high: t.ansi1, medium: t.ansi3, low: t.ansi4, ok: t.ansi2 };
-    const section = (title) => div().pt(4).text_size(11.5).font_semibold().text_color(t.muted).child(title), dot = () => div().flex_none().text_color(t.dim).child("·");
-    const related = [...(ctx?.open ?? []).map((p) => ({ ...p, state: "open" })), ...(ctx?.merged ?? []).map((p) => ({ ...p, state: "merged" }))];
-    const verdict = ai || fc.total ? verdictParts(list, fc, { failed: checks.filter((c) => c.ok === false).length, toVerify: this.verifyList().length }) : [];
+    const pr = this.prSel ?? {}, ai = this.ai, fc = this.counts(), list = this.taskNow(), verdict = this.verdictNow();
+    const dot = () => div().flex_none().text_color(t.dim).child("·");
     const go = { security: [(_e, cx) => { this.page = "blast"; cx.notify(); }, "Unresolved security findings: click for the Security page"],
       criteria: [null, "How many of the task's criteria this PR meets: the list is below"],
-      findings: [(_e, cx) => { this.tab = "findings"; cx.notify(); }, "Unresolved findings of the highest severity there is: click for the Findings tab"],
+      findings: [(_e, cx) => { this.tab = "findings"; cx.notify(); }, "Unresolved findings: click for the Findings tab"],
       checks: [(_e, cx) => this.pagePart("checks", cx), "Rules or checks that failed: click for the list"],
       verify: [(_e, cx) => { this.tab = "findings"; cx.notify(); }, "Fixes sent before the last push, not verified on the new head: click for the Findings tab"] };
-    const part = (p) => div().id(`rv-vd-${p.key}`).tooltip(go[p.key][1]).text_color(TONE[p.tone]).when(Boolean(go[p.key][0]), (e) => e.cursor_pointer().hover((s) => s.underline()).on_click(go[p.key][0]))
-      .child(p.key === "security" ? `⛨ ${p.text}` : p.text);
-    const fact = (id, text, tip, click) => div().id(id).tooltip(tip).cursor_pointer().hover((s) => s.text_color(t.foreground)).on_click(click).child(text);
-    const facts = [ctx?.stacked_on && fact("rv-ov-stacked", `Stacked on #${ctx.stacked_on.number} ${ctx.stacked_on.title ?? ""}`, `This PR's base is the branch of #${ctx.stacked_on.number}, so it merges after it. Click to open #${ctx.stacked_on.number} in its own review.`, (_e, cx) => this.openRelated(ctx.stacked_on, cx)),
-      componentLine(ai?.componentCounts) && fact("rv-ov-comp", componentLine(ai.componentCounts), "Components this PR adds or changes, as the analysis counts them: click for the Architecture impact page", (_e, cx) => { this.page = "arch"; cx.notify(); })].filter(Boolean);
-    const head = v_flex().flex_none().gap(8).max_w(1100)
+    const part = (p) => div().id(`rv-vd-${p.key}`).tooltip(go[p.key][1]).text_color(p.tone === "security" ? t.ansi1 : t.foreground)
+      .when(Boolean(go[p.key][0]), (e) => e.cursor_pointer().hover((s) => s.underline()).on_click(go[p.key][0])).child(p.key === "security" ? `⛨ ${p.text}` : p.text);
+    const head = v_flex().flex_none().gap(6).max_w(1100)
       .child(div().text_size(22).font_semibold().line_height(1.3).whitespace_normal().child(pr.title ?? `#${pr.number}`))
-      .when(verdict.length > 0, (e) => e.child(h_flex().id("rv-verdict").flex_wrap().gap(10).items_center().text_size(22).font_semibold().line_height(1.3)
+      .when(verdict.length > 0, (e) => e.child(h_flex().id("rv-verdict").flex_wrap().gap(8).items_center().text_size(15).font_semibold().line_height(1.35)
         .children(verdict.flatMap((p, k) => (k ? [dot(), part(p)] : [part(p)])))))
-      .when(facts.length > 0, (e) => e.child(h_flex().flex_wrap().gap(8).items_center().text_size(12.5).text_color(t.muted).children(facts.flatMap((f, k) => (k ? [dot(), f] : [f])))))
+      .child(this.contextLine(t))
       .when(Boolean(this.since), (e) => e.child(div().rounded(8).overflow_hidden().border_1().border_color(t.border).child(this.sinceBanner(t))))
       .when(!ai && !this.aiBusy, (e) => e.child(this.startCards(t)));
-    const intent = Boolean(task.jira || task.note || ai?.intent?.length || (task.title && task.title !== pr.title));
-    const changed = () => v_flex().flex_none().gap(8).max_w(W).text_size(13.5).line_height(1.5)
-      .child(section("WHAT CHANGED"))
-      .when(intent, (e) => e.child(v_flex().gap(4)
-        .child(h_flex().flex_wrap().gap(6).items_center().when(Boolean(task.title) && task.title !== pr.title, (x) => x.child(div().whitespace_normal().child(task.title)))
-          .when(Boolean(task.jira), (x) => x.child(chip(t, `Linked issue ${task.jira}`, t.accent, false, "rv-jira", "The issue this PR links to"))))
-        .when(Boolean(task.note), (x) => x.child(div().text_size(12).text_color(t.ansi3).whitespace_normal().child(task.note)))
-        .when(ai.intent?.length > 0, (x) => x.child(this.statements(t, ai.intent, "rv-int")))))
-      .when(Boolean(ai.summary), (e) => e.child(div().child(TextView.markdown(`rv-sum-${ai.generated}`, ai.summary))))
-      .when(Boolean(ai.behavior) || ai.behaviorPoints?.length > 0, (e) => e.child(section("BEHAVIOR"))
-        .child(ai.behaviorPoints?.length ? this.statements(t, ai.behaviorPoints, "rv-bp") : div().child(TextView.markdown(`rv-beh-${ai.generated}`, ai.behavior))));
-    // The checks that are no repo rule (the title's form, CI, conflicts), then the analysis' repo rules with where they
-    // come from; what failed first.
-    const rank = (r) => [false, null, true, "n/a"].indexOf(r.ok);
-    const rows = [...checks.filter((c) => !c.rule).map((c) => ({ ok: c.ok, name: c.name, sub: c.ok === true ? "" : c.why ?? "", where: c.where })),
-      ...(ai?.rules ?? []).map((r) => ({ ok: r.status === "pass" ? true : r.status === "fail" ? false : "n/a", name: r.rule, sub: `${r.source}${r.where ? ` · ${r.where}` : ""}${r.why ? ` — ${r.why}` : ""}`, where: r.where }))]
-      .sort((a, b) => rank(a) - rank(b));
-    const decided = rows.filter((r) => r.ok !== "n/a");
-    const MARK = { true: ["✓", "ansi2", "Passed"], false: ["✗", "ansi1", "Failed"], null: ["…", "ansi3", "Not decided yet"], "n/a": ["n/a", "muted", "Does not apply to this PR"] };
-    const checksEl = () => v_flex().flex_none().gap(2).max_w(W + 98)
-      .child(section(`REPO RULES AND CHECKS · ${decided.filter((r) => r.ok === true).length} of ${decided.length} passed`))
-      .children(rows.map((r, k) => h_flex().id(`rv-ck-${k}`).tooltip(`${MARK[r.ok][2]}${r.where ? ": click to jump to the code" : ""}`).gap(10).items_start().px(6).py(3).rounded(6).text_size(13.5)
-        .when(Boolean(r.where), (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.jumpTo(r.where, cx)))
-        .child(div().w(28).flex_none().font_semibold().text_color(t[MARK[r.ok][1]]).child(MARK[r.ok][0]))
-        .child(v_flex().flex_1().min_w(0).child(div().whitespace_normal().child(r.name))
-          .when(Boolean(r.sub), (e) => e.child(div().text_size(12).text_color(t.muted).whitespace_normal().child(r.sub))))))
-      .when(!ctx, (e) => e.child(div().px(6).text_size(12).text_color(t.muted).child("CI checks and mergeability load in the background…")));
-    const relatedEl = v_flex().flex_none().gap(6).max_w(W + 240).child(section(`RELATED PRS${ctx ? ` · ${related.length}` : ""}`))
-      .when(!ctx, (e) => e.child(div().text_size(12.5).text_color(t.muted).child("Looking for PRs that touch the same files…")))
-      .when(Boolean(ctx) && !related.length, (e) => e.child(div().text_size(12.5).text_color(t.muted).child("No other open PR and no PR merged in the last 90 days touches these files.")))
-      .children(related.map((p) => h_flex().id(`rv-rel-${p.number}`).tooltip("Open this related PR in its own review").gap(8).items_center().p(6).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
-        .on_click((_e, cx) => this.openRelated(p, cx))
-        .child(chip(t, p.stacked ? "base" : p.state, p.stacked ? t.accent : p.state === "open" ? t.ansi2 : t.ansi5, false, `rv-relst-${p.number}`, p.stacked ? "This PR is stacked on that one: its branch is this PR's base" : "Whether that PR is still open or already merged"))
-        .child(div().flex_none().text_size(13).text_color(t.muted).child(`#${p.number}`))
-        .child(div().flex_1().min_w(0).truncate().text_size(13.5).child(p.title))
-        .child(div().id(`rv-relf-${p.number}`).flex_none().text_size(12).text_color(t.muted).tooltip((p.files ?? []).join("\n") || "-").child(p.stacked ? "this PR builds on it" : `${p.overlap} ${p.overlap === 1 ? "file" : "files"} overlap`))));
-    const out = [["top", head], (ai || fc.total > 0) && ["task", this.asksPane(t, list, W)], ai && ["changed", changed()], rows.length > 0 && ["checks", checksEl()], ["related", relatedEl]].filter(Boolean);
-    return out;
+    const cols = h_flex().w_full().flex_wrap().items_start().gap(36)
+      .when(Boolean(ai) || fc.total > 0, (e) => e.child(v_flex().flex_1().min_w(440).max_w(760).child(this.asksPane(t, list))))
+      .child(v_flex().flex_1().min_w(340).max_w(620).child(this.doesPane(t)));
+    return [["top", head], ["main", cols]];
   },
 
   // A related PR in the review layout (the resume contract): prs.json's entry, else one built from gh pr view on this
@@ -3883,64 +3844,68 @@ export const ReviewMode = {
     cx.notify();
   },
 
-  // The task check as one list (pr.js taskList): the unresolved security findings, then each ask with its state as a
-  // chip with a symbol, why, and on a click of the row the findings that break it (file and line, a click jumps
-  // there); the acceptance criteria as a group of their own; then what is not in the task: the extras and the findings
-  // that belong to no ask. An analysis from before the newer fields shows the rows without why and findings.
-  asksPane(t, list, W) {
-    const ai = this.ai, task = ai?.task ?? {}, specs = ai ? specElements(ai) : new Map(), n = (k, one) => `${k} ${k === 1 ? one : `${one}s`}`;
-    const STATE = { met: ["✓", "met", "ansi2", "The diff does what this asks"], partly: ["◐", "partly", "ansi3", "The diff does only part of what this asks"],
-      broken: ["✗", "broken", "ansi1", "The code for this is there and breaks what this asks"], not_done: ["○", "not done", "ansi1", "Nothing in the diff does this"],
-      extra: ["+", "extra", "ansi4", "The diff does this, but the task did not ask for it"] };
-    const label = (text) => div().pt(8).px(6).text_size(11.5).font_semibold().text_color(t.muted).child(text);
-    // A finding: its severity (the scale as tooltip), title, place, and how sure it is with what it hangs on.
-    const finding = (f, id, w, nested = false) => {
-      const st = this.fstatus(f), settled = st === "fixed" || st === "dismissed";
-      return h_flex().id(id).tooltip("Open this finding and show its line in the diff").gap(10).items_start().px(nested ? 0 : 6).py(3).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
-        .on_click((_e, cx) => { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); cx.stop_propagation(); })
-        .child(div().w(w).flex_none().pt(1).child(h_flex().child(chip(t, f.severity, t[SEVERITY_COLOR[f.severity]] ?? t.muted, !settled, `${id}-sv`, severityTip(f)))))
-        .child(v_flex().flex_1().min_w(0).max_w(W)
-          .child(div().whitespace_normal().text_color(settled ? t.dim : t.foreground).child(f.title))
-          .child(div().text_size(12).text_color(t.muted).whitespace_normal().child([nested && f.security && "⛨ Security", `${f.file}:${f.line}`, certaintyLine(f), st !== "open" && FSTATUS[st]?.[0]].filter(Boolean).join(" · "))));
+  asksPane(t, list) {
+    const ai = this.ai, task = ai?.task ?? {}, specs = ai ? specElements(ai) : new Map(), n = (k, one) => `${k} ${k === 1 ? one : `${one}s`}`, soft = this.softText(t);
+    // A criterion's state as a symbol in colour, its word in the tooltip: only the security part of the page is red.
+    const STATE = { met: ["✓", "met", t.ansi2, "The diff does what this asks"], partly: ["◐", "partly", t.ansi3, "The diff does only part of what this asks"],
+      broken: ["✗", "broken", t.foreground, "The code for this is there and breaks what this asks"], not_done: ["○", "not done", t.foreground, "Nothing in the diff does this"],
+      extra: ["+", "extra", t.ansi4, "The diff does this, but the task did not ask for it"] };
+    const head = (id, title, tip, first, right = null) => h_flex().id(id).tooltip(tip).pt(first ? 0 : 22).pb(6).gap(8).items_center()
+      .child(div().flex_1().min_w(0).text_size(13).font_semibold().text_color(t.foreground).child(title)).when(Boolean(right), (e) => e.child(right));
+    // A finding: a stripe in its severity's colour, the word, title and place; a security finding's second line says
+    // how sure it is and what it hangs on, a settled or sent one its state.
+    const finding = (f, id, sec) => {
+      const st = this.fstatus(f), settled = st === "fixed" || st === "dismissed", sub = [sec && certaintyLine(f), st !== "open" && FSTATUS[st]?.[0]].filter(Boolean).join(" · ");
+      return v_flex().id(id).tooltip("Open this finding and show its line in the diff").pl(10).pr(6).py(3).gap(1).rounded(4).border_l(3).border_color(settled ? t.border : t[SEV[f.severity]] ?? t.muted)
+        .cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); cx.stop_propagation(); })
+        .child(h_flex().gap(8).items_start()
+          .child(div().id(`${id}-sv`).tooltip(severityTip(f)).w(54).flex_none().text_size(12).pt(1).text_color(t.muted).child(`${!sec && f.security ? "⛨ " : ""}${f.severity}`))
+          .child(div().flex_1().min_w(0).whitespace_normal().text_color(settled ? t.dim : t.foreground).child(f.title))
+          .child(div().flex_none().text_size(12).pt(1).text_color(t.muted).child(`${f.file.split("/").pop()}:${f.line}`)))
+        .when(Boolean(sub), (e) => e.child(div().pl(62).max_w(660).text_size(12).text_color(t.muted).whitespace_normal().child(sub)));
     };
+    // A criterion: symbol, short name and how many findings break it in one line, the reason in one line under it;
+    // a click unfolds the whole wording, the whole reason and the findings.
     const ask = (r) => {
       const a = r.ask, [sym, word, col, tip] = STATE[a.state], open = this.askOpen?.has(a.id), fs = r.findings, hunk = a.hunks.find((x) => this.byId.has(x));
-      return h_flex().id(`rv-ask-${a.id}`).gap(10).items_start().px(6).py(5).rounded(6)
-        .when(fs.length > 0 || Boolean(hunk), (e) => e.cursor_pointer().hover((s) => s.bg(t.hover))
-          .tooltip(fs.length ? (open ? "Hide the findings" : "Show the findings that break this, each with its file and line") : "No finding is linked to this: show the code it is about in the diff")
-          .on_click((_e, cx) => { if (fs.length) this.toggleAsk(a.id); else { this.tab = "files"; this.unfold(this.byId.get(hunk).path); this.visit(hunk, cx); this.scrollTo("files", hunk); } cx.notify(); }))
-        .child(div().w(88).flex_none().pt(1).child(h_flex().child(chip(t, `${sym} ${word}`, t[col], true, `rv-ask-${a.id}-st`, tip))))
-        .child(v_flex().flex_1().min_w(0).max_w(W).gap(2)
-          .child(div().line_height(1.5).child(TextView.markdown(`rv-ask-${ai.generated}-${a.id}`, a.text)))
-          .when(Boolean(a.why), (e) => e.child(div().text_size(12.5).line_height(1.45).text_color(t.muted).whitespace_normal().child(a.why)))
-          .when(r.unlinked, (e) => e.child(div().text_size(12).text_color(t.ansi3).child("No finding backs this state.")))
-          .when(a.elements.some((x) => specs.has(x)), (e) => e.child(h_flex().flex_wrap().gap(6).children(a.elements.filter((x) => specs.has(x)).map((x, k) => div().id(`rv-ask-${a.id}-sp${k}`).flex_none().px(5).rounded(4).border_1().border_dashed().border_color(t.ansi5)
-            .text_size(11).text_color(t.ansi5).cursor_pointer().tooltip("Spec only: in the picture, not found in the diff").child(`spec: ${specs.get(x).label} ↗`)
-            .on_click((_e, cx) => { this.openSpec(specs.get(x), cx); cx.stop_propagation(); })))))
-          .when(open, (e) => e.child(v_flex().pt(4).gap(2).children(fs.map((f) => finding(f, `rv-ask-${a.id}-f-${f.id}`, 60, true))))))
-        .child(div().w(96).flex_none().pt(2).text_size(12).text_color(t.muted).child(fs.length ? `${n(fs.length, "finding")} ${open ? "▾" : "▸"}` : hunk ? "Show in diff ↗" : ""));
+      const diff = (cx) => { this.tab = "files"; this.unfold(this.byId.get(hunk).path); this.visit(hunk, cx); this.scrollTo("files", hunk); cx.notify(); };
+      return v_flex().id(`rv-ask-${a.id}`).px(6).py(4).gap(2).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
+        .tooltip(open ? "Fold this criterion" : "Show the whole criterion, why it stands so, and the findings that break it").on_click((_e, cx) => { this.toggleAsk(a.id); cx.notify(); })
+        .child(h_flex().gap(8).items_center()
+          .child(div().id(`rv-ask-${a.id}-st`).tooltip(`${word[0].toUpperCase()}${word.slice(1)}: ${tip.toLowerCase()}`).w(16).flex_none().font_semibold().text_color(col).child(sym))
+          .child(div().min_w(0).when(!open, (e) => e.truncate()).when(open, (e) => e.whitespace_normal()).child(a.short || plain(a.text)))
+          .when(fs.length > 0, (e) => e.child(div().flex_none().text_size(12).text_color(t.muted).child(`${n(fs.length, "finding")} ${open ? "▾" : "▸"}`)))
+          .when(!fs.length && Boolean(hunk), (e) => e.child(div().id(`rv-ask-${a.id}-diff`).tooltip("Show the code this is about in the diff").flex_none().text_size(12).text_color(t.accent)
+            .child("Show in diff ↗").on_click((_e, cx) => { diff(cx); cx.stop_propagation(); }))))
+        .when(Boolean(a.why) && !open, (e) => e.child(div().pl(24).max_w(624).truncate().text_size(12.5).text_color(soft).child(plain(a.why))))
+        .when(open, (e) => e.child(v_flex().pl(24).max_w(624).gap(4)
+          .when(Boolean(a.short), (x) => x.child(div().line_height(1.5).text_size(12.5).child(TextView.markdown(`rv-ask-${ai.generated}-${a.id}`, a.text))))
+          .when(Boolean(a.why), (x) => x.child(div().text_size(12.5).line_height(1.45).text_color(soft).whitespace_normal().child(plain(a.why))))
+          .when(r.unlinked, (x) => x.child(div().text_size(12).text_color(t.muted).child("No finding names this yet.")))
+          .when(a.elements.some((x) => specs.has(x)), (x) => x.child(h_flex().flex_wrap().gap(6).children(a.elements.filter((y) => specs.has(y)).map((y, k) => div().id(`rv-ask-${a.id}-sp${k}`).flex_none().px(5).rounded(4).border_1().border_dashed().border_color(t.ansi5)
+            .text_size(11).text_color(t.ansi5).cursor_pointer().tooltip("Spec only: in the picture, not found in the diff").child(`spec: ${specs.get(y).label} ↗`)
+            .on_click((_e, cx) => { this.openSpec(specs.get(y), cx); cx.stop_propagation(); })))))
+          .when(fs.length > 0, (x) => x.child(v_flex().pt(2).gap(2).children(fs.map((f) => finding(f, `rv-ask-${a.id}-f-${f.id}`, false)))))));
     };
     const marked = list.rows.filter((r) => list.marked && r.ask.acceptance), rest = list.rows.filter((r) => !marked.includes(r)), hasTask = list.rows.length + list.extra.length > 0;
     const otherOpen = this.askOpen?.has("other") || !hasTask; // no task to fold them under: the findings are the list
     const sev = ["high", "medium", "low"].map((k) => [k, list.other.filter((f) => f.severity === k).length]).filter(([, c]) => c).map(([k, c]) => `${c} ${k}`).join(", ");
-    return v_flex().flex_none().gap(2).max_w(W + 240).text_size(13.5)
-      .child(h_flex().flex_wrap().gap(10).items_center().px(6)
-        .child(div().font_semibold().text_size(14.5).child(ai ? "Check against the task" : "Unresolved findings"))
-        .when(Boolean(taskHead(list)), (e) => e.child(div().id("rv-ask-head").tooltip("The criteria this PR meets; a row's chip says how each one stands").child(taskHead(list))))
-        .when(Boolean(ai), (e) => e.child(div().text_size(12).text_color(t.muted).child(`From the PR description${task.jira ? ` and Jira ${task.jira}` : ""}`))))
-      .when(Boolean(task.note), (e) => e.child(div().px(6).text_size(12).text_color(t.ansi3).whitespace_normal().child(task.note)))
-      .when(Boolean(ai) && !hasTask, (e) => e.child(div().px(6).text_color(t.muted).child("The analysis found no task in the PR description.")))
-      .when(list.security.length > 0, (e) => e.child(h_flex().pt(8).px(6).child(chip(t, "⛨ Security", t.ansi1, true, "rv-ask-sec", "Unresolved security findings; they stand before the task's criteria")))
-        .children(list.security.map((f) => finding(f, `rv-ask-s-${f.id}`, 88))))
-      .when(marked.length > 0, (e) => e.child(label("ACCEPTANCE CRITERIA")).children(marked.map(ask)))
-      .when(rest.length > 0, (e) => e.child(label(list.marked ? "ALSO IN THE DESCRIPTION" : "CRITERIA")).children(rest.map(ask)))
-      .when(list.extra.length + list.other.length > 0, (e) => e.when(hasTask || list.security.length > 0, (x) => x.child(label(hasTask ? "NOT IN THE TASK" : "OTHER FINDINGS"))).children(list.extra.map(ask))
-        .when(list.other.length > 0 && hasTask, (x) => x.child(h_flex().id("rv-ask-other").tooltip(otherOpen ? "Hide these findings" : "Show these findings, each with its file and line").gap(10).items_start().px(6).py(5).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
-          .on_click((_e, cx) => { this.toggleAsk("other"); cx.notify(); })
-          .child(div().w(88).flex_none())
-          .child(div().flex_1().min_w(0).max_w(W).whitespace_normal().child(`${n(list.other.length, "unresolved finding")} ${list.other.length === 1 ? "belongs" : "belong"} to no criterion: ${sev}`))
-          .child(div().w(96).flex_none().pt(2).text_size(12).text_color(t.muted).child(otherOpen ? "▾" : "▸"))))
-        .when(otherOpen, (x) => x.child(v_flex().pl(hasTask ? 98 : 0).gap(2).children(list.other.map((f) => finding(f, `rv-ask-o-${f.id}`, hasTask ? 60 : 88, hasTask))))));
+    const from = `From the PR description${task.jira ? ` and Jira ${task.jira}` : ""}`, met = (rows) => `${rows.filter((r) => r.ask.state === "met").length} of ${rows.length} met`;
+    const offer = this.runOffer?.("security") ?? null; // Paket S's model choice for the security run (pr-review runOffer), once there
+    let first = true;
+    const h = (...args) => { const el = head(...args.slice(0, 3), first, args[3] ?? null); first = false; return el; };
+    const groups = [];
+    if (list.security.length > 0 || offer) groups.push(h("rv-ask-sec", `Security · ${list.security.length}`, "Unresolved security findings, from every source; they stand before the task's criteria", offer),
+      ...(list.security.length ? list.security.map((f) => finding(f, `rv-ask-s-${f.id}`, true)) : [div().px(6).text_size(12.5).text_color(t.muted).child("No unresolved security finding.")]));
+    if (Boolean(task.note)) groups.push(div().pt(first ? 0 : 12).px(6).text_size(12).text_color(t.ansi3).whitespace_normal().child(task.note));
+    if (ai && !hasTask) groups.push(h("rv-ask-none", "Criteria", from), div().px(6).text_color(t.muted).child("The analysis found no task in the PR description."));
+    if (marked.length) groups.push(h("rv-ask-head", `Acceptance criteria · ${met(marked)}`, `${from}: the criteria it marks as acceptance criteria. A row's symbol says how each one stands; a click unfolds it.`), ...marked.map(ask));
+    if (rest.length) groups.push(h("rv-ask-rest", list.marked ? "Also in the description" : `Criteria · ${met(rest)}`, `${from}${list.marked ? ": what it asks besides the acceptance criteria" : ""}`), ...rest.map(ask));
+    if (list.extra.length) groups.push(h("rv-ask-extra", `Not in the task · ${list.extra.length}`, "What the diff does that the task did not ask for"), ...list.extra.map(ask));
+    if (list.other.length) groups.push(h("rv-ask-other", `${hasTask ? "Other findings" : "Findings"} · ${list.other.length}`, hasTask ? (otherOpen ? "Hide these findings" : "Unresolved findings that belong to no criterion: click to show them") : "Unresolved findings",
+      hasTask ? div().id("rv-ask-other-n").flex_none().text_size(12).text_color(t.muted).cursor_pointer().on_click((_e, cx) => { this.toggleAsk("other"); cx.notify(); }).child(`${sev} ${otherOpen ? "▾" : "▸"}`) : null));
+    if (list.other.length && otherOpen) groups.push(...list.other.map((f) => finding(f, `rv-ask-o-${f.id}`, false)));
+    return v_flex().flex_none().gap(2).text_size(13.5).children(groups);
   },
 
   // The Findings tab: every finding once, one line each, in sections by state (pr.js findingStatus): the unresolved
@@ -4438,12 +4403,95 @@ export const ReviewMode = {
 
   taskNow() { return taskList(this.ai?.asks ?? [], this.findings(), this.ai?.unlinked ?? [], (f) => this.fstatus(f)); },
   toggleAsk(id) { if (!(this.askOpen ??= new Set()).delete(id)) this.askOpen.add(id); }, // the open rows of the task check
+  // The verdict line's parts (pr.js verdictParts), for the Overview and the bar's excerpt alike.
+  verdictNow() {
+    const fc = this.counts(), checks = this.checksNow();
+    return this.ai || fc.total ? verdictParts(this.taskNow(), fc, { failed: checks.filter((c) => c.ok === false).length, toVerify: this.verifyList().length }) : [];
+  },
+  // What the AI runs on this PR cost, summed (pr.js costLine): the analysis, the reviewers, Look inside and Ask.
+  costNow() {
+    const sum = (l) => l.reduce((n, c) => n + (Number(c) || 0), 0);
+    return costLine([["Analysis", this.ai?.cost], ...Object.entries(this.find.runs ?? {}).map(([k, r]) => [REVIEWERS[k]?.[0] ?? k, r?.cost]),
+      ["Look inside", sum(Object.values(this.deep?.drills ?? {}).map((d) => d?.cost))], ["Questions", sum(Object.values(this.deep?.threads ?? {}).flatMap((x) => x?.turns ?? []).map((x) => x?.cost))]]);
+  },
+  // Text that is read, not glanced at (a criterion's reason): the foreground at about 78 %, Lc 60 and more on the page,
+  // where the muted grey is Lc 46.
+  softText(t) { return /^#[0-9a-f]{6}$/i.test(t.foreground) ? `${t.foreground}c8` : t.foreground; },
+
+  // The line under the verdict: the PR's size, what it is stacked on, which head the analysis read and how long ago
+  // (amber when the PR moved since), the model and what the AI runs cost; then the model choice for the analysis.
+  contextLine(t) {
+    const ai = this.ai, ctx = this.ctx, files = this.patch ?? [], head = this.headNow(), cost = this.costNow();
+    const add = files.reduce((n, f) => n + (f.add ?? 0), 0), del = files.reduce((n, f) => n + (f.del ?? 0), 0);
+    const fact = (id, text, tip, click = null, color = null) => div().id(id).tooltip(tip).when(Boolean(color), (e) => e.text_color(color))
+      .when(Boolean(click), (e) => e.cursor_pointer().hover((s) => s.text_color(t.foreground)).on_click(click)).child(text);
+    const facts = [
+      files.length > 0 && fact("rv-ov-size", `${files.length} ${files.length === 1 ? "file" : "files"} · +${add} −${del}`, "Files this PR changes, lines added and removed"),
+      ctx?.stacked_on && fact("rv-ov-stacked", `Stacked on #${ctx.stacked_on.number}`, `This PR's base is the branch of #${ctx.stacked_on.number} ${ctx.stacked_on.title ?? ""}, so it merges after it. Click to open #${ctx.stacked_on.number} in its own review.`,
+        (_e, cx) => this.openRelated(ctx.stacked_on, cx)),
+      ai && (ai.exact ? fact("rv-ov-ana", `Analysis of ${head ? String(head).slice(0, 7) : "this head"}, ${ago(ai.generated)}`, "The analysis read the PR's current head commit.")
+        : fact("rv-ov-ana", `Analysis of an earlier head, ${ago(ai.generated)}`, "The PR has new commits since the analysis ran: its layers and findings may be out of date. Re-analyze in the left column.", null, t.ansi3)),
+      ai && fact("rv-ov-cost", [modelLabel(ai.model) ?? ai.model, cost && `${cost.split(" (")[0]} in AI runs`].filter(Boolean).join(" · "), cost ? `What the AI runs on this PR cost: ${cost}.` : "The model of the analysis."),
+    ].filter(Boolean);
+    const offer = this.runOffer?.("analysis") ?? null; // Paket S's model choice for the analysis (pr-review runOffer), once there
+    return h_flex().id("rv-ov-context").flex_wrap().gap(8).items_center().text_size(12.5).text_color(t.muted)
+      .children(facts.flatMap((f, k) => (k ? [div().flex_none().text_color(t.dim).child("·"), f] : [f]))).when(Boolean(offer), (e) => e.child(offer));
+  },
+
+  // The Overview's right column: what the PR does as a labeled list (pr.js doesList), a flow picture when the analysis
+  // has one, then one line each for the new parts and the repo rules (unfolded when one failed), and the related PRs
+  // when one besides the base is there (the base is in the context line).
+  doesPane(t) {
+    const ai = this.ai, task = ai?.task ?? {}, pr = this.prSel ?? {}, ctx = this.ctx, checks = this.checksNow(), rules = checkGroups(checks).rules, rows = ai ? doesList(ai) : [];
+    const head = (title, first = false) => div().pt(first ? 0 : 22).pb(6).text_size(13).font_semibold().text_color(t.foreground).child(title);
+    const line = (id, label, child, tip, click = null) => h_flex().id(id).tooltip(tip).gap(10).items_start().py(3).px(6).rounded(6)
+      .when(Boolean(click), (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).on_click(click))
+      .child(div().w(84).flex_none().text_size(12.5).pt(1).text_color(t.muted).child(label)).child(div().flex_1().min_w(0).child(child));
+    const intent = Boolean(task.jira || task.note || ai?.intent?.length || (task.title && task.title !== pr.title));
+    // The rules and checks by name, what failed first; the count is the bar's (checkGroups: the repo rules only).
+    const rank = (r) => [false, null, true, "n/a"].indexOf(r.ok);
+    const all = [...checks.filter((c) => !c.rule).map((c) => ({ ok: c.ok, name: c.name, sub: c.ok === true ? "" : c.why ?? "", where: c.where })),
+      ...(ai?.rules ?? []).map((r) => ({ ok: r.status === "pass" ? true : r.status === "fail" ? false : "n/a", name: r.rule, sub: `${r.source}${r.where ? ` · ${r.where}` : ""}${r.why ? `: ${r.why}` : ""}`, where: r.where }))]
+      .sort((a, b) => rank(a) - rank(b));
+    const MARK = { true: ["✓", "ansi2", "Passed"], false: ["✗", "foreground", "Failed"], null: ["…", "ansi3", "Not decided yet"], "n/a": ["n/a", "muted", "Does not apply to this PR"] }; // red is the security part's
+    const failed = all.some((r) => r.ok === false), open = this.rulesOpen ?? failed, passed = rules.filter((c) => c.ok === true).length, ci = checkGroups(checks).ci;
+    const ruleText = `${passed} of ${rules.length} passed${ci.length ? ` · CI ${ci.filter((c) => c.ok === true).length} of ${ci.length}` : ""} ${open ? "▾" : "▸"}`;
+    const related = [...(ctx?.open ?? []).filter((p) => !p.stacked).map((p) => ({ ...p, state: "open" })), ...(ctx?.merged ?? []).map((p) => ({ ...p, state: "merged" }))];
+    const flow = (ai?.visuals ?? []).find((v) => v.kind === "flow");
+    return v_flex().flex_none().gap(2).text_size(13.5)
+      .when(Boolean(ai), (e) => e.child(head("What the PR does", true))
+        .when(intent, (x) => x.child(v_flex().px(6).pb(4).gap(4)
+          .child(h_flex().flex_wrap().gap(6).items_center().when(Boolean(task.title) && task.title !== pr.title, (y) => y.child(div().whitespace_normal().child(task.title)))
+            .when(Boolean(task.jira), (y) => y.child(chip(t, `Linked issue ${task.jira}`, t.accent, false, "rv-jira", "The issue this PR links to"))))
+          .when(Boolean(task.note), (y) => y.child(div().text_size(12).text_color(t.ansi3).whitespace_normal().child(task.note)))))
+        .when(ai.intent?.length > 0, (x) => x.child(line("rv-does-int", "Asked for", this.statements(t, ai.intent, "rv-int"), "What the task asks for, as the analysis reads it")))
+        .children(rows.map(([label, items], k) => line(`rv-does-${k}`, label, div().max_w(600).child(this.statements(t, items.map((x) => ({ ...x, text: plain(x.text) })), `rv-does-${k}-s`)),
+          ai.summary && typeof ai.summary === "object" ? `What the PR ${label === "Adds" ? "adds" : label === "Changes" ? "changes" : "does at run time"}` : "From the analysis' summary and behavior, sentence by sentence")))
+        .when(Boolean(flow), (x) => x.child(div().pt(10).max_w(600).child(visualsCard([flow], t, "rv-ov-flow", (at, cx) => this.jumpTo(at, cx), 0, () => {}, this.wrapX())))))
+      .child(head("In this PR", !ai))
+      .when(Boolean(componentLine(ai?.componentCounts)), (e) => e.child(line("rv-ov-comp", "New parts", h_flex().gap(8).child(div().flex_1().min_w(0).whitespace_normal().child(componentLine(ai.componentCounts))).child(div().flex_none().text_size(12).text_color(t.accent).child("Show ▸")),
+        "Components this PR adds or changes, as the analysis counts them: click for the Architecture impact page", (_e, cx) => { this.page = "arch"; cx.notify(); })))
+      .when(all.length > 0, (e) => e.child(line("rv-ov-rules", "Repo rules", div().child(ruleText), open ? "Hide the rules and checks" : "Show the rules and checks by name", (_e, cx) => { this.rulesOpen = !open; cx.notify(); })))
+      .when(all.length > 0 && open, (e) => e.children(all.map((r, k) => h_flex().id(`rv-ck-${k}`).tooltip(`${MARK[r.ok][2]}${r.where ? ": click to jump to the code" : ""}`).gap(10).items_start().pl(100).pr(6).py(2).rounded(6).text_size(12.5)
+        .when(Boolean(r.where), (x) => x.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.jumpTo(r.where, cx)))
+        .child(div().w(22).flex_none().font_semibold().text_color(t[MARK[r.ok][1]]).child(MARK[r.ok][0]))
+        .child(v_flex().flex_1().min_w(0).child(div().whitespace_normal().child(r.name)).when(Boolean(r.sub), (x) => x.child(div().text_size(12).text_color(t.muted).whitespace_normal().child(plain(r.sub)))))))
+        .when(!ctx, (x) => x.child(div().pl(100).text_size(12).text_color(t.muted).child("CI checks and mergeability load in the background…"))))
+      .when(related.length > 0, (e) => e.child(line("rv-ov-related", "Related PRs", div().child(`${related.length} touch the same files ${this.relOpen ? "▾" : "▸"}`), "Other PRs that change the same files: click to show them",
+        (_e, cx) => { this.relOpen = !this.relOpen; cx.notify(); }))
+        .when(Boolean(this.relOpen), (x) => x.children(related.map((p) => h_flex().id(`rv-rel-${p.number}`).tooltip("Open this related PR in its own review").gap(8).items_center().pl(100).pr(6).py(2).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
+          .on_click((_e, cx) => this.openRelated(p, cx))
+          .child(div().flex_none().text_size(12).text_color(p.state === "open" ? t.ansi2 : t.ansi5).child(p.state))
+          .child(div().flex_none().text_size(12.5).text_color(t.muted).child(`#${p.number}`))
+          .child(div().flex_1().min_w(0).truncate().text_size(12.5).child(p.title))
+          .child(div().id(`rv-relf-${p.number}`).flex_none().text_size(12).text_color(t.muted).tooltip((p.files ?? []).join("\n") || "-").child(`${p.overlap} ${p.overlap === 1 ? "file" : "files"} overlap`))))));
+  },
 
   // The bar's "Repo rules 2/2": the rules this PR is checked against (the title's form and the analysis' repo rules)
   // by name in the tooltip; CI and conflicts only when GitHub reports some. null: nothing to say yet.
   checkFacts() {
     if (!this.prSel) return null;
-    const checks = this.checksNow(), ci = checks.filter((c) => c.ci), rules = checks.filter((c) => !c.ci && c.name !== "No merge conflicts"), ok = (l) => l.filter((c) => c.ok === true).length;
+    const checks = this.checksNow(), { ci, rules } = checkGroups(checks), ok = (l) => l.filter((c) => c.ok === true).length;
     const parts = [rules.length > 0 && [`Repo rules ${ok(rules)}/${rules.length}`, rules.some((c) => c.ok === false)], ci.length > 0 && [`CI ${ok(ci)}/${ci.length}`, ci.some((c) => c.ok === false)],
       checks.some((c) => c.name === "No merge conflicts" && c.ok === false) && ["Merge conflicts", true]].filter(Boolean);
     if (!parts.length) return null;
@@ -4452,6 +4500,7 @@ export const ReviewMode = {
 
   // A click that leads to a part of the right pane's page (pageView's names): shown after the render that has it.
   pagePart(name, cx) {
+    if (name === "checks" && this.page === "overview") { this.rulesOpen = true; name = "main"; } // the rules sit in the Overview's right column, unfolded
     cx.timer.after(30, (cx) => { const k = (this.pageParts ?? []).indexOf(name); if (k >= 0) this.pageScrolls[this.page]?.scroll_to_item(k); cx.notify(); });
   },
 
@@ -4459,8 +4508,10 @@ export const ReviewMode = {
   copyState() {
     if (!this.prSel) return;
     const p = this.progressNow();
+    const ai = this.ai, behavior = ai?.behaviorPoints?.length ? ai.behaviorPoints.map((x) => x.text).join(" ") : ai?.behavior ?? "";
+    const fixOf = (f) => { const ff = Object.fromEntries(this.fixFacts(f)); return [ff.Agent, ff.Branch].filter(Boolean).join(", "); };
     const text = reviewState({ pr: this.prSel, head: this.worktree?.head ?? this.prSel.headSha ?? "", list: this.taskNow(), counts: this.counts(), findings: this.findings(), statusOf: (f) => this.fstatus(f),
-      progress: `Reviewer's progress: ${p.filesViewed} of ${p.files} files viewed, ${p.comments} pending ${p.comments === 1 ? "comment" : "comments"}.` });
+      progress: `Reviewer's progress: ${p.filesViewed} of ${p.files} files viewed, ${p.comments} pending ${p.comments === 1 ? "comment" : "comments"}.`, behavior, fixOf, cost: this.costNow() });
     copyText(text);
     this.note = `Review state copied as text (${text.trim().split("\n").length} lines), nothing was posted.${this.findings().some((f) => f.security) ? " Security findings are in it with their title only." : ""}`;
   },
