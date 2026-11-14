@@ -27,6 +27,7 @@ import { archView, archModel, archLegend, visualsCard, visualCard, segBar, foldC
 import { visualPlan } from "./stack.js";
 import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCALE } from "./views.js";
 import { wrapCode, codeCols, sliceSpans } from "./views.js"; // long lines wrap
+import { pairRows, pairSide, HALF_GUTTER } from "./views.js"; // side by side
 import { plainText } from "./pr.js";
 import { hasSources, archLayout, archBands } from "./arch.js";
 import * as TH from "./threads.js";
@@ -45,6 +46,8 @@ const SPLIT = 6, ROW = 22, GUTTER = 4 + 48 + 48 + 22, GAP_SEG = 110, BTN = 110, 
 const FILE_CHEV = 30, FILE_SEEN = 100, FILE_WHOLE = 124;
 const MORE = 20; // lines per ↑/↓ click
 const ONE_LINE = [0]; // a code line that fits: one visual line from its start (wrapsOf)
+// The items that start a card under a line: side by side they carry the mark of their half (item).
+const SIDE_HEAD = new Set(["find", "ch", "gh", "compose", "sug", "def", "hidden"]);
 const KEYS_POP = { width: 340, height: 330 }; // the "?" popup: sized to its rows and the last line
 const COMPOSE = 168; // the composer row: header + a fixed-height textarea (the list needs every row's height up front)
 const progressFile = () => `${appHome()}/pr-data/review-progress.json`; // per PR: progress and where you were (bounded)
@@ -1211,12 +1214,12 @@ export const ReviewMode = {
     const ths = this.threads().filter((x) => x.file === path), notes = codePins(this.pins(), path);
     const show = this.show();
     const thread = { gh, editId: this.composing ? this.editing?.id ?? null : null, composeKey: range && at.compose === undefined ? lineKey(rows[range[1]]) : null };
-    const cols = codeCols(this.listW ?? 900, GUTTER, this.codeCharW()); // a longer line wraps: one item per visual line (part)
-    rows.forEach((r, ri) => {
-      if (r.kind === "gap") { items.push({ t: "gap", path, r }); return; }
-      const hunk = hunkOf(r);
-      if (hunk && at[hunk] === undefined) at[hunk] = items.length;
-      for (let part = 0, n = this.wrapsOf(rows, ri, cols).length; part < n; part++) items.push({ t: "row", path, src: rows, ri, hunk, part, cols });
+    const cardsUnder = (r, side) => {
+      const from = items.length;
+      underRow(r);
+      if (side) for (let k = from; k < items.length; k++) items[k] = { ...items[k], side };
+    };
+    const underRow = (r) => {
       if (r.number === undefined) return;
       if (this.defAt && this.defAt.key === `${path}:${lineKey(r)}`) items.push({ t: "def", d: this.defAt });
       // The Show switch: a kind switched off folds away here, never silently ("n hidden").
@@ -1237,10 +1240,31 @@ export const ReviewMode = {
       if (r.kind !== "-") for (const f of finds) if (under.get(f) === r.number) { if (show.ai) items.push({ t: "find", f }, ...(this.findOpen(f) ? [{ t: "fact", f }] : [])); else hide("Findings"); }
       const n = Object.values(hidden).reduce((a, b) => a + b, 0);
       if (n) items.push({ t: "hidden", text: `${n} hidden · ${Object.keys(hidden).join(", ")}`, key: `${path}:${lineKey(r)}` });
-    });
+    };
+    // Side by side a unit is a pair of rows (l old, r new; one may be null), else one row; a longer line wraps: one
+    // item per visual line (part). What hangs under a line follows its unit, over the whole width, marked with its side.
+    const { cols, units, parts } = this.rowLayout(rows);
+    for (const u of units) {
+      const r = rows[u.ri];
+      if (r.kind === "gap") { items.push({ t: "gap", path, r }); continue; }
+      const hunk = hunkOf(r);
+      if (hunk && at[hunk] === undefined) at[hunk] = items.length;
+      for (let part = 0, n = parts(u); part < n; part++) items.push({ t: "row", path, src: rows, ri: u.ri, hunk, part, cols, ...(u.l === undefined ? {} : { l: u.l, r: u.r }) });
+      if (u.l === undefined || u.l === u.r) cardsUnder(r, null);
+      else { if (u.l !== null) cardsUnder(rows[u.l], "l"); if (u.r !== null) cardsUnder(rows[u.r], "r"); }
+    }
     // What found no line here (pending comments, GitHub's outdated ones): the file's end shows them (filesItems).
     return [...cms.filter((c) => !used.has(c)), ...gh.filter((g) => !ghUsed.has(g)).map((g) => ({ gh: g }))];
   },
+  // How a file's rows are drawn: the code columns per visual line, the units top to bottom ({ri} one row; side by side
+  // {ri, l, r}, ri the row the item's key names) and how many visual lines a unit takes (its longer half's).
+  rowLayout(rows) {
+    const split = this.diffMode() === "split", lw = this.listW ?? 900, cw = this.codeCharW();
+    const cols = split ? codeCols(lw / 2, HALF_GUTTER, cw) : codeCols(lw, GUTTER, cw), n = (ri) => (ri === null ? 1 : this.wrapsOf(rows, ri, cols).length);
+    const units = split ? pairRows(rows).map((p) => (p.full !== undefined ? { ri: p.full } : { ri: p.r ?? p.l, l: p.l, r: p.r })) : rows.map((_, ri) => ({ ri }));
+    return { split, cols, units, parts: (u) => (u.l === undefined ? n(u.ri) : Math.max(n(u.l), n(u.r))) };
+  },
+  diffMode() { return shared("review.diff") === "split" ? "split" : "unified"; },
 
   stepsItems(steps = this.steps()) {
     const items = [], at = {};
@@ -1303,10 +1327,10 @@ export const ReviewMode = {
   },
   // A folded file's height: what it took when last open (renderReview keeps openH), else its rows'.
   foldH(path, rows) {
-    const o = this.openH?.get(path);
-    if (o?.rows === rows) return o.h;
-    const memo = (this.rowsH ??= new WeakMap()), cols = codeCols(this.listW ?? 900, GUTTER, this.codeCharW());
-    if (memo.get(rows)?.cols !== cols) memo.set(rows, { cols, h: rows.reduce((h, r, ri) => h + (r.kind === "@" || r.kind === "gap" ? 30 : ROW * this.wrapsOf(rows, ri, cols).length), 0) });
+    const o = this.openH?.get(path), L = this.rowLayout(rows), key = `${L.split}|${L.cols}`;
+    if (o?.rows === rows && o.key === key) return o.h;
+    const memo = (this.rowsH ??= new WeakMap());
+    if (memo.get(rows)?.key !== key) memo.set(rows, { key, h: L.units.reduce((h, u) => h + (rows[u.ri].kind === "@" || rows[u.ri].kind === "gap" ? 30 : ROW * L.parts(u)), 0) });
     return memo.get(rows).h;
   },
   // A code character's width in the list's px: the probe measures it zoomed, listW is not (renderReview).
@@ -3562,6 +3586,10 @@ export const ReviewMode = {
   },
 
   item(it, t) {
+    // Side by side, a card over the whole width says in the gutter which half's line it hangs under.
+    if (it.side && SIDE_HEAD.has(it.t)) return div().w_full().relative().child(this.item({ ...it, side: null }, t))
+      .child(div().absolute().top(0).left(0).w(GUTTER - 10).h(ROW).flex().items_center().justify_end().text_size(11.5).text_color(it.side === "l" ? t.ansi1 : t.ansi2)
+        .child(it.side === "l" ? "− old side" : "+ new side"));
     const mono = (e) => e.font_family(settings().font_family ?? "JetBrains Mono");
     if (it.t === "row") {
       const r = it.src[it.ri];
@@ -3570,6 +3598,10 @@ export const ReviewMode = {
         return mono(h_flex()).h(30).w_full().pl(GUTTER - 4).pr(12).gap(10).items_center().bg(t.accent + "14").border_t(1).border_b(1).border_color(t.border).text_size(12.5)
           .child(div().flex_none().text_color(t.muted).child(m[1])).child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(m[2]));
       }
+      // Side by side: two halves of equal width and height; an empty one (a line only on the other side) is grey.
+      if (it.l !== undefined) return h_flex().h(ROW).w_full()
+        .child(it.l === null ? div().flex_1().min_w(0).h_full().bg(t.surface) : this.lineView(it, t, it.l, "l").flex_1().min_w(0))
+        .child(it.r === null ? div().flex_1().min_w(0).h_full().bg(t.surface).border_l(1).border_color(t.border) : this.lineView(it, t, it.r, "r").flex_1().min_w(0).border_l(1).border_color(t.border));
       return this.lineView(it, t, it.ri, null).w_full();
     }
     if (it.t === "gap") {
@@ -3715,6 +3747,7 @@ export const ReviewMode = {
     const r = it.src[ri], starts = this.wrapsOf(it.src, ri, it.cols), part = it.part ?? 0, first = part === 0, last = part === starts.length - 1;
     const on = Boolean(this.selKeys && this.fsel?.path === it.path && this.selKeys.has(lineKey(r)) && (!side || !this.fsel.side || this.fsel.side === side));
     const tone = r.kind === "+" ? t.ansi2 : r.kind === "-" ? t.ansi1 : null, focus = it.hunk && it.hunk === this.focusHunk, newSide = side !== "l";
+    if (starts[part] === undefined) return div().h(ROW).when(Boolean(tone), (e) => e.bg(tint(r.kind) + "1a")).when(on, (e) => e.bg(t.selection)); // under a half's shorter line
     const num = (n) => div().w(48).h_full().flex_none().pr(8).flex().items_center().justify_end().text_color(t.muted).child(n === undefined || !first ? "" : String(n));
     const sel = on && !this.composing && this.fsel?.b === lineKey(r) && last, trace = last && newSide && r.kind !== "-" && this.traces?.get(`${it.path}:${r.n}`);
     return h_flex().h(ROW).font_family(settings().font_family ?? "JetBrains Mono").text_size(13).cursor_pointer()
@@ -3749,7 +3782,7 @@ export const ReviewMode = {
     heads.forEach((h, k) => {
       const end = heads[k + 1] ?? n, it = items[h + 1];
       if (it?.t === "fold") folds.push([top[h + 1], top[h + 2]]);
-      else if (it?.t === "row") openH.set(it.path, { rows: it.src, h: top[end] - top[h + 1] }); // rows first: no "Loading file…" note
+      else if (it?.t === "row") openH.set(it.path, { rows: it.src, h: top[end] - top[h + 1], key: `${it.l !== undefined}|${it.cols}` }); // rows first: no "Loading file…" note; key: as drawn (foldH)
     });
     this.filesList = { heads, top, folds, keys };
     const a = this.anchor;

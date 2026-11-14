@@ -343,3 +343,12 @@ export const wrapHeight = (starts, row) => row * Math.max(1, starts.length);
 export const codeCols = (width, gutter, charW) => Math.max(8, Math.floor((width - gutter - 12) / (charW || 7.8)));
 // The syntax spans of text[a, b), shifted to the slice: a wrapped line keeps its colors on every visual line.
 export const sliceSpans = (spans, a, b) => spans.filter((s) => s.end > a && s.start < b).map((s) => ({ ...s, start: Math.max(s.start, a) - a, end: Math.min(s.end, b) - a }));
+
+// ---- side by side (review.js pushRows, lineView): two halves of equal width, each its own line number and sign
+export const HALF_GUTTER = 4 + 48 + 22;
+// Which half a press at x on a side-by-side row `w` px wide hit: the row index there (null: the half is empty), x from
+// the half's left edge, the half's width, and the side ("l" old, "r" new).
+export function pairSide(x, w, l, r) {
+  const half = w / 2, right = x >= half;
+  return { side: right ? "r" : "l", ri: right ? r : l, x: right ? x - half : x, w: half };
+}

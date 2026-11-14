@@ -312,3 +312,10 @@ const sp = [{ start: 0, end: 5, kind: "kw" }, { start: 6, end: 14, kind: "fn", r
 assert.deepEqual(sliceSpans(sp, 0, 10), [{ start: 0, end: 5, kind: "kw" }, { start: 6, end: 10, kind: "fn", ref: true }], "a span over the break is split");
 assert.deepEqual(sliceSpans(sp, 10, 20), [{ start: 0, end: 4, kind: "fn", ref: true }], "its second half starts the next line");
 assert.deepEqual(sliceSpans(sp, 14, 20), [], "nothing between spans");
+
+// ---- side by side: which half a press hit
+import { pairSide } from "./views.js";
+assert.deepEqual(pairSide(100, 1000, 3, 4), { side: "l", ri: 3, x: 100, w: 500 });
+assert.deepEqual(pairSide(600, 1000, 3, 4), { side: "r", ri: 4, x: 100, w: 500 }, "x from the right half's left edge");
+assert.deepEqual(pairSide(500, 1000, null, 4), { side: "r", ri: 4, x: 0, w: 500 }, "the middle belongs to the right half");
+assert.equal(pairSide(10, 1000, null, 4).ri, null, "an empty left half: no row");
