@@ -3832,6 +3832,10 @@ export const ReviewMode = {
     const runs = this.find.runs, all = this.findings(), tab = scopeTable(this.ai?.scope, runs);
     const from = (k) => all.filter((f) => f.sources.some((x) => x.reviewer === k)).length;
     const conflicts = scopeConflicts(tab, this.openFindings());
+    // What a reviewer run was allowed to do: the run's own list (runs[kind].allowed, when reviewers.py writes it), else
+    // what reviewers.py PERMISSIONS grants every Claude reviewer today. The analysis and Codex: not said.
+    const allowedOf = (k, r) => (!r?.state || k === "analysis" || k === "codex" ? null : Array.isArray(r.allowed) && r.allowed.length ? `allowed: ${r.allowed.join(", ")}`
+      : "allowed: read files in the checkout and its git history; no network, no writes");
     const lines = [["analysis", "Analysis", this.aiBusy ? { state: "running" } : this.ai ? { state: "done" } : null, null], ...reviewersNow().map(([k, [label]]) => [k, label, runs[k] ?? null, runs[k]?.scope ?? null])];
     const RESULT = { finding: ["Finding", t.ansi1], clean: ["Clean", t.ansi2], not_checked: ["Not checked", t.ansi3] };
     // A row is one line each (its notes cut); a click on it shows the whole texts and, under a "Finding", that run's
@@ -3861,7 +3865,7 @@ export const ReviewMode = {
         return h_flex().id(`rv-sec-run-${k}`).gap(8).items_start().text_size(12.5).line_height(1.5).cursor_pointer().on_click(toggle(`run:${k}`)).tooltip(whole ? "Fold this line" : "Show the whole line")
           .child(div().w(150).flex_none().font_semibold().child(label))
           .child(div().flex_1().min_w(0).when(whole, (e) => e.whitespace_normal()).when(!whole, (e) => e.truncate()).text_color(failed ? t.ansi1 : r?.state ? t.foreground : t.muted)
-            .child([runSummary(r, from(k)), scope?.read?.length ? `read: ${scope.read.join(", ")}` : null, scope?.skipped?.length ? `left out: ${scope.skipped.join("; ")}` : null,
+            .child([runSummary(r, from(k)), allowedOf(k, r), scope?.read?.length ? `read: ${scope.read.join(", ")}` : null, scope?.skipped?.length ? `left out: ${scope.skipped.join("; ")}` : null,
               r?.state === "done" && k !== "analysis" && !scope ? "it reported no scope" : null].filter(Boolean).join(" · ")));
       })))
       // An area the runs contradict each other on, or that a run calls clean while a finding names it in its effect
