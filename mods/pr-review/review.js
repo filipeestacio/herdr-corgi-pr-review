@@ -38,7 +38,8 @@ import { pollDue, pollAfter, windowActive } from "./pr.js"; // background fetche
 import { hasSources, archLayout, archBands } from "./arch.js";
 import { archMarks, transitionText } from "./arch.js";
 import { resStartOf, resOrder, resPicture, budgetBar, resPathView, resCardOf, resSentence, resMarksOn } from "./views.js";
-import { resWord, resToolText, resVerdict, resWatch, resTwice, PROBE_TYPICAL, resEdgeMarks, resByProbe, RES_MARK_ROW, resMarkRows, resVerdictParts, resStartCard } from "./views.js"; // wave R2: words, verdict, watch, doubled ways
+import { resWord, resToolText, resVerdict, resWatch, resTwice, PROBE_TYPICAL, resEdgeMarks, resByProbe, RES_MARK_ROW, resMarkRows, resVerdictParts, resStartCard } from "./views.js";
+import { withProbes, certaintyText, probedText } from "./views.js"; // wave C2 V3: a reproduced probe confirms its findings // wave R2: words, verdict, watch, doubled ways
 import { withResilience, resilienceStart, RUN_TYPICAL } from "./pr.js"; // the Resilience run's data // the Resilience page
 import { wayOf, wayText, passZones, runsIn } from "./views.js"; // panel round 3: ways through every gate, zones passed on
 import { transitionMarks, effectiveFrom, inProcess, mapArch, crossingsOf, crossingChanged, secSentence, TRUST_ORDER } from "./views.js";
@@ -962,10 +963,13 @@ export const ReviewMode = {
       return memo.get(key);
     };
     const lines = list.map((f) => (f.line > 0 ? anchor(f) : f.line)), at = lines.join();
-    if (m?.ai === ai && m.list === list && m.st === st && m.handled === handled && m.n === n && m.at === at) return m;
+    const probes = this.deep?.probes; // a probe that ends confirms its path's findings (withProbes below)
+    if (m?.ai === ai && m.list === list && m.st === st && m.handled === handled && m.n === n && m.at === at && m.probes === probes) return m;
     const moved = list.map((f, i) => (lines[i] === f.line ? f : { ...f, line: lines[i], end: Math.max(lines[i], f.end ?? 0), head: undefined, code: undefined }));
     const m2 = mergeFindings([...moved, ...(ai?.steps ?? []).flatMap((s) => s.findings ?? [])], (ai?.suspects ?? []).filter((s) => !handled[s.key]), st, publicFiles(ai?.access, ai?.arch?.nodes));
-    return (this.findMemo = { ai, list, st, handled, n, at, ...m2, findings: withProof(m2.findings, st) }); // an agent's check on each (Verify with an agent)
+    // An agent's check on each (Verify with an agent); a reproduced probe of the Resilience page confirms its path's findings.
+    const res = ai?.resilience ?? this.find?.resilience, proved = res?.paths && typeof this.probesNow === "function" ? withProbes(withProof(m2.findings, st), res.paths, this.probesNow()) : withProof(m2.findings, st);
+    return (this.findMemo = { ai, list, st, handled, n, at, probes, ...m2, findings: proved });
   },
   findings() { return this.merged().findings; },
   findingById(id) { return this.findings().find((f) => f.ids.includes(id)) ?? null; },
@@ -4005,7 +4009,7 @@ export const ReviewMode = {
       : level ? `${level[0].toUpperCase()}${level.slice(1)}${f.reachability === "unknown" ? "." : ". Stated by the analysis, which names no way in."}` : null;
     const way = cr ? `${wayText(wayOf(cr, ctx.crossings, this.ai?.arch))}.${cr.holds_if ? ` Holds only if: ${cr.holds_if.replace(/\.+$/, "")}.` : ""}` : null; // through every gate, from whoever arrives
     const facts = [f.effect && ["Effect", plain(f.effect)],
-      f.certainty && ["Certainty", `${CERTAIN[f.certainty]} ${f.preconditions.length ? `It needs: ${f.preconditions.map(plain).join("; ")}.` : "It needs nothing else: it holds as the code stands."}`],
+      f.certainty && ["Certainty", `${CERTAIN[f.certainty]}${probedText(f)} ${f.preconditions.length ? `It needs: ${f.preconditions.map(plain).join("; ")}.` : "It needs nothing else: it holds as the code stands."}`],
       reach && ["Reachable from", reach],
       way && ["Way", way],
       f.proof?.state === "done" && ["Agent check", `${PROOF_WORDS[f.proof.result]}${f.proof.reason ? `: ${plain(f.proof.reason)}` : "."}${f.proof.command ? ` (ran ${f.proof.command})` : ""}`],
@@ -4456,7 +4460,7 @@ export const ReviewMode = {
       .on_click((_e, cx) => { this.jumpTo(at, cx); cx.stop_propagation(); }).child(`${at.split("/").pop()} ↗`);
     // How sure a finding is, as words: a security finding in two parts (the flaw in the code, the way from outside),
     // another one only when it rests on an assumption.
-    const sure = (f) => (f.security ? [`code ${f.certainty ?? "not rated"}`, f.path_certainty && `reach ${f.path_certainty}`].filter(Boolean).join(" · ") : f.certainty === "assumed" ? "assumed" : "");
+    const sure = (f) => (f.security ? [`code ${f.certainty ? certaintyText(f) : "not rated"}`, f.path_certainty && `reach ${f.path_certainty}`].filter(Boolean).join(" · ") : f.certainty === "assumed" ? "assumed" : "");
     const finding = (f, id) => {
       const st = this.fstatus(f), settled = st === "fixed" || st === "dismissed", note = [sure(f), st !== "open" && FSTATUS[st]?.[0]].filter(Boolean).join(" · ");
       return h_flex().id(id).tooltip([f.title, `${f.severity[0].toUpperCase()}${f.severity.slice(1)}${f.security ? ", security" : ""}`, certaintyLine(f), "Click to open this finding."].filter(Boolean).join("\n")).gap(8).items_center()
@@ -5563,7 +5567,7 @@ async function worktreeAt(path, sha) {
 // that is folded (derived, assumed, confirmed; the open card says it in full).
 const CERT_TIP = { confirmed: "Confirmed: something that ran shows it", derived: "Derived: it follows from the code that was read; check it yourself", assumed: "Assumed: it rests on something the reviewer could not check" };
 function certaintyWord(t, f, id) {
-  return f?.security && CERT_TIP[f.certainty] ? div().id(id).tooltip(CERT_TIP[f.certainty]).flex_none().text_size(12).text_color(t.muted).child(f.certainty) : null;
+  return f?.security && CERT_TIP[f.certainty] ? div().id(id).tooltip(CERT_TIP[f.certainty]).flex_none().text_size(12).text_color(t.muted).child(certaintyText(f)) : null;
 }
 // A finding's state as a word only when it is not the usual one: unresolved goes without saying.
 const stateWord = (st) => (st === "open" ? null : st === "recheck" ? "line changed" : FSTATUS[st]?.[0] ?? st);

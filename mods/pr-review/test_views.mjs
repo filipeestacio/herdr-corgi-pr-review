@@ -822,3 +822,13 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.deepEqual(at([f("c", "library/reminders.py", 35, 35), f("d", "library/status.py", 39, 39)]), [[5, ["c"]]], "near enough, or none");
   assert.deepEqual(at([f("e", "library/status.py", 46, 50, { breaks: { from: "reminded", to: "returned" } })]), [[4, ["e"]]], "breaks names it");
 }
+
+// ---- wave C2: a reproduced probe confirms its path's findings
+{
+  const { withProbes, certaintyText } = await import("./views.js");
+  const fs = [{ id: "a", ids: ["a", "a2"], certainty: "derived" }, { id: "b", certainty: "derived" }];
+  const paths = [{ id: "p3", probe: "r1", findings: ["a2"] }, { id: "p4", findings: ["b"] }];
+  const out = withProbes(fs, paths, [{ id: "r1", of: "p3", status: "done", result: "reproduced", strength: "models_env" }, { id: "r2", of: "p4", status: "done", result: "not_reproduced" }]);
+  assert.deepEqual(out.map((f) => certaintyText(f)), ["confirmed, platform modeled", "derived"]);
+  assert.equal(withProbes(fs, paths, []), fs, "no probe done: the same list");
+}

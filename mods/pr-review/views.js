@@ -207,7 +207,7 @@ export const SEVERITY_SCALE = ["high", "medium", "low"].map((s) => `${s}: ${Obje
 export function factRows(f) {
   const why = IMPACT[f?.impact]?.[1], known = Boolean(f?.effect || f?.certainty);
   return [why && ["Severity", `${f.severity ?? IMPACT[f.impact][0]}, because ${why}.`], f?.effect && ["Effect", f.effect],
-    CERTAINTY[f?.certainty] && ["Certainty", CERTAINTY[f.certainty]],
+    CERTAINTY[f?.certainty] && ["Certainty", `${CERTAINTY[f.certainty]}${probedText(f)}`],
     f?.preconditions?.length ? ["Preconditions", f.preconditions.join("; ")] : known && ["Preconditions", "None: it always happens."]].filter(Boolean);
 }
 
@@ -1155,3 +1155,19 @@ export function resStartCard(p, arch) {
   }
   return p?.reach?.[0] ?? null;
 }
+// Wave C2 V3: a resilience path whose probe reproduced it (status done, result reproduced) confirms its findings:
+// certainty "confirmed", with probed {id, strength} so the word can say how ("confirmed, platform modeled" when the
+// script modeled the platform). paths: the run's paths (p.findings ids, p.probe); probes: review.js probesNow. Pure.
+export function withProbes(findings, paths, probes) {
+  const by = new Map();
+  for (const p of paths ?? []) {
+    const x = (probes ?? []).find((q) => (q.id === p.probe || q.of === p.id) && q.status === "done" && q.result === "reproduced");
+    if (x) for (const id of p.findings ?? []) by.set(id, { id: x.id, strength: x.strength ?? null });
+  }
+  if (!by.size) return findings;
+  return (findings ?? []).map((f) => { const hit = (f.ids ?? [f.id]).map((id) => by.get(id)).find(Boolean); return hit ? { ...f, certainty: "confirmed", probed: hit } : f; });
+}
+// The certainty as a word, with how a probe confirmed it ("confirmed, platform modeled").
+export const certaintyText = (f) => `${f?.certainty ?? ""}${f?.certainty === "confirmed" && f?.probed?.strength === "models_env" ? ", platform modeled" : ""}`;
+// Which probe confirmed a finding, as a sentence after its certainty (" Probe r1 reproduced it, with the platform modeled.").
+export const probedText = (f) => (f?.certainty === "confirmed" && f?.probed ? ` Probe ${f.probed.id} reproduced it${f.probed.strength === "models_env" ? ", with the platform modeled" : ""}.` : "");
