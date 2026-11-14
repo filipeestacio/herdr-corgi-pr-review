@@ -187,7 +187,7 @@ for bad in ([home], [os.path.dirname(home)], ["/"], [*py, home + "/"]):
     except ValueError:
         pass
 assert probe.bwrap_args("/tmp/x", dirs=[home + "/.pyenv/versions/3.12/lib/python3.12"]), "a folder inside the home is fine: only it shows"
-assert probe.above(["/", "/home", "/home/ann", "/home/ann/.pyenv/lib", "/opt/py"], ["/home/ann"]) == ["/", "/home", "/home/ann"]
+assert probe.above(["/", "/srv/people", "/srv/people/ann", "/srv/people/ann/.pyenv/lib", "/opt/py"], ["/srv/people/ann"]) == ["/", "/srv/people", "/srv/people/ann"]
 saved = probe.interp_dirs
 for platform, tools in (("darwin", {"sandbox-exec"}), ("linux", {"bwrap"})):
     probe.interp_dirs = lambda: ["/opt/py/bin", os.path.dirname(home)]
