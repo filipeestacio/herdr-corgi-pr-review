@@ -1,0 +1,1367 @@
+{
+ "source": "https://github.com/saefty/corgi-demo/pull/1",
+ "model": "sonnet",
+ "model_id": "claude-sonnet-5-5",
+ "hunks": [
+  {
+   "alias": "h1",
+   "id": "library/api.py:21add6eb"
+  },
+  {
+   "alias": "h2",
+   "id": "library/dates.py:26f490bf"
+  },
+  {
+   "alias": "h3",
+   "id": "library/handler.py:0134f066"
+  },
+  {
+   "alias": "h4",
+   "id": "library/loans.py:b85d861d"
+  },
+  {
+   "alias": "h5",
+   "id": "library/mailer.py:7b7dd766"
+  },
+  {
+   "alias": "h6",
+   "id": "library/mailer.py:b5c2cba6"
+  },
+  {
+   "alias": "h7",
+   "id": "library/reminders.py:50fe2810"
+  },
+  {
+   "alias": "h8",
+   "id": "library/status.py:15cb6432"
+  },
+  {
+   "alias": "h9",
+   "id": "library/tests/test_reminders.py:9be9e0ba"
+  },
+  {
+   "alias": "h10",
+   "id": "library/tests/test_status.py:5ee0e3b8"
+  },
+  {
+   "alias": "h11",
+   "id": "requirements.txt:6dbf76bc"
+  }
+ ],
+ "answer": {
+  "title": "feat(reminders): due-date reminders, overdue list, status machine and a front-desk Lambda",
+  "summary": "The PR adds reminder selection and sending, an overdue list, a loan status enum with allowed moves, and a Lambda entry point (`GET /late`) guarded by a bearer token. It also rewrites the mailer with retries, renames `fmt_date`, and adds an unused `requests` dependency. Several acceptance criteria are only half done. Nothing triggers the reminders, the status machine is not used by any loan code, and the opt-out is missing. The token check also accepts an empty token when the env var is unset.",
+  "behavior": "The front desk can fetch the overdue loans through a token-protected Lambda call, with the longest overdue first. Reminder logic exists, but nothing runs it, so members get no mail in production yet. Members cannot opt out of reminders, and there is no profile setting for it.",
+  "merge_risk": {
+   "level": "high",
+   "why": "The front-desk auth accepts an empty bearer token when FRONT_DESK_TOKEN is unset, the mailer can silently drop mails while the loan is still marked reminded, and two acceptance criteria are not delivered."
+  },
+  "effort": {
+   "score": 2,
+   "why": "About 150 added lines across small modules. The review is mostly checking the auth path, the mailer retry semantics and which acceptance criteria are wired up."
+  },
+  "rule_checks": [],
+  "architecture": {
+   "groups": [
+    {
+     "id": "g_edge",
+     "label": "Front desk (AWS Lambda)",
+     "kind": "Client"
+    },
+    {
+     "id": "g_lib",
+     "label": "Library service (library/)",
+     "kind": "Service"
+    },
+    {
+     "id": "g_missing",
+     "label": "Not in this PR",
+     "kind": "Planned"
+    }
+   ],
+   "nodes": [
+    {
+     "id": "n_handler",
+     "group": "g_edge",
+     "label": "handler (library/handler.py)",
+     "description": "Lambda entry for GET /late, with a bearer token check.",
+     "details": "Entry point for the front desk to reach the overdue list.\n- **New** `handler()` checks the `Authorization: Bearer` header with `hmac.compare_digest` against `FRONT_DESK_TOKEN`.\n- `TOKEN` defaults to `\"\"`, so **an empty bearer token passes** when the env var is unset.\n- Routes only `/late` and returns 404 for anything else.",
+     "type": "lambda",
+     "status": "new",
+     "source": "implemented",
+     "evidence": "library/handler.py:11",
+     "at": "library/handler.py:11"
+    },
+    {
+     "id": "n_api",
+     "group": "g_lib",
+     "label": "api (library/api.py)",
+     "description": "Framework-free HTTP handlers.",
+     "details": "Dict-in, status-and-body-out handlers for the service.\n- **New** `late()` returns the overdue loans as JSON-ready dicts.\n- `fmt_date` was **renamed** to `format_day` at the call sites.",
+     "type": "component",
+     "status": "changed",
+     "source": "implemented",
+     "evidence": "library/api.py:19",
+     "at": "library/api.py:19"
+    },
+    {
+     "id": "n_rem",
+     "group": "g_lib",
+     "label": "reminders (library/reminders.py)",
+     "description": "Selects loans due soon, sends reminder mails and lists overdue loans.",
+     "details": "Holds the reminder policy.\n- **New** `due_soon()` selects open, unreminded loans due in exactly 2 days.\n- **New** `send_reminders()` mails each one and sets `reminded_on`.\n- **New** `overdue()` sorts open late loans by `due_on` ascending.",
+     "type": "component",
+     "status": "new",
+     "source": "implemented",
+     "evidence": "library/reminders.py:9",
+     "at": "library/reminders.py:9"
+    },
+    {
+     "id": "n_status",
+     "group": "g_lib",
+     "label": "status (library/status.py)",
+     "description": "Loan status enum, table of allowed moves and `status_of`.",
+     "details": "Defines the loan lifecycle.\n- **New** `Status`, `MOVES`, `move()` and `status_of()`.\n- **Nothing calls** `move()` or `status_of()` outside the tests, so the rules are not enforced.",
+     "type": "component",
+     "status": "new",
+     "source": "implemented",
+     "evidence": "library/status.py:12",
+     "at": "library/status.py:12"
+    },
+    {
+     "id": "n_loans",
+     "group": "g_lib",
+     "label": "Loan / LoanStore (library/loans.py)",
+     "description": "In-memory loans and their store.",
+     "details": "Holds the loans.\n- **New** field `reminded_on` on `Loan`.",
+     "type": "data",
+     "status": "changed",
+     "source": "implemented",
+     "evidence": "library/loans.py:16",
+     "at": "library/loans.py:16"
+    },
+    {
+     "id": "n_mailer",
+     "group": "g_lib",
+     "label": "Mailer (library/mailer.py)",
+     "description": "Sends mail through the outbox.",
+     "details": "Delivers mail to an outbox (a list in tests, SMTP in production).\n- **Changed** `send()` loops `RETRIES` times on `OSError` with backoff.\n- **Silently returns** when all attempts fail.\n- Log level went from info to debug.",
+     "type": "component",
+     "status": "changed",
+     "source": "implemented",
+     "evidence": "library/mailer.py:13",
+     "at": "library/mailer.py:13"
+    },
+    {
+     "id": "n_dates",
+     "group": "g_lib",
+     "label": "dates (library/dates.py)",
+     "description": "Date helpers.",
+     "details": "Date helpers shared by the service.\n- **Renamed** `fmt_date` to `format_day`.",
+     "type": "component",
+     "status": "changed",
+     "source": "implemented",
+     "evidence": "library/dates.py:11",
+     "at": "library/dates.py:11"
+    },
+    {
+     "id": "n_sched",
+     "group": "g_missing",
+     "label": "Scheduled reminder job",
+     "description": "A daily job that calls send_reminders. It does not exist in the PR.",
+     "details": "Would run the reminders daily. Nothing in the diff does this.",
+     "type": "job",
+     "status": "new",
+     "source": "spec",
+     "evidence": "Acceptance: a member gets one reminder mail two days before due"
+    },
+    {
+     "id": "n_optout",
+     "group": "g_missing",
+     "label": "Profile reminder opt-out",
+     "description": "A member setting to turn reminder mails off. It does not exist in the PR.",
+     "details": "No field and no check exist in the diff.",
+     "type": "data",
+     "status": "new",
+     "source": "spec",
+     "evidence": "Acceptance: members can opt out of reminder mails"
+    }
+   ],
+   "edges": [
+    {
+     "from": "n_handler",
+     "to": "n_api",
+     "label": "calls api.late({}) after the token check",
+     "source": "implemented",
+     "evidence": "library/handler.py:19",
+     "status": "new"
+    },
+    {
+     "from": "n_api",
+     "to": "n_rem",
+     "label": "overdue(store.open_loans())",
+     "source": "implemented",
+     "evidence": "library/api.py:21",
+     "status": "new"
+    },
+    {
+     "from": "n_api",
+     "to": "n_loans",
+     "label": "reads open loans",
+     "source": "existing",
+     "evidence": "library/api.py:21",
+     "status": "unchanged"
+    },
+    {
+     "from": "n_rem",
+     "to": "n_mailer",
+     "label": "sends the reminder mail",
+     "source": "implemented",
+     "evidence": "library/reminders.py:19",
+     "status": "new"
+    },
+    {
+     "from": "n_rem",
+     "to": "n_dates",
+     "label": "today(), format_day()",
+     "source": "implemented",
+     "evidence": "library/reminders.py:4",
+     "status": "new"
+    },
+    {
+     "from": "n_status",
+     "to": "n_loans",
+     "label": "reads returned_on, due_on, reminded_on",
+     "source": "implemented",
+     "evidence": "library/status.py:27",
+     "status": "new"
+    },
+    {
+     "from": "n_sched",
+     "to": "n_rem",
+     "label": "would call send_reminders daily",
+     "source": "spec",
+     "evidence": "Acceptance: one reminder mail two days before due"
+    },
+    {
+     "from": "n_optout",
+     "to": "n_rem",
+     "label": "would skip opted-out members",
+     "source": "spec",
+     "evidence": "Acceptance: members can opt out"
+    }
+   ]
+  },
+  "blast_radius": {
+   "units": [
+    {
+     "id": "u_handler",
+     "label": "Front-desk Lambda handler",
+     "type": "lambda",
+     "status": "added",
+     "files": [
+      "library/handler.py"
+     ],
+     "spots": 1
+    },
+    {
+     "id": "u_rem",
+     "label": "Reminders and overdue",
+     "type": "module",
+     "status": "added",
+     "files": [
+      "library/reminders.py",
+      "library/loans.py"
+     ],
+     "spots": 2
+    },
+    {
+     "id": "u_status",
+     "label": "Status machine",
+     "type": "module",
+     "status": "added",
+     "files": [
+      "library/status.py"
+     ],
+     "spots": 1
+    },
+    {
+     "id": "u_mailer",
+     "label": "Mailer retry",
+     "type": "module",
+     "status": "changed",
+     "files": [
+      "library/mailer.py"
+     ],
+     "spots": 2
+    },
+    {
+     "id": "u_api",
+     "label": "api and dates rename",
+     "type": "module",
+     "status": "changed",
+     "files": [
+      "library/api.py",
+      "library/dates.py"
+     ],
+     "spots": 2
+    }
+   ],
+   "context": [
+    {
+     "id": "c_tests_loans",
+     "file": "library/tests/test_loans.py",
+     "direction": "upstream",
+     "relation": "Covers `Loan` and `LoanStore`, which gained the `reminded_on` field. It does not cover the new behavior.",
+     "links_to": "u_rem"
+    },
+    {
+     "id": "c_loans",
+     "file": "library/loans.py",
+     "direction": "downstream",
+     "relation": "`LoanStore.open_loans()` and `give_back()` feed reminders and the overdue list. `give_back` does not use `status.move`.",
+     "links_to": "u_status"
+    }
+   ]
+  },
+  "steps": [
+   {
+    "title": "Loan status model",
+    "risk": "medium",
+    "why_it_matters": "The acceptance criterion \"never back from returned\" is only enforced if loan code uses these moves, and nothing does.",
+    "explanation": "Adds the `Status` enum, the `MOVES` table, `move()` and `status_of()`. Also adds the `reminded_on` field on `Loan`. `move()` raises `ValueError` on a forbidden move, but `LoanStore.give_back()` and the reminder code write `returned_on` and `reminded_on` directly and never call it.",
+    "reading_order": 1,
+    "hunks": [
+     "h8",
+     "h4"
+    ],
+    "check_questions": [
+     "Does any production code call `move()` or `status_of()`, or is the rule only enforced in the test?",
+     "Can `give_back()` on an already returned loan still overwrite `returned_on`?"
+    ],
+    "question_files": [
+     "library/status.py",
+     "library/loans.py"
+    ],
+    "suggestions": [],
+    "findings": [
+     {
+      "file": "library/status.py",
+      "line": 20,
+      "end": 24,
+      "category": "requirement",
+      "impact": "breaks_requirement",
+      "effect": "A returned loan can still be changed through direct field writes, because the \"never back from returned\" rule lives only in an unused function.",
+      "preconditions": [],
+      "certainty": "derived",
+      "title": "Status machine is not wired into any loan code",
+      "detail": "`move()` and `status_of()` are referenced only in `library/tests/test_status.py`. `LoanStore.give_back` sets `returned_on = today()` directly and can run twice. `Loan` has no status field and `send_reminders` writes `reminded_on` directly.",
+      "suggestion": "Store a status on `Loan` and route `give_back` and `send_reminders` through `move()`, or have `give_back` reject loans that are already returned.",
+      "criteria": [
+       "c4"
+      ],
+      "severity": "high",
+      "id": "ac5f44003",
+      "breaks": {
+       "node": "n_status"
+      }
+     }
+    ],
+    "flows": [],
+    "visuals": [
+     {
+      "kind": "state_machine",
+      "title": "Loan",
+      "nodes": [
+       {
+        "id": "borrowed",
+        "label": "borrowed",
+        "source": "implemented",
+        "evidence": "library/status.py:6",
+        "changed": true
+       },
+       {
+        "id": "reminded",
+        "label": "reminded",
+        "source": "implemented",
+        "evidence": "library/status.py:7",
+        "changed": true
+       },
+       {
+        "id": "overdue",
+        "label": "overdue",
+        "source": "implemented",
+        "evidence": "library/status.py:8",
+        "changed": true
+       },
+       {
+        "id": "returned",
+        "label": "returned",
+        "source": "implemented",
+        "evidence": "library/status.py:9",
+        "changed": true
+       }
+      ],
+      "edges": [],
+      "transitions": [
+       {
+        "from": "borrowed",
+        "to": "reminded",
+        "event": "reminder sent",
+        "source": "implemented",
+        "evidence": "library/status.py:13",
+        "changed": true
+       },
+       {
+        "from": "borrowed",
+        "to": "overdue",
+        "event": "due date passes",
+        "source": "implemented",
+        "evidence": "library/status.py:13",
+        "changed": true
+       },
+       {
+        "from": "borrowed",
+        "to": "returned",
+        "event": "returned",
+        "source": "implemented",
+        "evidence": "library/status.py:13",
+        "changed": true
+       },
+       {
+        "from": "reminded",
+        "to": "overdue",
+        "event": "due date passes",
+        "source": "implemented",
+        "evidence": "library/status.py:14",
+        "changed": true
+       },
+       {
+        "from": "reminded",
+        "to": "returned",
+        "event": "returned",
+        "source": "implemented",
+        "evidence": "library/status.py:14",
+        "changed": true
+       },
+       {
+        "from": "overdue",
+        "to": "returned",
+        "event": "returned",
+        "source": "implemented",
+        "evidence": "library/status.py:15",
+        "changed": true
+       },
+       {
+        "from": "returned",
+        "to": "borrowed",
+        "event": "move(RETURNED, BORROWED)",
+        "action": "raises ValueError (MOVES[RETURNED] is empty); nothing calls move() outside tests",
+        "source": "implemented",
+        "evidence": "library/status.py:22",
+        "changed": true
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "title": "Reminder and overdue logic",
+    "risk": "medium",
+    "why_it_matters": "This is the core of the feature: who gets mailed, when, and the order of the overdue list.",
+    "explanation": "`due_soon` picks open loans due in exactly 2 days with no reminder yet. `send_reminders` mails each one and sets `reminded_on`. `overdue` returns open loans past due, sorted by `due_on` ascending, so the longest overdue comes first. Only open loans are selected, so returned loans get no reminder. There is no opt-out check, and nothing calls `send_reminders`.",
+    "reading_order": 2,
+    "hunks": [
+     "h7"
+    ],
+    "check_questions": [
+     "What calls `send_reminders` in production, and what happens on a day the job does not run?",
+     "What does `send_reminders` do if `mailer.send` fails without raising?",
+     "Where is the opt-out checked before mailing?"
+    ],
+    "question_files": [
+     "library/reminders.py",
+     "library/reminders.py",
+     "library/reminders.py"
+    ],
+    "suggestions": [
+     {
+      "hunk": "h7",
+      "line": 12,
+      "side": "new",
+      "severity": "low",
+      "category": "bug",
+      "text": "`l.due_on == day` matches exactly one day, so a loan is never reminded if the job misses that day. Consider `<= day` together with the `reminded_on is None` check."
+     }
+    ],
+    "findings": [
+     {
+      "file": "library/reminders.py",
+      "line": 15,
+      "end": 23,
+      "category": "requirement",
+      "impact": "dead_path",
+      "effect": "Members never receive a reminder mail in production, because no code or schedule invokes `send_reminders`.",
+      "preconditions": [],
+      "certainty": "derived",
+      "title": "Nothing triggers send_reminders",
+      "detail": "`send_reminders` is called only from `library/tests/test_reminders.py`. There is no scheduler, Lambda or CLI entry point in the diff or the repo. The only Lambda handler serves `/late`.",
+      "suggestion": "Add a scheduled entry point, for example an EventBridge-triggered handler, that calls `send_reminders(store, Mailer())` daily.",
+      "criteria": [
+       "c1"
+      ],
+      "severity": "high",
+      "id": "a460dbbc8",
+      "breaks": {
+       "from": "n_sched",
+       "to": "n_rem",
+       "edge": "e6"
+      }
+     },
+     {
+      "file": "library/loans.py",
+      "line": 16,
+      "category": "requirement",
+      "impact": "breaks_requirement",
+      "effect": "Members who want no reminder mails still receive them, because there is no opt-out.",
+      "preconditions": [],
+      "certainty": "confirmed",
+      "title": "Reminder opt-out is not implemented",
+      "detail": "`Loan` and `LoanStore` have no opt-out flag and no member profile exists. `due_soon` and `send_reminders` do not filter on any preference. A search of the repo finds no opt-out code.",
+      "suggestion": "Add an opt-out flag per member, and skip those members in `due_soon` or `send_reminders`.",
+      "criteria": [
+       "c5"
+      ],
+      "severity": "high",
+      "id": "a9549044f",
+      "breaks": {
+       "from": "n_optout",
+       "to": "n_rem",
+       "edge": "e7"
+      }
+     },
+     {
+      "file": "library/reminders.py",
+      "line": 19,
+      "end": 22,
+      "category": "bug",
+      "impact": "data_loss",
+      "effect": "A reminder can be lost for good: the loan is marked reminded and counted as sent although no mail went out, and it is never retried.",
+      "preconditions": [
+       "`Mailer.send` exhausts its retries with `OSError` and returns without raising"
+      ],
+      "certainty": "derived",
+      "title": "Loan is marked reminded even if the mail was not sent",
+      "detail": "`Mailer.send` returns None both on success and after the final failed attempt. `send_reminders` then sets `reminded_on` and increments `sent`. `due_soon` skips loans with `reminded_on` set, so the member is never reminded.",
+      "suggestion": "Have `Mailer.send` raise or return a status after the last retry, and set `reminded_on` only after a successful send.",
+      "criteria": [
+       "c1"
+      ],
+      "severity": "high",
+      "id": "a2000d6ca",
+      "breaks": {
+       "from": "n_rem",
+       "to": "n_mailer",
+       "edge": "e3"
+      }
+     }
+    ],
+    "flows": [
+     {
+      "function": "send_reminders",
+      "at": "library/reminders.py:15",
+      "inputs": [
+       {
+        "name": "store",
+        "type": "LoanStore",
+        "example": "loan 1 (ada, SICP) borrowed 2026-03-01, due 2026-03-22"
+       },
+       {
+        "name": "mailer",
+        "type": "Mailer",
+        "example": "Mailer(outbox=[])"
+       },
+       {
+        "name": "on",
+        "type": "date",
+        "example": "2026-03-20"
+       }
+      ],
+      "output": {
+       "type": "int",
+       "example": "1"
+      },
+      "side_effects": [
+       "appends a mail to mailer.outbox",
+       "sets loan.reminded_on = 2026-03-20"
+      ],
+      "calls": [
+       "due_soon",
+       "Mailer.send",
+       "format_day"
+      ],
+      "trace": [
+       {
+        "path": "library/reminders.py",
+        "line": 17,
+        "values": "sent = 0"
+       },
+       {
+        "path": "library/reminders.py",
+        "line": 18,
+        "values": "day = 2026-03-22, loan = Loan(id=1)"
+       },
+       {
+        "path": "library/reminders.py",
+        "line": 19,
+        "values": "mailer.send(\"member\", \"Please return SICP\", ...)"
+       },
+       {
+        "path": "library/reminders.py",
+        "line": 21,
+        "values": "loan.reminded_on = 2026-03-20"
+       },
+       {
+        "path": "library/reminders.py",
+        "line": 22,
+        "values": "sent = 1"
+       },
+       {
+        "path": "library/reminders.py",
+        "line": 23,
+        "values": "return 1"
+       }
+      ]
+     }
+    ],
+    "visuals": []
+   },
+   {
+    "title": "Mailer retry and logging",
+    "risk": "medium",
+    "why_it_matters": "A reminder mail can be silently dropped, and the change is not part of the task.",
+    "explanation": "`Mailer.send` now loops `RETRIES` times and retries on `OSError` with an exponential sleep. It also lowers the log level from info to debug. The only thing it does is `list.append`, which never raises `OSError`, so the retry is dead today. After the last attempt the method returns without raising or logging.",
+    "reading_order": 3,
+    "hunks": [
+     "h5",
+     "h6"
+    ],
+    "check_questions": [
+     "What does a caller see after the third `OSError`?",
+     "Is it intended that the log level dropped from info to debug, so sent mail is no longer visible in production logs?"
+    ],
+    "question_files": [
+     "library/mailer.py",
+     "library/mailer.py"
+    ],
+    "suggestions": [],
+    "findings": [
+     {
+      "file": "library/mailer.py",
+      "line": 19,
+      "end": 20,
+      "category": "availability",
+      "impact": "breaks_requirement",
+      "effect": "When sending keeps failing, the mail is lost with no exception and no log line, so operators and callers cannot see it.",
+      "preconditions": [
+       "The outbox write, or a real SMTP backend in production, raises `OSError` on all 3 attempts"
+      ],
+      "certainty": "derived",
+      "title": "Mailer swallows the final failure",
+      "detail": "After the last `except OSError` the loop ends and the function returns None. Nothing is raised or logged, and the successful path logs only at debug. `send_reminders` therefore cannot tell a failed send from a successful one (see the reminders finding). Backoff `sleep(2 ** attempt)` also sleeps 4s after the last attempt for nothing.",
+      "suggestion": "Re-raise or log an error after the last attempt, and skip the sleep on the final attempt.",
+      "criteria": [
+       "c1"
+      ],
+      "severity": "high",
+      "id": "aaebee31e",
+      "breaks": {
+       "node": "n_mailer"
+      }
+     },
+     {
+      "file": "library/mailer.py",
+      "line": 17,
+      "category": "scope",
+      "impact": "unrequested",
+      "effect": "The retry loop and the lower log level are changes the task does not ask for, and they reduce visibility of sent mail.",
+      "preconditions": [],
+      "certainty": "derived",
+      "title": "Unrequested mailer rewrite and log-level change",
+      "detail": "The task asks for reminder mails and an overdue list. It asks for neither retries nor demoting `log.info` to `log.debug`. The retry wraps only `list.append`, so it cannot do anything against the in-memory outbox.",
+      "suggestion": "Drop this change from the PR or move it to its own PR with a real SMTP failure handling.",
+      "criteria": [],
+      "severity": "low",
+      "id": "a672cef03"
+     }
+    ],
+    "flows": [],
+    "visuals": []
+   },
+   {
+    "title": "Front-desk Lambda and API",
+    "risk": "high",
+    "why_it_matters": "This is the only access control for the front-desk list, and it holds member names and book titles.",
+    "explanation": "`handler.py` is a new Lambda entry. It checks that the `Authorization` header starts with `Bearer `. It compares the rest with `hmac.compare_digest` against `FRONT_DESK_TOKEN` and then routes `/late` to `api.late`. `api.late` lists overdue loans. `fmt_date` is renamed to `format_day`, and no other caller of the old name exists.",
+    "reading_order": 4,
+    "hunks": [
+     "h3",
+     "h1",
+     "h2"
+    ],
+    "check_questions": [
+     "What does the handler do when `FRONT_DESK_TOKEN` is unset and the caller sends `Authorization: Bearer ` with nothing after it?",
+     "What does `hmac.compare_digest` do with a non-ASCII token string?",
+     "Is the in-memory `store` in `api.py` populated in a Lambda cold start?"
+    ],
+    "question_files": [
+     "library/handler.py",
+     "library/handler.py",
+     "library/api.py"
+    ],
+    "suggestions": [
+     {
+      "hunk": "h3",
+      "line": 17,
+      "side": "new",
+      "severity": "low",
+      "category": "bug",
+      "text": "Only the path is checked, not the HTTP method, so any method on `/late` returns the list."
+     }
+    ],
+    "findings": [
+     {
+      "file": "library/handler.py",
+      "line": 8,
+      "end": 15,
+      "category": "security",
+      "impact": "unauthorized_access",
+      "effect": "Anyone who can reach the Lambda can read the overdue list (member names and book titles) without a token.",
+      "preconditions": [
+       "`FRONT_DESK_TOKEN` is unset or empty in the deployment",
+       "The caller sends the header `Authorization: Bearer ` with an empty token"
+      ],
+      "certainty": "derived",
+      "title": "Empty default token lets an empty bearer token through",
+      "detail": "`TOKEN = os.environ.get(\"FRONT_DESK_TOKEN\", \"\")` falls back to an empty string. For the header `Bearer `, the code passes `startswith` and `compare_digest(\"\", \"\")` returns True, so the request reaches `api.late`. The service should fail closed when no token is configured.",
+      "suggestion": "Fail with 401 or 500 when `TOKEN` is empty, for example by reading it with `os.environ[\"FRONT_DESK_TOKEN\"]` or checking `if not TOKEN`.",
+      "criteria": [
+       "c3"
+      ],
+      "severity": "high",
+      "id": "a862b9be2",
+      "breaks": {
+       "node": "n_handler"
+      }
+     },
+     {
+      "file": "library/handler.py",
+      "line": 15,
+      "category": "bug",
+      "impact": "breaks_requirement",
+      "effect": "A request with a non-ASCII token crashes the Lambda with a 500 error instead of returning 403.",
+      "preconditions": [
+       "The caller sends a bearer token with non-ASCII characters"
+      ],
+      "certainty": "derived",
+      "title": "compare_digest on str raises TypeError for non-ASCII input",
+      "detail": "`hmac.compare_digest` accepts `str` arguments only when they are ASCII, and raises `TypeError` otherwise. The handler does not catch it, so the Lambda invocation fails.",
+      "suggestion": "Compare `.encode()` bytes of both values.",
+      "criteria": [
+       "c3"
+      ],
+      "severity": "high",
+      "id": "aaf47b421",
+      "breaks": {
+       "node": "n_handler"
+      }
+     }
+    ],
+    "flows": [
+     {
+      "function": "handler",
+      "at": "library/handler.py:11",
+      "inputs": [
+       {
+        "name": "event",
+        "type": "dict",
+        "example": "{\"rawPath\": \"/late\", \"headers\": {\"authorization\": \"Bearer \"}}"
+       },
+       {
+        "name": "TOKEN",
+        "type": "str",
+        "example": "\"\" (env var unset)"
+       }
+      ],
+      "output": {
+       "type": "dict",
+       "example": "{\"statusCode\": 200, \"body\": \"[{\\\"id\\\": 2, \\\"member\\\": \\\"alan\\\", ...}]\"}"
+      },
+      "side_effects": [],
+      "calls": [
+       "hmac.compare_digest",
+       "api.late"
+      ],
+      "trace": [
+       {
+        "path": "library/handler.py",
+        "line": 12,
+        "values": "auth = \"Bearer \""
+       },
+       {
+        "path": "library/handler.py",
+        "line": 13,
+        "values": "auth.startswith(\"Bearer \") = True"
+       },
+       {
+        "path": "library/handler.py",
+        "line": 15,
+        "values": "compare_digest(\"\", \"\") = True, so no 403"
+       },
+       {
+        "path": "library/handler.py",
+        "line": 17,
+        "values": "rawPath = \"/late\", so no 404"
+       },
+       {
+        "path": "library/handler.py",
+        "line": 19,
+        "values": "status = 200, body = [...overdue loans...]"
+       },
+       {
+        "path": "library/handler.py",
+        "line": 20,
+        "values": "returns statusCode 200"
+       }
+      ]
+     }
+    ],
+    "visuals": [
+     {
+      "kind": "sequence",
+      "title": "GET /late",
+      "nodes": [
+       {
+        "id": "fd",
+        "label": "Front desk",
+        "source": "existing"
+       },
+       {
+        "id": "h",
+        "label": "handler",
+        "source": "implemented",
+        "evidence": "library/handler.py:11"
+       },
+       {
+        "id": "a",
+        "label": "api.late",
+        "source": "implemented",
+        "evidence": "library/api.py:19"
+       },
+       {
+        "id": "r",
+        "label": "reminders.overdue",
+        "source": "implemented",
+        "evidence": "library/reminders.py:26"
+       }
+      ],
+      "edges": [
+       {
+        "from": "fd",
+        "to": "h",
+        "label": "GET /late, Bearer token",
+        "source": "implemented",
+        "evidence": "library/handler.py:12"
+       },
+       {
+        "from": "h",
+        "to": "h",
+        "label": "compare_digest(token, TOKEN); empty TOKEN accepts an empty token",
+        "source": "implemented",
+        "evidence": "library/handler.py:15"
+       },
+       {
+        "from": "h",
+        "to": "a",
+        "label": "late({})",
+        "source": "implemented",
+        "evidence": "library/handler.py:19"
+       },
+       {
+        "from": "a",
+        "to": "r",
+        "label": "overdue(open_loans)",
+        "source": "implemented",
+        "evidence": "library/api.py:21"
+       },
+       {
+        "from": "h",
+        "to": "fd",
+        "label": "200 + JSON list",
+        "source": "implemented",
+        "evidence": "library/handler.py:20"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "title": "Tests",
+    "risk": "medium",
+    "why_it_matters": "The tests cover the happy path of reminding and the status rule, but not the auth path or most of the acceptance criteria.",
+    "explanation": "`test_reminders.py` checks one reminder two days before due and that a second run sends none, and it checks a one-element overdue list. `test_status.py` checks that `move(RETURNED, BORROWED)` raises and that `status_of` gives OVERDUE. Nothing tests the Lambda handler, the ordering, returned loans, `REMINDED` status or the opt-out.",
+    "reading_order": 5,
+    "hunks": [
+     "h9",
+     "h10"
+    ],
+    "check_questions": [
+     "Would any test fail if the handler accepted an empty token or no token?",
+     "Would a test fail if `overdue` sorted the wrong way round?"
+    ],
+    "question_files": [
+     "library/tests/test_reminders.py",
+     "library/tests/test_reminders.py"
+    ],
+    "suggestions": [],
+    "findings": [
+     {
+      "file": "library/tests/test_reminders.py",
+      "line": 11,
+      "category": "test",
+      "impact": "untested",
+      "effect": "A regression in the token check, such as the empty-token case, would not fail any test.",
+      "preconditions": [],
+      "certainty": "derived",
+      "title": "No test for the Lambda handler's auth and routing",
+      "detail": "There is no `test_handler.py` and no test calls `handler()`. The 401, 403 and 404 paths, and the unset-token case, are all unguarded.",
+      "suggestion": "Add tests for missing header, wrong token, empty token with an unset env var, wrong path and the success case.",
+      "criteria": [
+       "c3"
+      ],
+      "severity": "medium",
+      "id": "a1da55225",
+      "breaks": {
+       "node": "n_handler"
+      }
+     },
+     {
+      "file": "library/tests/test_reminders.py",
+      "line": 24,
+      "end": 25,
+      "category": "test",
+      "impact": "untested",
+      "effect": "If `overdue` sorted the wrong way round, or `send_reminders` mailed a returned loan, the tests would still pass.",
+      "preconditions": [],
+      "certainty": "derived",
+      "title": "Ordering and returned-loan behavior are not tested",
+      "detail": "`test_overdue_lists_the_late_loan` has only one overdue loan, so the order is not checked. No test returns a loan and then runs `send_reminders` or `overdue`. No test covers the `REMINDED` status or the move table beyond `RETURNED`.",
+      "suggestion": "Add two overdue loans with different due dates and assert the order, and a returned loan that is skipped by both functions.",
+      "criteria": [
+       "c2",
+       "c6"
+      ],
+      "severity": "medium",
+      "id": "ae3d65305"
+     }
+    ],
+    "flows": [],
+    "visuals": []
+   },
+   {
+    "title": "New dependency",
+    "risk": "low",
+    "why_it_matters": "A pinned third-party package is added that nothing in the code uses.",
+    "explanation": "`requirements.txt` adds `requests==2.32.3`. No file in the repo imports `requests`. The Lambda would ship an unused package.",
+    "reading_order": 6,
+    "hunks": [
+     "h11"
+    ],
+    "check_questions": [
+     "Is `requests` needed by any code in this PR?"
+    ],
+    "question_files": [
+     "requirements.txt"
+    ],
+    "suggestions": [],
+    "findings": [
+     {
+      "file": "requirements.txt",
+      "line": 1,
+      "category": "scope",
+      "impact": "unrequested",
+      "effect": "An unused dependency grows the Lambda package and the supply-chain surface.",
+      "preconditions": [],
+      "certainty": "confirmed",
+      "title": "Unused `requests` dependency",
+      "detail": "A search for `requests` in the repo finds no import, and the task does not need an HTTP client.",
+      "suggestion": "Remove the line, or add it together with the code that uses it.",
+      "criteria": [],
+      "severity": "low",
+      "id": "a63885050"
+     }
+    ],
+    "flows": [],
+    "visuals": []
+   }
+  ],
+  "asks": [
+   {
+    "id": "c1",
+    "text": "A member gets one reminder mail two days before a loan is due",
+    "acceptance": true,
+    "state": "partly",
+    "why": "`due_soon` and `send_reminders` send once per loan, but nothing calls them and a failed send is still marked as reminded.",
+    "hunks": [
+     "h7",
+     "h6"
+    ],
+    "elements": [
+     "n_sched"
+    ],
+    "findings": [
+     "a460dbbc8",
+     "a2000d6ca",
+     "aaebee31e"
+    ],
+    "coverage": "partly"
+   },
+   {
+    "id": "c2",
+    "text": "The front desk can list all overdue loans, the longest overdue first",
+    "acceptance": true,
+    "state": "partly",
+    "why": "`overdue()` sorts ascending by `due_on` and `api.late` returns it.",
+    "hunks": [
+     "h7",
+     "h1"
+    ],
+    "elements": [],
+    "findings": [
+     "ae3d65305"
+    ],
+    "coverage": "partly"
+   },
+   {
+    "id": "c3",
+    "text": "The front desk reaches the list through a Lambda, and only with its token",
+    "acceptance": true,
+    "state": "broken",
+    "why": "`handler.py` checks the token, but an unset `FRONT_DESK_TOKEN` defaults to `\"\"` and accepts `Bearer ` with an empty token.",
+    "hunks": [
+     "h3"
+    ],
+    "elements": [],
+    "findings": [
+     "a862b9be2",
+     "aaf47b421",
+     "a1da55225"
+    ],
+    "coverage": "absent"
+   },
+   {
+    "id": "c4",
+    "text": "A loan moves through borrowed, reminded, overdue and returned, and never back from returned",
+    "acceptance": true,
+    "state": "partly",
+    "why": "`status.py` defines the moves, but no loan code uses `move()` or `status_of()`.",
+    "hunks": [
+     "h8",
+     "h4"
+    ],
+    "elements": [],
+    "findings": [
+     "ac5f44003"
+    ],
+    "coverage": "partly"
+   },
+   {
+    "id": "c5",
+    "text": "Members can opt out of reminder mails in their profile",
+    "acceptance": true,
+    "state": "not_done",
+    "why": "There is no opt-out field, profile or filter in the diff.",
+    "hunks": [
+     "h7"
+    ],
+    "elements": [
+     "n_optout"
+    ],
+    "findings": [
+     "a9549044f"
+    ],
+    "coverage": "absent"
+   },
+   {
+    "id": "c6",
+    "text": "No reminder goes out for a book that was already returned",
+    "acceptance": true,
+    "state": "partly",
+    "why": "`due_soon` filters on `l.open`, and the store only passes open loans.",
+    "hunks": [
+     "h7"
+    ],
+    "elements": [],
+    "findings": [
+     "ae3d65305"
+    ],
+    "coverage": "partly"
+   },
+   {
+    "id": "x1",
+    "text": "Mailer retry loop and log level change",
+    "acceptance": false,
+    "state": "extra",
+    "why": "Adds retries and drops `log.info` to `log.debug`, which the task does not ask for.",
+    "hunks": [
+     "h5",
+     "h6"
+    ],
+    "elements": [],
+    "findings": [],
+    "coverage": "extra"
+   },
+   {
+    "id": "x2",
+    "text": "Rename fmt_date to format_day",
+    "acceptance": false,
+    "state": "extra",
+    "why": "Renames a helper and updates its one caller, which the task does not ask for.",
+    "hunks": [
+     "h2",
+     "h1"
+    ],
+    "elements": [],
+    "findings": [],
+    "coverage": "extra"
+   },
+   {
+    "id": "x3",
+    "text": "requests==2.32.3 added to requirements.txt",
+    "acceptance": false,
+    "state": "extra",
+    "why": "Adds a dependency that nothing imports.",
+    "hunks": [
+     "h11"
+    ],
+    "elements": [],
+    "findings": [],
+    "coverage": "extra"
+   }
+  ],
+  "components": [
+   {
+    "name": "handler",
+    "kind": "lambda",
+    "status": "new",
+    "at": "library/handler.py:11",
+    "node": "n_handler",
+    "operate": [
+     "FRONT_DESK_TOKEN env var must be set",
+     "no infrastructure code in this PR (no route or authorizer defined)"
+    ],
+    "owner": null
+   },
+   {
+    "name": "FRONT_DESK_TOKEN",
+    "kind": "config",
+    "status": "new",
+    "at": "library/handler.py:8",
+    "node": "n_handler",
+    "operate": [
+     "empty default instead of failing when unset",
+     "no rotation"
+    ],
+    "owner": null
+   },
+   {
+    "name": "late",
+    "kind": "function",
+    "status": "new",
+    "at": "library/api.py:19",
+    "node": "n_api",
+    "operate": [],
+    "owner": null
+   },
+   {
+    "name": "send_reminders",
+    "kind": "function",
+    "status": "new",
+    "at": "library/reminders.py:15",
+    "node": "n_rem",
+    "operate": [
+     "no scheduler calls it",
+     "no opt-out check",
+     "failed sends are not detected"
+    ],
+    "owner": null
+   },
+   {
+    "name": "overdue",
+    "kind": "function",
+    "status": "new",
+    "at": "library/reminders.py:26",
+    "node": "n_rem",
+    "operate": [],
+    "owner": null
+   },
+   {
+    "name": "Status / MOVES / move",
+    "kind": "module",
+    "status": "new",
+    "at": "library/status.py:5",
+    "node": "n_status",
+    "operate": [
+     "not used by loan code"
+    ],
+    "owner": null
+   },
+   {
+    "name": "Loan.reminded_on",
+    "kind": "config",
+    "status": "changed",
+    "at": "library/loans.py:16",
+    "node": "n_loans",
+    "operate": [
+     "in-memory only, lost on restart or Lambda cold start"
+    ],
+    "owner": null
+   },
+   {
+    "name": "Mailer.send",
+    "kind": "function",
+    "status": "changed",
+    "at": "library/mailer.py:13",
+    "node": "n_mailer",
+    "operate": [
+     "no error after the last failed attempt",
+     "debug-level logging only"
+    ],
+    "owner": null
+   },
+   {
+    "name": "requests",
+    "kind": "dependency",
+    "status": "new",
+    "at": "requirements.txt:1",
+    "operate": [
+     "unused"
+    ],
+    "owner": null
+   }
+  ],
+  "access": [
+   {
+    "resource": "handler GET /late",
+    "kind": "route",
+    "principal": "front desk (callers with the bearer token)",
+    "actions": [
+     "call GET /late (overdue list with member names and book titles)"
+    ],
+    "public": true,
+    "auth": "bearer token compared in handler.py; an empty token passes when FRONT_DESK_TOKEN is unset",
+    "used": true,
+    "at": "library/handler.py:11",
+    "node": "n_handler"
+   }
+  ],
+  "unlinked": [],
+  "component_counts": {
+   "new": 7,
+   "changed": 2,
+   "no_owner": 9,
+   "codeowners": false
+  }
+ },
+ "incremental": null,
+ "cut": [],
+ "scope": {
+  "files": 10,
+  "detailed": 10,
+  "skimmed": 0,
+  "why": "",
+  "passes": 1,
+  "checked": [
+   {
+    "area": "authentication",
+    "result": "finding",
+    "note": "empty default token; non-ASCII TypeError"
+   },
+   {
+    "area": "authorization",
+    "result": "clean",
+    "note": "single token, single route"
+   },
+   {
+    "area": "input_validation",
+    "result": "finding",
+    "note": "non-ASCII token raises TypeError; HTTP method is not checked"
+   },
+   {
+    "area": "secrets",
+    "result": "clean",
+    "note": "token read from env, compared in constant time"
+   },
+   {
+    "area": "permissions",
+    "result": "not_checked",
+    "note": "no infrastructure code in the PR"
+   },
+   {
+    "area": "personal_data",
+    "result": "clean",
+    "note": "the overdue list shows member and book names behind the token; mail logging dropped to debug"
+   },
+   {
+    "area": "dependencies",
+    "result": "finding",
+    "note": "unused requests pin"
+   },
+   {
+    "area": "correctness",
+    "result": "finding",
+    "note": "loan marked reminded though the mail may not be sent; exact-day match"
+   },
+   {
+    "area": "error_handling",
+    "result": "finding",
+    "note": "Mailer swallows final failure"
+   },
+   {
+    "area": "concurrency",
+    "result": "not_checked",
+    "note": "in-memory store, no concurrent code in the diff"
+   },
+   {
+    "area": "state",
+    "result": "finding",
+    "note": "status machine not wired into loan code"
+   },
+   {
+    "area": "contracts",
+    "result": "clean",
+    "note": "fmt_date rename has no other callers"
+   },
+   {
+    "area": "tests",
+    "result": "finding",
+    "note": "no handler tests; ordering and returned loans untested"
+   }
+  ]
+ },
+ "cost": 0.2137849,
+ "usage": {
+  "input": 6,
+  "output": 15953,
+  "cache_read": 49869,
+  "cache_write": 12314
+ },
+ "ms": 109716,
+ "budget": 3.0,
+ "task": {
+  "title": "feat(reminders): due-date reminders and an overdue list",
+  "jira": null,
+  "note": null
+ },
+ "generated": "2026-11-14T10:55:24.285939+01:00"
+}
