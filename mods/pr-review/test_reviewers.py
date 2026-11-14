@@ -13,7 +13,7 @@ import reviewers  # noqa: E402
 sec, code = reviewers.findings_schema("security"), reviewers.findings_schema("claude")
 assert {"zones", "access", "threats"} <= set(sec["required"]) and not {"zones", "access", "threats"} & set(code["properties"])
 assert "ref" in sec["properties"]["findings"]["items"]["required"] and "reachability" not in code["properties"]["findings"]["items"]["properties"]
-for part in ("zones: the trust zones", "auth_kind (none:", "threats: a threat model", "at least one entry for each of them", "gates: the check", "principal_kind (internet", "without an authorizer"):
+for part in ("never a defect of the code", "an attacker who has taken over the principal", "zones: the trust zones", "auth_kind (none:", "threats: a threat model", "at least one entry for each of them", "gates: the check", "principal_kind (internet", "without an authorizer"):
     assert part in sec["description"] and part not in code["description"], part
 
 # The security run's own prompt carries the steps of the /security-review template (which cannot run: its template runs
@@ -188,6 +188,13 @@ assert reviewers.security_view({"zones": [{"id": "z", "trust": "public", "nodes"
 agree = [{"id": "ok", "ref": "f1", "file": "lib/handler.py", "line": 9, "impact": "unauthorized_access"}]
 reviewers.security_view(ans5, agree, w5, {"lib/handler.py": {9}}, None)
 assert "reach_conflict" not in agree[0] and agree[0]["reachable_from"] == ["acc1"], "finding and threat at the same row: no conflict"
+shared = {"architecture": {"groups": [], "nodes": [{"id": "h"}, {"id": "c"}, {"id": "mailer", "runs_in": ["c", "h"]}, {"id": "old", "runs_in": "c"}], "edges": []}}
+sv = reviewers.security_view({"zones": [{"id": "p", "trust": "public", "nodes": ["h"]}, {"id": "i", "trust": "internal", "nodes": ["c"]}]}, [], shared, None)
+assert {z["id"]: z["nodes"] for z in sv["zones"]} == {"p": ["h"], "i": ["c"]}, "the zones list only the run's nodes"
+assert reviewers.picture_text(shared).count("runs in c, h") == 1
+shared["architecture"]["edges"] = [{"from": "c", "to": "mailer", "status": "new"}, {"from": "c", "to": "old", "status": "new"}]
+sv = reviewers.security_view({"zones": [{"id": "p", "trust": "public", "nodes": ["h"]}, {"id": "i", "trust": "internal", "nodes": ["c"]}]}, [], shared, None)
+assert [c["to"] for c in sv["crossing"]] == ["mailer"], "a library in a public and an internal process stands in the public one (the most exposed); a single old runs_in still counts"
 assert "principal_node (the id" in reviewers.findings_schema("security")["description"] and "bypasses the boundary" in reviewers.findings_schema("security")["description"]
 entry = {"architecture": {"nodes": [{"id": "c", "status": "unchanged"}, {"id": "h", "status": "changed"}], "edges": [{"from": "c", "to": "h", "status": "changed"}]}}
 ez = {"zones": [{"id": "p", "trust": "public", "nodes": ["c"]}, {"id": "a", "trust": "authenticated", "nodes": ["h"]}],
