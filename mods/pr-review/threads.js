@@ -313,3 +313,61 @@ export const filterRows = (rows, state, show) => rows.filter((r) => show[r.src] 
 // The Show switch's counts: comments per kind in the diff; ai: the unresolved findings, the Findings tab's number.
 export const showCounts = ({ rows, findings = 0, agents = 0 }) => ({ mine: rows.filter((r) => r.src === "mine").length, ai: findings, agents,
   github: rows.filter((r) => r.src === "github").length, notes: rows.filter((r) => r.src === "notes").length });
+
+// ---- what a send preview says before an agent starts (review.js sendPopover)
+
+// The facts above the buttons, as [label, text] rows: who runs it and on which account, what it gets, what it may do,
+// whether it can push, what comes back and what it costs. kind: "sub" (a fix agent in its own checkout), "main" (the
+// PR's live agent session), "new" (a new agent tab for a question), "live" (a question put into a live agent's
+// input: nothing starts), "resume" (the PR's session, resumed in a new tab), anything else: a live session.
+// handoff: the PR's live agent a sub-agent hands its fix to (handoffNote); that session, not this agent, pushes.
+export function sendFacts({ kind, account, trusted = false, branch = null, name = null, chat = false, where = null, handoff = null }) {
+  const own = kind === "sub" || kind === "new", who = name ?? "the agent";
+  const starts = { new: `A new agent in a new tab, in the review's checkout of the PR head${where ? ` (${where})` : ""}.`,
+    live: `Nothing new. The text goes into the ${chat ? "chat box" : "terminal"} of ${who} as a draft, and you send it there.`,
+    resume: `The PR's own session again, in a new tab${where ? ` in ${where}` : ""}. The text is on your clipboard to paste there.` }[kind];
+  const may = kind === "sub" ? (trusted ? "Edit files, run commands and commit in its checkout without asking (auto mode). Risky commands still ask you."
+    : "Nothing without your OK: this is someone else's PR, so it asks before every edit and command.")
+    : kind === "new" ? "Read and answer. It asks you before every edit and command (manual mode)." : "Whatever that session allows, in the PR's checkout itself.";
+  const result = kind === "sub" ? `A commit on ${branch ?? "its branch"} and a report here. ${handoff ? `${handoff} then applies it to the PR.` : "Nothing changes in the PR until you apply it."}`
+    : kind === "main" ? "Commits in the PR's checkout and a report here." : `An answer in ${kind === "new" ? "the new tab" : "that session"}. The finding stays as it is.`;
+  return [
+    starts && ["Starts", starts],
+    ["Runs as", own ? account : `${name ?? "The PR's session"}, on its own account and with its own permissions.`],
+    ["Gets", own ? "The text below and every file it opens in its checkout. All of it goes to the provider." : "The text below. The session reads what it needs in its own checkout."],
+    ["May", may],
+    ["Push", kind === "sub" ? (handoff ? `Not by this agent: git push and gh pr create are denied. ${handoff} pushes once it took the fix over.` : "Never: git push and gh pr create are denied, and the task forbids them.") : kind === "new" ? "Only if you approve the command." : "Possible. Nothing here prevents it."],
+    ["Result", result],
+    ["Cost", own ? `Not capped and not estimated; billed to that account.${kind === "sub" ? " One finding usually takes a few minutes." : ""}` : "Billed to that session's account."],
+  ].filter(Boolean);
+}
+
+// ---- Finish your review: what the findings say about the verdict
+
+// The verdict the findings suggest (c: pr.js findingCounts): shown next to the choice and never chosen for the
+// reviewer, since the findings are a model's claims.
+export function suggestVerdict(c) {
+  const are = (n) => (n === 1 ? "finding is" : "findings are");
+  if (c?.high) return { event: "request_changes", why: `${c.high} unresolved ${are(c.high)} of high severity` };
+  if (c?.unresolved) return { event: "comment", why: `${c.unresolved} ${are(c.unresolved)} unresolved, none of high severity` };
+  return null;
+}
+// "Insert blockers": the unresolved findings from high up as a review body to edit. A security finding goes in with
+// its title only (no place, no detail): the text is public once it is posted.
+export function blockersDraft(findings) {
+  const high = (findings ?? []).filter((f) => f.severity === "high" || f.severity === "critical");
+  if (!high.length) return "";
+  return [`Blocking before merge (${high.length}):`, ...high.map((f) => (f.security ? `- Security: ${f.title}` : `- ${f.title} (${f.file}:${f.line})`))].join("\n");
+}
+
+// ---- the "Run review" popup: one line per run
+
+// r: a run of pr.js runsOf (or none), others: the findings the other sources have. A zero says what it means: the
+// reviewer ran and found nothing, which is not "not run". times: {running, took, ago} as text.
+export function runLine(r, others = 0, times = {}) {
+  if (r?.state === "running") return ["Running", times.running].filter(Boolean).join(" · ");
+  if (r?.state === "failed") return `Failed: ${r.error ?? "no result"}`;
+  if (r?.state !== "done") return "Not run on this PR yet";
+  const n = r.count ?? 0, found = n ? `${n} ${n === 1 ? "finding" : "findings"}` : `No findings${others ? `. It reviews on its own; the other sources have ${others}` : ""}`;
+  return [found, r.cost != null ? `$${Number(r.cost).toFixed(3)}` : null, times.took, times.ago].filter(Boolean).join(" · ");
+}

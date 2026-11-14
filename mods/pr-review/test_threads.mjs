@@ -207,3 +207,34 @@ console.log("threads ok");
   assert.deepEqual([TH.threadsOf(d2, "k")[0].code, TH.threadsOf(d2, "k")[0].head], ["line", "h1"]);
   console.log("github comments ok");
 }
+
+// The send preview's facts: a sub-agent's account, rights and the push ban; a live session is not ours to limit.
+{
+  const sub = Object.fromEntries(TH.sendFacts({ kind: "sub", account: "Claude Code (Anthropic) · account in ~/.claude", trusted: true, branch: "fix/7-f1" }));
+  assert.equal(sub["Runs as"], "Claude Code (Anthropic) · account in ~/.claude");
+  assert.match(sub.May, /auto mode/); assert.match(sub.Push, /^Never/); assert.match(sub.Result, /fix\/7-f1.*until you apply it/);
+  assert.equal(sub.Starts, undefined, "the choice above says where it starts");
+  assert.match(Object.fromEntries(TH.sendFacts({ kind: "sub", account: "a", trusted: false })).May, /someone else's PR.*asks before every edit/);
+  const handed = Object.fromEntries(TH.sendFacts({ kind: "sub", account: "a", trusted: true, branch: "fix/7-f1", handoff: "PR #7" }));
+  assert.match(handed.Push, /^Not by this agent.*PR #7 pushes/); assert.match(handed.Result, /PR #7 then applies it/);
+  const main = Object.fromEntries(TH.sendFacts({ kind: "main", account: "a", name: "PR #7" }));
+  assert.match(main["Runs as"], /^PR #7, on its own account/); assert.match(main.Push, /^Possible/);
+  const live = Object.fromEntries(TH.sendFacts({ kind: "live", account: "a", name: "PR #7", chat: true }));
+  assert.match(live.Starts, /^Nothing new.*chat box of PR #7 as a draft/);
+  assert.match(Object.fromEntries(TH.sendFacts({ kind: "new", account: "a", where: "/w" })).Starts, /new agent in a new tab.*\(\/w\)/);
+  // Finish your review: a suggestion from the findings, and the blockers as a body (security: the title only).
+  assert.deepEqual(TH.suggestVerdict({ unresolved: 3, high: 1 }), { event: "request_changes", why: "1 unresolved finding is of high severity" });
+  assert.equal(TH.suggestVerdict({ unresolved: 2, high: 0 }).event, "comment");
+  assert.equal(TH.suggestVerdict({ unresolved: 0, high: 0 }), null, "nothing unresolved: no suggestion, an approval is the reviewer's call");
+  assert.equal(TH.blockersDraft([{ severity: "high", title: "Mails twice", file: "a.py", line: 3 }, { severity: "high", security: true, title: "Empty token passes", file: "h.py", line: 8 }, { severity: "medium", title: "m", file: "b", line: 1 }]),
+    "Blocking before merge (2):\n- Mails twice (a.py:3)\n- Security: Empty token passes");
+  assert.equal(TH.blockersDraft([{ severity: "low", title: "x" }]), "");
+  // The reviewers popup: a zero is put in relation, one finding is singular, a failure and "not run" are their own words.
+  assert.equal(TH.runLine({ state: "done", count: 0, cost: 0.0886 }, 16, { took: "0:40", ago: "34 min ago" }), "No findings. It reviews on its own; the other sources have 16 · $0.089 · 0:40 · 34 min ago");
+  assert.equal(TH.runLine({ state: "done", count: 1 }), "1 finding");
+  assert.equal(TH.runLine({ state: "done", count: 2, cost: 0.12 }), "2 findings · $0.120");
+  assert.equal(TH.runLine({ state: "failed", error: "no JSON" }), "Failed: no JSON");
+  assert.equal(TH.runLine(undefined), "Not run on this PR yet");
+  assert.equal(TH.runLine({ state: "running" }, 0, { running: "0:12" }), "Running · 0:12");
+  console.log("preview, verdict and runs ok");
+}
