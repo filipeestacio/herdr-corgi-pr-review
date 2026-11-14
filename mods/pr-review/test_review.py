@@ -178,7 +178,8 @@ def stub2(feature, text, **kw):  # noqa: E302
         mine = [a for a in (f"h{k}" for k in range(1, 10)) if f"\n{a} " in "\n" + text.split("Index:")[-1]]
         return {"summary": "c", "steps": [{"title": f"L{mine[0]}", "risk": "low", "why_it_matters": "w", "explanation": "e", "reading_order": 1, "hunks": mine, "check_questions": []}]}
     return {"title": "T", "summary": "S", "behavior": "B", "merge_risk": {"level": "low", "why": "w"}, "effort": {"score": 2, "why": "w"},
-            "rule_checks": [], "architecture": {"groups": [], "nodes": [], "edges": []}, "blast_radius": {"units": [], "context": []}, "asks": [], "reading_order": [1, 0]}
+            "rule_checks": [], "architecture": {"groups": [], "nodes": [], "edges": []}, "blast_radius": {"units": [], "context": []}, "asks": [], "reading_order": [1, 0],
+            "read": ["lib/unchanged.py", "./lib/unchanged.py", big[0]["path"]]}
 real, review.llm.claude = review.llm.claude, stub2
 review.save = lambda path, value: (statuses.append(value) if str(path).endswith(".status") else None, real_save(path, value))[1]
 try:
@@ -193,6 +194,7 @@ placed = [a for st in r["answer"]["steps"] for a in st["hunks"]]
 assert sorted(placed) == sorted(h["alias"] for h in big), "every alias accounted for"
 assert r["answer"]["steps"][-1]["skimmed"] and r["answer"]["steps"][-1]["hunks"] == ["h10"]
 assert r["scope"]["passes"] == len(co) + 1 and r["scope"]["skimmed"] == 1 and r["cut"] == []
+assert r["scope"]["read"] == ["lib/unchanged.py"] and "read" not in r["answer"], "read: files outside the diff, once"
 assert [x["pass"] for x in statuses if "pass" in x][0] == 1 and statuses[-1]["passes"] == len(co) + 1, "progress: Pass k of n"
 assert r["usage"] == {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}  # the stub reports none
 assert r["answer"]["title"] == "T" and r["cost"] == round(0.1 * (len(co) + 1), 10) or abs(r["cost"] - 0.1 * (len(co) + 1)) < 1e-9
@@ -287,5 +289,23 @@ assert not seated["steps"][0].get("visuals") and seated["steps"][2]["visuals"] =
 stays = review.finish({"visuals": [{"kind": "state_machine", "title": "No evidence", "nodes": [{"id": "a"}], "edges": []}], "steps": [{"title": "x", "hunks": ["h1"]}]}, None, {"h1": "a.py"})
 assert [v["title"] for v in stays["visuals"]] == ["No evidence"], "nothing to go by: it stays where it is"
 assert "except for the state diagram" in p and "a state diagram goes into the layer" in p
+# Round 4: a finding in lines the PR adds is the PR's; else the model's word, else true. The way from outside is said
+# apart from the flaw; a requirement's short name has at most eight words.
+ch = review.changed_lines([{"path": "a.py", "lines": ["@@ -1,2 +5,3 @@", " x", "+y", "-z", "+w"]}])
+assert ch == {"a.py": {6, 7}}
+intro = lambda **kw: review.introduced({"file": "a.py", "line": 1, **kw}, ch)["introduced_here"]  # noqa: E731
+assert [intro(line=6), intro(line=4, end=6, introduced_here=False), intro(line=1, introduced_here=False), intro(line=1), intro(file="b.py", introduced_here=False)] == [True, True, False, True, False]
+assert review.introduced({"file": "a.py", "line": 9, "introduced_here": False}, None)["introduced_here"] is False, "a follow-up analysis without the whole diff keeps the model's word"
+j = review.judge({"impact": "unauthorized_access", "certainty": "derived", "path_certainty": "assumed", "path_why": "gateway", "introduced_here": "yes"})
+assert (j["certainty"], j["path_certainty"], j["path_why"], "introduced_here" in j) == ("derived", "assumed", "gateway", False)
+assert "path_why" not in review.judge({"path_certainty": "maybe", "path_why": "x"})
+sh = review.finish({"asks": [{"id": "c1", "text": "t", "short": "one  reminder mail per loan and never ever twice", "state": "met", "hunks": []}], "steps": [
+    {"title": "x", "hunks": [], "findings": [fin(title="new", file="a.py", line=6, introduced_here=False), fin(title="old", file="a.py", line=1, introduced_here=False)]}]}, None, {}, ch)
+assert sh["asks"][0]["short"] == "one reminder mail per loan and never ever" and [f["introduced_here"] for f in sh["steps"][0]["findings"]] == [True, False]
+p4 = review.prompt([], [], "PR: x", True)
+for part in ("what_changed: the change as three short lists", "read: the paths of the files outside the diff", "short (its name in at most eight words",
+             "introduced_here (true when", "path_certainty (confirmed, derived or assumed", "certainty stays about the code alone"):
+    assert part in p4, part
+assert {"what_changed", "read"} <= set(review.SCHEMA["required"]) and {"what_changed", "read"} <= set(review.MERGE_SCHEMA["required"])
 print("ok finish")
 

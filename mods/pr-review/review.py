@@ -38,8 +38,24 @@ TIMEOUT = 15 * 60
 KEY = re.compile(r"(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9]{1,9})-(\d{1,6})(?![A-Za-z0-9])")
 NOT_JIRA = {"PR", "ADR", "PEP", "CWE", "UTF", "SHA", "ISO", "RFC", "CVE", "GH", "HTTP", "TLS", "X86", "ARM", "MD5", "BASE64"}
 LEVELS = ["high", "medium", "low"]
-READ_ONLY = ["Read", "Grep", "Glob", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git blame:*)",
-             "Bash(git grep:*)", "Bash(git ls-files:*)"]
+# What a model run that reads a PR may do (this analysis, and the reviewers in reviewers.py): it reads someone else's
+# code and text, which may carry instructions to it. --restricted confines the file tools to the checkout (and
+# --add-dir) and ignores the checkout's own .claude settings; dontAsk refuses whatever no rule allows. Allowed: the
+# file tools and the git commands that read history; no network, no writes. Denied: options that write a file
+# (--output), run a program (--ext-diff, --textconv) or read a file outside the checkout (--no-index, blame --contents,
+# -S, --ignore-revs-file), each by its shortest unambiguous prefix, since git takes abbreviated long options in some
+# commands (blame --con is --contents). llm.py also sets GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS for the run.
+GIT_READ = ("diff", "log", "show", "status", "blame", "merge-base", "rev-parse", "ls-files")
+GIT_DENIED = ("--ou", "--ext", "--textc", "--no-in", "--con", "--ignore-revs")
+
+
+def permissions(*tools):
+    """The CLI flags for a run with these tools plus read-only git."""
+    denied = ["Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch", *(f"Bash(git *{o}*)" for o in GIT_DENIED), "Bash(git blame*-S*)"]
+    return ("--restricted", "--permission-mode", "dontAsk", "--allowedTools", *tools, *(f"Bash(git {c} *)" for c in GIT_READ), "--disallowedTools", *denied)
+
+
+READ_ONLY = permissions("Read", "Grep", "Glob")
 SYSTEM = ("You are a thorough, experienced code reviewer and guide a person through the review of a pull request in {lang}: "
           "ordered by risk, with concrete check points and only real suspicious spots verified in the code, no style "
           "criticism. Take your time: read callers, types and surrounding code before you claim anything. "
@@ -109,14 +125,24 @@ SCALE_TEXT = "; ".join(f"{level}: " + ", ".join(f"{k} ({v[1]})" for k, v in IMPA
 CERTAINTY = ["confirmed", "derived", "assumed"]
 EFFORT = ["quick", "moderate", "heavy"]  # what the fix takes
 JUDGED = {"category": {"enum": CATEGORIES}, "impact": {"enum": list(SCALE)}, "effect": S, "preconditions": STRINGS, "certainty": {"enum": CERTAINTY},
-          "effort": {"enum": EFFORT}}
+          "effort": {"enum": EFFORT}, "introduced_here": {"type": "boolean"}}
+# A security finding says two things apart: certainty is about the flaw in the code, path_certainty about the way from
+# outside to it (path_why: what that way depends on). Optional: only security findings have them.
+PATH = {"path_certainty": {"enum": CERTAINTY}, "path_why": S}
 JUDGED_TEXT = ("impact (the gravest that applies; it sets the severity. " + SCALE_TEXT + "), effect (one sentence: what happens to "
                "whom when it occurs), preconditions (what must hold for it to occur, each one checkable, e.g. \"API_TOKEN is "
                "unset in the deployment\"; empty when it always occurs), certainty (confirmed: something that ran shows it, e.g. a "
                "test in the repo or a command's output; derived: it follows from the code you read, every step is in the files; "
                "assumed: it needs something you could not check, such as deployment settings or how a gateway or library "
                "behaves, and preconditions names it), effort (what the fix takes: quick: a few lines in one place; moderate: "
-               "several places or a new test; heavy: a design change, a migration or a change other teams must agree to)")
+               "several places or a new test; heavy: a design change, a migration or a change other teams must agree to), "
+               "introduced_here (true when the flaw is in lines this PR adds or changes, or the PR's change causes it; false when "
+               "the same flaw was there before this PR and the PR only passes by it). A security finding also has "
+               "path_certainty (confirmed, derived or assumed, as for certainty, but for the way from outside to the flaw: who can "
+               "send what to reach it; assumed whenever that way depends on something the code does not show, such as a "
+               "gateway, a proxy, a client or deployment settings) and path_why (one sentence: what the way depends on, e.g. "
+               "\"assumed: depends on the gateway passing an empty bearer token through\"). certainty stays about the code "
+               "alone: a check that the code shows to fail is derived even when the way to it is assumed")
 # How the texts a person reads are written: markdown where it shortens the reading, never longer than prose. The UI
 # renders it in findings and comments; a title stands in one-line lists and stays plain.
 TEXTS = ("Texts: detail, suggestion, effect, why and a suggestion's text are markdown. Identifiers, paths and calls are "
@@ -153,19 +179,22 @@ def checked_schema(areas):
 # layer (no findings file); finish() gives it the id the UI uses and its severity; reviewer "analysis".
 FINDING = {"type": "object", "required": ["file", "line", "title", "detail", "suggestion", *JUDGED, "criteria"], "properties": {
     "file": S, "line": {"type": "integer"}, "end": {"type": "integer"}, **PROSE, **JUDGED,
-    "criteria": STRINGS, "breaks": {"type": "object", "properties": {"node": S, "from": S, "to": S}}}}
+    "criteria": STRINGS, "breaks": {"type": "object", "properties": {"node": S, "from": S, "to": S}}, **PATH}}
 ASK_STATES = ["met", "partly", "broken", "not_done", "extra"]
 SCHEMA = {"type": "object", "required": ["title", "summary", "behavior", "merge_risk", "effort", "rule_checks", "architecture", "blast_radius", "steps", "asks",
-                                        "components", "checked"], "properties": {
+                                        "components", "checked", "what_changed", "read"], "properties": {
     "title": S, "summary": S, "behavior": S,
+    "what_changed": {"type": "object", "required": ["adds", "changes", "runtime"], "properties": {
+        "adds": {**STRINGS, "maxItems": 3}, "changes": {**STRINGS, "maxItems": 3}, "runtime": {**STRINGS, "maxItems": 3}}},
+    "read": STRINGS,
     "merge_risk": {"type": "object", "required": ["level", "why"], "properties": {"level": {"enum": ["minimal", "low", "medium", "high", "critical"]}, "why": S}},
     "effort": {"type": "object", "required": ["score", "why"], "properties": {"score": {"type": "integer", "minimum": 1, "maximum": 5}, "why": S}},
     "rule_checks": {"type": "array", "maxItems": 20, "items": {"type": "object", "required": ["rule", "source", "status", "why"], "properties": {
         "rule": S, "source": S, "status": {"enum": ["pass", "fail", "n/a"]}, "where": S, "why": S}}},
     "architecture": ARCHITECTURE, "blast_radius": BLAST, "visuals": VISUALS,
     "intent": {"type": "array", "maxItems": 6, "items": STATEMENT}, "behavior_points": {"type": "array", "maxItems": 6, "items": STATEMENT},
-    "asks": {"type": "array", "items": {"type": "object", "required": ["id", "text", "acceptance", "state", "why", "hunks"], "properties": {
-        "id": S, "text": S, "acceptance": {"type": "boolean"}, "state": {"enum": ASK_STATES}, "why": S, "hunks": STRINGS, "elements": STRINGS}}},
+    "asks": {"type": "array", "items": {"type": "object", "required": ["id", "text", "short", "acceptance", "state", "why", "hunks"], "properties": {
+        "id": S, "text": S, "short": S, "acceptance": {"type": "boolean"}, "state": {"enum": ASK_STATES}, "why": S, "hunks": STRINGS, "elements": STRINGS}}},
     "components": {"type": "array", "maxItems": 16, "items": {"type": "object", "required": ["name", "kind", "status", "at", "operate"], "properties": {
         "name": S, "kind": S, "status": {"enum": ["new", "changed"]}, "at": S, "node": S, "operate": STRINGS}}},
     "checked": checked_schema(AREAS_CODE),
@@ -345,7 +374,7 @@ INVENTORY_TEXT = (
 
 def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None, lang="English", index=None, patches=None):
     text = ("Analyze the diff below thoroughly." + (" You are in a checkout of the PR head and may read (Read, Grep, Glob, "
-            "git log/show/blame/diff/grep): check callers, types and surrounding code before you name a suspicious spot, and "
+            "git log/show/blame/diff): check callers, types and surrounding code before you name a suspicious spot, and "
             "name only what you confirmed in the code." if tools else "") +
             f" Write every text field in {lang}." +
             "\n\nsteps: Put all hunks into steps (each hunk in exactly one, related ones together, rather few). Per step: "
@@ -407,7 +436,10 @@ def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None,
             "codebase and unchanged; evidence where known), spec (only described in the PR description, the linked ticket, "
             "ADRs or spec docs, and NOT found in the diff: planned or missing). Never present a spec-only item as implemented: "
             "when you can't point at the diff, use spec.\n\ntitle/summary: the PR in one line and "
-            "in 2-3 sentences. behavior: 2-3 sentences on how the application's behavior changes, also for users (no code). "
+            "in 2-3 sentences. what_changed: the change as three short lists, each at most three short sentences, empty when "
+            "none: adds (what is new: a module, an endpoint, a queue), changes (what existing code now does differently), runtime "
+            "(what changes when it runs: a new call between services, a new permission, a new schedule). read: the paths of the "
+            "files outside the diff that you read to check the change. behavior: 2-3 sentences on how the application's behavior changes, also for users (no code). "
             "intent and behavior_points: the PR's intent and its behavior change as single statements (at most 6 each), each "
             "with source and evidence (see Sources). "
             "merge_risk: level (minimal, low, medium, high, critical) and why (one sentence). effort: score 1-5 (1: minutes, 5: hours "
@@ -441,6 +473,7 @@ def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None,
                  "The analysis so far:\n" + previous)
     if task_text and not previous:
         text += ("\n\nasks: Break the task below into its requirements. Per requirement: id (c1, c2, …), text (short), "
+                 "short (its name in at most eight words, e.g. \"one reminder mail per loan\"), "
                  "acceptance (true: the task lists it as an acceptance criterion or in a checklist of requirements; false: you "
                  "derived it from the prose), state (met: the diff does it and no finding breaks it; partly: the diff does some "
                  "of it, or it holds only in some cases; broken: the code for it is in the diff and breaks the rule; not_done: "
@@ -592,9 +625,13 @@ def judge(f, breaks_requirement=False):
     """A finding's severity by the fixed scale: from its impact (a finding that breaks a requirement is high; a gap in
     the tests leaves it unguarded, which is "untested"). One without an impact (an older analysis, a review turned
     from text) keeps its own. Unknown enum values go."""
-    for key, allowed in (("impact", SCALE), ("category", CATEGORIES), ("certainty", CERTAINTY), ("effort", EFFORT)):
+    for key, allowed in (("impact", SCALE), ("category", CATEGORIES), ("certainty", CERTAINTY), ("effort", EFFORT), ("path_certainty", CERTAINTY)):
         if f.get(key) not in allowed:
             f.pop(key, None)
+    if not isinstance(f.get("introduced_here"), bool):
+        f.pop("introduced_here", None)
+    if "path_certainty" not in f:
+        f.pop("path_why", None)
     if f.get("category") == "test" and f.get("impact"):
         f["impact"] = "untested"
     elif breaks_requirement and SCALE.get(f.get("impact")) != "high":
@@ -672,7 +709,35 @@ OLD_STATE = {"seen": "met", "partly": "partly", "absent": "not_done", "extra": "
 COVERAGE = {"met": "seen", "partly": "partly", "broken": "absent", "not_done": "absent", "extra": "extra"}
 
 
-def finish(answer, root=None, path_of=None):
+def changed_lines(hunks):
+    """{path: the new-side line numbers the diff adds} from hunks [{path, lines}]."""
+    out = {}
+    for h in hunks:
+        new = 0
+        for line in h.get("lines") or []:
+            m = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)", line)
+            if m:
+                new = int(m[1])
+            elif line[:1] == "+":
+                out.setdefault(h["path"], set()).add(new)
+                new += 1
+            elif line[:1] == " ":
+                new += 1
+    return out
+
+
+def introduced(f, changed):
+    """introduced_here from the diff where it can tell (changed: {path: added line numbers}, None when unknown): a
+    finding whose lines the PR adds is the PR's. Otherwise the model's word, and without one true (a blocker stays one)."""
+    path, line = str(f.get("file") or "").strip().removeprefix("./"), int(f.get("line") or 0)
+    if changed is not None and line and set(range(line, max(line, int(f.get("end") or line)) + 1)) & set(changed.get(path, ())):
+        f["introduced_here"] = True
+    elif not isinstance(f.get("introduced_here"), bool):
+        f["introduced_here"] = True
+    return f
+
+
+def finish(answer, root=None, path_of=None, changed=None):
     """The answer made consistent, in place. Requirements (asks): id, state (older ones: from coverage), coverage (from
     state, for readers of the older field), findings (ids of the findings that break it; a "met" one with findings is
     partly). answer.unlinked: the ids of the requirements that are partly, broken or not_done although no finding names
@@ -681,7 +746,9 @@ def finish(answer, root=None, path_of=None):
     Check questions: question_files as long as the
     questions, a path only when it is a file of the diff (path_of: {hunk alias: path}) or the checkout. State diagrams
     sit in the layer of their state machine (seat_state_diagrams). Components: owner from CODEOWNERS (None:
-    nobody), and component_counts {new, changed, no_owner, codeowners: the repo has such a file}.
+    nobody), and component_counts {new, changed, no_owner, codeowners: the repo has such a file}. Each finding's
+    introduced_here (introduced(); changed: changed_lines() of the whole diff, None in a follow-up analysis). A
+    requirement's short name has at most eight words.
     ponytail: a big PR's cohort passes don't know the requirements or the picture, so their findings carry no
     criteria and no breaks; let the merge pass assign them when big PRs need the links."""
     asks, path_of = answer.get("asks") or [], path_of or {}
@@ -690,6 +757,8 @@ def finish(answer, root=None, path_of=None):
     for k, a in enumerate(asks, 1):
         a["id"] = str(a.get("id") or f"c{k}")
         a["state"] = a["state"] if a.get("state") in ASK_STATES else OLD_STATE.get(a.get("coverage"), "not_done")
+        if a.get("short"):
+            a["short"] = " ".join(str(a["short"]).split()[:8])
         a["findings"] = []
     by_id = {a["id"]: a for a in asks}
     root = pathlib.Path(root) if root else None
@@ -703,6 +772,7 @@ def finish(answer, root=None, path_of=None):
         for f in st.get("findings") or []:
             f["criteria"] = [c for c in dict.fromkeys(f.get("criteria") or []) if c in by_id]
             judge(f, any(by_id[c]["state"] != "extra" for c in f["criteria"]))
+            introduced(f, changed)
             f["id"] = "a" + fnv(f"{f.get('category') or 'structure'}|{str(f.get('file') or '').strip().removeprefix('./')}|{str(f.get('title') or '').strip()}")
             for c in f["criteria"]:
                 if f["id"] not in by_id[c]["findings"]:
@@ -844,7 +914,7 @@ def main_diagrams(req):
     prev = json.loads(pathlib.Path(req["diagrams"]).read_text())
     t = task(req.get("pr"), (ctx or {}).get("tickets", True))
     tools = bool(wt and pathlib.Path(wt).is_dir())
-    extra = ("--allowedTools", *READ_ONLY, "--disallowedTools", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch") if tools else ()
+    extra = READ_ONLY if tools else ()
     meta = {}
     answer = llm.claude(FEATURE_DIAGRAMS, diagrams_prompt(req["hunks"], prev, t and t["text"], tools, lang), context=ctx, model=model,
                         schema=DIAGRAMS_SCHEMA, system=SYSTEM.format(lang=lang), budget=BUDGET_DIAGRAMS[llm.tier(model)], timeout=TIMEOUT,
@@ -899,8 +969,8 @@ def read_tools(root):
     """Read-only tools in root (the PR head checkout or the explored repo), or none."""
     if not (root and pathlib.Path(root).is_dir()):
         return {"tools": "", "cwd": pathlib.Path.home(), "extra": ()}
-    return {"tools": "Read,Grep,Glob", "cwd": root, "extra": ("--allowedTools", "Read", "Grep", "Glob", "--disallowedTools", "Edit", "Write",
-                                                              "NotebookEdit", "WebFetch", "WebSearch", "Bash")}
+    return {"tools": "Read,Grep,Glob", "cwd": root, "extra": ("--restricted", "--permission-mode", "dontAsk", "--allowedTools", "Read", "Grep", "Glob",
+                                                              "--disallowedTools", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Bash")}
 
 
 def main_ask(req):
@@ -974,7 +1044,7 @@ def main(req):
     index = write_run(run, hunks)
     cap, aliases = BUDGET[llm.tier(model)], [h["alias"] for h in hunks]
     # Read-only tools in the checkout plus the run's folder (the patches); without a checkout, only the folder.
-    extra = ("--effort", "high", "--add-dir", run, "--allowedTools", *READ_ONLY, "--disallowedTools", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch")
+    extra = ("--effort", "high", "--add-dir", run, *READ_ONLY)
     call = lambda feature, text, schema, budget, meta: llm.claude(feature, text, context=ctx, model=model, schema=schema, system=SYSTEM.format(lang=lang),  # noqa: E731
                                                               budget=budget, timeout=TIMEOUT, cwd=wt if tools else run, tools="Read,Grep,Glob,Bash", meta=meta, extra=extra)
     cohorts = None if prev else cohorts_of(hunks, INLINE[llm.tier(model)])
@@ -998,7 +1068,10 @@ def main(req):
     scope["checked"] = checked(answer.pop("checked", None), AREAS_CODE)
     if prev:
         out_hunks, answer = merge_incremental(prev, answer, hunks, req["full"])
-    finish(answer, wt if tools else None, {h["alias"]: h["path"] for h in (req["full"] if prev else hunks)})
+    paths = {h["path"] for h in (req["full"] if prev else hunks)}
+    scope["read"] = [p for p in dict.fromkeys(str(x).strip().removeprefix("./") for x in answer.pop("read", None) or [])
+                     if p and p not in paths and (not tools or (pathlib.Path(wt) / p).is_file())]
+    finish(answer, wt if tools else None, {h["alias"]: h["path"] for h in (req["full"] if prev else hunks)}, None if prev else changed_lines(hunks))
     cost = sum(m.get("cost") or 0 for m in metas) if any(m.get("cost") is not None for m in metas) else None
     result = {"source": req.get("source") or req.get("pr"), "model": model, "model_id": next((m["model_id"] for m in metas if m.get("model_id")), model),
               "hunks": out_hunks, "answer": answer, "incremental": req.get("since") if prev else None, "cut": [], "scope": scope,
@@ -1044,7 +1117,7 @@ def analyze_cohorts(req, cohorts, hunks, index, run, t, candidates, wt, lang, ca
     text = (f"This is the merge pass ({n} of {n}) over a big pull request analyzed in {len(cohorts)} cohorts. The layers below are "
             "final; write the whole-PR parts from them, the index and the code (read patches or the checkout where it helps): "
             "title, summary, behavior, merge_risk, effort, rule_checks, architecture, blast_radius, visuals, intent, "
-            "behavior_points, asks (hunks as aliases), components, checked and reading_order (the layer numbers in the "
+            "behavior_points, what_changed, read, asks (hunks as aliases), components, checked and reading_order (the layer numbers in the "
             f"order the PR is best read). Write every text field in {lang}.\n\n" + picture_guide(lang) + "\n\n" + INVENTORY_TEXT +
             "\n\nLayers:\n" + digest +
             "\n\nCohort summaries:\n" + "\n".join(f"- {r.get('summary', '')}" for r in results) +

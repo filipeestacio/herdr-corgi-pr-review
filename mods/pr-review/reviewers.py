@@ -40,15 +40,9 @@ import review  # noqa: E402  (the severity scale and the areas of a run's self-r
 FEATURE = {"claude": "Claude code review", "security": "Security review", "codex": "Codex review"}
 BUDGET = {"haiku": 0.5, "sonnet": 3.0, "opus": 8.0}
 TIMEOUT = 1500
-# What a reviewer may do: it reads someone else's code and text, which may carry instructions to it. So: read files in
-# the checkout (--restricted confines the file tools to it and ignores the checkout's own .claude settings), the git
-# commands that read history, nothing else (dontAsk: whatever no rule allows is refused, no prompt). No network (no
-# gh, no web tools), no writes. The denied options are the ones that write a file (--output), run a program
-# (--ext-diff, --textconv, a pager) or read outside the checkout (--no-index, blame --contents).
-READ_ONLY = ["Read", "Grep", "Glob", "Agent", *(f"Bash(git {c} *)" for c in ("diff", "log", "show", "status", "blame", "merge-base", "rev-parse", "ls-files"))]
-DENIED = ["Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch",
-          *(f"Bash(git *{o}*)" for o in ("--output", "--ext-diff", "--textconv", "--no-index", "--contents"))]
-PERMISSIONS = ("--restricted", "--permission-mode", "dontAsk", "--allowedTools", *READ_ONLY, "--disallowedTools", *DENIED)
+# What a reviewer may do: the analysis' rules (review.permissions: the checkout, read-only git, no network, no writes,
+# whatever no rule allows refused), plus Agent for the slash commands that split their work.
+PERMISSIONS = review.permissions("Read", "Grep", "Glob", "Agent")
 PLACE = {"file": review.S, "line": {"type": "integer"}, "end": {"type": "integer"}, **review.PROSE}
 # A review turned from text: what its words give, nothing judged on top.
 PLAIN_FINDINGS = {"type": "object", "required": ["findings"], "properties": {"findings": {"type": "array", "items": {
@@ -113,10 +107,10 @@ def findings_schema(kind):
     fork takes no extra prompt text (it would read it as the review target), but it sees the schema. The security
     reviewer also answers with its view (SECURITY)."""
     sec = kind == "security"
-    extra = {"ref": S, "reachability": {"enum": REACH}} if sec else {}
+    extra = {"ref": S, "reachability": {"enum": REACH}} if sec else {}  # every Claude reviewer may name the way from outside (review.PATH)
     return {"type": "object", "description": ASK + (ASK_SECURITY if sec else ""), "required": ["findings", "scope", *(SECURITY if sec else [])], "properties": {
         "findings": {"type": "array", "items": {"type": "object", "required": ["file", "line", "title", "detail", *review.JUDGED, *(["ref"] if sec else [])],
-                                               "properties": {**PLACE, **review.JUDGED, **extra}}},
+                                               "properties": {**PLACE, **review.JUDGED, **review.PATH, **extra}}},
         "scope": {"type": "object", "required": ["read", "checked", "skipped"], "properties": {
             "read": review.STRINGS, "checked": review.checked_schema(AREAS[kind]), "skipped": review.STRINGS}},
         **(SECURITY if sec else {})}}
@@ -158,7 +152,7 @@ def normalize(raw, reviewer, worktree):
         fid = hashlib.sha1(f"{reviewer}|{path}|{line}|{title}".encode()).hexdigest()[:12]
         out.append({"id": fid, "reviewer": reviewer, "file": path, "line": line, "end": int(f.get("end") or line),
                     "severity": f["severity"], "title": title, "detail": str(f.get("detail") or ""), "suggestion": str(f.get("suggestion") or ""),
-                    "code": code, **{k: f[k] for k in (*review.JUDGED, "ref", "reachability") if f.get(k)}})
+                    "code": code, **{k: f[k] for k in (*review.JUDGED, *review.PATH, "ref", "reachability") if f.get(k) not in (None, "", [])}})
     return out
 
 
@@ -396,13 +390,15 @@ def main(arg):
     else:
         answer, meta = codex_review(req)
     findings = normalize(answer.get("findings"), req["kind"], wt)
+    try:  # the lines the PR adds: a finding in them is the PR's (introduced_here), an access row there opened by it
+        diff = related.diff_files(git("diff", "--no-color", "--no-ext-diff", "-U0", f"origin/{req['base']}...HEAD", cwd=wt))
+        changed = {f["path"]: {n for n, _ in f["added"]} for f in diff}
+    except (RuntimeError, OSError, subprocess.SubprocessError):
+        changed = None
+    for f in findings:
+        review.introduced(f, changed)
     security = None
     if req["kind"] == "security":
-        try:
-            diff = related.diff_files(git("diff", "--no-color", "--no-ext-diff", "-U0", f"origin/{req['base']}...HEAD", cwd=wt))
-            changed = {f["path"]: {n for n, _ in f["added"]} for f in diff}
-        except (RuntimeError, OSError, subprocess.SubprocessError):
-            changed = None
         security = {"head": req["head"], "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "picture": made, **security_view(answer, findings, pic, changed)}
     for f in findings:
         f.pop("ref", None)

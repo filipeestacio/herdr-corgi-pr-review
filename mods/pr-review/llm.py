@@ -42,8 +42,9 @@ def ledger_dir():
 
 
 def env_for(context):
-    """The process env with the context's vars applied (None unsets)."""
-    env = dict(os.environ)
+    """The process env with the context's vars applied (None unsets). git refuses abbreviated long options in every
+    run: a model's `git blame --con` would else be --contents, past a rule that denies the full name."""
+    env = {**os.environ, "GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS": "1"}
     for k, v in ((context or {}).get("env") or {}).items():
         if v is None:
             env.pop(k, None)
