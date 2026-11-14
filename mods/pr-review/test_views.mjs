@@ -407,3 +407,14 @@ assert.equal(oneSided(rowsOf("+++")), true, "a new file");
 assert.equal(oneSided(rowsOf("--")), true, "a deleted file");
 assert.equal(oneSided(rowsOf(" ++")), false, "context: a changed file");
 assert.equal(oneSided(rowsOf("-+")), false, "a line changed");
+
+// A card's tint over the background is one opaque colour, so the grid does not show through a card.
+{
+  const { solidOver } = await import("./views.js");
+  {
+    assert.equal(solidOver("#000000", "#ffffff80"), "#808080");
+    assert.equal(solidOver("#101010", "#202020"), "#202020", "an opaque colour stays");
+    assert.equal(solidOver("#000", "#fff"), "#ffffff");
+    assert.equal(solidOver("rgb(0,0,0)", "#ffffff80"), "#ffffff80", "an unknown base: unchanged");
+  }
+}

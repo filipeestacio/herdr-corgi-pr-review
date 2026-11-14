@@ -443,3 +443,19 @@ export const diffModeOf = (chosen, width, charW) => (chosen === "split" || chose
 // A file whose lines are all on one side (a new or a deleted file): side by side it keeps one column over the whole
 // width instead of an empty half.
 export const oneSided = (rows) => !rows.some((r) => r.kind === " ") && !(rows.some((r) => r.kind === "+") && rows.some((r) => r.kind === "-"));
+
+// A colour with transparency laid over the base, as one opaque colour: cards drawn with it hide the grid behind them
+// (a tint with alpha let the grid show through a card). Colours are #rgb, #rrggbb or #rrggbbaa; anything else is
+// returned as it is.
+export function solidOver(base, over) {
+  const rgba = (c) => {
+    const s = String(c ?? "").replace("#", "");
+    const h = s.length === 3 || s.length === 4 ? [...s].map((x) => x + x).join("") : s;
+    if (!/^[0-9a-f]{6}([0-9a-f]{2})?$/i.test(h)) return null;
+    return [0, 2, 4, 6].map((k) => (k < h.length ? parseInt(h.slice(k, k + 2), 16) : 255));
+  };
+  const b = rgba(base), o = rgba(over);
+  if (!b || !o) return over;
+  const a = o[3] / 255, hex = (v) => Math.round(v).toString(16).padStart(2, "0");
+  return "#" + [0, 1, 2].map((k) => hex(o[k] * a + b[k] * (1 - a))).join("");
+}

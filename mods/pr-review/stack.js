@@ -5,7 +5,7 @@ import { div, PathBuilder } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { levels } from "./pr.js";
 import { archLayout, archFocus, stateLayout, transitionText, sourceStyle, hasSources, pathMark, SPEC_TIP, ARCH, LABEL } from "./arch.js";
-import { flowArch, seqLayout, wrapCount, SEQ } from "./views.js";
+import { flowArch, seqLayout, wrapCount, SEQ, solidOver } from "./views.js";
 
 export const STATUS_COLOR = { new: "ansi2", added: "ansi2", changed: "accent", unchanged: "muted", removed: "ansi1" };
 export const SEVERITY_COLOR = { critical: "ansi1", high: "ansi1", medium: "ansi3", low: "ansi4", minimal: "ansi2" };
@@ -136,7 +136,7 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
     const ext = n.type === "external";
     return dim(v_flex().id(`${id}-n${i}`).absolute().left(n.x).top(n.y).w(n.w).h(n.h).px(ext ? 16 : 10).py(8).gap(3).rounded(ext ? 28 : 8).border_1()
       .border_color(lit ? t.accent : live ? c : ext ? t.muted : t.border).when(live && !st.dashed && !ext, (e) => e.border_l(4)).when(lit, (e) => e.border_2()).when(st.dashed || ext, (e) => e.border_dashed())
-      .bg(lit ? t.accent + "1a" : ext ? t.background : n.status === "new" ? t.ansi2 + "14" : t.surface)
+      .bg(lit ? solidOver(t.background, t.accent + "1a") : ext ? t.background : n.status === "new" ? solidOver(t.background, t.ansi2 + "14") : solidOver(t.background, t.surface))
       .when(Boolean(tip), (e) => e.tooltip(tip))
       .when(Boolean(opts.onFocus), (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => opts.onFocus(opts.focus === n.id ? null : n.id, cx)))
       .when(!opts.onFocus && open, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((ev, cx) => onNode(n, ev, cx)))
@@ -440,3 +440,4 @@ export function gridBg(t, w, h) {
   for (let y = GRID; y < h; y += GRID) p = p.move_to("0%", Y(y)).line_to("100%", Y(y));
   return globalThis.window.paint_path(p.build(), t.foreground + "12").absolute().top(0).left(0).w(w).h(h);
 }
+
