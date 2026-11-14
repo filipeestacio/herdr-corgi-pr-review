@@ -359,11 +359,12 @@ export function blockersDraft(findings) {
 // r: a run of pr.js runsOf (or none), others: the findings the other sources have. A zero says what it means: the
 // reviewer ran and found nothing, which is not "not run". times: {running, took, ago} as text.
 export function runLine(r, others = 0, times = {}) {
-  if (r?.state === "running") return ["Running", times.running].filter(Boolean).join(" · ");
-  if (r?.state === "failed") return `Failed: ${r.error ?? "no result"}`;
+  const auto = r?.auto ? ` · Started by itself: ${r.auto}` : ""; // the security trigger's reasons
+  if (r?.state === "running") return ["Running", times.running].filter(Boolean).join(" · ") + auto;
+  if (r?.state === "failed") return `Failed: ${r.error ?? "no result"}${auto}`;
   if (r?.state !== "done") return "Not run on this PR yet";
   const n = r.count ?? 0, found = n ? `${n} ${n === 1 ? "finding" : "findings"}` : `No findings${others ? `. It reviews on its own; the other sources have ${others}` : ""}`;
-  return [found, r.cost != null ? `$${Number(r.cost).toFixed(3)}` : null, times.took, times.ago].filter(Boolean).join(" · ");
+  return [found, r.cost != null ? `$${Number(r.cost).toFixed(3)}` : null, times.took, times.ago].filter(Boolean).join(" · ") + auto;
 }
 
 // ---- a finding as a review comment (review.js "Add to review", "Ask an agent…")

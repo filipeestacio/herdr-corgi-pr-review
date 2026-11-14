@@ -235,6 +235,8 @@ console.log("threads ok");
   assert.equal(TH.runLine({ state: "done", count: 2, cost: 0.12 }), "2 findings · $0.120");
   assert.equal(TH.runLine({ state: "failed", error: "no JSON" }), "Failed: no JSON");
   assert.equal(TH.runLine(undefined), "Not run on this PR yet");
+  assert.equal(TH.runLine({ state: "running", auto: "template.yaml changes IAM policies or permissions" }, 0, { running: "0:12" }), "Running · 0:12 · Started by itself: template.yaml changes IAM policies or permissions");
+  assert.equal(TH.runLine({ state: "done", count: 2, auto: "a.py touches auth or token code" }), "2 findings · Started by itself: a.py touches auth or token code");
   assert.equal(TH.runLine({ state: "running" }, 0, { running: "0:12" }), "Running · 0:12");
   console.log("preview, verdict and runs ok");
 }

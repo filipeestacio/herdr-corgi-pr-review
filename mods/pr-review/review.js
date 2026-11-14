@@ -20,7 +20,7 @@ import { findingSteps, funnel, funnelLine, ownerOf, quickFirst, hasEffort } from
 import { overviewMd, findingMd, findingsMd, layerMd, architectureMd, securityMd, verifyContextMd } from "./markdown.js"; // Copy this page as Markdown
 import { highlightJob, highlightStep, highlightLines, langOf, colors, renderLine, refAt } from "./syntax.js";
 import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js";
-import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf, codeModel, priceOf, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch } from "./pr.js";
+import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf, codeModel, priceOf, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch, withSecurity } from "./pr.js";
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState, codeOf, isStale } from "./pr.js";
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible, pastTop } from "./views.js";
@@ -631,12 +631,13 @@ export const ReviewMode = {
     cx.spawn(async (cx) => {
       const before = JSON.parse(await readTextFile(out).catch(() => null) ?? "null");
       if (this.prSel?.url !== url) return;
-      if (before) { this.ctx = before; this.publish(); cx.notify(); }
+      if (before) { this.ctx = before; this.securityNow(cx); this.publish(); cx.notify(); }
       if (before && Date.now() - Date.parse(before.at) < CTX_MS) return;
       const req = { url, head, base: this.prSel.base ?? "main", worktree: this.worktree?.path ?? null, files: (this.patch ?? []).map((f) => f.path).filter((f) => !lowValue(f)), out }; // lockfiles would relate everything
       const r = await exec("python3", [`${appHome()}/mods/pr-review/related.py`, JSON.stringify(req)], { timeout: 400000 }).catch(() => null);
       if (this.prSel?.url !== url || r?.code !== 0) return;
       this.ctx = JSON.parse(r.stdout);
+      this.securityNow(cx);
       exec("python3", [`${appHome()}/mods/pr-review/prs.py`, "--prune"]).catch(() => null); // bounds the cache folder
       this.publish(); cx.notify();
     });
@@ -820,6 +821,7 @@ export const ReviewMode = {
         const text = await readTextFile(job.out).catch(() => null);
         if (text && model() === m) { this.ai = this.mapSaved(JSON.parse(text), true); this.aiFile = job.out; this.goStep(0, cx, false); }
       }
+      this.securityNow(cx);
       this.publish(); cx.notify();
     }));
   },
@@ -845,8 +847,8 @@ export const ReviewMode = {
     r.steps.push(...extra(`Not analyzed (${left.filter((h) => cut.has(h.alias)).length} hunks)`, "Too large for the model: read these yourself.", left.filter((h) => cut.has(h.alias))),
       ...extra(`In no step (${left.filter((h) => !cut.has(h.alias)).length} hunks)`, exact ? "The model put these hunks in no step." : "New since the analysis.", left.filter((h) => !cut.has(h.alias))));
     for (const s of r.steps) s.stale = s.hunks.length > 0 && !s.hunks.some((id) => this.byId.has(id));
-    return { ...r, exact, diagrams: saved.diagrams ?? null, cost: saved.cost, ms: saved.ms, budget: saved.budget, model: saved.model, model_id: saved.model_id, generated: saved.generated, cut: saved.cut ?? [], task: saved.task ?? {},
-      incremental: saved.incremental ?? null, scope: saved.scope ?? null, usage: saved.usage ?? null }; // scope.checked and usage: newer analyses only
+    return withSecurity({ ...r, exact, diagrams: saved.diagrams ?? null, cost: saved.cost, ms: saved.ms, budget: saved.budget, model: saved.model, model_id: saved.model_id, generated: saved.generated, cut: saved.cut ?? [], task: saved.task ?? {},
+      incremental: saved.incremental ?? null, scope: saved.scope ?? null, usage: saved.usage ?? null }, this.find.loaded === this.prSel?.url ? this.find.security : null, this.ctx, this.worktree?.head ?? this.head); // scope.checked and usage: newer analyses only
   },
 
   // What the bar shows: the analysis on screen, or the one running.
@@ -938,19 +940,32 @@ export const ReviewMode = {
     const [doc, rep] = await Promise.all([readTextFile(`${base}.json`).catch(() => null), readTextFile(`${base}.jsonl`).catch(() => null)]);
     if (this.prSel?.url !== url) return;
     const d = doc ? JSON.parse(doc) : {};
-    this.find = { ...this.find, list: d.findings ?? [], runs: runsOf(d.runs), status: d.status ?? {}, reports: parseReports(rep) };
+    this.find = { ...this.find, list: d.findings ?? [], runs: runsOf(d.runs), status: d.status ?? {}, reports: parseReports(rep), security: d.security ?? null, loaded: url };
     for (const r of Object.values(this.find.runs)) if (r.busy && Date.now() - Date.parse(r.started) > 30 * 60000) { r.busy = false; r.state = "failed"; r.error = "Stopped without a result"; }
     setShared("review.reviewers", this.find.runs);
+    this.securityNow(cx);
     cx.notify();
   },
 
-  runReviewer(kind, cx) {
+  // The security run's view on the analysis (pr.js withSecurity) once the findings file or the context changed, and
+  // the security review started by itself: once per head, after the analysis, when related.py's security_trigger
+  // says the diff gives a reason. A run of this head in any state (also a failed one) means it already started.
+  securityNow(cx) {
+    if (this.exMode || !this.ai) return;
+    const w = this.worktree, head = w?.head ?? this.head, t = this.ctx?.security_trigger, r = this.find.runs.security;
+    const mine = this.find.loaded === this.prSel?.url; // the findings file of this PR, not the one before
+    this.ai = withSecurity(this.ai, mine ? this.find.security : null, this.ctx, head);
+    if (!t?.run || this.aiBusy || !w || w.local || this.ctx.head !== head || !mine || r?.head === head || r?.state === "running") return;
+    this.runReviewer("security", cx, (t.reasons ?? []).slice(0, 3).map((x) => x.text).join("; "));
+  },
+
+  runReviewer(kind, cx, auto = null) { // auto: why it started by itself (securityNow)
     const pr = this.prSel, w = this.worktree;
     if (!reviewersNow().some(([k]) => k === kind) || !pr?.url) return;
     if (!w || w.local) { this.note = !w ? "Could not run: the PR head is not checked out yet" : "Could not run: reviewers need a PR (not a branch diff)"; return cx.notify(); }
     const req = { kind, url: pr.url, number: pr.number, context: this.ctxReq(), model: model(), codexModel: shared("review.codexModel") || null, worktree: w.path, base: pr.base ?? "main",
-      head: w.head, level: "medium", file: `${findDir()}/${hash(pr.url)}.json` };
-    this.find.runs[kind] = { state: "running", busy: true, started: new Date().toISOString(), scope: null, error: null };
+      head: w.head, level: "medium", file: `${findDir()}/${hash(pr.url)}.json`, ...(auto ? { auto } : {}) };
+    this.find.runs[kind] = { state: "running", busy: true, started: new Date().toISOString(), scope: null, error: null, head: w.head, ...(auto ? { auto } : {}) };
     setShared("review.reviewers", { ...this.find.runs });
     exec("sh", ["-c", 'nohup python3 "$0" "$1" >/dev/null 2>&1 &', `${appHome()}/mods/pr-review/reviewers.py`, JSON.stringify(req)])
       .catch((e) => { this.note = `Could not start ${REVIEWERS[kind][0]}: ${e}`; cx.notify(); });
