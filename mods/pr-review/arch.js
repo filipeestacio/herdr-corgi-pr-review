@@ -244,10 +244,15 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
   }
   // Then exact search where it is small: the order of the groups sharing a column (up to 4), then the cards of each
   // group column (up to 6), each by the number of swapped call pairs between neighbouring columns.
+  // A long line runs down to the channel under the picture, so it crosses every next-column line that leaves a card
+  // below its own in the same column (that line's start or its way into its target meets the long line's way down):
+  // such a pair counts as swapped too, and a card with a long line goes below its neighbours where it can.
+  const longE = edges.filter((e) => kindOf(e) === "long");
   const swapped = () => {
     const row = rows();
     let n = 0;
     for (const a of nexts) for (const b of nexts) if (col.get(a.from) === col.get(b.from) && row.get(a.from) < row.get(b.from) && row.get(a.to) > row.get(b.to)) n++;
+    for (const a of longE) for (const b of nexts) if (col.get(a.from) === col.get(b.from) && row.get(a.from) < row.get(b.from)) n++;
     return n;
   };
   for (let c = 0; c < ncol; c++) {
@@ -413,18 +418,26 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
     return { segs, arrow: { x: tx, y: ty, left: false } };
   };
 
-  // Lane order per gutter: the permutation (small gutters) or sort with the fewest crossings inside the gutter.
-  const lane = new Map();
+  // Lane order per gutter: the permutation (small gutters) or swaps with the fewest crossings inside the gutter. A long
+  // line's way down from its card (out) and up to its target (in) take part, so its lane goes where it crosses the
+  // fewest lines rather than always outermost; the start order is by where a line ends (the way down last).
+  const lane = new Map(), channelY = Math.max(0, ...frames.map((f) => f.y + f.h)) + 14;
+  const part = (q, trial) => {
+    const x = trial.get(q.key), p = q.p;
+    if (q.kind === "out") { const f = at.get(p.from[0]), sy = PY(p, "from", f.id); return [{ x1: f.x + W, y1: sy, x2: x, y2: sy }, { x1: x, y1: sy, x2: x, y2: channelY }]; }
+    if (q.kind === "in") { const ty = PY(p, "to", p.to); return [{ x1: x, y1: channelY, x2: x, y2: ty }, { x1: x, y1: ty, x2: at.get(p.to).x, y2: ty }]; }
+    return build(q, trial).segs;
+  };
   for (let c = 0; c < ncol; c++) {
-    const items = [...paths.filter((p) => p.kind === "next" && srcCol(p) === c), ...trunks.filter((tr) => srcCol(tr) === c)];
-    const left = colX[c] + cw[c] + zone[c] + textW[c] + 14;
-    let k = items.length; // long lines take the lanes after the others
-    for (const p of longP) { if (srcCol(p) === c) lane.set(`${p.key}:out`, left + k++ * LANE); if (col.get(p.to) - 1 === c) lane.set(`${p.key}:in`, left + k++ * LANE); }
+    const items = [...paths.filter((p) => p.kind === "next" && srcCol(p) === c), ...trunks.filter((tr) => srcCol(tr) === c),
+      ...longP.filter((p) => srcCol(p) === c).map((p) => ({ key: `${p.key}:out`, kind: "out", p })), ...longP.filter((p) => col.get(p.to) - 1 === c).map((p) => ({ key: `${p.key}:in`, kind: "in", p }))];
     if (!items.length) continue;
+    const left = colX[c] + cw[c] + zone[c] + textW[c] + 14;
     const trialOf = (order) => new Map(order.map((p, k) => [p.key, left + k * LANE]));
-    const cost = (order) => { const trial = trialOf(order); return crossings(order.map((p) => ({ key: p.key, segments: build(p, trial).segs }))).length; };
-    const tyOf = (p) => (p.kind === "trunk" ? Math.min(...p.branches.map((b) => PY(b, "to", b.to))) : PY(p, "to", p.to));
-    const start = [...items].sort((a, b) => tyOf(a) - tyOf(b) || Math.min(...ysOf(a)) - Math.min(...ysOf(b)));
+    const cost = (order) => { const trial = trialOf(order); return crossings(order.map((q) => ({ key: q.key, segments: part(q, trial) }))).length; };
+    const tyOf = (q) => (q.kind === "out" ? Infinity : q.kind === "in" ? PY(q.p, "to", q.p.to) : q.kind === "trunk" ? Math.min(...q.branches.map((b) => PY(b, "to", b.to))) : PY(q, "to", q.to));
+    const yOf = (q) => (q.kind === "out" ? PY(q.p, "from", q.p.from[0]) : q.kind === "in" ? channelY : Math.min(...ysOf(q)));
+    const start = [...items].sort((a, b) => tyOf(a) - tyOf(b) || yOf(a) - yOf(b));
     for (const [k, v] of trialOf(bestOrder(items, cost, start))) lane.set(k, v);
   }
 
