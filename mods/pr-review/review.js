@@ -15,7 +15,7 @@ import { exec, hc, run, spaces, agents, terminals, focused, pickFolder, theme, s
 import { parseReports, findingStatus, mergeFindings, findingCounts, countLine, runsOf, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
 import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig } from "./setup-view.js";
-import { taskList, taskHead, verdictParts, reviewState, certaintyLine, severityTip, componentLine, doesList, checkGroups, costLine } from "./pr.js"; // the Overview page
+import { taskList, taskHead, verdictParts, reviewState, certaintyLine, severityTip, componentLine, doesList, checkGroups, costLine, alreadyThere } from "./pr.js"; // the Overview page
 import { findingSteps, funnel, funnelLine, ownerOf, quickFirst, hasEffort } from "./pr.js"; // the Findings tab
 import { overviewMd, findingMd, findingsMd, layerMd, architectureMd, securityMd, verifyContextMd } from "./markdown.js"; // Copy this page as Markdown
 import { highlightJob, highlightStep, highlightLines, langOf, colors, renderLine, refAt } from "./syntax.js";
@@ -2574,7 +2574,7 @@ export const ReviewMode = {
     const facts = [
       vd.length > 0 && link("rv-mr", h_flex().gap(6).children(vd.flatMap((p, k) => [k > 0 && div().text_color(t.dim).child("·"), div().when(p.tone === "security", (e) => e.text_color(t.ansi1)).child(p.short)].filter(Boolean))),
         (_e, cx) => { this.tab = "steps"; this.page = "overview"; cx.notify(); }).tooltip(`${vd.map((p) => p.text).join(" · ")}. Click for the Overview.`),
-      ck && link("rv-ck", h_flex().gap(4).children(ck.parts.map(([text, bad]) => div().when(bad, (e) => e.text_color(t.ansi1)).child(text))),
+      ck && link("rv-ck", h_flex().gap(4).children(ck.parts.map(([text, bad]) => div().child(`${bad ? "✗ " : ""}${text}`))), // a symbol, not red: red is the security part's
         (_e, cx) => { this.tab = "steps"; this.page = "overview"; this.pagePart("checks", cx); cx.notify(); }).tooltip(ck.tip),
     ].filter(Boolean);
     const modelText = this.aiBusy ? `${modelLabel(this.aiBusy.model)} analyzing…` : `${modelLabel(m)}${ai?.cost != null && ai.model === m ? ` · $${Number(ai.cost).toFixed(2)}` : ""}`;
@@ -3887,8 +3887,10 @@ export const ReviewMode = {
           .when(fs.length > 0, (x) => x.child(v_flex().pt(2).gap(2).children(fs.map((f) => finding(f, `rv-ask-${a.id}-f-${f.id}`, false)))))));
     };
     const marked = list.rows.filter((r) => list.marked && r.ask.acceptance), rest = list.rows.filter((r) => !marked.includes(r)), hasTask = list.rows.length + list.extra.length > 0;
-    const otherOpen = this.askOpen?.has("other") || !hasTask; // no task to fold them under: the findings are the list
-    const sev = ["high", "medium", "low"].map((k) => [k, list.other.filter((f) => f.severity === k).length]).filter(([, c]) => c).map(([k, c]) => `${c} ${k}`).join(", ");
+    // Findings in code this PR does not add or change (pr.js alreadyThere): no blocker, a folded group of their own.
+    const before = new Set(alreadyThere(this.openFindings()).map((x) => x.finding)), old = list.other.filter((f) => before.has(f.id)), other = list.other.filter((f) => !before.has(f.id));
+    const otherOpen = this.askOpen?.has("other") || !hasTask, oldOpen = this.askOpen?.has("before"); // no task to fold them under: the findings are the list
+    const sevOf = (l) => ["high", "medium", "low"].map((k) => [k, l.filter((f) => f.severity === k).length]).filter(([, c]) => c).map(([k, c]) => `${c} ${k}`).join(", "), sev = sevOf(other);
     const from = `From the PR description${task.jira ? ` and Jira ${task.jira}` : ""}`, met = (rows) => `${rows.filter((r) => r.ask.state === "met").length} of ${rows.length} met`;
     const offer = this.runOffer?.("security") ?? null; // Paket S's model choice for the security run (pr-review runOffer), once there
     let first = true;
@@ -3901,9 +3903,12 @@ export const ReviewMode = {
     if (marked.length) groups.push(h("rv-ask-head", `Acceptance criteria · ${met(marked)}`, `${from}: the criteria it marks as acceptance criteria. A row's symbol says how each one stands; a click unfolds it.`), ...marked.map(ask));
     if (rest.length) groups.push(h("rv-ask-rest", list.marked ? "Also in the description" : `Criteria · ${met(rest)}`, `${from}${list.marked ? ": what it asks besides the acceptance criteria" : ""}`), ...rest.map(ask));
     if (list.extra.length) groups.push(h("rv-ask-extra", `Not in the task · ${list.extra.length}`, "What the diff does that the task did not ask for"), ...list.extra.map(ask));
-    if (list.other.length) groups.push(h("rv-ask-other", `${hasTask ? "Other findings" : "Findings"} · ${list.other.length}`, hasTask ? (otherOpen ? "Hide these findings" : "Unresolved findings that belong to no criterion: click to show them") : "Unresolved findings",
+    if (other.length) groups.push(h("rv-ask-other", `${hasTask ? "Other findings" : "Findings"} · ${other.length}`, hasTask ? (otherOpen ? "Hide these findings" : "Unresolved findings that belong to no criterion: click to show them") : "Unresolved findings",
       hasTask ? div().id("rv-ask-other-n").flex_none().text_size(12).text_color(t.muted).cursor_pointer().on_click((_e, cx) => { this.toggleAsk("other"); cx.notify(); }).child(`${sev} ${otherOpen ? "▾" : "▸"}`) : null));
-    if (list.other.length && otherOpen) groups.push(...list.other.map((f) => finding(f, `rv-ask-o-${f.id}`, false)));
+    if (other.length && otherOpen) groups.push(...other.map((f) => finding(f, `rv-ask-o-${f.id}`, false)));
+    if (old.length) groups.push(h("rv-ask-before", `Already there before this PR · ${old.length}`, "Unresolved findings in code this PR does not add or change: worth knowing, no blocker for this PR",
+      div().id("rv-ask-before-n").flex_none().text_size(12).text_color(t.muted).cursor_pointer().on_click((_e, cx) => { this.toggleAsk("before"); cx.notify(); }).child(`${sevOf(old)} ${oldOpen ? "▾" : "▸"}`)));
+    if (old.length && oldOpen) groups.push(...old.map((f) => finding(f, `rv-ask-b-${f.id}`, false)));
     return v_flex().flex_none().gap(2).text_size(13.5).children(groups);
   },
 

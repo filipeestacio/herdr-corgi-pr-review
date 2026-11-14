@@ -492,7 +492,7 @@ console.log("ok");
   assert.equal(componentLine(null), null);
   // What the PR does: the analysis' own lists, else its paragraphs cut into sentences ("Adds…" under Adds, a dotted
   // name does not end a sentence), the behavior points with their source under At run time.
-  assert.deepEqual(doesList({ summary: { adds: ["A queue."], changes: [], runtime: ["Mails once."] } }), [["Adds", [{ text: "A queue." }]], ["At run time", [{ text: "Mails once." }]]]);
+  assert.deepEqual(doesList({ summary: "Adds x. Changes y.", behavior: "z", whatChanged: { adds: ["A queue."], changes: [], runtime: ["Mails once."] } }), [["Adds", [{ text: "A queue." }]], ["At run time", [{ text: "Mails once." }]]], "whatChanged wins over the paragraphs");
   assert.deepEqual(doesList({ summary: "Adds a LoanEvent, makes status.transition publish. The PR misses most criteria.  It has `x()` too.", behavior: "Members get two mails. (Sometimes three.)" }),
     [["Adds", [{ text: "Adds a LoanEvent, makes status.transition publish." }]], ["Changes", [{ text: "The PR misses most criteria." }, { text: "It has `x()` too." }]], ["At run time", [{ text: "Members get two mails." }, { text: "(Sometimes three.)" }]]]);
   assert.deepEqual(doesList({ summary: "", behavior: "x", behaviorPoints: [{ text: "Mails", source: "spec" }] }), [["At run time", [{ text: "Mails", source: "spec" }]]]);

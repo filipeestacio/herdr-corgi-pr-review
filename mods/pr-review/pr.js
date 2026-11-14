@@ -849,14 +849,14 @@ export function verdictParts(l, c, { failed = 0, toVerify = 0 } = {}) {
     toVerify > 0 && { key: "verify", text: `${count(toVerify, "fix", "fixes")} to verify`, short: `${count(toVerify, "fix", "fixes")} to verify`, tone: "plain" }].filter(Boolean);
 }
 
-// What the PR does, as a labeled list [[label, [{text, source?, evidence?}]]]: the analysis' summary {adds, changes,
-// runtime} when it has one; an older analysis' paragraphs cut into sentences, a summary sentence that starts with
-// "Adds" under Adds, the other ones under Changes, the behavior under At run time. Empty labels are left out.
+// What the PR does, as a labeled list [[label, [{text, source?, evidence?}]]]: the analysis' whatChanged {adds,
+// changes, runtime} when it has one; an older analysis' paragraphs cut into sentences, a summary sentence that starts
+// with "Adds" under Adds, the other ones under Changes, the behavior under At run time. Empty labels are left out.
 const sentences = (s) => (typeof s === "string" ? s.replace(/\s+/g, " ").trim().split(/(?<=[.!?])\s+(?=[A-Z`"(])/).filter(Boolean) : []);
 export function doesList(ai) {
-  const s = ai?.summary, own = s && typeof s === "object", item = (text) => ({ text: String(text) });
-  const runtime = ai?.behaviorPoints?.length ? ai.behaviorPoints : sentences(ai?.behavior).map(item), said = sentences(s), adds = said.filter((x) => /^(adds?|introduces?|creates?)\b/i.test(x));
-  const lists = own ? [s.adds, s.changes, s.runtime].map((l) => (l ?? []).map(item)) : [adds.map(item), said.filter((x) => !adds.includes(x)).map(item), runtime];
+  const w = ai?.whatChanged, item = (text) => ({ text: String(text) });
+  const runtime = ai?.behaviorPoints?.length ? ai.behaviorPoints : sentences(ai?.behavior).map(item), said = sentences(ai?.summary), adds = said.filter((x) => /^(adds?|introduces?|creates?)\b/i.test(x));
+  const lists = w ? [w.adds, w.changes, w.runtime].map((l) => (l ?? []).map(item)) : [adds.map(item), said.filter((x) => !adds.includes(x)).map(item), runtime];
   return [["Adds", lists[0]], ["Changes", lists[1]], ["At run time", lists[2]]].filter(([, l]) => l.length);
 }
 
