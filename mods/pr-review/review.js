@@ -2173,8 +2173,8 @@ export const ReviewMode = {
         .child(`${fc.high} unresolved ${fc.high === 1 ? "finding is" : "findings are"} of high severity${fc.security ? `, ${fc.security} about security` : ""}. An approval on GitHub says nothing about them.${this.approveAsk ? " Click the button again to approve anyway." : ""}`)))
       // Exactly what goes out: nothing else (AI suggestions, findings, the analysis) unless it was added as a comment.
       .child(div().text_size(11.5).font_semibold().text_color(t.muted).child(gh ? "WHAT IS POSTED (only what is ticked)" : `WHAT IS SENT · ${n} ${n === 1 ? "comment" : "comments"}`))
-      .child(div().flex_1().min_h(0).relative().max_h(190)
-        .child(v_flex().id("rv-finish-items").gap(4).max_h(190).overflow_y_scroll()
+      .child(div().flex_1().min_h(0).relative().max_h(250)
+        .child(v_flex().id("rv-finish-items").gap(4).max_h(250).overflow_y_scroll()
           .when(gh && Boolean(summary), (e) => e.child(h_flex().id("rv-fi-summary").gap(8).items_start().p(6).rounded(6).bg(this.summaryOn ? t.surface : t.background)
             .child(tick("rv-fit-summary", this.summaryOn, () => { this.summaryOn = !this.summaryOn; }))
             .child(v_flex().id("rv-fir-summary").flex_1().min_w(0).gap(2).cursor_pointer().on_click((_e, cx) => { this.summaryOn = !this.summaryOn; cx.notify(); })
@@ -2196,9 +2196,9 @@ export const ReviewMode = {
           .child(pill("rv-rdrop-yes", t, "Delete", (_e, cx) => { this.comments = []; this.discardAsk = false; this.persist(cx); cx.notify(); }, false, t.ansi1).tooltip("Delete them now; this cannot be undone"))
           .child(pill("rv-rdrop-no", t, "Keep", (_e, cx) => { this.discardAsk = false; cx.notify(); }).tooltip("Keep your pending comments")))
         .child(div().flex_1())
-        .child(div().id("rv-submit").tooltip(this.cfg?.dryRun && gh ? DRY_TIP : "Sends only what is listed above, to the target shown; nothing leaves before this click").px(14).h(32).flex().items_center().rounded(8).text_size(13).font_semibold().bg(ready ? GH_GREEN : t.raised)
+        .when(!this.discardAsk, (e) => e.child(div().id("rv-submit").tooltip(this.cfg?.dryRun && gh ? DRY_TIP : "Sends only what is listed above, to the target shown; nothing leaves before this click").px(14).h(32).flex().items_center().rounded(8).text_size(13).font_semibold().bg(ready ? GH_GREEN : t.raised)
           .text_color(ready ? "#ffffff" : t.muted).when(ready, (e) => e.cursor_pointer())
-          .on_click((_e, cx) => { if (ready) this.submitClick(cx); }).child(this.sending ? "Submitting…" : risky && this.approveAsk ? "Approve anyway" : gh ? plan.label : "Send to agent…")));
+          .on_click((_e, cx) => { if (ready) this.submitClick(cx); }).child(this.sending ? "Submitting…" : risky && this.approveAsk ? "Approve anyway" : gh ? plan.label : "Send to agent…"))));
   },
 
   // The preview before an agent starts or anything is typed into a session: what it is about (the finding or the
@@ -2209,8 +2209,8 @@ export const ReviewMode = {
     const p = this.sendP, fix = p.fix, sub = fix?.target === "sub", kind = fix ? fix.target : p.ask?.kind ?? null, short = (x) => (x ? String(x).replace(home(), "~") : null);
     const live = this.sendAgent().agent, name = live ? p.agent.split(" · ")[0] : null, handoff = sub && fix.main && fix.head ? name : null;
     const facts = kind ? TH.sendFacts({ kind, account: accountOf(this.ctxId()), trusted: this.trustedPr(), branch: fix?.branch, name: p.ask?.name ?? name, chat: p.ask?.chat, where: short(p.ask?.where), handoff }) : [];
-    const picking = Boolean(fix?.pool), n = fix?.items.length ?? 0, ready = !this.sending && (!picking || n > 0), text = this.sendText.value();
-    const go = this.sending ? "Sending…" : sub ? (picking ? `Start fix agent for ${n} ${n === 1 ? "finding" : "findings"}` : "Start fix agent") : fix ? "Send to main agent"
+    const picking = Boolean(fix?.pool), n = fix?.items.length ?? 0, some = !picking || n > 0, ready = !this.sending && some, text = this.sendText.value();
+    const go = this.sending ? "Sending…" : sub ? (picking && n ? `Start fix agent for ${n} ${n === 1 ? "finding" : "findings"}` : "Start fix agent") : fix ? "Send to main agent"
       : p.ask ? { new: "Start agent", resume: "Resume its session", live: p.ask.chat ? "Draft in chat" : "Paste to agent" }[p.ask.kind] : "Send to agent";
     const head = (label) => div().text_size(11.5).font_semibold().text_color(t.muted).child(label);
     const choice = (k, title, what) => h_flex().id(`rv-fix-${k}`).gap(10).px(6).py(4).rounded(6).items_start().cursor_pointer().hover((s) => s.bg(t.hover))
@@ -2232,19 +2232,19 @@ export const ReviewMode = {
           .child(`${fix.alone} security ${fix.alone === 1 ? "finding is" : "findings are"} not in this list. Each is fixed on its own, so that its change stays one commit to check.`)))))
       .when(!picking && Boolean(p.own), (e) => e.child(v_flex().gap(4).child(head(p.ownLabel))
         .child(div().max_h(110).overflow_hidden().p(8).rounded(6).border_l(3).border_color(t.accent).bg(t.surface).text_size(12.5).line_height(1.45).whitespace_normal().child(p.own))))
-      .when(Boolean(fix), (e) => e.child(v_flex().gap(1).child(head("WHO FIXES IT"))
+      .when(Boolean(fix) && some, (e) => e.child(v_flex().gap(1).child(head("WHO FIXES IT"))
         .child(choice("sub", "Sub-agent", `A new agent in a separate checkout, on the new branch ${fix.branch} from ${this.worktree?.local ? "this branch's head" : "the PR head"}${fix.head ? ` ${fix.head.slice(0, 7)}` : ""}. It works apart from the PR's checkout`
           + (handoff ? `. When it is done it hands the fix to ${handoff}, and that session applies and pushes it.` : "; the fix stays on that branch until you apply it.")))
         .when(this.mainOffered(), (x) => x.child(choice("main", "Main agent", `${name}, the PR's own agent session. It changes the PR's checkout directly, with its own permissions; nothing separates the fix from the PR.`)))
         .when(!this.mainOffered(), (x) => x.child(div().pl(32).text_size(12).text_color(t.dim).whitespace_normal()
           .child(`The PR's own agent is not offered: ${this.trustedPr() ? "this PR has no live agent session" : "this is someone else's PR, so its code is only changed in a separate checkout"}.`)))))
       .when(!kind, (e) => e.child(h_flex().gap(6).items_center().text_size(12.5).child(div().text_color(t.muted).child("To")).child(div().flex_1().min_w(0).whitespace_normal().font_semibold().child(p.agent))))
-      .when(facts.length > 0, (e) => e.child(v_flex().id("rv-send-facts").p(8).gap(3).rounded(6).border_1().border_color(t.border)
+      .when(facts.length > 0 && some, (e) => e.child(v_flex().id("rv-send-facts").p(8).gap(3).rounded(6).border_1().border_color(t.border)
         .children(facts.map(([label, what]) => h_flex().gap(8).items_start().text_size(12.5).line_height(1.45)
           .child(div().w(58).flex_none().text_color(t.muted).child(label)).child(div().flex_1().min_w(0).whitespace_normal().child(what))))))
-      .child(head(`EXACT TEXT SENT · ${text.split("\n").length} lines, editable${text.length > 700 || text.split("\n").length > 11 ? " · longer than the box: scroll inside it to read the end" : ""}`))
-      .child(div().id("rv-send-text").tooltip("The exact text the agent gets; you can edit it").px(10).py(6).rounded(6).border_1().border_color(this.typing === "send" ? t.accent : t.border).bg(t.background).cursor_text()
-        .on_click(() => this.sendText.focus()).child(Textarea.new(this.sendText).w_full().text_size(12.5).text_color(t.foreground)))
+      .when(some, (e) => e.child(head(`EXACT TEXT SENT · ${text.split("\n").length} lines, editable${text.length > 700 || text.split("\n").length > 11 ? " · longer than the box: scroll inside it to read the end" : ""}`))
+        .child(div().id("rv-send-text").tooltip("The exact text the agent gets; you can edit it").px(10).py(6).rounded(6).border_1().border_color(this.typing === "send" ? t.accent : t.border).bg(t.background).cursor_text()
+          .on_click(() => this.sendText.focus()).child(Textarea.new(this.sendText).w_full().text_size(12.5).text_color(t.foreground))))
       .child(h_flex().gap(8).items_center().child(div().flex_1())
         .child(pill("rv-send-cancel", t, "Cancel", (_e, cx) => { this.sendP = null; this.fh.focus(); cx.notify(); }).tooltip("Close the preview without sending"))
         .child(div().id("rv-send-go").tooltip(picking && !n ? "Tick at least one finding first" : "The only click that sends or starts anything").px(14).h(32).flex().items_center().rounded(8).text_size(13).font_semibold()
