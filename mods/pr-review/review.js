@@ -4138,8 +4138,10 @@ export const ReviewMode = {
     const word = p.blocker ? `${p.blocker.unclear ? "Blocker? old or new unclear" : "Blocker"}: ${p.blocker.reason}${dated}` : p.same_cause ? `same cause as path ${num(p.same_cause)}`
       : p.pre_existing === true ? `finding, already on the base${dated}` : p.result === "mitigated" ? (p.limited_by ? `✓ limited at ${p.limited_by}` : "limited, no guard named")
         : p.result === "not_assessed" ? "not assessed" : "finding";
-    const name = (s) => { if (/^e\d+$/.test(s)) return null; const c = resCardOf(s, this.ai?.arch); return c ? this.ai.arch.nodes.find((n) => n.id === c)?.label ?? c : s; };
-    const way = [...new Set((p.steps ?? []).map(name).filter(Boolean))].join(" → ");
+    // The way: each step's card (a call e<k> by both its ends, R2 runs name calls), each card once.
+    const arch = this.ai?.arch, label = (id) => arch?.nodes.find((n) => n.id === id)?.label ?? id;
+    const name = (s) => { const e = /^e(\d+)$/.exec(s); if (e) return arch?.edges?.[Number(e[1])] ? [label(arch.edges[Number(e[1])].from), label(arch.edges[Number(e[1])].to)] : []; const c = resCardOf(s, arch); return [c ? label(c) : s]; };
+    const way = [...new Set((p.steps ?? []).flatMap(name).filter(Boolean))].join(" → ");
     const fs = this.findings().filter((f) => (p.findings ?? []).some((id) => (f.ids ?? [f.id]).includes(id)));
     // What on-call sees, two states (seen / ✕ silent) from signal and seen_as (an older run: visible), the detail in the tooltip.
     const silent = p.signal ? p.signal === "none" : !p.visible, seenAs = p.seen_as || p.seen || (p.signal && p.signal !== "none" ? `It shows in ${resWord(p.signal)}.` : "");
