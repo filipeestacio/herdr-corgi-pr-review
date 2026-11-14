@@ -537,7 +537,7 @@ export function zoneArch(arch) {
 }
 
 // A picture wider than the view, cut into bands stacked top to bottom instead of one long row to scroll sideways:
-// cuts go through a gap no card, badge, chip or text covers, each band as wide as fits the view. Lines
+// cuts go through a gap no card, badge, chip, text or frame covers, each band as wide as fits the view. Lines
 // crossing a cut run on in the next band at the same height. Returns [{x0, x1, h, in, out}], h: how far down that
 // band's frames and lines reach (a band is not as tall as the tallest one); out and in: the lines that cross its right
 // and its left cut, [{y, nums: the paths' numbers, back: the line runs right to left (a long line)}], so both ends of a
@@ -551,6 +551,10 @@ export function archBands(L, viewW) {
   const gaps = [];
   let end = -Infinity;
   for (const [a, b] of boxes) { if (a > end + 8 && end > 0) gaps.push({ lo: Math.round(end + 2), hi: Math.round(Math.min(a, ...L.groups.map((g) => g.x).filter((x) => x > end + 2 && x <= a)) - 2) }); end = Math.max(end, b); }
+  // No cut through a frame: a frame goes whole into the next band (one wider than the view is a band of its own).
+  const inFrame = (x) => L.groups.some((g) => !g.bare && g.x < x && x < g.x + g.w);
+  for (const g of gaps) if (inFrame(g.hi)) g.hi = g.lo;
+  gaps.splice(0, gaps.length, ...gaps.filter((g) => !inFrame(g.lo)));
   const cuts = [];
   let x0 = 0;
   while (L.width - x0 > viewW) {

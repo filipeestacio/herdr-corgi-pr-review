@@ -460,7 +460,7 @@ export const ReviewMode = {
     // page-part:<name> scrolls the open page until that part shows (pageView lists the names), as the wheel would.
     else if (name === "arch-view") { if (["diff", "before", "after"].includes(arg)) this.archMode = arg; }
     else if (name === "arch-fit") { this.archFit = !this.archFitOn(); this.hsOf("rv-arch-canvas").x = 0; }
-    else if (name === "arch-wrap") { this.archWrap = !this.archWrapOn(); this.hsOf("rv-arch-canvas").x = 0; }
+    else if (name === "arch-wrap") this.setArchWrap(!this.archWrapOn());
     else if (name === "sec-card") { this.page = "blast"; this.tab = "steps"; this.secCard(arg || null, cx); } // a click on a card of the Security page's picture ("": unlight)
     else if (name === "page-part") { const k = (this.pageParts ?? []).indexOf(arg); if (k >= 0) this.pageScrolls[this.page]?.scroll_to_item(k); }
     // The same model calls as their buttons (a click each, never by themselves): Refresh diagrams, and a card's
@@ -2952,7 +2952,7 @@ export const ReviewMode = {
           .text_color(fit ? t.foreground : t.muted).tooltip("Narrow cards with shorter texts, so more of the picture fits a row").on_click((_e, cx) => { this.archFit = !fit; this.hsOf("rv-arch-canvas").x = 0; cx.notify(); }).child("Fit"))
         .child(div().id("rv-av-wrap").flex_none().px(10).h(28).flex().items_center().rounded(7).border_1().border_color(this.archWrapOn() ? t.accent : t.border).cursor_pointer().text_size(12.5)
           .text_color(this.archWrapOn() ? t.foreground : t.muted).tooltip("On: a picture wider than the view goes on in a second row. Off: one row to scroll sideways")
-          .on_click((_e, cx) => { this.archWrap = !this.archWrapOn(); this.hsOf("rv-arch-canvas").x = 0; cx.notify(); }).child("Wrap"))],
+          .on_click((_e, cx) => { this.setArchWrap(!this.archWrapOn()); cx.notify(); }).child("Wrap"))],
       ["map", this.archCanvas(t, L, opts)],
       ...(this.archFocus && a.nodes.some((x) => x.id === this.archFocus) ? [["card", this.archCard(t, a, marks)]] : []),
       ...(this.archFocus && this.drillAt(`arch:${this.archFocus}`) ? [["inside", this.drillPanel(t, `arch:${this.archFocus}`)]] : []),
@@ -2962,7 +2962,7 @@ export const ReviewMode = {
       ...(this.ai?.visuals?.length > 0 ? [["views", v_flex().gap(12).child(div().pt(6).text_size(13).font_semibold().text_color(t.muted).child("More views")).child(div().max_w(760).child(more()))]] : [])]);
   },
 
-  // The picture: wider than the view and Wrap on (archWrapOn, the default), in bands stacked top to bottom (arch.js
+  // The picture: wider than the view and Wrap on (archWrapOn), in bands stacked top to bottom (arch.js
   // archBands); else one row in the sideways scroller (40 px of room after the last column). A line that goes on in the
   // next band ends at the band's right edge in a turn with its number, and starts again at the left edge of the next
   // one with the same number, at the same height: no line goes on unnamed.
@@ -2986,9 +2986,6 @@ export const ReviewMode = {
           ...(k ? [div().id(`${pid}-cut${k}`).w_full().h(0).border_t(1).border_dashed().border_color(t.border).tooltip("The picture goes on here: a line that leaves the row above on the right comes in on the left at the same height, with the same number")] : []),
           div().id(`${pid}-band${k}`).w(left + w + (b.out.length ? M : 0)).h(b.h + 4).relative()
             .child(div().absolute().top(0).left(left).w(w).h(b.h + 4).overflow_hidden().child(div().absolute().top(0).left(-b.x0).w(L.width).h(L.height + 4).children(pic(k))))
-            // A frame cut by the band's left edge (a wide trust zone) names itself again there.
-            .children(L.groups.filter((g) => !g.bare && g.label && g.x < b.x0 && g.x + g.w > b.x0 + 40).map((g, j) => div().id(`${pid}-gc${k}-${j}`).absolute().left(left + 10).top(g.y + 5)
-              .text_size(11.5).font_semibold().text_color(t.muted).child(`${g.label}, continued`)))
             .children(b.in.map((m) => turn(m, k, "in").left(0)))
             .children(b.out.map((m) => turn(m, k, "out").left(left + w + 2)))];
       }));
@@ -3129,7 +3126,9 @@ export const ReviewMode = {
       .children(rows.map((r, k) => h_flex().id(`${id}-${k}`).gap(10).px(6).py(5).items_start().border_t(1).border_color(t.border).when(lit(k), (e) => e.bg(t.selected)).children(line(r))));
   },
   // Wrap: on unless switched off (a wide picture goes on in a second row instead of being cut off at the right).
-  archWrapOn() { return this.archWrap !== false; },
+  // Wrap: off by default (one row to scroll sideways); the choice is kept for every review (shared review.archWrap).
+  archWrapOn() { return shared("review.archWrap") === true; },
+  setArchWrap(on) { setShared("review.archWrap", on); this.hsOf("rv-arch-canvas").x = 0; },
   // Fit (narrow cards): only when switched on; the picture wraps instead.
   archFitOn() { return this.archFit === true; },
   // The picture shown: its layout with the calls' texts on their lines, a row in a card and above a call for the
@@ -3695,7 +3694,7 @@ export const ReviewMode = {
         .children(order.map((e) => mark(e))).child("ways in and rights at a card")
         .child(chip(t, "High · 1", t.ansi1, true)).child("unresolved security findings at a card or call")
         .child("Dimmed: neither.").when(hasTrust(L), (e) => e.child(trustLegend(L, t))))
-      .child(this.archCanvas(t, L, opts, { id: "rv-sec-canvas", pic: "rv-sec-pic", wrap: true, decorate: deco, notes: false }));
+      .child(this.archCanvas(t, L, opts, { id: "rv-sec-canvas", pic: "rv-sec-pic", decorate: deco, notes: false }));
   },
   // A card of the picture lit (null: none), and its first row below brought into view.
   secCard(id, cx) {
