@@ -1272,16 +1272,24 @@ export function budgetOf(path, deps) {
 // Whether a path blocks the merge and why, in words with the line: only a path with a finding; by what it breaks
 // (RES_BLOCKING), by a ladder without a limit, by a budget over its timeout, or when it repeats or loses effects
 // and nothing signals it.
-export function blockerOf(path, ladder, budget) {
+// A repeated or lost effect blocks only when the effect is visible and cannot be taken back (a mail, a payment, a
+// notification …): effects on the path (by node, or a line in the effect's file) of such a kind. Without any effects
+// in the block (an older run) the model's word stays.
+const RES_VISIBLE = /mail|sms|text message|push|notif|payment|charge|refund|invoice|order|webhook|ship/i;
+const RES_EFFECT = new Set(["duplicate_effect", "lost_effect", "swallowed_retry"]);
+// A path's end that names such an effect counts too: a lost publish ends in mails nobody gets.
+const visibleOn = (path, effects) => !effects.length || RES_VISIBLE.test(path.end ?? "") || effects.some((e) => RES_VISIBLE.test(`${e.kind} ${e.id}`) &&
+  (path.steps.includes(e.node) || path.steps.some((s) => String(s).split(":")[0] === String(e.at ?? "").split(":")[0])));
+export function blockerOf(path, ladder, budget, effects = []) {
   // Reading state another process holds is a finding, not a blocker: what it breaks (a poison message, a lost mail)
   // blocks in its own path. (A race and such a read exclude each other; neither is double counted.)
   if (path.result !== "finding" || path.failing.includes("reads_foreign_state")) return null;
-  const at = path.steps.find((s) => /:\d+$/.test(s)) ?? path.limited_by ?? null;
-  const hit = RES_BLOCKING.find(([k]) => path.failing.includes(k));
+  const at = path.steps.find((s) => /:\d+$/.test(s)) ?? path.limited_by ?? null, seen = visibleOn(path, effects);
+  const hit = RES_BLOCKING.find(([k]) => path.failing.includes(k) && (!RES_EFFECT.has(k) || seen));
   if (hit) return { why: hit[1], at: hit[0] === "over_timeout" && budget ? budget.at : at };
   if (ladder?.factors.some((f) => f.n === null)) return { why: "load grows without a limit", at: ladder.factors.find((f) => f.n === null).at };
   if (budget?.over_s > 0) return { why: "the worst run outlasts its timeout and is delivered again", at: budget.at };
-  if (!path.visible && (path.kind === "effect" || path.kind === "silent")) return { why: "the path repeats or loses effects and nothing signals it", at };
+  if (!path.visible && (path.kind === "effect" || path.kind === "silent") && seen) return { why: "the path repeats or loses effects and nothing signals it", at };
   return null;
 }
 
@@ -1298,8 +1306,17 @@ export function withResilience(ai, block, head = null, findings = []) {
   const sec = new Set(findings.filter((f) => f.security || (f.sources ?? []).some((x) => x.reviewer === "security")).flatMap((f) => f.ids ?? [f.id]));
   const paths = block.paths.map((p) => {
     const ladder = ladderOf(p, deps), budget = budgetOf(p, deps), pre = p.findings.length > 0 && p.findings.every((id) => before.get(id) === true);
-    return { ...p, ladder, budget, pre_existing: pre, blocker: pre ? null : blockerOf(p, ladder, budget), also_security: p.findings.some((id) => sec.has(id)) };
-  }).sort((a, b) => Number(Boolean(b.blocker)) - Number(Boolean(a.blocker)));
+    return { ...p, ladder, budget, pre_existing: pre, blocker: pre ? null : blockerOf(p, ladder, budget, block.effects ?? []), also_security: p.findings.some((id) => sec.has(id)) };
+  });
+  // One cause blocks once: a blocking path with the reason of an earlier one and a finding or a call (a dep's place)
+  // in common is that path again (same_cause: its id), a finding but no second blocker; the missing dead-letter queue
+  // behind three paths counts one time.
+  const spots = (p) => new Set([...p.findings, ...p.steps.filter((s) => deps.some((d) => d.edge === s || d.at === s))]);
+  for (const [k, p] of paths.entries()) {
+    const first = p.blocker && paths.slice(0, k).find((q) => q.blocker && q.blocker.why === p.blocker.why && [...spots(p)].some((x) => spots(q).has(x)));
+    if (first) Object.assign(p, { blocker: null, same_cause: first.id });
+  }
+  paths.sort((a, b) => Number(Boolean(b.blocker)) - Number(Boolean(a.blocker)));
   const blockers = paths.filter((p) => p.blocker), found = paths.filter((p) => p.result === "finding"), mitigated = paths.filter((p) => p.result === "mitigated");
   const na = paths.filter((p) => p.result === "not_assessed").length, checks = block.checks ?? [];
   const tail = na ? `; ${na} not assessed` : "";

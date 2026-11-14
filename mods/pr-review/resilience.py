@@ -148,12 +148,14 @@ def hints(pic, security, findings):
     return ("\n\n" + "\n\n".join(out)) if out else ""
 
 
-def view(answer, findings, pic, known):
+def view(answer, findings, pic, known, changed=None):
     """The run's answer as the block `resilience`, checked: enums kept only when known (else dropped), a path's steps
     only the picture's node and edge ids or a file:line, edges only the picture's, findings only known ids or refs of
     this run's new findings (mapped to their ids), probes linked from paths only when they exist. A new finding on a
-    path through a new or changed node or call is introduced_here. findings: this run's new findings (normalized, with
-    ref); known: ids of findings already there. Pure but for popping each ref and setting introduced_here."""
+    path through a new node or call (or a line in a new node's file) is introduced_here; one that is neither in lines
+    the diff adds nor on such a path was there before (the base rule wins over the model's word; changed: {path: added
+    lines}, None when unknown). findings: this run's new findings (normalized, with ref); known: ids of findings already
+    there. Pure but for popping each ref and setting introduced_here."""
     arch = pic.get("architecture") or {}
     nodes = {n.get("id") for n in arch.get("nodes") or []}
     edges = {f"e{k}" for k in range(len(arch.get("edges") or []))}
@@ -205,15 +207,21 @@ def view(answer, findings, pic, known):
                       "action": str(p.get("action") or "")})
     # As for security: a new finding on a path through a node or call this PR adds or changes is the PR's, also when its
     # own line is old (the mailer that swallowed errors before, now reached by the PR's new consumer).
-    fresh = {n.get("id") for n in arch.get("nodes") or [] if n.get("status") in ("new", "changed")} | \
-            {f"e{k}" for k, e in enumerate(arch.get("edges") or []) if e.get("status") in ("new", "changed")}
+    fresh = {n.get("id") for n in arch.get("nodes") or [] if n.get("status") == "new"} | \
+            {f"e{k}" for k, e in enumerate(arch.get("edges") or []) if e.get("status") == "new"}
     fresh_files = {str(n.get("at") or "").rsplit(":", 1)[0] for n in arch.get("nodes") or [] if n.get("status") == "new" and n.get("at")}
     mine = {f["id"]: f for f in findings}
     for p in paths:  # a step is the node or call itself, or a line in the file of a new node
         if fresh & set(p["steps"]) or any(str(x).rsplit(":", 1)[0] in fresh_files for x in p["steps"] if ":" in str(x)):
             for fid in p["findings"]:
                 if fid in mine:
-                    mine[fid]["introduced_here"] = True
+                    mine[fid]["on_new_path"] = True
+    for f in findings:  # the base rule: in added lines (review.introduced) or on a new path, else from before this PR
+        if f.pop("on_new_path", False):
+            f["introduced_here"] = True
+        elif changed is not None:
+            line, end = int(f.get("line") or 0), int(f.get("end") or f.get("line") or 0)
+            f["introduced_here"] = bool(line and any(line <= n <= max(line, end) for n in changed.get(str(f.get("file") or "").removeprefix("./"), ())))
     additions = [{"what": str(a.get("what") or ""), "kind": str(a.get("kind") or ""), "at": at(a.get("at")), "solves": str(a.get("solves") or ""),
                   "likelihood": enum(a.get("likelihood"), LIKELIHOOD), "cost": {k: str((a.get("cost") or {}).get(k) or "") for k in ("mental", "ops", "money")},
                   "simpler": str(a.get("simpler") or ""), "result": enum(a.get("result"), ADD_RESULTS) or "questionable", "findings": fids(a.get("findings"))}
