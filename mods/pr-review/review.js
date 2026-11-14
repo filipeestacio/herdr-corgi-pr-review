@@ -30,6 +30,7 @@ import { worst, byUrgency, byFocus, attentionCounts, layerAccess, analysisAge, s
 import { archView, archLegend, visualsCard, visualCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
 import { visualPlan } from "./stack.js";
 import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCALE } from "./views.js";
+import { ghMd, mdBlocks } from "./views.js"; // GitHub comments as GitHub shows them
 import { wrapCode, codeCols, sliceSpans } from "./views.js"; // long lines wrap
 import { pairRows, pairSide, HALF_GUTTER, diffModeOf, oneSided, stackOf, chipAt, textW } from "./views.js"; // side by side; the bar's stack
 import { plainText } from "./pr.js";
@@ -55,6 +56,9 @@ const SPLIT = 6, ROW = 22, GUTTER = 4 + 48 + 48 + 22, GAP_SEG = 110, BTN = 110, 
 const FILE_CHEV = 30, FILE_SEEN = 100, FILE_WHOLE = 124;
 const MORE = 20; // lines per ↑/↓ click
 const ONE_LINE = [0]; // a code line that fits: one visual line from its start (wrapsOf)
+// A fenced block in a GitHub comment (codeView): font size, line height, padding; GH_GAP between a comment's blocks (as
+// TextView's between paragraphs, MD.GAP).
+const CODE_SIZE = 12.5, CODE_LH = 19, CODE_PAD_X = 10, CODE_PAD_Y = 7, GH_GAP = 10;
 const NO_WRAP = 1e9; // the columns of a line that does not wrap (rowLayout)
 // The items that start a card under a line: side by side they carry the mark of their half (item).
 const SIDE_HEAD = new Set(["find", "ch", "gh", "compose", "sug", "def", "hidden"]);
@@ -458,6 +462,7 @@ export const ReviewMode = {
     else if (name === "stack") { if (arg) this.openRelated({ url: arg }, cx); } // stack:<url>: a click on a PR of the bar's "Stack: #1 → #2"
     else if (name === "wrap") setShared("review.wrap", arg === "on"); // wrap:on | off, the top bar's "Wrap" switch
     else if (name === "diff") setShared("review.diff", arg === "split" || arg === "unified" ? arg : null); // diff:split | unified (the top bar's switch), diff:auto: what fits
+    else if (name === "gh-details") { const id = Number(arg) || arg; if (!(this.ghOpen ??= new Set()).delete(id)) this.ghOpen.add(id); } // gh-details:<comment id>: a click on that GitHub comment
     else if (name === "copy-link") copyText(this.prSel?.url ?? "");
     else if (name === "copy-state") this.copyState();
     else if (name === "copy-md") this.copyMd(arg); // copy-md: this page; copy-md:verify: the context for an agent that checks the open finding, or the unresolved security findings
@@ -1614,7 +1619,8 @@ export const ReviewMode = {
       if (d.ask) { this.setDrawer("open", cx, null); return cx.notify(); }
       this.fsel = d.sel && h.side ? { ...d.sel, side: h.side } : d.sel; this.sug = null;
       if (d.open) this.openComposer(cx);
-    } else if (it.t === "sug") { this.sug = this.sug === it.s.key ? null : it.s.key; this.visit(it.s.hunk, cx); }
+    } else if (it.t === "gh") { if (!(this.ghOpen ??= new Set()).delete(it.g.id)) this.ghOpen.add(it.g.id); } // its <details> open and fold, as on GitHub
+    else if (it.t === "sug") { this.sug = this.sug === it.s.key ? null : it.s.key; this.visit(it.s.hunk, cx); }
     else if (it.t === "ch" || it.t === "cb" || it.t === "cr") this.cardClick(it, x, cx);
 
     else if (it.t === "composeact") { const b = this.composeButtons().find((b) => x >= b.x && x < b.x + b.w); if (b) this[b.act](cx); }
@@ -2578,7 +2584,7 @@ export const ReviewMode = {
             ...rows.filter((r) => r.file === file).flatMap((r) => {
               const st = STATE[r.state], mine = r.kind === "pending" || r.kind === "thread";
               // A row is one line; the one clicked last shows its whole text under it, as Markdown.
-              const whole = this.crow === r.id ? [div().id(`rv-crw-${r.id}`).ml(68).mr(6).mb(6).px(10).py(6).rounded(6).bg(t.surface).text_size(13).line_height(1.5).child(TextView.markdown(`rv-crwm-${r.id}`, String(r.text ?? "")))] : [];
+              const whole = this.crow === r.id ? [div().id(`rv-crw-${r.id}`).ml(68).mr(6).mb(6).px(10).py(6).rounded(6).bg(t.surface).text_size(13).line_height(1.5).child(TextView.markdown(`rv-crwm-${r.id}`, r.src === "github" ? ghMd(r.text, true) : String(r.text ?? "")))] : [];
               return [h_flex().id(`rv-cr-${r.id}`).tooltip("Jump to this comment in the diff").flex_none().gap(8).items_center().px(6).h(30).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
                 .on_click((_e, cx) => { this.crow = r.id; if (r.kind === "thread") this.openThreads.add(r.id); if (r.kind === "note") (this.openNotes ??= new Set()).add(r.id); this.jumpTo(`${r.file}:${r.line}`, cx); })
                 .child(div().id(`rv-crb-${r.id}`).tooltip((mine ? "Select to fix this comment with an agent" : "Only your own comments can be selected")).accessibility_label("Select comment").w(14).h(14).flex_none().rounded(3).border_1().border_color(sel.has(r.id) ? t.accent : mine ? t.input : "#00000000").bg(sel.has(r.id) ? t.accent : "#00000000")
@@ -3048,7 +3054,7 @@ export const ReviewMode = {
         .when(hasTrust(L), (e) => e.child(div().flex_none().child(trustLegend(L, t, a.zones))))
         .child(h_flex().flex_none().gap(2).p(2).rounded(7).border_1().border_color(t.border).child(seg("diff", "Structural diff")).child(seg("before", "Before")).child(seg("after", "After")))
         .child(div().id("rv-av-fit").flex_none().px(10).h(28).flex().items_center().rounded(7).border_1().border_color(fit ? t.accent : t.border).cursor_pointer().text_size(12.5)
-          .text_color(fit ? t.foreground : t.muted).tooltip("Narrow cards with shorter texts, so more of the picture fits a row").on_click((_e, cx) => { this.archFit = !fit; this.hsOf("rv-arch-canvas").x = 0; cx.notify(); }).child("Fit"))
+          .text_color(fit ? t.foreground : t.muted).tooltip(typeof this.archFit === "boolean" ? "Narrow cards with shorter texts, so more of the picture fits a row" : "Narrow cards with shorter texts: on by itself while the picture is wider than the view. A click decides for you").on_click((_e, cx) => { this.archFit = !fit; this.hsOf("rv-arch-canvas").x = 0; cx.notify(); }).child("Fit"))
         .child(div().id("rv-av-wrap").flex_none().px(10).h(28).flex().items_center().rounded(7).border_1().border_color(this.archWrapOn() ? t.accent : t.border).cursor_pointer().text_size(12.5)
           .text_color(this.archWrapOn() ? t.foreground : t.muted).tooltip("On: a picture wider than the view goes on in a second row. Off: one row to scroll sideways")
           .on_click((_e, cx) => { this.setArchWrap(!this.archWrapOn()); cx.notify(); }).child("Wrap"))],
@@ -3233,17 +3239,24 @@ export const ReviewMode = {
   archWrapOn() { return shared("review.archWrap") === true; },
   setArchWrap(on) { setShared("review.archWrap", on); this.hsOf("rv-arch-canvas").x = 0; },
   // Fit (narrow cards): only when switched on; the picture wraps instead.
-  archFitOn() { return this.archFit === true; },
+  // Fit: the person's choice when there is one; else on as soon as the usual cards are wider than the view, so the
+  // picture opens with every frame in sight (the view's width is known after the first layout: until then, off).
+  archFitOn() {
+    if (typeof this.archFit === "boolean") return this.archFit;
+    const s = this.hsOf("rv-arch-canvas"), L = s.viewW ? this.archL(false) : null;
+    return Boolean(L) && L.width + 44 > hsVisible(s.viewW / (settings().zoom || 1), this.drawerCover());
+  },
   // The picture shown: its layout with the calls' texts on their lines, a row in a card and above a call for the
   // findings there, normal or narrow cards (Fit). Memoized: the page renders often.
-  archL() {
+  archL(fit = this.archFitOn()) {
     const a = this.ai?.arch;
     if (!a) return null;
-    const m = this.archMarksNow(), fit = this.archFitOn(), key = `${fit}|${this.archMode}|${[...m.nodes.keys()]}|${[...m.edges.keys()]}|${JSON.stringify(a)}|${JSON.stringify(this.ai?.access ?? [])}`;
+    const m = this.archMarksNow(), key = `${fit}|${this.archMode}|${[...m.nodes.keys()]}|${[...m.edges.keys()]}|${JSON.stringify(a)}|${JSON.stringify(this.ai?.access ?? [])}`;
     // The map as the boundary really runs (views.js mapArch): the Internet card at the way in, no zone on shared code,
     // no "‖" on a call in one process.
-    if (this.fitMemo?.key !== key) this.fitMemo = { key, L: archLayout(mapArch(a, this.ai?.access, this.ai?.bypasses ?? []), this.archMode, (n) => (m.nodes.has(n.id) ? 1 : 0), fit, { labels: true, marked: (es) => es.some((i) => m.edges.has(i)) }) };
-    return this.fitMemo.L;
+    const memo = (this.fitMemos ??= {});
+    if (memo[fit]?.key !== key) memo[fit] = { key, L: archLayout(mapArch(a, this.ai?.access, this.ai?.bypasses ?? []), this.archMode, (n) => (m.nodes.has(n.id) ? 1 : 0), fit, { labels: true, marked: (es) => es.some((i) => m.edges.has(i)) }) };
+    return memo[fit].L;
   },
   // ---- sideways scrollers inside the scrolling page (the architecture canvas, the flow, state-machine and blast
   // pictures): clipped at their box, the content moved by left(-x); wheel and trackpad through wheelStep (one axis per
@@ -4389,6 +4402,28 @@ export const ReviewMode = {
   lines(text, less = 0) { return wrapCount(text, (this.listW ?? 900) - GUTTER - 45 - less); },
   // The height of a Markdown text in such a card (views.js mdHeight).
   md(text, less = 0) { return mdHeight(text, (this.listW ?? 900) - GUTTER - 45 - less); },
+  // A GitHub comment's body in blocks (views.js ghMd, mdBlocks): Markdown for TextView, fenced code drawn here. Its
+  // <details> fold unless opened (a click on the card); memoized per comment, open state and body.
+  ghBlocks(g) {
+    const open = Boolean(this.ghOpen?.has(g.id)), memo = (this.ghMemo ??= new Map()), m = memo.get(g.id);
+    if (m && m.body === g.body && m.open === open) return m.blocks;
+    const blocks = mdBlocks(ghMd(g.body, open));
+    memo.set(g.id, { body: g.body, open, blocks });
+    return blocks;
+  },
+  // A fenced block in a card: mono at the card's size, its long lines wrapped at the card's width (views.js wrapCode),
+  // so its height is exact; a GitHub suggestion says so above its lines.
+  codeRows(b) {
+    const w = (this.listW ?? 900) - GUTTER - 45 - 2 * CODE_PAD_X, cols = Math.max(8, Math.floor(w / (this.codeCharW() * (CODE_SIZE / 13))));
+    return (b.code.length ? b.code : [""]).flatMap((l) => { const at = wrapCode(l, cols); return at.map((a, k) => l.slice(a, at[k + 1])); });
+  },
+  codeH(b) { return 2 * CODE_PAD_Y + this.codeRows(b).length * CODE_LH + (b.lang === "suggestion" ? CODE_LH : 0); },
+  codeView(b, t) {
+    const sug = b.lang === "suggestion";
+    return v_flex().w_full().h(this.codeH(b)).flex_none().px(CODE_PAD_X).py(CODE_PAD_Y).rounded(6).bg(t.surface).border_1().border_color(t.border)
+      .when(sug, (e) => e.child(div().h(CODE_LH).flex_none().text_size(12).text_color(t.muted).child("Suggested change")))
+      .children(this.codeRows(b).map((l) => div().h(CODE_LH).flex_none().font_family(settings().font_family ?? "JetBrains Mono").text_size(CODE_SIZE).whitespace_nowrap().overflow_hidden().text_color(sug ? t.ansi2 : t.foreground).child(l || " ")));
+  },
 
   sizeOf(it) {
     if (it.t === "row") return it.src[it.ri].kind === "@" ? 30 : ROW;
@@ -4403,7 +4438,7 @@ export const ReviewMode = {
     if (it.t === "ch") return this.cardOf(it).folded ? 28 + 2 * CARD_GAP : CARD_HEAD;
     if (it.t === "cb") { const c = this.cardOf(it), w = this.cardW(c) - 26; return 12 + mdHeight(c.text, w, 20) + c.replies.reduce((n, r) => n + 26 + mdHeight(r.text, w - 44, 19, 12.5), 0) + (it.k === "th" ? 0 : CARD_GAP); }
     if (it.t === "cr") return CARD_REPLY + CARD_GAP;
-    if (it.t === "gh") return 50 + this.md(it.g.body);
+    if (it.t === "gh") return 50 + this.ghBlocks(it.g).reduce((n, b, k) => n + (k ? GH_GAP : 0) + (b.code ? this.codeH(b) : this.md(b.text)), 0);
     if (it.t === "compose") return COMPOSE;
     if (it.t === "composeact") return ACT + 4;
     if (it.t === "cact" || it.t === "fact") return ACT;
@@ -4490,7 +4525,8 @@ export const ReviewMode = {
           .when(Boolean(it.loose), (e) => e.child(div().text_color(t.muted).child(g.line ?? g.original_line ? `· line ${g.line ?? g.original_line}, not shown` : "· on the file")))
           .when(Boolean(g.outdated), (e) => e.child(badge(t, "Outdated", t.muted).id(`rv-gho-${g.id}`).tooltip("GitHub marks this comment outdated: the code it was on changed since")))
           .when(Boolean(g.resolved), (e) => e.child(badge(t, "Resolved", t.ansi2).id(`rv-ghr-${g.id}`).tooltip("This thread is resolved on GitHub"))))
-        .child(div().flex_1().min_h(0).line_height(1.55).text_color(t.foreground).child(TextView.markdown(`rv-ghm-${g.id}`, String(g.body ?? "")))));
+        .child(v_flex().flex_1().min_h(0).gap(GH_GAP).line_height(1.55).text_color(t.foreground).children(this.ghBlocks(g).map((b, k) => (b.code ? this.codeView(b, t)
+          : div().w_full().flex_none().child(TextView.markdown(`rv-ghm-${g.id}-${this.ghOpen?.has(g.id) ? 1 : 0}-${k}`, b.text)))))));
     }
     if (it.t === "compose") {
       const c = this.editing, a = c ?? this.selAnchor(), out = Boolean(a) && this.routeNow() === "github" && !inDiff(this.diffLines ?? new Map(), { file: this.fsel?.path, ...a });
