@@ -504,3 +504,14 @@ const mail = { groups: [{"id": "fd", "label": "Front desk Lambda"}, {"id": "core
   assert.ok(archBands(ZL, Math.round(app.w * 0.6)).length > 1, "a frame wider than the view still wraps around it");
 }
 console.log("ok");
+
+// ---- a mark names its finding
+{
+  const { markLine } = await import("./arch.js");
+  const f = (title, severity) => ({ title, severity });
+  assert.deepEqual(markLine({ n: 1, findings: [f("Front desk token defaults to empty, so an empty bearer token authenticates", "high")] }).text, "Front desk token defaults to…");
+  const two = markLine({ n: 2, findings: [f("Minor thing", "low"), f("No SQS publisher", "high")] });
+  assert.deepEqual([two.text, two.top.title], ["No SQS publisher and 1 more", "No SQS publisher"]);
+  assert.equal(markLine({ n: 1, findings: [f("`Queue.publish` never sends", "high")] }).text, "Queue.publish never sends");
+  assert.deepEqual(markLine(null), { text: "", top: null });
+}

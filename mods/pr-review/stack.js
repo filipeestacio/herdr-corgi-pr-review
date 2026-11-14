@@ -4,6 +4,7 @@
 import { div, PathBuilder } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { levels } from "./pr.js";
+import { markLine } from "./arch.js";
 import { archLayout, archFocus, stateLayout, transitionText, sourceStyle, hasSources, pathMark, SPEC_TIP, ARCH, LABEL } from "./arch.js";
 import { flowArch, seqLayout, wrapCount, SEQ, solidOver } from "./views.js";
 
@@ -57,7 +58,7 @@ export function foldCard(t, id, title, right, open, toggle, body) {
 // view), numbers: false (no number on a line unless it carries a mark)}. A focused node (clicked) keeps its paths
 // and neighbours and dims the other lines to 25% (a hovered one to 55%); the other cards only to 60%, so their names
 // stay readable. Clicking a chip focuses its target. marks: where unresolved findings sit. A card shows the highest
-// severity with the count, and "flow breaks here" when one of them breaks the flow at it (the layout keeps a row:
+// severity with the count and the finding (its title cut short, "and n more"; whether it breaks the flow is in the tooltip; the layout keeps a row:
 // extra); a call shows the same above its text, or as the colour of its number when it has no text on the line.
 export function archView(L, t, id, onNode, decorate, opts = {}) {
   const kept = opts.keep ? { nodes: opts.keep, paths: new Set(L.paths.filter((p) => opts.keep.has(p.to) && p.from.some((f) => opts.keep.has(f))).map((p) => p.num)) } : null;
@@ -68,6 +69,11 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
   const color = (p) => (opts.hl === p.num ? t.accent : p.source === "spec" ? t.ansi5 : sourceStyle(p.source).tone === "muted" ? t.muted : p.status === "new" || p.status === "changed" ? t.accent : t.muted);
   const marks = opts.marks, sevOf = (m) => t[SEVERITY_COLOR[m.severity]] ?? t.muted;
   const markChip = (m, cid) => chip(t, `${cap(m.severity)} · ${m.n}`, sevOf(m), true, cid, markTip(m));
+  // A mark's row: the chip and the finding it is about (arch.js markLine); a click opens that finding (opts.onFinding).
+  // stacked: the finding on a line of its own under the chip (above a call's text, where the row is narrow).
+  const markRow = (m, cid, h, stacked = false) => { const ml = markLine(m); return (stacked ? v_flex().items_start() : h_flex().items_center()).id(`${cid}-r`).flex_none().h(h).gap(stacked ? 1 : 4).tooltip(markTip(m))
+    .when(Boolean(opts.onFinding && ml.top), (e) => e.cursor_pointer().on_click((_e, cx) => { opts.onFinding(ml.top, cx); cx.stop_propagation(); }))
+    .child(markChip(m, cid)).child(div().when(!stacked, (e) => e.flex_1()).when(stacked, (e) => e.flex_none().h(14).line_height(1.3)).w_full().min_w(0).truncate().text_size(10.5).text_color(t.foreground).child(ml.text)); };
   // opts.zoom (the person's zoom): a line is at least one device pixel wide, or it is not drawn when zoomed far out.
   const thin = Math.max(1.5, 1 / (opts.zoom || 1)), W = (p) => (opts.hl === p.num ? thin + 1 : thin);
   const dim = (el, on, by = fade) => (on ? el.opacity(by) : el);
@@ -110,7 +116,7 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
     .text_size(10.5).text_color(t.foreground).tooltip(tipOf(p))
     .when(Boolean(opts.onHl), (e) => e.on_hover((on, cx) => opts.onHl(on ? p.num : null, cx)))
     .when(Boolean(p.evidence && opts.onJump), (e) => e.cursor_pointer().on_click((_e, cx) => { opts.onJump(p.evidence, cx); cx.stop_propagation(); }))
-    .when(Boolean(p.text.mark && pathMark(marks, p)), (e) => e.child(h_flex().flex_none().h(LABEL.MARK).gap(4).items_center().child(markChip(pathMark(marks, p), `${id}-tm${i}`)).child(div().min_w(0).truncate().child(pathMark(marks, p).n === 1 ? "breaks here" : "break here"))))
+    .when(Boolean(p.text.mark && pathMark(marks, p)), (e) => e.child(markRow(pathMark(marks, p), `${id}-tm${i}`, LABEL.MARK, true)))
     .children(p.text.lines.map((l) => div().flex_none().h(LABEL.LH).line_height(LABEL.LH / 10.5).whitespace_nowrap().child(l))), dimP(p))] : []));
   const chips = L.paths.flatMap((p, i) => (p.chip ? [dim(div().id(`${id}-c${i}`).absolute().left(p.chip.x).top(p.chip.y).w(p.chip.w).h(p.chip.h).px(5)
     .flex().items_center().gap(6).rounded(6).border_1().border_color(bare(p) ? sevOf(bare(p)) : color(p)).when(p.dashed, (e) => e.border_dashed()).bg(opts.hl === p.num ? t.accent + "33" : t.background)
@@ -125,9 +131,11 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
     .border_color(g.trust ? trustColor(t, g.trust) : t.border).when(Boolean(g.trust), (e) => e.bg(trustColor(t, g.trust) + "0f")).child(h_flex().px(PAD_IN).h(26).items_center().gap(6).text_size(11.5)
       .child(div().flex_1().min_w(0).truncate().font_semibold().text_color(t.foreground).child(g.label ?? ""))
       .child(div().flex_none().text_color(g.trust ? trustColor(t, g.trust) : t.muted).child(g.kind ?? "")))]));
-  // A call over a trust boundary: two bars across its line, before the arrow.
+  // A call over a trust boundary: two bars across its line, before the arrow; the tooltip names both zones (opts.zones).
+  const zoneById = new Map((opts.zones ?? []).map((z) => [z.id, z])), zoneOfN = (nid) => zoneById.get(L.nodes.find((x) => x.id === nid)?.zone);
+  const zoneName = (z) => (z ? `${z.name ?? z.id} (${z.trust})` : "an unnamed zone");
   const crossings = L.paths.flatMap((p, i) => (p.crosses ? [dim(div().id(`${id}-x${i}`).absolute().left(p.arrow.x - 24).top(p.arrow.y - 9).w(12).h(18).flex().items_center().justify_center()
-    .text_size(13).font_semibold().text_color(t.ansi3).tooltip(`Crosses a trust boundary${typeof p.crosses === "string" ? `: ${p.crosses}` : ""}`).child("‖"), dimP(p))] : []));
+    .text_size(13).font_semibold().text_color(t.ansi3).tooltip(zoneById.size ? `Crosses a trust boundary: from ${zoneName(zoneOfN(p.from[0]))} to ${zoneName(zoneOfN(p.to))}` : `Crosses a trust boundary${typeof p.crosses === "string" ? `: ${p.crosses}` : ""}`).child("‖"), dimP(p))] : []));
   const nodes = L.nodes.map((n, i) => {
     const st = sourceStyle(n.source), c = st.tone === "muted" ? t.muted : t[STATUS_COLOR[n.status] ?? "muted"];
     const live = st.tone !== "muted" && n.status && n.status !== "unchanged", lit = hlNodes.has(n.id) || opts.focus === n.id;
@@ -143,13 +151,16 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
       .when(Boolean(opts.onHover), (e) => e.on_hover((on, cx) => opts.onHover(on ? n.id : null, cx)))
       .child(h_flex().gap(6).items_start().text_size(12.5)
         .child(div().id(`${id}-gl${i}`).flex_none().h(17).text_color(t.muted).when(Boolean(n.type), (e) => e.tooltip(`Type: ${n.type}`).accessibility_label(`Type: ${n.type}`)).child(GLYPH[n.type] ?? "◇"))
+        // Its trust zone as a small dot (opts.zones); ringed when it is really reachable from further out (opts.effective).
+        .when(Boolean(zoneById.get(n.zone)), (e) => { const z = zoneById.get(n.zone), eff = opts.effective?.get(n.id);
+          return e.child(div().id(`${id}-z${i}`).flex_none().mt(4).w(9).h(9).rounded_full().bg(trustColor(t, z.trust)).when(Boolean(eff), (x) => x.border_2().border_color(t.ansi1))
+            .tooltip(`Trust zone: ${zoneName(z)}${eff ? `\nReachable as ${eff.trust}: ${eff.why}.` : ""}`).accessibility_label(`Trust zone ${z.trust}`)); })
         .child(div().flex_1().min_w(0).h(n.titleLines * 17).overflow_hidden().whitespace_normal().line_height(1.35).font_semibold().child(n.title))
         .when(n.spots > 0, (e) => e.child(div().id(`${id}-sn${i}`).flex_none().tooltip(`${n.spots} changed ${n.spots === 1 ? "spot" : "spots"} in the code`).text_size(11).text_color(t.muted).child(`</> ${n.spots}`)))
         .when(Boolean(st.chip), (e) => e.child(specTag(t, `${id}-sp${i}`))))
       .when(n.descLines > 0, (e) => e.child(div().flex_none().h(n.descLines * 15).overflow_hidden().text_size(11).line_height(1.35).whitespace_normal().text_color(t.muted).child(n.desc)))
       .children(decorate ? decorate(n) : [])
-      .when(Boolean(marks?.nodes?.get(n.id)), (e) => { const m = marks.nodes.get(n.id); return e.child(h_flex().flex_none().h(15).gap(4).items_center().child(markChip(m, `${id}-m${i}`))
-        .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.foreground).child(breakText(m, n.w < ARCH.W)))); })
+      .when(Boolean(marks?.nodes?.get(n.id)), (e) => e.child(markRow(marks.nodes.get(n.id), `${id}-m${i}`, 15)))
       .child(div().flex_1())
       // No type word here: it was cut off in most cards (the glyph's tooltip and the card's panel name the type). A
       // narrow card (Fit, a layer's flow) has no room for the link either: its panel has it.
@@ -186,22 +197,21 @@ const cap = (s) => String(s ?? "").replace(/^./, (c) => c.toUpperCase());
 // Trust zones (arch.js zoneArch): a colour per trust level, none of them the severity red.
 const TRUST = { public: "ansi3", authenticated: "ansi4", internal: "ansi6", data: "ansi5" };
 const trustColor = (t, trust) => t[TRUST[trust] ?? "ansi6"];
-// Whether a picture has something about trust to explain: zones as frames, or a call over a boundary.
-export const hasTrust = (L) => Boolean(L) && (L.groups.some((g) => g.trust) || L.paths.some((p) => p.crosses));
-// That explanation, in one row: the trust levels of the frames shown, and the mark of a call over a boundary.
-export function trustLegend(L, t) {
-  const levels = [...new Set(L.groups.map((g) => g.trust).filter(Boolean))];
+// Whether a picture has something about trust to explain: zones as frames or as dots on cards, or a call over a boundary.
+export const hasTrust = (L) => Boolean(L) && (L.groups.some((g) => g.trust) || L.nodes.some((n) => n.zone) || L.paths.some((p) => p.crosses));
+// That explanation, in one row: the trust levels shown (frames: squares; zones only as a dot on cards: dots), and the
+// mark of a call over a boundary. zones: the analysis' zones, for the dots.
+export function trustLegend(L, t, zones = []) {
+  const framed = L.groups.some((g) => g.trust), byId = new Map((zones ?? []).map((z) => [z.id, z.trust]));
+  const levels = [...new Set(framed ? L.groups.map((g) => g.trust).filter(Boolean) : L.nodes.map((n) => byId.get(n.zone)).filter(Boolean))];
+  const swatch = (z) => (framed ? div().w(10).h(10).rounded(3).border_1().border_dashed().border_color(trustColor(t, z)).bg(trustColor(t, z) + "33") : div().w(9).h(9).rounded_full().bg(trustColor(t, z)));
   return h_flex().gap(10).text_size(11.5).text_color(t.muted)
-    .when(levels.length > 0, (e) => e.child("Trust zones:").children(levels.map((z) => h_flex().gap(4).items_center().child(div().w(10).h(10).rounded(3).border_1().border_dashed().border_color(trustColor(t, z)).bg(trustColor(t, z) + "33")).child(z))))
+    .when(levels.length > 0, (e) => e.child("Trust zones:").children(levels.map((z) => h_flex().gap(4).items_center().child(swatch(z)).child(z))))
     .when(L.paths.some((p) => p.crosses), (e) => e.child(h_flex().gap(4).items_center().child(div().font_semibold().text_color(t.ansi3).child("‖")).child("call over a trust boundary")));
 }
 // What a mark's chip says in full: the count by kind, then the titles (at most five).
 const markTip = (m) => [`${m.n} unresolved ${m.n === 1 ? "finding" : "findings"} here, the highest is ${m.severity}${m.breaks ? `; ${m.breaks === m.n ? (m.n === 1 ? "it breaks" : "all break") : `${m.breaks} of them break`} the flow at this place` : ""}.`,
   ...m.findings.slice(0, 5).map((f) => `· ${f.title}`), ...(m.n > 5 ? [`· and ${m.n - 5} more`] : [])].join("\n");
-// Next to a card's mark: how many of its findings break the flow at the card ("High · 4" and "1 breaks the flow here").
-// A narrow card has room for two words.
-const breakText = (m, narrow) => (!m.breaks ? (narrow ? "" : m.n === 1 ? "finding in this code" : "findings in this code")
-  : `${m.breaks === m.n ? "" : `${m.breaks} `}${m.breaks === 1 ? "breaks" : "break"} ${narrow ? "flow" : "the flow here"}`);
 const STATE_GLYPH = { task: "▭", choice: "◇", parallel: "⫴", map: "⧉", wait: "⏱", pass: "↓", fail: "✕", succeed: "✓" };
 const PAD_IN = 10;
 
@@ -220,7 +230,7 @@ export function archLegend(L, t, id, title, opts = {}, big = false) {
       .child(div().flex_none().mt(1).w(18).h(18).flex().items_center().justify_center().rounded_full().border_1()
         .border_color(opts.hl === p.num || p.status ? t.accent : t.muted).text_size(11).text_color(t.foreground).child(String(p.num)))
       .when(p.source === "spec", (e) => e.child(div().flex_none().mt(2).child(specTag(t, `${id}-sp${p.num}`))))
-      .when(Boolean(mark(p)), (e) => e.child(div().flex_none().mt(1).child(chip(t, `${cap(mark(p).severity)} · ${mark(p).n} · ${mark(p).n === 1 ? "breaks" : "break"} here`, t[SEVERITY_COLOR[mark(p).severity]] ?? t.muted, true, `${id}-m${p.num}`, markTip(mark(p))))))
+      .when(Boolean(mark(p)), (e) => e.child(div().flex_none().mt(1).child(chip(t, `${cap(mark(p).severity)} · ${mark(p).n}: ${markLine(mark(p)).text}`, t[SEVERITY_COLOR[mark(p).severity]] ?? t.muted, true, `${id}-m${p.num}`, markTip(mark(p))))))
       .child(div().flex_1().min_w(0).whitespace_normal().text_size(big ? 13 : 12).line_height(1.4)
         .child(`${p.from.map((f) => name.get(f)).join(", ")} → ${name.get(p.to)}${p.label ? `: ${p.label}` : ""}`))));
 }
