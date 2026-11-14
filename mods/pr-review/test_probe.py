@@ -93,6 +93,12 @@ if probe.barrier() == "sandbox-exec":
     # One hostile probe tries everything at once and names what got through: the network (a listener on this machine,
     # a name lookup and a connection out), writes outside its own folder (next to the checkout, in another folder),
     # reads from a denied folder and from the user's home, new processes (a fork bomb, a spawned command).
+    # Other programs' files in /private/tmp (as the output of another Claude session) and in the user's own
+    # temporary folder: the macOS sandbox reads from an allowlist, so none of them.
+    other = pathlib.Path(tempfile.mkdtemp(dir="/private/tmp", prefix="claude-probe-test-")) / "out.txt"
+    other.write_text("OTHER SESSION OUTPUT\n")
+    mytmp = pathlib.Path(tempfile.mkdtemp()) / "note.txt"  # in $TMPDIR, the user's temporary folder
+    mytmp.write_text("USER TMP\n")
     usock = tempfile.mkdtemp(dir="/tmp") + "/s"  # a short path: unix socket paths are short
     usrv = socket.socket(socket.AF_UNIX)
     usrv.bind(usock), usrv.listen(1)
@@ -113,6 +119,13 @@ tries("write outside", lambda: open({str(target)!r}, "w").write("x"))
 tries("write checkout", lambda: open({str(repo / 'pwned.txt')!r}, "w").write("x"))
 tries("read denied", lambda: open({str(outside / 'secret.txt')!r}).read())
 tries("read home", lambda: os.listdir({home!r}))
+tries("list /private/tmp", lambda: os.listdir("/private/tmp"))
+tries("list /tmp", lambda: os.listdir("/tmp"))
+tries("read other session", lambda: open({str(other)!r}).read())
+tries("list user tmp", lambda: os.listdir({str(mytmp.parent.parent)!r}))
+tries("read user tmp", lambda: open({str(mytmp)!r}).read())
+tries("list volumes", lambda: os.listdir("/Volumes"))
+tries("read etc", lambda: open("/etc/hosts").read())
 def bomb():
     for _ in range(50):
         if os.fork() == 0:
@@ -127,9 +140,15 @@ tries("unix socket", unix)
 open("inside.txt", "w").write("fine")
 print("reproduced got through: " + ", ".join(got) if got else "not_reproduced all blocked")
 """
-    code, r = run("hostile", hostile, env={"PROBE_EXTRA_DENY": str(outside)})
+    code, r = run("hostile", hostile)  # no extra folders: the allowlist alone keeps everything out
     assert r["status"] == "not_reproduced" and r["line"] == "all blocked", r
     assert not target.exists() and not (repo / "pwned.txt").exists() and "TOPSECRET" not in json.dumps(r), r
+    assert "OTHER SESSION" not in json.dumps(r) and "USER TMP" not in json.dumps(r), r
+    import shutil
+    shutil.rmtree(other.parent, ignore_errors=True), shutil.rmtree(mytmp.parent, ignore_errors=True)
+    # What the probes need still reads: the standard library with its compiled modules, the time zones, the clock.
+    code, r = run("stdlib", "import zoneinfo, time, sqlite3, ssl, decimal, hashlib, json\nprint('reproduced', zoneinfo.ZoneInfo('Europe/Berlin'), time.localtime().tm_zone != '')\n")
+    assert r["status"] == "reproduced", r
 else:
     print(f"(no sandbox-exec here: {probe.barrier()}; the network, write, read and fork checks are skipped)")
 
