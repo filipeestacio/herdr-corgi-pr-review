@@ -4233,7 +4233,7 @@ export const ReviewMode = {
     }
     // Not checked: never missing; open when nothing stands before the merge
     const nc = notChecked({ ai, runs: this.find.runs, open: this.openFindings() }), ncOpen = open("nc") !== !rows.length;
-    const offer = this.runOffer?.("security") ?? null; // Paket A's model choice for the security run, once there
+    const offer = this.runOffer?.("security", t) ?? null; // Paket A's model choice for the security run, once there
     out.push(fold("nc", "Not checked", div().truncate().child(nc.text), "What no run says it checked, what rests on an assumption, and how far the security review got: click to show it", ncOpen));
     if (ncOpen) out.push(v_flex().pl(16).pr(6).gap(2).text_size(12.5)
       .child(div().truncate().child(nc.areas.length ? `Areas no run checked: ${nc.areas.join(", ")}` : "Every area was checked by at least one run."))
@@ -4832,7 +4832,7 @@ export const ReviewMode = {
         (_e, cx) => { this.tab = "findings"; cx.notify(); }),
       this.ctx?.at && this.freshFact(fact),
     ].filter(Boolean);
-    const offer = this.runOffer?.("analysis") ?? null; // Paket A's model choice for the analysis, once there
+    const offer = this.runOffer?.("analysis", t) ?? null; // Paket A's model choice for the analysis, once there
     return h_flex().id("rv-ov-context").flex_wrap().gap(8).items_center().text_size(12.5).text_color(t.muted)
       .children(facts.flatMap((f, k) => (k ? [div().flex_none().text_color(t.dim).child("·"), f] : [f]))).when(Boolean(offer), (e) => e.child(offer));
   },
