@@ -37,7 +37,8 @@ import { plainText } from "./pr.js";
 import { pollDue, pollAfter, windowActive } from "./pr.js"; // background fetches (ghTick)
 import { hasSources, archLayout, archBands } from "./arch.js";
 import { archMarks, transitionText } from "./arch.js";
-import { resStartOf, resOrder, resPicture, budgetBar, resPathView } from "./views.js"; // the Resilience page
+import { resStartOf, resOrder, resPicture, budgetBar, resPathView, resCardOf, resSentence } from "./views.js";
+import { withResilience, resilienceStart, RUN_TYPICAL } from "./pr.js"; // the Resilience run's data // the Resilience page
 import { transitionMarks, effectiveFrom, inProcess, mapArch, crossingsOf, crossingChanged, secSentence, TRUST_ORDER } from "./views.js";
 import { trustLegend, hasTrust } from "./stack.js";
 import { scopeTable, scopeConflicts, runSummary, AREA_NAME, areaFindings, surfaceOf, EXPOSURE, reachLevel, secOrder, extraWays } from "./views.js";
@@ -1038,6 +1039,8 @@ export const ReviewMode = {
       ready: Boolean(this.ai) && !this.exMode && !this.aiBusy && Boolean(w) && !w.local });
     if (this.exMode || !this.ai) return;
     this.ai = withSecurity(this.ai, mine ? this.find.security : null, this.ctx, head);
+    // The Resilience run's block with its derived parts (pr.js withResilience), and where it would start (resilienceStart).
+    this.ai = { ...withResilience(this.ai, mine ? this.find.resilience : null, head, this.find.list ?? []), resilienceStart: resilienceStart(this.patch ?? []) };
     if (this.secStart.start) this.runReviewer("security", cx, this.secStart.reasons.slice(0, 3).join("; "));
   },
   // Why the security review would run, for someone else's PR where it does not start by itself; null otherwise.
@@ -4031,7 +4034,8 @@ export const ReviewMode = {
       .when(run?.state === "running", (e) => e.child(div().id("rv-res-running").text_size(13).text_color(t.muted).child("Resilience review running: reading the code, the template and the calls between them…"))));
     if (!res) {
       // Before the run: where it would start, the offer, what it does not do.
-      const own = this.ai?.resilienceStart, start = own ? { text: own.text ?? own.sentence, nodes: own.nodes ?? [] } : resStartOf(a, this.ai?.access);
+      // The count from the diff (pr.js resilienceStart) for the sentence; the cards from the map for the circles.
+      const own = this.ai?.resilienceStart, map = resStartOf(a, this.ai?.access), start = own?.sentence ? { text: own.sentence, nodes: map.nodes } : map;
       return [["head", head], ["start", v_flex().id("rv-res-start").gap(10).max_w(1000)
         .child(div().text_size(14).line_height(1.5).whitespace_normal().child(start.text))
         .when(run?.state !== "running", (e) => e.child(this.runOffer("resilience", t)))
@@ -4064,7 +4068,7 @@ export const ReviewMode = {
   // The map, the Architecture page's own: with a path chosen, its cards and calls lit and the rest dimmed, its marks
   // (⏱ timeout, ×n, DLQ, ✕ silent …) on its cards; before the run, ○ on the cards where the run would start.
   resMap(t, a, p, start) {
-    const L = this.archL(), on = new Set(p ? (p.steps ?? []).filter((s) => a.nodes.some((n) => n.id === s)) : start);
+    const L = this.archL(), on = new Set(p ? (p.steps ?? []).map((s) => resCardOf(s, a)).filter(Boolean) : start); // places light the card of their file
     const fs = p ? this.openFindings().filter((f) => (p.findings ?? []).some((id) => (f.ids ?? [f.id]).includes(id))) : [];
     const marks = archMarks(a, fs, this.ai?.access, this.ai?.threats ?? []), byNode = new Map((p?.marks ?? []).map((m) => [m.node, m.text]));
     const opts = { ...this.archOpts("res"), marks, keep: on.size ? on : null, zoom: settings().zoom || 1 };
@@ -4085,7 +4089,7 @@ export const ReviewMode = {
     const ev = probe?.status === "done" ? { reproduced: ["✓", "reproduced", t.foreground], not_reproduced: ["✗", "not reproduced", t.muted], script_failed: ["!", "script failed", t.ansi3] }[probe.result] ?? ["·", probe.result, t.muted]
       : p.budget ? ["=", "computed", t.muted] : ["·", probe ? "probe proposed" : "no probe", t.muted];
     const word = p.blocker ? `Blocker: ${p.blocker.reason}` : p.result === "mitigated" ? `✓ limited${p.limited_by ? ` at ${p.limited_by}` : ""}` : p.result === "not_assessed" ? "not assessed" : "finding";
-    const name = (s) => (/^e\d+$/.test(s) ? null : this.ai?.arch?.nodes.find((n) => n.id === s)?.label ?? s);
+    const name = (s) => { if (/^e\d+$/.test(s)) return null; const c = resCardOf(s, this.ai?.arch); return c ? this.ai.arch.nodes.find((n) => n.id === c)?.label ?? c : s; };
     const way = [...new Set((p.steps ?? []).map(name).filter(Boolean))].join(" → ");
     const fs = this.findings().filter((f) => (p.findings ?? []).some((id) => (f.ids ?? [f.id]).includes(id)));
     const line2 = [way, p.failing?.length && `failing: ${p.failing.join(", ")}`, `seen: ${p.visible ? p.seen || "yes" : "✕ silent"}`, fs.length && `${fs.length} ${fs.length === 1 ? "finding" : "findings"}`].filter(Boolean).join(" · ");
@@ -4093,7 +4097,7 @@ export const ReviewMode = {
       .child(v_flex().id(`rv-res-ph-${p.id}`).gap(2).cursor_pointer().on_click((_e, cx) => { this.resOpen = open ? null : p.id; cx.notify(); }).tooltip(open ? "Fold this path" : "Open this path: its picture, the action and the probe, and light it on the map")
         .child(h_flex().gap(10).items_start()
           .child(div().flex_none().w(18).text_color(t.muted).child(`${k + 1}`))
-          .child(div().flex_1().min_w(0).text_size(14).font_semibold().whitespace_normal().line_height(1.4).child(`${p.trigger}: ${p.end}`))
+          .child(div().flex_1().min_w(0).text_size(14).font_semibold().whitespace_normal().line_height(1.4).child(resSentence(p)))
           .child(div().flex_none().max_w(320).text_size(12.5).font_semibold().whitespace_normal().text_color(p.blocker ? t.ansi1 : p.result === "mitigated" ? t.ansi2 : t.muted).child(word))
           .child(div().flex_none().text_size(12.5).text_color(ev[2]).child(`${ev[0]} ${ev[1]}`))
           .child(div().flex_none().text_color(t.muted).child(open ? "▾" : "▸")))
@@ -4114,7 +4118,7 @@ export const ReviewMode = {
     const kind = resPicture(p), at = (s, id) => (s ? div().id(id).flex_none().text_color(t.accent).cursor_pointer().hover((x) => x.underline()).on_click((_e, cx) => this.jumpTo(s, cx)).child(`${s} ↗`) : div());
     const box = (el) => v_flex().p(16).gap(6).rounded(8).border_1().border_color(t.border).bg(t.background).text_size(12.5).child(el);
     if (kind === "ladder") return box(v_flex().gap(4)
-      .children(p.ladder.map((r, k) => h_flex().gap(12).items_center().child(div().w(130).flex_none().text_color(t.muted).child(r.name)).child(div().w(90).flex_none().font_semibold().text_color(/no limit|∞/.test(r.factor) ? t.ansi1 : t.foreground).child(r.factor))
+      .children(p.ladder.map((r, k) => h_flex().gap(12).items_center().child(div().w(240).flex_none().text_color(t.muted).child(r.name)).child(div().w(90).flex_none().font_semibold().text_color(/no limit|∞/.test(r.factor) ? t.ansi1 : t.foreground).child(r.factor))
         .child(at(r.at, `rv-res-l-${p.id}-${k}`)).when(Boolean(r.note), (e) => e.child(div().min_w(0).truncate().text_color(t.muted).child(r.note)))))
       .when(Boolean(p.product), (e) => e.child(div().pt(4).font_semibold().whitespace_normal().child(`= ${p.product}`))));
     if (kind === "budget") return box(v_flex().gap(6).child(bulletChart(t, `rv-res-b-${p.id}`, budgetBar(p.budget), `worst case ${p.budget.value_s} s`, `the ${p.budget.limit_s} s timeout`))
@@ -4241,7 +4245,8 @@ export const ReviewMode = {
   // ponytail: one past run as the measure; a mean over runs when there are several kinds of PRs to compare.
   runPrice(kind, tier) {
     const r = kind === "analysis" ? (this.ai?.cost > 0 ? { cost: this.ai.cost, model: this.ai.model_id ?? this.ai.model } : null) : this.find.runs[kind]?.cost > 0 ? this.find.runs[kind] : null;
-    return r ? `about $${((r.cost * priceOf(tier)[1]) / priceOf(r.model)[1]).toFixed(2)}` : `capped at $${REVIEW_CAP[tier]}`;
+    const typical = RUN_TYPICAL[kind]?.[tier]; // measured before a first run (pr.js RUN_TYPICAL)
+    return r ? `about $${((r.cost * priceOf(tier)[1]) / priceOf(r.model)[1]).toFixed(2)}` : typical ? `about $${typical.usd.toFixed(2)}, ${Math.round(typical.s / 60) || 1} min` : `capped at $${REVIEW_CAP[tier]}`;
   },
   // "<run>: <model> recommended because …" with Run on that model and Change model (a class up or down). kind: one
   // that can start from here (security; the Overview adds analysis); null for another.
@@ -5028,7 +5033,7 @@ export const ReviewMode = {
   // The Overview's "Before merge" rows (pr.js beforeMerge on mergeBlockers).
   mergeRows() {
     // The Resilience run's blockers stand with the others, one row each, right after the security rows.
-    const res = (this.resNow()?.paths ?? []).filter((p) => p.blocker).map((p) => ({ kind: "resilience", title: `${p.trigger}: ${p.end}`, why: `Blocker: ${p.blocker.reason ?? p.blocker.why}`, path: p.id, asks: [] }));
+    const res = (this.resNow()?.paths ?? []).filter((p) => p.blocker).map((p) => ({ kind: "resilience", title: resSentence(p), why: `Blocker: ${p.blocker.reason ?? p.blocker.why}`, path: p.id, asks: [] }));
     const rows = beforeMerge({ list: this.taskNow(), findings: this.findings(), statusOf: (f) => this.fstatus(f), blockers: this.blockersNow() }), sec = rows.filter((r) => r.kind === "security").length;
     return [...rows.slice(0, sec), ...res, ...rows.slice(sec)]; // after the security rows: a way a failure grows without limit is as urgent
   },

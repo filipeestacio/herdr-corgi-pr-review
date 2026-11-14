@@ -912,3 +912,17 @@ export function resPathView(p, res = {}) {
   return { ...p, ladder: lad, product: p.product ?? (Array.isArray(p.ladder) ? null : p.ladder?.text) ?? null, budget, race, writers, state: p.state ?? st?.what ?? st?.id,
     blocker: p.blocker ? { reason: p.blocker.reason ?? p.blocker.why ?? "" } : null };
 }
+// A path's step as a card of the map: a card id, or a place ("file:line") on the card of that file (the last card
+// that starts at or above the line, else the file's first); an edge id or an unknown place: null.
+export function resCardOf(step, arch) {
+  const nodes = arch?.nodes ?? [], s = String(step ?? "");
+  if (nodes.some((n) => n.id === s)) return s;
+  const m = /^(.+?):(\d+)$/.exec(s);
+  if (!m) return null;
+  const same = (a, b) => a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`);
+  const mine = nodes.map((n) => ({ id: n.id, at: /^(.+?):(\d+)/.exec(String(n.at ?? n.evidence ?? "")) })).filter((x) => x.at && same(x.at[1], m[1]));
+  return (mine.filter((x) => Number(x.at[2]) <= Number(m[2])).sort((a, b) => Number(b.at[2]) - Number(a.at[2]))[0] ?? mine[0])?.id ?? null;
+}
+// "Trigger: end" as one sentence: the end's first letter small unless it starts a name or a code word.
+// ponytail: only the usual first words of a sentence; a name (Lambda, Mailer) keeps its capital.
+export const resSentence = (p) => `${p.trigger}: ${/^(The|A|An|One|Every|Each|Both|No|Nothing|It|Its|Batch|Mail|Mails)\b/.test(p.end ?? "") ? p.end[0].toLowerCase() + p.end.slice(1) : p.end ?? ""}`;

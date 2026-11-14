@@ -676,3 +676,13 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.equal(resPathView({ id: "p5", kind: "race", findings: ["f2"], steps: [] }, res).race.id, "r1"); assert.equal(resPicture(resPathView({ id: "p9", kind: "other", steps: [], findings: [] }, res)), null);
   assert.equal(resPathView({ id: "x", ladder: [{ name: "a", factor: "3" }], blocker: { reason: "r" } }).blocker.reason, "r", "the view's own shape stays");
 }
+
+// ---- a path's places as cards, and its sentence
+{
+  const { resCardOf, resSentence } = await import("./views.js");
+  const arch = { nodes: [{ id: "consumer", at: "library/consumer.py:11" }, { id: "mailer", at: "library/mailer.py:9" }, { id: "late", at: "library/consumer.py:40" }] };
+  assert.deepEqual(["consumer", "library/consumer.py:19", "consumer.py:45", "library/mailer.py:3", "e6", "x.py:1"].map((s) => resCardOf(s, arch)), ["consumer", "consumer", "late", "mailer", null, null]);
+  assert.equal(resSentence({ trigger: "Mailer exhausts retries", end: "The record is acked" }), "Mailer exhausts retries: the record is acked");
+  assert.equal(resSentence({ trigger: "x", end: "SQS never sees it" }), "x: SQS never sees it");
+  assert.equal(resSentence({ trigger: "x", end: "Lambda times out" }), "x: Lambda times out", "a name keeps its capital");
+}
