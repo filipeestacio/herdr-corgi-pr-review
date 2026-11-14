@@ -32,7 +32,8 @@ import { wrapCode, codeCols, sliceSpans } from "./views.js"; // long lines wrap
 import { pairRows, pairSide, HALF_GUTTER, diffModeOf, oneSided } from "./views.js"; // side by side
 import { plainText } from "./pr.js";
 import { hasSources, archLayout, archBands } from "./arch.js";
-import { archMarks, zoneArch } from "./arch.js";
+import { archMarks, zoneArch, transitionText } from "./arch.js";
+import { transitionMarks } from "./views.js";
 import { trustLegend, hasTrust } from "./stack.js";
 import { scopeTable, runSummary, AREA_NAME, areaFindings, surfaceOf, EXPOSURE, reachLevel, secOrder, extraWays, zoneRights, blastLine } from "./views.js";
 import * as TH from "./threads.js";
@@ -462,6 +463,7 @@ export const ReviewMode = {
     else if (name === "arch-fit") { this.archFit = !this.archFitOn(); this.hsOf("rv-arch-canvas").x = 0; }
     else if (name === "arch-wrap") this.setArchWrap(!this.archWrapOn());
     else if (name === "sec-card") { this.page = "blast"; this.tab = "steps"; this.secCard(arg || null, cx); } // a click on a card of the Security page's picture ("": unlight)
+    else if (name === "vis") { this.toggleVis(arg); } // a click on a folded or open state diagram over a layer's code (vis|<layer>|<k>)
     else if (name === "scope-row") { this.page = "blast"; this.scopeRow = this.scopeRow === arg ? null : arg || null; } // a click on a row of "What each run checked" (<area> or run:<kind>)
     else if (name === "page-part") { const k = (this.pageParts ?? []).indexOf(arg); if (k >= 0) this.pageScrolls[this.page]?.scroll_to_item(k); }
     // The same model calls as their buttons (a click each, never by themselves): Refresh diagrams, and a card's
@@ -1398,7 +1400,7 @@ export const ReviewMode = {
     const items = [], at = {};
     steps.forEach((s, i) => {
       at[`s${i}`] = items.length;
-      items.push({ t: "step", s, i }, ...(s.visuals ?? []).map((v, k) => ({ t: "vis", v, i, text: `vis|${i}|${k}` })));
+      items.push({ t: "step", s, i }, ...(s.visuals ?? []).flatMap((v, k) => this.visItems(v, i, k)));
       const present = this.present(s);
       if (s.stale) items.push({ t: "note", text: "Outdated: these hunks are no longer in the diff." });
       for (const id of present) {
@@ -1561,6 +1563,8 @@ export const ReviewMode = {
     } else if (it.t === "fold") this.unfold(it.path);
     else if (it.t === "step") this.goStep(it.i, cx, false);
     else if (it.t === "path") this.visit(it.h.id, cx);
+    else if (it.t === "visfold" || (it.t === "vis" && it.bare)) this.toggleVis(it.text);
+    else if (it.t === "vtr" && (it.e.at || it.e.evidence)) this.jumpTo(it.e.at ?? it.e.evidence, cx);
     cx.notify();
   },
 
@@ -2978,7 +2982,7 @@ export const ReviewMode = {
     const s = this.hsOf(id), M = 40; // the room for a turn's mark at a band's edge
     // The view is measured in logical px, the picture is drawn in the person's zoom: its width in the picture's px.
     const B = archBands(L, s.viewW && wrap ? hsVisible(s.viewW / (settings().zoom || 1), this.drawerCover()) - 4 - 2 * M : 0); // 0: not measured yet or Wrap off, one row
-    const pic = (k) => [archView(L, t, `${pid}${k ? `-${k}` : ""}`, (n, _e, cx) => this.jumpTo(n.at, cx), decorate, opts), ...(notes ? this.pinNotes(t, L) : [])];
+    const pic = (k) => [archView(L, t, `${pid}${k ? `-${k}` : ""}`, (n, _e, cx) => this.jumpTo(n.at ?? n.evidence ?? n.file, cx), decorate, opts), ...(notes ? this.pinNotes(t, L) : [])];
     if (B.length < 2) return this.hscroll(id, L.width + 4 + 40, L.height + 4, pic(0), t);
     const num = (n) => div().flex_none().w(18).h(18).flex().items_center().justify_center().rounded_full().border_1().border_color(t.muted).bg(t.background).text_size(11).text_color(t.foreground).child(String(n));
     const turn = (m, k, end) => h_flex().id(`${pid}-turn${k}-${end}-${m.y}`).absolute().top(m.y - 9).h(18).gap(2).items_center().text_size(13).text_color(t.muted)
@@ -4119,7 +4123,9 @@ export const ReviewMode = {
   sizeOf(it) {
     if (it.t === "row") return it.src[it.ri].kind === "@" ? 30 : ROW;
     if (it.t === "step") { const w = Math.min(LAYER_TEXT, (this.listW ?? 900) - 32), qs = it.s.questions; return 48 + mdHeight(it.s.why, w) + (qs.length ? 26 + qs.reduce((n, q, k) => n + 4 + mdHeight(this.asked(it.s, q, k), w - 20), 0) : 0); }
-    if (it.t === "vis") return visualPlan(it.v, (this.listW ?? 900) - 32).h + 8;
+    if (it.t === "vis") return visualPlan(it.v, (this.listW ?? 900) - 32, Boolean(it.bare)).h + 8;
+    if (it.t === "visfold") return 46;
+    if (it.t === "vtr") return 26;
     if (it.t === "sug") return this.sug === it.s.key ? 56 + this.md(it.s.reason) : 26;
     if (it.t === "pad") return 60;
     if (it.t === "fold") return it.h;
@@ -4262,11 +4268,49 @@ export const ReviewMode = {
           .children(s.questions.map((q, k) => h_flex().flex_none().max_w(LAYER_TEXT).gap(8).items_start().text_size(13.5).line_height(1.55)
             .child(div().w(12).flex_none().text_color(t.accent).child("?")).child(div().flex_1().min_w(0).child(TextView.markdown(`rv-lqm-${it.i}-${k}`, this.asked(s, q, k)))))));
     }
-    if (it.t === "vis") return div().w_full().h(this.sizeOf(it)).px(16).pb(8).bg(it.i === this.cur ? t.selected : t.raised).child(visualCard(it.v, t, `rv-lvis-${it.i}-${it.text}`, null, null, (this.listW ?? 900) - 32));
+    if (it.t === "vis") return div().w_full().h(this.sizeOf(it)).px(16).pb(8).bg(it.i === this.cur ? t.selected : t.raised).when(Boolean(it.bare), (e) => e.cursor_pointer().tooltip("Click to fold the state diagram to one line"))
+      .child(visualCard(it.v, t, `rv-lvis-${it.i}-${it.text}`, null, null, (this.listW ?? 900) - 32, { bare: it.bare, marks: it.marks }));
+    if (it.t === "visfold") return this.visFoldItem(it, t);
+    if (it.t === "vtr") return this.visTransitionItem(it, t);
     if (it.t === "def") return this.defItem(it, t);
     if (it.t === "fold") return div().h(it.h).w_full().pl(GUTTER).pt(8).text_size(12.5).text_color(t.muted).cursor_pointer().child(`${it.n} lines folded to keep the list fast · they open as you scroll here, or click`);
     if (it.t === "path") return mono(h_flex()).h(30).w_full().px(16).items_center().text_size(12.5).text_color(t.muted).truncate().child(it.h.path);
     return div().h(30).w_full().px(16).flex().items_center().text_size(12.5).text_color(t.ansi3).child(it.text);
+  },
+
+  // A layer's picture over its code (rows of the diff list). A state diagram folds to one line (how many states and
+  // transitions, the mark of a finding at a transition) and stays open only when a finding hangs on a transition
+  // (views.js transitionMarks); open, its transitions follow as rows of their own, each opening its place on a click
+  // (the list has no handlers inside a row: onItem). this.visOpen[text]: the person's choice; command vis:<text>.
+  visItems(v, i, k) {
+    const text = `vis|${i}|${k}`;
+    if (v.kind !== "state_machine") return [{ t: "vis", v, i, text }];
+    const marks = transitionMarks(v, this.openFindings());
+    if (!(this.visOpen?.[text] ?? marks.size > 0)) return [{ t: "visfold", v, i, text, marks }];
+    return [{ t: "vis", v, i, text, bare: true, marks }, ...[...(v.edges ?? []), ...(v.transitions ?? [])].map((e, j) => ({ t: "vtr", v, i, e, j, text: `vtr|${i}|${k}|${j}`, mark: marks.get(j) ?? null }))];
+  },
+  toggleVis(text) {
+    const it = (this.items ?? []).find((x) => x.text === text && (x.t === "vis" || x.t === "visfold"));
+    const now = it ? it.t === "vis" : Boolean(this.visOpen?.[text]);
+    this.visOpen = { ...this.visOpen, [text]: !now };
+  },
+  visFoldItem(it, t) {
+    const rank = { critical: 0, high: 1, medium: 2, low: 3 }, n = [...(it.v.edges ?? []), ...(it.v.transitions ?? [])].length, top = [...it.marks.values()].sort((a, b) => (rank[a.severity] ?? 9) - (rank[b.severity] ?? 9))[0];
+    return div().w_full().h(this.sizeOf(it)).px(16).pb(8).bg(it.i === this.cur ? t.selected : t.raised).cursor_pointer().tooltip("Click to open the state diagram")
+      .child(h_flex().h(36).px(10).gap(8).items_center().rounded(8).border_1().border_color(t.border).bg(t.surface).text_size(12)
+        .child(div().flex_none().text_color(t.muted).child("▸"))
+        .child(div().flex_none().font_semibold().text_size(11.5).text_color(t.muted).child("STATE DIAGRAM"))
+        .child(div().flex_1().min_w(0).truncate().child(`${it.v.title ? `${it.v.title} · ` : ""}${it.v.nodes.length} ${it.v.nodes.length === 1 ? "state" : "states"}, ${n} ${n === 1 ? "transition" : "transitions"}`))
+        .when(Boolean(top), (e) => e.child(chip(t, `${top.severity} · ${[...it.marks.values()].reduce((x, m) => x + m.findings.length, 0)} at a transition`, t[SEVERITY_COLOR[top.severity]] ?? t.ansi1, true))));
+  },
+  visTransitionItem(it, t) {
+    const place = it.e.at ?? it.e.evidence, m = it.mark, name = (id) => it.v.nodes.find((n) => n.id === id)?.label ?? id;
+    return h_flex().w_full().h(26).pl(28).pr(16).gap(8).items_center().bg(it.i === this.cur ? t.selected : t.raised).text_size(12).when(Boolean(place), (e) => e.cursor_pointer())
+      .tooltip([place ? `Click to open ${place}` : "This transition names no place in the code", m && m.findings.map((f) => `· ${f.title}`).join("\n")].filter(Boolean).join("\n"))
+      .child(div().flex_none().w(22).text_color(t.muted).child(`${it.j + 1}.`))
+      .when(Boolean(m), (e) => e.child(chip(t, m.severity, t[SEVERITY_COLOR[m.severity]] ?? t.ansi1, true)))
+      .child(div().flex_1().min_w(0).truncate().text_color(it.e.changed && it.e.source !== "existing" ? t.foreground : t.muted).child(`${name(it.e.from)} → ${name(it.e.to)}${transitionText(it.e) ? ` · ${transitionText(it.e)}` : ""}`))
+      .when(Boolean(place), (e) => e.child(div().flex_none().text_color(t.accent).child(`${String(place).split("/").pop()} ↗`)));
   },
 
   // A row's code: plain text now; phase 3 (syntax.js) swaps in highlighted spans here.

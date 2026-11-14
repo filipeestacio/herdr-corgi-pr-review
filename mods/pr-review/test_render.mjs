@@ -108,6 +108,16 @@ for (const n of [0, 3, 310]) {
   ok(`${n} files: the same layer open in the Layers view`, () => v.render(cx));
   // Its picture is a row of the diff list, right after the layer's head; a question names the file the analysis gives.
   assert.deepEqual(v.items.slice(v.at.s1, v.at.s1 + 2).map((it) => it.t), ["step", "vis"], "a layer's picture sits over its code");
+  // A state diagram over the code: open with its transitions as rows while a finding sits at one, folded otherwise.
+  const sm = { kind: "state_machine", title: "Loan", nodes: [{ id: "s1", label: "S1", evidence: "src/a.ts:1" }, { id: "s2", label: "S2" }], transitions: [{ from: "s1", to: "s2", event: "go", evidence: "src/f0.ts:2" }, { from: "s2", to: "s1", event: "back" }] };
+  v.ai.steps[1].visuals = [sm];
+  const steps = () => S.lists.find((l) => l.id === "rv-list-steps"), rows = () => { const l = steps(); if (l) l.render({ start: 0, end: l.n }, cx); };
+  ok(`${n} files: a state diagram with a finding at a transition`, () => { v.render(cx); rows(); });
+  assert.deepEqual(v.items.slice(v.at.s1 + 1, v.at.s1 + 4).map((it) => it.t), ["vis", "vtr", "vtr"]);
+  v.toggleVis("vis|1|0");
+  ok(`${n} files: the state diagram folded`, () => { v.render(cx); rows(); });
+  assert.deepEqual(v.items.slice(v.at.s1 + 1, v.at.s1 + 2).map((it) => it.t), ["visfold"]);
+  v.ai.steps[1].visuals = [{ kind: "flow", title: "f", nodes: [{ id: "n1", label: "N1", at: "src/a.ts:3" }, { id: "n2", label: "N2" }], edges: [{ from: "n1", to: "n2", label: "y" }] }];
   assert.deepEqual([v.asked({ questionFiles: ["src/a.ts", ""] }, "q?", 0), v.asked({ questionFiles: ["src/a.ts", ""] }, "q?", 1), v.asked({}, "q?", 0)], ["a.ts — q?", "q?", "q?"]);
   // Its analysis finding: in the layer above, and in the Findings tab (read live from the analysis, linked to its layer).
   assert.deepEqual(v.findings().map((f) => f.id), ["a1"]); assert.equal(v.layerOf(v.findings()[0]), 1);

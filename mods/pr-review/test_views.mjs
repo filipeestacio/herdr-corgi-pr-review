@@ -434,3 +434,13 @@ assert.equal(oneSided(rowsOf("-+")), false, "a line changed");
   assert.deepEqual(areaFindings("tests", "claude", list).map((f) => f.id), ["n"]);
   assert.deepEqual(areaFindings("dependencies", "security", list), []);
 }
+
+// ---- findings at a state diagram's transitions
+{
+  const { transitionMarks } = await import("./views.js");
+  const v = { kind: "state_machine", nodes: [{ id: "a" }, { id: "b" }], transitions: [{ from: "a", to: "b", evidence: "library/status.py:14" }, { from: "b", to: "a", at: "status.py:29-31" }, { from: "b", to: "b" }] };
+  const f = (id, file, line, severity, end) => ({ id, file, line, end, severity });
+  const m = transitionMarks(v, [f("x", "library/status.py", 14, "medium"), f("y", "library/status.py", 30, "low"), f("z", "library/status.py", 28, "high", 29), f("w", "library/loans.py", 14, "high")]);
+  assert.deepEqual([...m].map(([i, x]) => [i, x.findings.map((g) => g.id), x.severity]), [[0, ["x"], "medium"], [1, ["y", "z"], "high"]]);
+  assert.equal(transitionMarks(v, []).size, 0); assert.equal(transitionMarks(null, null).size, 0);
+}

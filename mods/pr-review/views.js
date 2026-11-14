@@ -475,3 +475,20 @@ export function areaFindings(area, k, findings) {
   const words = AREA_WORDS[area], cats = AREA_CATEGORY[area] ?? [];
   return mine.filter((f) => cats.includes(f.category) || (words && words.test([f.title, f.effect, f.detail].filter(Boolean).join(" "))));
 }
+
+// ---- a state diagram's transitions and the findings at them
+// The unresolved findings at each transition of a state visual: one whose file and line fall on the transition's place
+// (`evidence` or `at`: "file:line" or "file:line-end"; a finding's own range counts). Returns Map(index in edges then
+// transitions -> {findings, severity: the highest}); a transition without a place has none.
+const RANK = { critical: 0, high: 1, medium: 2, low: 3 };
+export function transitionMarks(v, findings) {
+  const out = new Map(), place = (s) => /^(.+?):(\d+)(?:-(\d+))?/.exec(String(s ?? ""));
+  [...(v?.edges ?? []), ...(v?.transitions ?? [])].forEach((e, i) => {
+    const m = place(e.evidence) ?? place(e.at);
+    if (!m) return;
+    const [path, a, b] = [m[1], Number(m[2]), Number(m[3] ?? m[2])];
+    const hit = (findings ?? []).filter((f) => f.file && (f.file === path || f.file.endsWith(`/${path}`) || path.endsWith(`/${f.file}`)) && (f.line ?? 0) <= b && (f.end ?? f.line ?? 0) >= a);
+    if (hit.length) out.set(i, { findings: hit, severity: hit.map((f) => f.severity).sort((x, y) => (RANK[x] ?? 9) - (RANK[y] ?? 9))[0] });
+  });
+  return out;
+}

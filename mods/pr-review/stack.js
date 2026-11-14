@@ -131,7 +131,7 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
   const nodes = L.nodes.map((n, i) => {
     const st = sourceStyle(n.source), c = st.tone === "muted" ? t.muted : t[STATUS_COLOR[n.status] ?? "muted"];
     const live = st.tone !== "muted" && n.status && n.status !== "unchanged", lit = hlNodes.has(n.id) || opts.focus === n.id;
-    const open = Boolean(onNode && (n.at || n.file)), tip = [n.cut ? `${n.label ?? n.id}\n\n${n.description ?? ""}` : "", st.tip, n.evidence].filter(Boolean).join("\n\n");
+    const open = Boolean(onNode && (n.at || n.file || n.evidence)), tip = [n.cut ? `${n.label ?? n.id}\n\n${n.description ?? ""}` : "", st.tip, n.evidence].filter(Boolean).join("\n\n");
     // A caller from outside (type external) is a dashed capsule.
     const ext = n.type === "external";
     return dim(v_flex().id(`${id}-n${i}`).absolute().left(n.x).top(n.y).w(n.w).h(n.h).px(ext ? 16 : 10).py(8).gap(3).rounded(ext ? 28 : 8).border_1()
@@ -262,8 +262,8 @@ const edgeText = (v, e, prefix = "") => { const name = (id) => v.nodes.find((n) 
 // transitions as a list beside it (below it when there is no room), each with its whole text; a flow the usual cards
 // when they fit, else the narrow ones; a sequence a sequence diagram (views.js seqLayout).
 const planMemo = new Map();
-export function visualPlan(v, wide) {
-  const key = `${wide}|${JSON.stringify(v)}`;
+export function visualPlan(v, wide, bare = false) {
+  const key = `${wide}|${bare}|${JSON.stringify(v)}`;
   if (planMemo.has(key)) return planMemo.get(key);
   const inner = wide - 22, edges = edgesOf(v), rowsH = (texts, w, size, lh, gap) => texts.reduce((n, x) => n + gap + lh * wrapCount(x, w, size), 0);
   let P;
@@ -274,7 +274,7 @@ export function visualPlan(v, wide) {
     const S = stateLayout({ ...v, edges: [], transitions: edges.map((e, k) => (isErr(e) ? e : { ...e, event: undefined, guard: undefined, action: undefined, label: String(k + 1) })) });
     const w = Math.ceil(Math.max(S.width, ...S.edges.flatMap((e) => [...e.segments.flatMap((x) => [x.x1, x.x2]), e.labelAt ? e.labelAt.x + Math.min(e.labelAt.w, 24) : 0])) + 4);
     const side = inner - w - 24 >= 320, texts = edges.map((e, k) => edgeText(v, e, `${k + 1}. `)), listH = rowsH(texts, (side ? inner - w - 24 : inner) - 4, 12, 18, 4);
-    P = { S, w, side, texts, h: side ? Math.max(S.height + 2, listH) : S.height + 2 + 8 + listH };
+    P = bare ? { S, w, side: false, bare, texts, h: S.height + 2 } : { S, w, side, texts, h: side ? Math.max(S.height + 2, listH) : S.height + 2 + 8 + listH };
   } else if (v.kind === "sequence") {
     const Q = seqLayout(v, inner);
     P = { Q, h: Q.height };
@@ -293,7 +293,9 @@ export function visualPlan(v, wide) {
 }
 
 // wide: the card's width when it is a row over the layer's code (visualPlan), else it sizes to its content.
-export function visualCard(v, t, id, onJump, wrapX = null, wide = null) {
+// opts {bare: a state diagram without its list of transitions (they are rows of their own), marks: views.js
+// transitionMarks for a state diagram}.
+export function visualCard(v, t, id, onJump, wrapX = null, wide = null, opts = {}) {
   const name = new Map(v.nodes.map((n) => [n.id, n.label ?? n.id])), c = (x) => (x?.changed && x?.source !== "existing" ? t.accent : t.border);
   const box = (n, k) => v_flex().id(`${id}-b${k}`).flex_none().max_w(180).px(8).py(4).gap(2).rounded(6).border_1().border_color(c(n)).when(n.source === "spec", (e) => e.border_dashed().tooltip(SPEC_TIP)).bg(t.background)
     .when(Boolean(n.at && onJump), (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).tooltip(n.source === "spec" ? `${SPEC_TIP}\nClick to jump to the related code` : "Jump to this place in the code").on_click((_e, cx) => { onJump(n.at, cx); cx.stop_propagation(); }))
@@ -303,15 +305,15 @@ export function visualCard(v, t, id, onJump, wrapX = null, wide = null) {
   const edge = (e, k, prefix = "") => h_flex().id(`${id}-x${k}`).gap(4).items_start().text_size(11.5).text_color(e.changed && e.source !== "existing" ? t.accent : t.muted)
     .when(e.source === "spec", (x) => x.child(specTag(t, `${id}-x${k}-sp`)))
     .child(div().flex_1().min_w(0).whitespace_normal().child(`${prefix}${name.get(e.from) ?? e.from} → ${name.get(e.to) ?? e.to}${transitionText(e) ? ` · ${transitionText(e)}` : ""}`));
-  const edges = edgesOf(v), P = wide ? visualPlan(v, wide) : null;
+  const edges = edgesOf(v), P = wide ? visualPlan(v, wide, Boolean(opts.bare)) : null, place = (x) => x?.at ?? x?.evidence;
   let body;
   if (v.kind === "sequence" && P) {
-    body = seqView(P.Q, t, `${id}-sq`);
+    body = seqView(P.Q, t, `${id}-sq`, onJump);
   } else if (v.kind === "sequence") {
     // The same diagram as over a layer's code (seqLayout), in one row that scrolls sideways when wider than its room;
     // the numbered calls under it folded to one line.
     const Q = seqLayout(v, 200 * v.nodes.length), open = openLists.has(id);
-    body = v_flex().gap(6).child((wrapX ?? nativeX)(`${id}-sq`, Q.width, Q.height, seqView(Q, t, `${id}-sv`)))
+    body = v_flex().gap(6).child((wrapX ?? nativeX)(`${id}-sq`, Q.width, Q.height, seqView(Q, t, `${id}-sv`, onJump)))
       .child(h_flex().id(`${id}-calls`).gap(6).cursor_pointer().text_size(11.5).text_color(t.muted).hover((x) => x.text_color(t.foreground))
         .tooltip(open ? "Fold the list of calls" : "Show every call with its whole text").on_click((_e, cx) => { if (open) openLists.delete(id); else openLists.add(id); cx.stop_propagation(); cx.notify(); })
         .child(open ? "▾" : "▸").child(`${edges.length} numbered ${edges.length === 1 ? "call" : "calls"}`))
@@ -319,19 +321,20 @@ export function visualCard(v, t, id, onJump, wrapX = null, wide = null) {
   } else if (v.kind === "state_machine" && P) {
     // Every transition with its whole text: the diagram cuts a label where its line leaves no room.
     const list = v_flex().flex_1().min_w(0).children(edges.map((e, k) => div().id(`${id}-tr${k}`).flex_none().pt(4).text_size(12).line_height(1.5).whitespace_normal()
-      .text_color(e.changed && e.source !== "existing" ? t.foreground : t.muted).when(Boolean(e.evidence), (x) => x.tooltip(e.evidence)).child(P.texts[k])));
-    const pic = div().w(P.w).flex_none().child(stateView(P.S, t, `${id}-sv`, onJump));
-    body = P.side ? h_flex().gap(24).items_start().child(pic).child(list) : v_flex().gap(8).child(nativeX(`${id}-sm`, 0, 0, pic)).child(list);
+      .text_color(e.changed && e.source !== "existing" ? t.foreground : t.muted).when(Boolean(e.evidence), (x) => x.tooltip(e.evidence))
+      .when(Boolean(place(e) && onJump), (x) => x.cursor_pointer().hover((s) => s.text_color(t.accent)).on_click((_e, cx) => { onJump(place(e), cx); cx.stop_propagation(); })).child(P.texts[k])));
+    const pic = div().w(P.w).flex_none().child(stateView(P.S, t, `${id}-sv`, onJump, opts.marks));
+    body = P.bare ? nativeX(`${id}-sm`, 0, 0, pic) : P.side ? h_flex().gap(24).items_start().child(pic).child(list) : v_flex().gap(8).child(nativeX(`${id}-sm`, 0, 0, pic)).child(list);
   } else if (v.kind === "state_machine") {
     const S = stateLayout(v);
-    body = (wrapX ?? nativeX)(`${id}-sm`, S.width, S.height + 2, stateView(S, t, `${id}-sv`, onJump));
+    body = (wrapX ?? nativeX)(`${id}-sm`, S.width, S.height + 2, stateView(S, t, `${id}-sv`, onJump, opts.marks));
   } else if (v.kind === "steps") {
     const lv = levels(v.nodes, edges), order = [...v.nodes].sort((a, b) => lv.get(a.id) - lv.get(b.id));
     body = v_flex().gap(4).children(order.map((n, k) => h_flex().gap(6).items_start().child(div().w(16).flex_none().text_size(12).text_color(t.muted).child(`${k + 1}.`)).child(box(n, k))));
   } else {
     const L = P?.L ?? flowModel(v);
     body = v_flex().gap(6)
-      .child((wrapX ?? nativeX)(`${id}-fs`, L.width + 4, L.height + 4, archView(L, t, `${id}-av`, onJump ? (n, _e, cx) => { onJump(n.at, cx); cx.stop_propagation(); } : null, null, {}), 6))
+      .child((wrapX ?? nativeX)(`${id}-fs`, L.width + 4, L.height + 4, archView(L, t, `${id}-av`, onJump ? (n, _e, cx) => { onJump(place(n), cx); cx.stop_propagation(); } : null, null, {}), 6))
       // A picture wider than its room says so instead of being scaled down.
       .when(P ? P.over : L.width > FLOW_FITS, (e) => e.child(div().h(16).flex_none().text_size(10.5).text_color(t.dim).child("Scroll sideways for the whole picture →")))
       .child(archLegend(L, t, `${id}-lg`, "Edges"));
@@ -346,13 +349,14 @@ export function visualCard(v, t, id, onJump, wrapX = null, wide = null) {
 // A sequence diagram at seqLayout's positions: the participants in a row, a lifeline under each, and one row per
 // call in order: its number and text above an arrow from the caller's lifeline to the callee's (a loop beside the
 // lifeline for a call to itself). A text longer than its arrow runs on to the right, over the other lifelines.
-function seqView(Q, t, id) {
+function seqView(Q, t, id, onJump = null) {
+  const jump = (el, place) => el.when(Boolean(place && onJump), (x) => x.cursor_pointer().hover((s) => s.border_color(t.accent)).on_click((_e, cx) => { onJump(place, cx); cx.stop_propagation(); }));
   const col = (e) => (e.changed && e.source !== "existing" ? t.accent : t.muted);
   const heads = Q.cols.flatMap((n, k) => [
     div().id(`${id}-l${k}`).absolute().left(n.x).top(SEQ.HEAD).w(0).h(Q.height - SEQ.HEAD).border_l(1).border_dashed().border_color(t.border),
-    div().id(`${id}-p${k}`).absolute().left(n.x - n.w / 2).top(0).w(n.w).h(SEQ.HEAD - 4).px(6).flex().items_center().justify_center().rounded(6).border_1()
+    jump(div().id(`${id}-p${k}`).absolute().left(n.x - n.w / 2).top(0).w(n.w).h(SEQ.HEAD - 4).px(6).flex().items_center().justify_center().rounded(6).border_1()
       .border_color(n.changed && n.source !== "existing" ? t.accent : t.border).when(n.source === "spec", (e) => e.border_dashed()).bg(t.background).text_size(12).font_semibold()
-      .text_color(n.source === "existing" ? t.muted : t.foreground).tooltip([n.label ?? n.id, n.note, n.source === "spec" ? SPEC_TIP : ""].filter(Boolean).join("\n")).child(div().truncate().child(n.label ?? n.id))]);
+      .text_color(n.source === "existing" ? t.muted : t.foreground).tooltip([n.label ?? n.id, n.note, n.source === "spec" ? SPEC_TIP : ""].filter(Boolean).join("\n")).child(div().truncate().child(n.label ?? n.id)), n.at ?? n.evidence)]);
   const calls = Q.calls.flatMap((e, k) => {
     const c = col(e), lo = Math.min(e.x1, e.x2), y = e.y + SEQ.ROW - 12, self = e.x1 === e.x2, left = self || e.x2 < e.x1;
     const text = /^\d+[.)]/.test(e.text) ? e.text : `${e.n}. ${e.text}`; // some analyses number the calls themselves
@@ -360,8 +364,8 @@ function seqView(Q, t, id) {
       self ? div().id(`${id}-c${k}`).absolute().left(lo).top(y - 12).w(22).h(12).border_t(1.5).border_r(1.5).border_b(1.5).rounded_r(6).border_color(c)
         : div().id(`${id}-c${k}`).absolute().left(lo).top(y).w(Math.abs(e.x2 - e.x1)).h(0).border_t(1.5).border_color(c).when(Boolean(e.dashed) || e.source === "spec", (x) => x.border_dashed()),
       div().id(`${id}-a${k}`).absolute().left(left ? e.x2 : e.x2 - 9).top(y - 8).text_size(11).text_color(c).child(left ? "◀" : "▶"),
-      div().id(`${id}-t${k}`).absolute().left(lo + (self ? 28 : 8)).top(e.y + (self ? 12 : 4)).max_w(Q.width - lo - (self ? 32 : 12)).h(17).px(3).bg(t.surface).text_size(11.5)
-        .text_color(e.changed && e.source !== "existing" ? t.foreground : t.muted).tooltip([text, e.evidence].filter(Boolean).join("\n")).child(div().truncate().child(text))];
+      jump(div().id(`${id}-t${k}`).absolute().left(lo + (self ? 28 : 8)).top(e.y + (self ? 12 : 4)).max_w(Q.width - lo - (self ? 32 : 12)).h(17).px(3).bg(t.surface).text_size(11.5)
+        .text_color(e.changed && e.source !== "existing" ? t.foreground : t.muted).tooltip([text, e.evidence].filter(Boolean).join("\n")).child(div().truncate().child(text)), e.at ?? e.evidence)];
   });
   return div().id(id).relative().flex_none().w(Q.width).h(Q.height).children([gridBg(t, Q.width, Q.height), ...heads, ...calls]);
 }
@@ -370,25 +374,32 @@ function seqView(Q, t, id) {
 // branches), transitions down with their "event [guard] / action" beside the last stretch, return lanes on the left
 // with rounded corners, self-loops on the card's edge, Catch/Retry stubs with chips. Changed in the accent colour.
 const SM_GLYPH = { task: "▭", choice: "◇", parallel: "⫴", map: "⧉", wait: "⏱", pass: "↓", fail: "✕", succeed: "✓" };
-export function stateView(L, t, id, onJump) {
-  const col = (x) => (x.changed && x.source !== "existing" ? t.accent : t.muted), els = [];
+// marks: views.js transitionMarks (Map(transition index -> {findings, severity})): such a transition is drawn in its
+// severity's colour with a chip at its arrow, the titles in its tooltip. onJump(place, cx): a card, a label or a chip
+// opens its place (at, else evidence).
+export function stateView(L, t, id, onJump, marks = null) {
+  // A transition's index, from its key: "f<i>:…" forward, "b<i>" a return lane, "l<i>" a self-loop.
+  const idx = (e) => { const m = /^[fbl](\d+)/.exec(e.key ?? ""); return m ? Number(m[1]) : -1; };
+  const sevC = (m) => t[SEVERITY_COLOR[m.severity]] ?? t.ansi1, mk = (e) => marks?.get(idx(e)) ?? null;
+  const col = (x) => (mk(x) ? sevC(mk(x)) : x.changed && x.source !== "existing" ? t.accent : t.muted), els = [];
+  const findTip = (m) => (m ? `\n\n${m.findings.length} unresolved ${m.findings.length === 1 ? "finding" : "findings"} at this transition:\n${m.findings.slice(0, 5).map((f) => `· ${f.title}`).join("\n")}` : "");
+  const jump = (el, place) => el.when(Boolean(place && onJump), (x) => x.cursor_pointer().on_click((_e, cx) => { onJump(place, cx); cx.stop_propagation(); }));
   const hline = (k, x1, x2, y, c, d = false) => div().id(k).absolute().left(Math.min(x1, x2)).top(y).w(Math.abs(x2 - x1)).h(0).border_t(1.5).border_color(c).when(d, (e) => e.border_dashed());
   const vline = (k, x, y1, y2, c, d = false) => div().id(k).absolute().left(x).top(Math.min(y1, y2)).w(0).h(Math.abs(y2 - y1)).border_l(1.5).border_color(c).when(d, (e) => e.border_dashed());
   L.edges.forEach((e, i) => {
     const c = col(e);
     e.segments.forEach((s, k) => {
       els.push(s.y1 === s.y2 ? hline(`${id}-e${i}-${k}`, s.x1, s.x2, s.y1, c, e.dashed) : vline(`${id}-e${i}-${k}`, s.x1, s.y1, s.y2, c, e.dashed));
-      // A transition that skips a row: stateLayout gives no stretch for the row it passes, so the line would break there.
-      const p = e.segments[k - 1];
-      if (p && p.x2 === s.x1 && p.y2 < s.y1) els.push(vline(`${id}-j${i}-${k}`, s.x1, p.y2, s.y1, c, e.dashed));
     });
+    if (mk(e)) els.push(jump(div().id(`${id}-m${i}`).absolute().left(e.arrow.x + 7).top(e.arrow.y - 16).px(4).h(15).flex().items_center().rounded(4).border_1().border_color(c).bg(t.background)
+      .text_size(9.5).text_color(t.foreground).tooltip(`${e.text || "Transition"}${findTip(mk(e))}`).child(`${cap(mk(e).severity)} · ${mk(e).findings.length}`), e.at ?? e.evidence));
     els.push(div().id(`${id}-a${i}`).absolute().left(e.arrow.x - 5).top(e.arrow.y - 11).text_size(9).text_color(c).child("▼"));
-    if (e.text && e.labelAt) els.push(div().id(`${id}-l${i}`).absolute().left(e.labelAt.x).top(e.labelAt.y).w(e.labelAt.w).h(13).text_size(10.5).text_color(e.changed ? t.accent : t.muted)
-      .tooltip([e.text, sourceStyle(e.source).tip, e.evidence].filter(Boolean).join("\n")).child(div().truncate().when(Boolean(e.labelAt.left), (x) => x.text_right()).child(e.text)));
+    if (e.text && e.labelAt) els.push(jump(div().id(`${id}-l${i}`).absolute().left(e.labelAt.x).top(e.labelAt.y).w(e.labelAt.w).h(13).text_size(10.5).text_color(mk(e) ? c : e.changed ? t.accent : t.muted)
+      .tooltip([e.text, sourceStyle(e.source).tip, e.evidence].filter(Boolean).join("\n") + findTip(mk(e))).child(div().truncate().when(Boolean(e.labelAt.left), (x) => x.text_right()).child(e.text)), e.at ?? e.evidence));
   });
   L.backs.forEach((b, i) => {
     const c = col(b), near = Math.min(b.sx, b.tx);
-    els.push(div().id(`${id}-r${i}`).absolute().left(b.laneX).top(b.ty).w(near - b.laneX).h(b.sy - b.ty).border_l(1.5).border_t(1.5).border_b(1.5).rounded_l(8).border_color(c).when(b.dashed, (e) => e.border_dashed()).tooltip(b.text || "back"));
+    els.push(div().id(`${id}-r${i}`).absolute().left(b.laneX).top(b.ty).w(near - b.laneX).h(b.sy - b.ty).border_l(1.5).border_t(1.5).border_b(1.5).rounded_l(8).border_color(c).when(b.dashed, (e) => e.border_dashed()).tooltip(`${b.text || "back"}${findTip(mk(b))}`));
     if (b.tx > near) els.push(hline(`${id}-rt${i}`, near, b.tx, b.ty, c, b.dashed));
     if (b.sx > near) els.push(hline(`${id}-rs${i}`, near, b.sx, b.sy, c, b.dashed));
     els.push(div().id(`${id}-ra${i}`).absolute().left(b.tx - 8).top(b.ty - 8).text_size(9).text_color(c).child("▶"));
@@ -400,7 +411,7 @@ export function stateView(L, t, id, onJump) {
       .child(div().w(8).h(8).rounded_full().bg(t.foreground));
     const st = sourceStyle(n.source), lit = n.changed && st.tone !== "muted";
     const card = v_flex().id(`${id}-n${i}`).absolute().left(n.x).top(n.y).w(n.w).h(n.h).px(8).py(5).gap(1).rounded(6).border_1().border_color(lit ? t.accent : t.border).when(st.dashed, (e) => e.border_dashed()).bg(t.background)
-      .when(Boolean(n.at && onJump), (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).tooltip("Jump to this place in the code").on_click((_e, cx) => { onJump(n.at, cx); cx.stop_propagation(); }))
+      .when(Boolean((n.at || n.evidence) && onJump), (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).tooltip("Jump to this place in the code").on_click((_e, cx) => { onJump(n.at ?? n.evidence, cx); cx.stop_propagation(); }))
       .child(h_flex().gap(5).items_center().text_size(12).child(div().flex_none().text_color(t.muted).child(SM_GLYPH[n.type] ?? "▭"))
         .child(div().flex_1().min_w(0).truncate().font_semibold().text_color(lit ? t.accent : st.tone === "muted" ? t.muted : t.foreground).child(n.label ?? n.id))
         .when(Boolean(st.chip), (e) => e.child(specTag(t, `${id}-n${i}-sp`)))
@@ -416,7 +427,9 @@ export function stateView(L, t, id, onJump) {
     if (nxt && nxt.branch === k.branch) out.push(vline(`${id}-kl${i}-${j}`, k.x + k.w / 2, k.y + k.h, nxt.y, t.muted));
     return out;
   }));
-  const loops = L.loops.flatMap((l, i) => [div().id(`${id}-o${i}`).absolute().left(l.x).top(l.y).w(14).h(12).rounded(6).border(1.5).border_color(col(l)).when(l.dashed, (e) => e.border_dashed()).tooltip(l.text || "self-transition"),
+  const loops = L.loops.flatMap((l, i) => [div().id(`${id}-o${i}`).absolute().left(l.x).top(l.y).w(14).h(12).rounded(6).border(1.5).border_color(col(l)).when(l.dashed, (e) => e.border_dashed()).tooltip(`${l.text || "self-transition"}${findTip(mk(l))}`),
+    ...(mk(l) ? [div().id(`${id}-om${i}`).absolute().left(l.x - 2).top(l.y - 16).px(4).h(15).flex().items_center().rounded(4).border_1().border_color(col(l)).bg(t.background).text_size(9.5).text_color(t.foreground)
+      .tooltip(`${l.text || "Self-transition"}${findTip(mk(l))}`).child(`${cap(mk(l).severity)} · ${mk(l).findings.length}`)] : []),
     ...(l.text ? [div().id(`${id}-ol${i}`).absolute().left(l.x + 17).top(l.y - 1).max_w(l.w).text_size(10.5).text_color(l.changed ? t.accent : t.muted).tooltip(l.text).child(div().truncate().child(`↺ ${l.text}`))] : [])]);
   const stubs = L.stubs.flatMap((s, i) => {
     const c = /retry/i.test(s.text) ? t.ansi3 : t.ansi1;
