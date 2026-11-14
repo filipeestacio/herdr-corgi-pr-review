@@ -741,8 +741,9 @@ export function preMergeChecks({ title, rules = [], ctx = null }) {
 }
 
 // What stands between the PR and a merge, most severe first: conflicts, failing CI, failed rules, high/critical
-// unresolved findings that this PR brings in (introduced_here not false; one that was there before is in alreadyThere),
-// (sent(f): a fix is out for it, which does not resolve it), fixes not verified on this head,
+// unresolved findings that this PR brings in (introduced_here not false; one that was there before is in alreadyThere)
+// and security findings of any severity (at their own severity; sent(f): a fix is out for it,
+// which does not resolve it), fixes not verified on this head,
 // overlapping open PRs (not the one this PR is stacked on: that is its base, the merge order is given).
 export function mergeBlockers({ checks = [], findings = [], unverified = 0, related = null, sent = () => false }) {
   const out = [];
@@ -750,7 +751,7 @@ export function mergeBlockers({ checks = [], findings = [], unverified = 0, rela
   const ci = checks.filter((c) => c.ci && c.ok === false);
   if (ci.length) out.push({ severity: "high", title: `${ci.length} CI ${ci.length === 1 ? "check is" : "checks are"} failing`, why: ci.map((c) => c.name.replace(/^CI: /, "")).join(", ") });
   for (const c of checks.filter((x) => (x.rule || x.name === "Conventional Commit title") && x.ok === false)) out.push({ severity: "medium", title: `Rule not met: ${c.name}`, why: c.why ?? "", where: c.where });
-  for (const f of findings.filter((x) => (x.severity === "high" || x.severity === "critical") && x.introduced_here !== false)) out.push({ severity: "high", title: f.title, why: `${f.file}:${f.line} · unresolved ${f.severity} finding${sent(f) ? " · fix sent, not verified" : ""}`, finding: f.id });
+  for (const f of findings.filter((x) => (x.severity === "high" || x.severity === "critical" || x.security) && x.introduced_here !== false)) out.push({ severity: x2(f.severity), title: f.title, why: `${f.file}:${f.line} · unresolved ${f.severity} finding${sent(f) ? " · fix sent, not verified" : ""}`, finding: f.id });
   if (unverified) out.push({ severity: "medium", title: `${unverified} ${unverified === 1 ? "fix is" : "fixes are"} not verified`, why: "Sent to Fix before the last push: verify them on the new head." });
   for (const p of related?.open ?? []) if (p.overlap > 0 && !p.stacked) out.push({ severity: "low", title: `Overlaps with open PR #${p.number}`, why: `Both change ${p.overlap} ${p.overlap === 1 ? "file" : "files"} (${(p.files ?? []).slice(0, 3).join(", ")}): agree on the merge order.`, url: p.url });
   return out;
@@ -920,13 +921,18 @@ export function reviewState({ pr, head = "", list, counts, findings, statusOf, p
 
 // A Markdown text as one plain line, for a folded card, a list row or a title: its first paragraph only, without code
 // blocks, list markers, a heading's "#" or a quote's ">", and without the marks of code, bold and links. A text that
-// is nothing but a code block (a GitHub suggestion) gives the block's first line.
+// is nothing but a code block (a GitHub suggestion) gives the block's first line. HTML tags (a bot's <a><picture>…)
+// go; a text that is then empty but had an image gives the image's alt text, or "(image)".
 export function plainText(text) {
-  const src = String(text ?? ""), noCode = src.replace(/^[ \t]*(```|~~~)[^\n]*\n[\s\S]*?(?:\n[ \t]*\1[^\n]*|$)/gm, "");
+  const raw = String(text ?? "").replace(/<!--[\s\S]*?-->/g, ""), src = raw.replace(HTML_TAG, " ");
+  if (!src.trim() && /<img\b/i.test(raw)) return /<img\b[^>]*\balt\s*=\s*"([^"]+)"/i.exec(raw)?.[1].trim() || "(image)";
+  const noCode = src.replace(/^[ \t]*(```|~~~)[^\n]*\n[\s\S]*?(?:\n[ \t]*\1[^\n]*|$)/gm, "");
   const para = noCode.split(/\n[ \t]*\n/).find((p) => p.trim()) ?? src.split("\n").find((l) => l.trim() && !/^[ \t]*(```|~~~)/.test(l)) ?? "";
   return para.split("\n").map((l) => l.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "").replace(/^\s*(?:#{1,6}\s+|>\s?)/, "")).join(" ")
     .replace(/`([^`]*)`/g, "$1").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/\s+/g, " ").trim();
 }
+// The HTML tags GitHub renders in a comment, by name: a type like `Vec<String>` or `<T>` is no tag.
+const HTML_TAG = /<\/?(?:a|abbr|b|blockquote|br|code|details|div|em|h[1-6]|hr|i|img|kbd|li|ol|p|picture|pre|source|span|strong|sub|summary|sup|table|tbody|td|th|thead|tr|ul)\b[^>]*>/gi;
 
 // ---- the Findings tab: a finding's way into the PR, how its number comes about, owners, effort (review.js findingsPane)
 
@@ -1071,3 +1077,6 @@ export function funnelShort(x) {
   return `${n(x.reported, "report")} from ${n(x.by.length, "source")}, ${x.reported > x.merged ? `${x.merged} after merging` : "none merged"}`
     + (x.security ? ` · ${x.security} on security, ${x.confirmed || "none"} confirmed by a run` : "");
 }
+
+// A blocker's severity for a finding: critical counts as high; a security finding below high keeps its own.
+const x2 = (s) => (s === "critical" ? "high" : s);

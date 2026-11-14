@@ -350,6 +350,9 @@ console.log("ok");
     related: { open: [{ number: 9, overlap: 2, files: ["a", "b"] }, { number: 10, overlap: 0 }] } });
   assert.deepEqual(bl.map((x) => x.title), ["Code conflicts need to be resolved", "1 CI check is failing", "Rule not met: Conventional Commit title", "Rule not met: No secrets", "SQL injection", "2 fixes are not verified", "Overlaps with open PR #9"]);
   assert.equal(bl[4].why, "a:1 · unresolved high finding · fix sent, not verified");
+  // A security finding blocks at any severity, at its own.
+  assert.deepEqual(mergeBlockers({ findings: [{ id: "s", title: "Open route", severity: "medium", security: true, file: "a", line: 2 }, { id: "m", title: "Edge", severity: "medium", file: "a", line: 3 }] })
+    .map((b) => [b.title, b.severity]), [["Open route", "medium"]]);
 
   // Triage: type from the prefix, effort from the analysis else the size, P1 for overlap or high risk.
   const tr = triageOf({ pr: { title: "feat(x): y" }, analysis: { effort: { score: 3 }, mergeRisk: { level: "high", why: "auth" } } });
@@ -543,6 +546,13 @@ console.log("ok");
   assert.equal(plainText("- one\n- two\n1. three"), "one two three");
   assert.equal(plainText("## Why\nsee [the docs](https://example.com) now"), "Why see the docs now");
   assert.deepEqual([plainText("#2 feat: loan_id"), plainText("plain title"), plainText(null)], ["#2 feat: loan_id", "plain title", ""]);
+  // A bot's comment in HTML: the tags go, an image alone gives its alt text or "(image)"; a type in angle brackets stays.
+  const logo = '<a href="https://x.dev"><picture><source media="(prefers-color-scheme: dark)" srcset="d.png"><img alt="Coverage report" src="l.png"></picture></a>';
+  assert.equal(plainText(`${logo}\n\n**Coverage** dropped by 2%.`), "Coverage dropped by 2%.");
+  assert.equal(plainText(`<p align="center">${logo}</p>`), "Coverage report");
+  assert.equal(plainText('<img src="x.png">'), "(image)");
+  assert.equal(plainText("returns `Vec<String>` and <T> stays"), "returns Vec<String> and <T> stays");
+  assert.equal(plainText("<!-- bot:meta -->\nDeploy preview <b>ready</b>"), "Deploy preview ready");
   // A suggestion's title is cut at the first sentence end outside inline code, and is plain.
   const sug = (line, reason) => ({ key: `e.py:+${line}`, hunk: "h", path: "e.py", line, old: false, severity: "high", reason });
   assert.deepEqual(mergeFindings([], [sug(1, "`json.loads(x); y` raises `KeyError` on a missing id; both return 500."), sug(2, "Import couples the two. Split it."), sug(3, "No sentence end here")]).findings.map((f) => [f.title, f.detail]),
