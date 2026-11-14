@@ -538,3 +538,24 @@ console.log("ok");
   assert.equal(col("h"), col("cl") + 1, "the handler stands right after its caller");
   assert.ok(L.paths.find((p) => p.from.includes("cl")).kind !== "stub", "the call into it is a line, no stub");
 }
+
+// A long line from the card above a next-column line no longer crosses it (the owner's picture, rebuilt with other
+// names): the card with the long line goes below, and its way down takes the lane that crosses nothing. A crossing
+// that stays keeps its hop (hops are crossings()).
+{
+  const N = (id, group, label) => ({ id, group, label, description: "d", type: "service", status: "new" });
+  const arch = { groups: [{ id: "ws", label: "Workstation", kind: "client" }, { id: "acc", label: "Account", kind: "cloud" }, { id: "store", label: "Storage", kind: "cloud" }],
+    nodes: [N("show", "ws", "show script"), N("toggle", "ws", "toggle script"), N("org", "acc", "Organizations"), N("mid", "acc", "Delivery"), N("bucket", "store", "Bucket")],
+    edges: [{ from: "show", to: "bucket", label: "reads events" }, { from: "toggle", to: "org", label: "detach / attach" }, { from: "mid", to: "bucket", label: "writes" }] };
+  for (const fit of [false, true]) {
+    const L = archLayout(arch, "diff", () => 0, fit, { labels: true }), y = (id) => L.nodes.find((n) => n.id === id).y;
+    assert.deepEqual([L.paths.find((p) => p.kind === "long")?.to, L.hops.length], ["bucket", 0]);
+    assert.ok(y("show") > y("toggle"), "the card with the long line sits below");
+    assert.equal(L.hops.length, crossings([...L.paths.filter((p) => p.kind === "next" || p.kind === "long"), ...L.trunks]).length);
+  }
+  // Where the order cannot help (one card each in two columns of a group), the long line's lane still goes where it
+  // crosses the fewest: here none.
+  const one = { ...arch, groups: [...arch.groups, { id: "ws2", label: "Other", kind: "client" }], nodes: arch.nodes.map((n) => (n.id === "toggle" ? { ...n, group: "ws2" } : n)) };
+  assert.equal(archLayout(one, "diff", () => 0, false, { labels: true }).hops.length, 0);
+  console.log("ok long lines cross less");
+}
