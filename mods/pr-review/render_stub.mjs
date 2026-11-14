@@ -22,10 +22,11 @@ S.el = () => {
   });
   return p;
 };
-S.handle = () => new Proxy({}, { get: (_, k) => (k === "then" ? undefined : (...a) => {
+S.handle = () => { let val = ""; return new Proxy({}, { get: (_, k) => (k === "then" ? undefined : (...a) => { // an input keeps what set_value gave it
   if (k === "scroll_to_item" && !(Number.isInteger(a[0]) && a[0] >= 0)) S.errs.push(`scroll_to_item(${a[0]}) at ${where()}`);
-  return k === "value" ? "" : k === "is_focused" ? false : undefined;
-}) });
+  if (k === "set_value") val = String(a[0] ?? "");
+  return k === "value" ? val : k === "is_focused" ? false : undefined;
+}) }); };
 S.vlist = (id, n, sizes, key, render) => {
   S.lists.push({ id, n, render });
   if (n > 10000) S.errs.push(`${id}: ${n} items`);

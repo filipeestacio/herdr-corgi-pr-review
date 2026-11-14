@@ -54,6 +54,9 @@ async function open({ diff, analysis = null, findings = null, ctx = null, pr = 2
 async function tour(v, name) {
   const at = (x) => `${name}: ${x}`;
   for (const tab of ["files", "steps", "comments", "findings"]) act(v, tab, at(`tab ${tab}`));
+  // A comment written at a line: the composer, then a pending comment in the diff, the Comments tab and Finish.
+  const line = v.hunks[0] && `${v.hunks[0].path}:${v.hunks[0].rows.find((r) => r.kind === "+")?.n ?? 1}`;
+  if (line) { act(v, `comment:${line}`, at("composer open")); act(v, "draft:Why this?", at("composer with text")); act(v, "add", at("a pending comment")); assert.ok(v.comments.length > 0, at("the comment was added")); act(v, "comments", at("Comments with a pending comment")); act(v, "files", at("files again")); }
   // The pages, with their folds and rows clicked.
   for (const p of ["overview", "blast", "arch"]) act(v, `page:${p}`, at(`page ${p}`));
   v.command("page:overview", cx); v.rulesOpen = true; draw(v, at("Overview, rules open"));
