@@ -3,51 +3,101 @@
 
     python3 <this file> <checkout> <command> [args…]
 
-and never git itself. Allowed commands: diff, log, show, status, blame, merge-base, rev-parse, ls-files. Refused, with
-exit 2: any other command; a path that is absolute, starts with ~ or has a .. segment (git diff with a path outside
-the repository silently turns into --no-index and reads any file; a revision range like base..head is no path
-segment and stays allowed); options that write a file, run a program or read a file outside the checkout, also
-abbreviated (git takes abbreviations in some commands: blame --con is --contents). git runs as `git -C <checkout>`,
-without pager, external diff or textconv, with GIT_CEILING_DIRECTORIES above the checkout and abbreviated options
-disallowed. Standard library only.
+and never git itself. An allowlist, nothing else passes (exit 2 with the reason):
+- commands: diff, log, show, status, blame, merge-base, rev-parse, ls-files;
+- options: only those listed for the command below, none that takes a file; a value is given as --opt=value, a short
+  one attached or as the next argument (-n 5, -L 1,5);
+- every other argument is a revision or a path: relative, inside the checkout: no leading / or ~, no .. segment (also
+  a bare ..; a revision range like base..head is no segment and stays allowed), also after : (rev:path).
+git runs as `git --no-pager -C <checkout>`, with no external diff, no textconv, GIT_CEILING_DIRECTORIES above the
+checkout and abbreviated options disallowed. Standard library only.
 """
 import os
 import re
 import subprocess
 import sys
 
-COMMANDS = ("diff", "log", "show", "status", "blame", "merge-base", "rev-parse", "ls-files")
-# Long options refused, also as any abbreviation of them: they write a file, run a program or read a file by path.
-LONG = ("output", "ext-diff", "textconv", "no-index", "contents", "ignore-revs-file", "orderfile", "exclude-from",
-        "exclude-per-directory", "open-files-in-pager", "resolve-git-dir", "git-dir", "work-tree", "exec", "paginate")
-# Short options that take a file: diff/log/show -O<orderfile>, blame -S <revs-file>, ls-files -X <exclude-file>.
-SHORT = {"diff": "O", "log": "O", "show": "O", "blame": "S", "ls-files": "X"}
+FLAG, VALUE = None, "value"  # an option without a value, or with one (a word, number, format or pattern; never a file)
+DIFF = {"--stat": FLAG, "--numstat": FLAG, "--shortstat": FLAG, "--name-only": FLAG, "--name-status": FLAG, "--summary": FLAG, "--raw": FLAG,
+        "-p": FLAG, "--patch": FLAG, "-u": FLAG, "--no-patch": FLAG, "-s": FLAG, "-U": VALUE, "--unified": VALUE, "--minimal": FLAG,
+        "--patience": FLAG, "--histogram": FLAG, "-w": FLAG, "--ignore-all-space": FLAG, "-b": FLAG, "--ignore-space-change": FLAG,
+        "--ignore-blank-lines": FLAG, "--word-diff": FLAG, "--color": VALUE, "--no-color": FLAG, "--exit-code": FLAG, "--quiet": FLAG,
+        "-M": FLAG, "--find-renames": FLAG, "--no-renames": FLAG, "--diff-filter": VALUE, "-R": FLAG, "--function-context": FLAG, "-W": FLAG,
+        "--full-index": FLAG, "--abbrev": VALUE, "--no-prefix": FLAG, "--text": FLAG, "-a": FLAG, "--stat-width": VALUE}
+LOG = {**DIFF, "--oneline": FLAG, "--format": VALUE, "--pretty": VALUE, "-n": VALUE, "--max-count": VALUE, "--skip": VALUE, "--since": VALUE,
+       "--until": VALUE, "--after": VALUE, "--before": VALUE, "--author": VALUE, "--committer": VALUE, "--grep": VALUE, "-S": VALUE, "-G": VALUE,
+       "--follow": FLAG, "--first-parent": FLAG, "--merges": FLAG, "--no-merges": FLAG, "--reverse": FLAG, "--graph": FLAG, "--decorate": FLAG,
+       "--no-decorate": FLAG, "--date": VALUE, "--all": FLAG, "-L": VALUE, "-i": FLAG, "--regexp-ignore-case": FLAG}
+OPTIONS = {
+    "diff": {**DIFF, "--merge-base": FLAG, "--cached": FLAG, "--staged": FLAG},
+    "log": LOG,
+    "show": LOG,
+    "blame": {"-L": VALUE, "-w": FLAG, "-M": FLAG, "--porcelain": FLAG, "--line-porcelain": FLAG, "-e": FLAG, "--show-email": FLAG, "-s": FLAG,
+              "--date": VALUE, "-l": FLAG, "-t": FLAG, "--root": FLAG},
+    "status": {"--short": FLAG, "-s": FLAG, "--porcelain": FLAG, "--branch": FLAG, "-b": FLAG, "--untracked-files": VALUE, "-u": VALUE},
+    "merge-base": {"--all": FLAG, "--is-ancestor": FLAG, "--fork-point": FLAG, "--octopus": FLAG},
+    "rev-parse": {"--short": FLAG, "--verify": FLAG, "--abbrev-ref": FLAG, "--symbolic-full-name": FLAG, "--is-inside-work-tree": FLAG, "-q": FLAG, "--quiet": FLAG},
+    "ls-files": {"--cached": FLAG, "-c": FLAG, "--modified": FLAG, "-m": FLAG, "--others": FLAG, "-o": FLAG, "--exclude-standard": FLAG, "--stage": FLAG,
+                 "-s": FLAG, "--deleted": FLAG, "-d": FLAG, "-z": FLAG},
+}
+# Options whose value may hold a path (log -L 1,5:lib/x.py, blame -L): the part after the last : is checked as one.
+PATH_VALUES = {"-L"}
+
+
+def bad_path(text):
+    """Why a revision or path leaves the checkout, or None."""
+    for part in str(text).split(":"):
+        p = part.strip().replace("\\", "/")
+        if p.startswith(("/", "~")) or ".." in p.split("/") or "\0" in p:
+            return f"{text}: paths must be relative and stay inside the checkout"
+    return None
 
 
 def refused(cmd, args):
     """The reason the call is refused, or None."""
-    if cmd not in COMMANDS:
-        return f"only {', '.join(COMMANDS)} are allowed"
-    paths = False
-    for a in args:
-        if a == "--":
-            paths = True
+    allowed = OPTIONS.get(cmd)
+    if allowed is None:
+        return f"only {', '.join(OPTIONS)} are allowed"
+    k, paths = 0, False
+    while k < len(args):
+        a = args[k]
+        k += 1
+        if paths or a == "--" or not a.startswith("-") or a == "-":
+            if a == "--":
+                paths = True
+                continue
+            if a == "-":
+                return "reading from stdin is not allowed"
+            why = bad_path(a)
+            if why:
+                return why
             continue
-        if a.startswith("--") and not paths:
-            name = a[2:].split("=", 1)[0]
-            if name and any(full.startswith(name) for full in LONG):
-                return f"option {a.split('=', 1)[0]} is not allowed"
-            values = a.split("=", 1)[1:]
-        elif a.startswith("-") and len(a) > 1 and not paths:
-            if SHORT.get(cmd) and SHORT[cmd] in a[1:]:
-                return f"option -{SHORT[cmd]} is not allowed for git {cmd}"
-            values = [a[2:]]  # an attached value, e.g. log -L1,5:path
+        if cmd == "log" and re.fullmatch(r"-\d+", a):  # log -5
+            continue
+        if a.startswith("--"):
+            name, eq, value = a.partition("=")
+            short = None
         else:
-            values = [a]
-        for v in values:
-            for part in re.split(r"[:=]", v):  # rev:path and --opt=path
-                if part.startswith(("/", "~")) or ".." in part.replace("\\", "/").split("/"):
-                    return f"{a}: paths must stay inside the checkout (no absolute path, ~ or ..)"
+            name, value, eq = a[:2], a[2:], ""
+            short = True
+        if name not in allowed:
+            return f"option {name} is not allowed for git {cmd}"
+        kind = allowed[name]
+        if kind is FLAG:
+            if value and short and not all(f"-{c}" in allowed and allowed[f"-{c}"] is FLAG for c in value):
+                return f"option {a} is not allowed for git {cmd}"  # combined flags (-pw) only of known flags
+            if eq:
+                return f"option {name} takes no value"
+            continue
+        if not value and not eq:
+            if not short or k >= len(args):
+                return f"option {name} needs its value as {name}=…" if not short else f"option {name} needs a value"
+            value = args[k]
+            k += 1
+        if name in PATH_VALUES:
+            why = bad_path(value.rsplit(":", 1)[-1]) if ":" in value else None
+            if why:
+                return why
     return None
 
 
@@ -60,11 +110,8 @@ def main(argv):
     if why:
         print(f"safegit: refused: {why}", file=sys.stderr)
         return 2
-    env = {**os.environ, "GIT_CEILING_DIRECTORIES": os.path.dirname(root), "GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS": "1",
-           "GIT_PAGER": "cat", "PAGER": "cat"}
-    env.pop("GIT_EXTERNAL_DIFF", None)
-    env.pop("GIT_DIR", None)
-    env.pop("GIT_WORK_TREE", None)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}  # no GIT_DIR, GIT_EXTERNAL_DIFF, GIT_CONFIG_* from outside
+    env.update(GIT_CEILING_DIRECTORIES=os.path.dirname(root), GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS="1", GIT_PAGER="cat", PAGER="cat", GIT_CONFIG_NOSYSTEM="1")
     plain = ["--no-ext-diff", "--no-textconv"] if cmd in ("diff", "log", "show") else []
     return subprocess.run(["git", "--no-pager", "-C", root, "-c", "core.fsmonitor=false", cmd, *plain, *args], env=env).returncode
 

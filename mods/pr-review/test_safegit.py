@@ -1,5 +1,4 @@
 """Run: python3 test_safegit.py  (a scratch repo, no network): the read-only git of the model runs."""
-import os
 import pathlib
 import subprocess
 import sys
@@ -9,15 +8,32 @@ sys.dont_write_bytecode = True
 import safegit  # noqa: E402
 
 no = lambda cmd, *a: safegit.refused(cmd, list(a))  # noqa: E731
-for cmd, args in [("diff", ["/etc/hosts", "README.md"]), ("diff", ["~/x", "a.py"]), ("diff", ["../x", "a.py"]), ("diff", ["a/../../x", "a.py"]),
-                  ("diff", ["--no-index", "a", "b"]), ("diff", ["--ou=x"]), ("diff", ["--output=x"]), ("diff", ["--ext", "HEAD"]), ("diff", ["--textconv"]),
-                  ("blame", ["--con", "x", "a.py"]), ("blame", ["-S", "revs", "a.py"]), ("blame", ["--ignore-revs-f", "x", "a.py"]), ("diff", ["-Ox", "HEAD"]),
-                  ("show", ["HEAD:../x"]), ("show", ["HEAD:/etc/hosts"]), ("diff", ["--relative=../"]), ("log", ["-L1,5:/etc/hosts"]), ("diff", ["HEAD", "--", "../x"]),
-                  ("ls-files", ["-X", "x"]), ("rev-parse", ["--resolve-git-dir", "x"]), ("grep", ["x"]), ("config", ["--list"]), ("diff", ["..\\x"])]:
+refused = [
+    # paths outside the checkout, with or without an option (git diff turns into --no-index on its own)
+    ("diff", ["/etc/hosts", "README.md"]), ("diff", ["~/.ssh/known_hosts", "/dev/null"]), ("diff", ["~/x", "a.py"]), ("diff", ["../x", "a.py"]),
+    ("diff", ["../../x", "y"]), ("diff", ["a/../../x", "a.py"]), ("diff", [".."]), ("diff", [".. "]), ("diff", ["HEAD", "--", "../x"]), ("diff", ["..\\x"]),
+    ("show", ["HEAD:../x"]), ("show", ["HEAD:/etc/hosts"]), ("show", [":/fix"]), ("log", ["-L1,5:/etc/hosts"]), ("log", ["-L", "1,5:../x"]),
+    ("status", ["/tmp"]), ("diff", ["-"]),
+    # options that read or write a file, run a program, or move git elsewhere; also abbreviated and unknown ones
+    ("diff", ["--no-index", "a", "b"]), ("diff", ["--ou=x"]), ("diff", ["--output=x"]), ("diff", ["--ext", "HEAD"]), ("diff", ["--ext-diff"]),
+    ("diff", ["--textconv"]), ("diff", ["-Ox", "HEAD"]), ("diff", ["--orderfile=x"]), ("diff", ["--relative=../"]), ("diff", ["-C", "/x"]),
+    ("diff", ["-c", "core.pager=sh"]), ("log", ["--git-dir=/x"]), ("log", ["--work-tree=/x"]), ("blame", ["--con", "x", "a.py"]),
+    ("blame", ["--contents", "x", "a.py"]), ("blame", ["-S", "revs", "a.py"]), ("blame", ["--ignore-revs-file=x", "a.py"]), ("ls-files", ["-X", "x"]),
+    ("ls-files", ["--exclude-from=x"]), ("rev-parse", ["--resolve-git-dir", "x"]), ("rev-parse", ["--git-path", "x"]), ("diff", ["-pO"]),
+    ("diff", ["--stat=x"]), ("log", ["--format"]),
+    # other commands
+    ("grep", ["x"]), ("config", ["--list"]), ("checkout", ["x"]), ("-C", ["/x", "log"]),
+]
+for cmd, args in refused:
     assert no(cmd, *args), (cmd, args)
-for cmd, args in [("diff", ["base..head", "--", "lib/x.py"]), ("diff", ["origin/main...HEAD", "--stat"]), ("log", ["--oneline", "-5"]), ("show", ["HEAD:lib/x.py"]),
-                  ("blame", ["-L", "1,5", "lib/x.py"]), ("log", ["-Sneedle", "--format=%H"]), ("diff", ["--exit-code", "--name-only"]), ("ls-files", []),
-                  ("rev-parse", ["--show-toplevel"]), ("merge-base", ["HEAD", "origin/main"]), ("status", ["--short"]), ("log", ["--follow", "--", "lib/x.py"])]:
+allowed = [
+    ("diff", ["base..head", "--", "lib/x.py"]), ("diff", ["origin/main...HEAD", "--stat"]), ("log", ["--oneline", "-5"]), ("show", ["HEAD:lib/x.py"]),
+    ("blame", ["-L", "1,5", "lib/x.py"]), ("log", ["-Sneedle", "--format=%H"]), ("log", ["-S", "needle"]), ("diff", ["--exit-code", "--name-only"]),
+    ("ls-files", []), ("rev-parse", ["--short", "HEAD"]), ("merge-base", ["HEAD", "origin/main"]), ("status", ["--short"]), ("status", ["-uno"]),
+    ("log", ["--follow", "--", "lib/x.py"]), ("log", ["-n", "3", "-L", "1,5:lib/x.py"]), ("diff", ["-pw", "-U3", "HEAD~1"]), ("show", ["--stat", "HEAD"]),
+    ("log", ["--grep=fix ../ in text", "--author=a"]), ("diff", ["--merge-base", "origin/main"]),
+]
+for cmd, args in allowed:
     assert no(cmd, *args) is None, (cmd, args, no(cmd, *args))
 
 # Run for real in a scratch repo: a file outside is never read, an inside diff works, the root must be absolute.
@@ -32,10 +48,10 @@ run("-c", "user.name=t", "-c", "user.email=t", "add", "a.py")
 run("-c", "user.name=t", "-c", "user.email=t", "commit", "-qm", "one")
 me = str(pathlib.Path(__file__).with_name("safegit.py"))
 call = lambda *a: subprocess.run([sys.executable, me, *a], capture_output=True, text=True)  # noqa: E731
-out = call(str(repo), "diff", str(top / "outside.txt"), "a.py")
-assert out.returncode == 2 and "SECRET" not in out.stdout + out.stderr and "refused" in out.stderr
+for args in (["diff", str(top / "outside.txt"), "a.py"], ["diff", "../outside.txt", "a.py"]):
+    out = call(str(repo), *args)
+    assert out.returncode == 2 and "SECRET" not in out.stdout + out.stderr and "refused" in out.stderr, args
 assert call(str(repo), "log", "--oneline").stdout.strip().endswith("one")
 assert call(str(repo), "show", "HEAD:a.py").stdout == "x = 1\n"
 assert call("repo", "log").returncode == 2 and call(str(repo / "nowhere"), "log").returncode == 2, "the checkout is an absolute, existing folder"
-os.chdir(top)
 print("ok")
