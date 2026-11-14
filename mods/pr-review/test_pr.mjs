@@ -485,7 +485,7 @@ console.log("ok");
   assert.equal(verdictParts(taskList(asks, [f("a", "high", { security: true }), f("b", "low", { security: true }), f("c", "low", { security: true })], [], statusOf), {})[0].short, "⛨ 1 high");
   assert.equal(verdictParts(taskList([], [f("a", "low", { security: true }), f("b", "low", { security: true })], [], statusOf), {})[0].short, "⛨ 2");
   assert.deepEqual(verdictParts(list, counts, { failed: 1, toVerify: 2 }).slice(2).map((p) => [p.key, p.text, p.tone]), [["checks", "1 check failed", "plain"], ["verify", "2 fixes to verify", "plain"]]);
-  assert.equal(certaintyLine(all[0]), "Assumed, not checked · only if no token set (and 1 more)");
+  assert.equal(certaintyLine(all[0]), "Assumed, not checked · only if no token set and no authorizer");
   assert.equal(certaintyLine(f("x", "low", { certainty: "derived" })), "Derived from the code");
   assert.deepEqual([["The caller passes auth"], ["SQS redelivery"]].map((preconditions) => certaintyLine(f("x", "low", { preconditions }))), ["only if the caller passes auth", "only if SQS redelivery"]);
   assert.equal(certaintyLine(f("x", "low")), "", "an older finding says nothing about it");
@@ -595,6 +595,10 @@ console.log("ok");
   assert.equal(funnelLine(funnel([m.findings[2]], () => "open")), "analysis reported 1 and ai 1, 2 in all. Merged by file and line, that is 1 finding. 1 is unresolved, none of them on security.");
   assert.equal(funnelLine(funnel([m.findings[1]], () => "fixed")), "analysis reported 1 and claude 1, 2 in all. Merged by file and line, that is 1 finding. None are unresolved.");
   assert.equal(funnelLine(funnel([], () => "open")), "No findings reported.");
+  const { funnelShort } = await import("./pr.js");
+  assert.deepEqual([funnelShort(x), funnelShort(funnel([m.findings[0]], () => "open")), funnelShort(funnel([], () => "open"))],
+    ["7 reports from 4 sources, 4 after merging · 1 on security, 1 confirmed by a run", "2 reports from 2 sources, 1 after merging · 1 on security, 1 confirmed by a run", ""]);
+  assert.equal(funnelShort({ by: [["analysis", 1]], reported: 1, merged: 1, security: 0 }), "1 report from 1 source, none merged");
   // The owner of a finding's file, when a component there names one.
   const comps = [{ name: "Queue", at: "a.py:6", owner: null }, { name: "Event", at: "a.py:20", owner: "@platform-team" }, { name: "Other", at: "b.py:1", owner: "@web" }];
   assert.deepEqual([ownerOf({ file: "a.py" }, comps), ownerOf({ file: "b.py" }, comps), ownerOf({ file: "c.py" }, comps), ownerOf({ file: "a.py" }, undefined)], ["@platform-team", "@web", null, null]);
@@ -693,6 +697,15 @@ console.log("ok");
   const same = mergeFindings(pr2.slice(0, 2), [keyErr, { ...keyErr, key: "k21", line: 21 }, { ...keyErr, key: "k22", line: 22, category: "availability" }, { ...keyErr, key: "k22b", line: 22, severity: "low" }]);
   assert.deepEqual([same.findings.map((f) => `${f.line} ${f.sources.map((y) => y.reviewer).join("+")}`), same.notes.map((x) => x.key)], [["19 analysis+claude+ai", "22 ai+ai"], ["k21"]]);
   assert.deepEqual(mergeFindings([{ ...pr2[0], criteria: ["c4"] }, { ...pr2[1], criteria: ["c2", "c4"] }]).findings[0].criteria, ["c4", "c2"]);
+  // A note in a file the public reaches is a finding whatever its category word (handler.py:20 on PR #2: the
+  // route is in template.yaml, its handler in library/handler.py).
+  const { publicFiles } = await import("./pr.js");
+  const pub = publicFiles([{ public: true, at: "template.yaml:24", node: "handler" }, { public: false, at: "template.yaml:20", node: "sqs" }],
+    [{ id: "handler", at: "library/handler.py:18" }, { id: "sqs", at: "template.yaml:11" }]);
+  assert.deepEqual([...pub], ["template.yaml", "library/handler.py"]);
+  const n500 = { key: "k20", path: "library/handler.py", line: 20, old: false, severity: "medium", category: "bug", reason: "A missing 'id' key raises KeyError and returns an unhandled 500." };
+  assert.deepEqual([mergeFindings([], [n500]).notes.length, mergeFindings([], [n500], {}, pub).findings.map((f) => [f.line, f.reviewer])], [1, [[20, "ai"]]]);
+  assert.deepEqual([...publicFiles(undefined, undefined)], []);
   console.log("ok neighbouring lines");
 }
 
