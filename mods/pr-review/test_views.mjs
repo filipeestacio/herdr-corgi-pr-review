@@ -432,3 +432,11 @@ assert.deepEqual(stackOf({ stacked_on: { number: 1, url: "u1" } }, 2).map((p) =>
 assert.deepEqual(stackOf({ stacked_above: [{ number: 2, url: "u2" }] }, 1).map((p) => [p.number, Boolean(p.self)]), [[1, true], [2, false]], "PR #1 under #2");
 assert.equal(stackOf({ stacked_on: null, stacked_above: [] }, 3), null);
 assert.equal(stackOf(null, 3), null, "no context yet");
+
+// ---- a layer's "Depends on" chips: clicks placed by x from the right end
+import { chipAt, textW } from "./views.js";
+assert.equal(chipAt(950, 1000, [80, 100]), 1, "the last chip ends at the right end");
+assert.equal(chipAt(850, 1000, [80, 100]), 0, "the one before it, a gap to the left");
+assert.equal(chipAt(897, 1000, [80, 100]), -1, "the gap between them");
+assert.equal(chipAt(700, 1000, [80, 100]), -1);
+assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));

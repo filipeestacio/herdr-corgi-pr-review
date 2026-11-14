@@ -29,7 +29,7 @@ import { archView, archLegend, visualsCard, visualCard, segBar, foldCard, chip, 
 import { visualPlan } from "./stack.js";
 import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCALE } from "./views.js";
 import { wrapCode, codeCols, sliceSpans } from "./views.js"; // long lines wrap
-import { pairRows, pairSide, HALF_GUTTER, diffModeOf, oneSided, stackOf } from "./views.js"; // side by side; the bar's stack
+import { pairRows, pairSide, HALF_GUTTER, diffModeOf, oneSided, stackOf, chipAt, textW } from "./views.js"; // side by side; the bar's stack
 import { plainText } from "./pr.js";
 import { hasSources, archLayout, archBands } from "./arch.js";
 import { archMarks, zoneArch } from "./arch.js";
@@ -1396,6 +1396,8 @@ export const ReviewMode = {
     return { split, cols, units, parts: (u) => (u.l === undefined ? n(u.ri) : Math.max(n(u.l), n(u.r))) };
   },
   // Side by side or unified: the person's choice (shared "review.diff", the switch in the top bar), else what fits.
+  // A layer's "Depends on": the shown layers by title (step.dependsOn) with each chip's width.
+  stepDeps(s) { return (s.dependsOn ?? []).map((title) => this.steps().find((x) => x.title === title)).filter(Boolean).map((d) => [d, Math.min(220, textW(d.title, 12.5) + 14)]); },
   diffMode() { return diffModeOf(shared("review.diff"), this.listW ?? 900, this.codeCharW()); },
   // Long lines wrap only when the person switched it on (shared "review.wrap"); else the code scrolls sideways
   // (hsOf("rv-code"): the wheel or shift+wheel over the list, the bar at its foot), gutters and cards stay.
@@ -1582,7 +1584,10 @@ export const ReviewMode = {
       else if (x >= FILE_CHEV + FILE_SEEN && x < FILE_CHEV + FILE_SEEN + FILE_WHOLE && this.shown().fileHunks?.has(p)) this.toggleWhole(p, cx);
       else if (this.collapsed.has(p) || this.overBudget?.has(p)) this.unfold(p); else this.collapsed.add(p);
     } else if (it.t === "fold") this.unfold(it.path);
-    else if (it.t === "step") this.goStep(it.i, cx, false);
+    else if (it.t === "step") {
+      const deps = this.stepDeps(it.s), k = chipAt(x, this.press.w - 16, deps.map(([, w]) => w), 10); // the head's "Depends on" chips: px(16), gap(10)
+      if (k >= 0) this.goStep(this.steps().indexOf(deps[k][0]), cx); else this.goStep(it.i, cx, false);
+    }
     else if (it.t === "path") this.visit(it.h.id, cx);
     cx.notify();
   },
@@ -4250,7 +4255,11 @@ export const ReviewMode = {
       return v_flex().w_full().h(this.sizeOf(it)).px(16).pt(10).gap(4).bg(on ? t.selected : t.raised).border_t(1).border_color(t.border).cursor_pointer()
         .child(h_flex().h(24).flex_none().gap(10).items_center()
           .child(div().id(`rv-lstep-${it.i}`).tooltip(this.done(s) ? "This layer is checked off" : "Layer number").text_size(14).font_semibold().text_color(this.done(s) ? t.ansi2 : t.muted).child(this.done(s) ? "✓" : `${it.i + 1}`))
-          .child(div().flex_1().min_w(0).truncate().text_size(15).font_semibold().child(plain(s.title))))
+          .child(div().flex_1().min_w(0).truncate().text_size(15).font_semibold().child(plain(s.title)))
+          // "Depends on" the layers its code builds on (step.dependsOn): a click on one opens it (onItem, chipAt).
+          .when(this.stepDeps(s).length > 0, (e) => e.child(div().id(`rv-ldeps-${it.i}`).flex_none().text_size(12.5).text_color(t.muted).tooltip("The layers whose code this one builds on: read them first").child("Depends on"))
+            .children(this.stepDeps(s).map(([d, w]) => div().w(w).h(22).flex_none().px(6).flex().items_center().rounded(6).border_1().border_color(t.border).text_size(12.5).text_color(t.accent)
+              .truncate().child(plain(d.title))))))
         .child(div().flex_none().max_w(LAYER_TEXT).line_height(1.55).text_size(13.5).text_color(t.foreground).child(TextView.markdown(`rv-lwhy-${it.i}`, s.why)))
         .when(s.questions.length > 0, (e) => e.child(div().id(`rv-lq-${it.i}`).tooltip("Questions to check while you read this layer's code").h(18).flex_none().mt(4).text_size(11.5).font_semibold().text_color(t.muted).child("CHECK"))
           .children(s.questions.map((q, k) => h_flex().flex_none().max_w(LAYER_TEXT).gap(8).items_start().text_size(13.5).line_height(1.55)

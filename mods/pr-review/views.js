@@ -474,3 +474,18 @@ export function stackOf(ctx, number) {
   const below = ctx?.stacked_on ?? null, above = ctx?.stacked_above ?? [];
   return below || above.length ? [...(below ? [below] : []), { number, self: true }, ...above] : null;
 }
+
+// ---- "Depends on" in a layer's head (review.js item "step"): small chips at the right end of the title row
+// A text's width in px of the UI font at `size` (the estimate wrapCount uses), for chips whose clicks are placed by x.
+export const textW = (text, size = 13.5) => Math.ceil([...String(text ?? "")].reduce((w, ch) => w + CH_W(ch), 0) * (size / 13.5) * 1.04);
+// Which of the chips laid out right-aligned (the last one ending at `right`, `gap` px between) a press at x hit: its
+// index, or -1.
+export function chipAt(x, right, widths, gap = 6) {
+  let r = right;
+  for (let k = widths.length - 1; k >= 0; k--) {
+    const l = r - widths[k];
+    if (x >= l && x < r) return k;
+    r = l - gap;
+  }
+  return -1;
+}
