@@ -416,7 +416,7 @@ console.log("ok");
   assert.deepEqual([old.unlinked, old.components, old.componentCounts, old.access, old.steps[0].questionFiles], [[], [], null, [], [""]]);
   const of = old.steps[0].findings[0];
   assert.match(of.id, /^a[0-9a-f]+$/);
-  assert.deepEqual(findingFacts(of), { impact: null, effect: "", preconditions: [], certainty: null, criteria: [], breaks: null, effort: null, reachable_from: [], reachability: null });
+  assert.deepEqual(findingFacts(of), { impact: null, effect: "", preconditions: [], certainty: null, criteria: [], breaks: null, effort: null, reachable_from: [], reachability: null, introduced_here: null, path_certainty: null, path_why: "" });
   const now = mapReview({ unlinked: ["c2"], components: [{ name: "Queue", status: "new" }], component_counts: { new: 1, changed: 0, no_owner: 1, codeowners: false }, access: [{ resource: "Api", public: true }],
     steps: [{ title: "s", hunks: ["h1"], check_questions: ["", "q1?", "q2?"], question_files: ["x.py", "a.py", ""],
       suggestions: [{ hunk: "h1", line: 2, side: "new", severity: "low", category: "availability", text: "No retry. Add one." }],
@@ -439,9 +439,9 @@ console.log("ok");
   assert.deepEqual(m.findings.map((f) => [f.file, f.line, f.severity, f.reviewer, f.category]), [["a.py", 9, "high", "security", undefined], ["a.py", 2, "low", "ai", "availability"]]);
   assert.deepEqual(m.notes, []);
   assert.deepEqual(findingFacts(m.findings[0]), { impact: "unauthorized_access", effect: "Anyone reads it.", preconditions: ["redelivery"], certainty: "confirmed", criteria: ["c1"], breaks: { from: "n1", to: "n2", edge: "e5" }, effort: null,
-    reachable_from: ["acc1"], reachability: "public" }, "a reviewer names no reachability: the merged finding has the analysis's");
+    reachable_from: ["acc1"], reachability: "public", introduced_here: null, path_certainty: null, path_why: "" }, "a reviewer names no reachability: the merged finding has the analysis's");
   assert.ok(m.findings[0].ids.includes(now.asks[0].findings[0]), "an ask finds its finding through ids");
-  assert.deepEqual(findingFacts(m.findings[1]), { impact: null, effect: "", preconditions: [], certainty: null, criteria: [], breaks: null, effort: null, reachable_from: [], reachability: null });
+  assert.deepEqual(findingFacts(m.findings[1]), { impact: null, effect: "", preconditions: [], certainty: null, criteria: [], breaks: null, effort: null, reachable_from: [], reachability: null, introduced_here: null, path_certainty: null, path_why: "" });
   // Reviewer runs: the state as written, or derived for an entry from before it was.
   const runs = runsOf({ a: { busy: true, started: "t" }, b: { at: "t", count: 0 }, c: { error: "boom", at: "t" }, d: { state: "failed", error: "x" }, e: { state: "done", scope: { read: ["a.py"], checked: [], skipped: [] }, at: "t" }, f: {} });
   assert.deepEqual(Object.values(runs).map((r) => r.state), ["running", "done", "failed", "failed", "done", null]);
@@ -682,4 +682,21 @@ console.log("ok");
   assert.deepEqual(securityStart({ ...base, trusted: true, trigger: { run: false, reasons: [], why_not: "Only documentation changed." } }), { start: false, offer: false, reasons: [] });
   assert.deepEqual(securityStart(), { start: false, offer: false, reasons: [] });
   console.log("ok security start");
+}
+
+// Round 4 fields: a requirement's short name, what changed as three lists, introduced_here and the way from outside.
+{
+  const { mapReview, findingFacts, mergeFindings, mergeBlockers, alreadyThere } = await import("./pr.js");
+  const ai = mapReview({ what_changed: { adds: ["A queue."], changes: ["Reminders publish events.", "x", "y", "too many"] }, asks: [{ id: "c1", text: "t", short: "one reminder mail per loan" }], steps: [] }, []);
+  assert.deepEqual([ai.whatChanged, ai.asks[0].short], [{ adds: ["A queue."], changes: ["Reminders publish events.", "x", "y"], runtime: [] }, "one reminder mail per loan"]);
+  assert.deepEqual([mapReview({ asks: [{ text: "t" }], steps: [] }, []).whatChanged, mapReview({ asks: [{ text: "t" }], steps: [] }, []).asks[0].short], [null, ""], "an older analysis");
+  const tok = { id: "s1", reviewer: "security", file: "library/handler.py", line: 9, severity: "high", title: "Empty token passes", certainty: "derived", path_certainty: "assumed",
+    path_why: "depends on the gateway passing an empty bearer token through", introduced_here: true };
+  assert.deepEqual([findingFacts(tok).certainty, findingFacts(tok).path_certainty, findingFacts(tok).path_why, findingFacts(tok).introduced_here], ["derived", "assumed", tok.path_why, true]);
+  assert.deepEqual([findingFacts({}).introduced_here, findingFacts({}).path_certainty, findingFacts({ path_certainty: "maybe" }).path_certainty], [null, null, null]);
+  const old = { id: "a1", reviewer: "analysis", file: "library/api.py", line: 4, severity: "high", title: "Store is global", introduced_here: false };
+  const m = mergeFindings([tok, old, { id: "a2", reviewer: "analysis", file: "a.py", line: 1, severity: "high", title: "Old cache, not said" }]).findings;
+  assert.deepEqual(mergeBlockers({ findings: m }).map((b) => b.finding).sort(), ["a2", "s1"], "a flaw that was there before is no blocker; not said stays one");
+  assert.deepEqual(alreadyThere(m).map((b) => [b.finding, b.why]), [["a1", "library/api.py:4 · high finding, already there before this PR"]]);
+  console.log("ok round 4 fields");
 }

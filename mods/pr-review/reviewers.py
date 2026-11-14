@@ -107,10 +107,10 @@ def findings_schema(kind):
     fork takes no extra prompt text (it would read it as the review target), but it sees the schema. The security
     reviewer also answers with its view (SECURITY)."""
     sec = kind == "security"
-    extra = {"ref": S, "reachability": {"enum": REACH}} if sec else {}
+    extra = {"ref": S, "reachability": {"enum": REACH}} if sec else {}  # every Claude reviewer may name the way from outside (review.PATH)
     return {"type": "object", "description": ASK + (ASK_SECURITY if sec else ""), "required": ["findings", "scope", *(SECURITY if sec else [])], "properties": {
         "findings": {"type": "array", "items": {"type": "object", "required": ["file", "line", "title", "detail", *review.JUDGED, *(["ref"] if sec else [])],
-                                               "properties": {**PLACE, **review.JUDGED, **extra}}},
+                                               "properties": {**PLACE, **review.JUDGED, **review.PATH, **extra}}},
         "scope": {"type": "object", "required": ["read", "checked", "skipped"], "properties": {
             "read": review.STRINGS, "checked": review.checked_schema(AREAS[kind]), "skipped": review.STRINGS}},
         **(SECURITY if sec else {})}}
@@ -152,7 +152,7 @@ def normalize(raw, reviewer, worktree):
         fid = hashlib.sha1(f"{reviewer}|{path}|{line}|{title}".encode()).hexdigest()[:12]
         out.append({"id": fid, "reviewer": reviewer, "file": path, "line": line, "end": int(f.get("end") or line),
                     "severity": f["severity"], "title": title, "detail": str(f.get("detail") or ""), "suggestion": str(f.get("suggestion") or ""),
-                    "code": code, **{k: f[k] for k in (*review.JUDGED, "ref", "reachability") if f.get(k)}})
+                    "code": code, **{k: f[k] for k in (*review.JUDGED, *review.PATH, "ref", "reachability") if f.get(k) not in (None, "", [])}})
     return out
 
 
@@ -390,13 +390,15 @@ def main(arg):
     else:
         answer, meta = codex_review(req)
     findings = normalize(answer.get("findings"), req["kind"], wt)
+    try:  # the lines the PR adds: a finding in them is the PR's (introduced_here), an access row there opened by it
+        diff = related.diff_files(git("diff", "--no-color", "--no-ext-diff", "-U0", f"origin/{req['base']}...HEAD", cwd=wt))
+        changed = {f["path"]: {n for n, _ in f["added"]} for f in diff}
+    except (RuntimeError, OSError, subprocess.SubprocessError):
+        changed = None
+    for f in findings:
+        review.introduced(f, changed)
     security = None
     if req["kind"] == "security":
-        try:
-            diff = related.diff_files(git("diff", "--no-color", "--no-ext-diff", "-U0", f"origin/{req['base']}...HEAD", cwd=wt))
-            changed = {f["path"]: {n for n, _ in f["added"]} for f in diff}
-        except (RuntimeError, OSError, subprocess.SubprocessError):
-            changed = None
         security = {"head": req["head"], "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "picture": made, **security_view(answer, findings, pic, changed)}
     for f in findings:
         f.pop("ref", None)
