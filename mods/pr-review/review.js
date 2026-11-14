@@ -51,6 +51,7 @@ const SPLIT = 6, ROW = 22, GUTTER = 4 + 48 + 48 + 22, GAP_SEG = 110, BTN = 110, 
 const FILE_CHEV = 30, FILE_SEEN = 100, FILE_WHOLE = 124;
 const MORE = 20; // lines per ↑/↓ click
 const ONE_LINE = [0]; // a code line that fits: one visual line from its start (wrapsOf)
+const NO_WRAP = 1e9; // the columns of a line that does not wrap (rowLayout)
 // The items that start a card under a line: side by side they carry the mark of their half (item).
 const SIDE_HEAD = new Set(["find", "ch", "gh", "compose", "sug", "def", "hidden"]);
 const KEYS_POP = { width: 340, height: 330 }; // the "?" popup: sized to its rows and the last line
@@ -445,6 +446,8 @@ export const ReviewMode = {
     // by side (the unified view takes the line): on its code, shift-click on its code, on its line number, on its
     // "+ Comment" chip. The same handler as the click (onItem).
     else if (name === "line") this.pressLine(arg, cx);
+    else if (name === "code-x") { const c = this.hsOf("rv-code"); c.x = Math.max(0, Math.min(c.maxX, arg === "end" ? c.maxX : Number(arg) || 0)); } // code-x:<px> | end: the long lines' scroll bar, as a drag
+    else if (name === "wrap") setShared("review.wrap", arg === "on"); // wrap:on | off, the top bar's "Wrap" switch
     else if (name === "diff") setShared("review.diff", arg === "split" || arg === "unified" ? arg : null); // diff:split | unified (the top bar's switch), diff:auto: what fits
     else if (name === "copy-link") copyText(this.prSel?.url ?? "");
     else if (name === "copy-state") this.copyState();
@@ -1386,12 +1389,31 @@ export const ReviewMode = {
   // {ri, l, r}, ri the row the item's key names) and how many visual lines a unit takes (its longer half's).
   rowLayout(rows) {
     const split = this.diffMode() === "split" && !oneSided(rows), lw = this.listW ?? 900, cw = this.codeCharW();
-    const cols = split ? codeCols(lw / 2, HALF_GUTTER, cw) : codeCols(lw, GUTTER, cw), n = (ri) => (ri === null ? 1 : this.wrapsOf(rows, ri, cols).length);
+    const cols = !this.wrapOn() ? NO_WRAP : split ? codeCols(lw / 2, HALF_GUTTER, cw) : codeCols(lw, GUTTER, cw), n = (ri) => (ri === null ? 1 : this.wrapsOf(rows, ri, cols).length);
     const units = split ? pairRows(rows).map((p) => (p.full !== undefined ? { ri: p.full } : { ri: p.r ?? p.l, l: p.l, r: p.r })) : rows.map((_, ri) => ({ ri }));
     return { split, cols, units, parts: (u) => (u.l === undefined ? n(u.ri) : Math.max(n(u.l), n(u.r))) };
   },
   // Side by side or unified: the person's choice (shared "review.diff", the switch in the top bar), else what fits.
   diffMode() { return diffModeOf(shared("review.diff"), this.listW ?? 900, this.codeCharW()); },
+  // Long lines wrap only when the person switched it on (shared "review.wrap"); else the code scrolls sideways
+  // (hsOf("rv-code"): the wheel or shift+wheel over the list, the bar at its foot), gutters and cards stay.
+  wrapOn() { return shared("review.wrap") === true; },
+  codeShift() { return this.wrapOn() ? 0 : this.hsOf("rv-code").x; },
+  // The sideways room of the diff's code: its longest line (whole row arrays, memoized) against the code column.
+  codeScroll(items) {
+    const s = this.hsOf("rv-code"), m = (this.longest ??= new WeakMap()), lw = this.listW ?? 900, cw = this.codeCharW();
+    let n = 0;
+    // ponytail: the lines on screen in the last frame decide; one scroll for the whole list, not per file.
+    const v = this.visCode, shown = v && v.end <= items.length ? items.slice(v.start, v.end) : items;
+    for (const it of shown) {
+      if (it.t !== "row") continue;
+      if (!m.has(it.src)) m.set(it.src, it.src.reduce((k, r) => (r.number === undefined ? k : Math.max(k, expandTabs(r.text).length)), 0));
+      n = Math.max(n, m.get(it.src));
+    }
+    const vis = this.diffMode() === "split" ? lw / 2 - HALF_GUTTER - 12 : lw - GUTTER - 12;
+    s.contentW = n * cw + 8; s.visW = lw; s.maxX = this.wrapOn() ? 0 : Math.max(0, s.contentW - vis); s.x = Math.min(s.x, s.maxX); s.view = vis;
+    return s;
+  },
 
   stepsItems(steps = this.steps()) {
     const items = [], at = {};
@@ -1513,7 +1535,7 @@ export const ReviewMode = {
       // A wrapped line's next visual line: its code starts that many columns into the line.
       const starts = this.wrapsOf(it.src, h.ri, it.cols), part = it.part ?? 0, a = starts[part], lastPart = part === starts.length - 1, gw = h.side ? HALF_GUTTER : GUTTER;
       if (a === undefined) return; // the blank under a half's shorter line
-      if (this.press.cmd) return this.define(it, r, cx, h.x < gw ? h.x : h.x + a * (this.charW ?? 7.8), gw, h.ri); // ⌘-click a name: its definition
+      if (this.press.cmd) return this.define(it, r, cx, h.x < gw ? h.x : h.x + (a + this.codeShift() / this.codeCharW()) * (this.charW ?? 7.8), gw, h.ri); // ⌘-click a name: its definition (scrolled sideways: that many columns on)
       // Selections are (file, line keys), not row indexes: rows are rebuilt on every render.
       // A line number (GitHub's gutter "+") opens the composer there; shift-click makes it a range. Side by side a
       // selection stays on its half: a press on the other half starts a new one there.
@@ -2589,7 +2611,9 @@ export const ReviewMode = {
         menu("models", modelChoices(this.ctxId()).map((c) => [`${c.value === m ? "✓ " : ""}${c.label} · ${priceText(c.value)} · ${this.estimate(c.value)}`, false, `model:${c.value}`]), 470)).tooltip("Pick the model for the AI analysis; each option shows its cost estimate").accessibility_label("Model"))
       .child(sep())
       .child(h_flex().gap(10).items_center().child(link("rv-diffmode", div().child(this.diffMode() === "split" ? "Side by side" : "Unified"), () => setShared("review.diff", this.diffMode() === "split" ? "unified" : "split"))
-        .tooltip(`The diff ${this.diffMode() === "split" ? "shows the old and the new lines side by side" : "shows old and new lines in one column"}. Click to switch; your choice is kept.`)).child(sep()))
+        .tooltip(`The diff ${this.diffMode() === "split" ? "shows the old and the new lines side by side" : "shows old and new lines in one column"}. Click to switch; your choice is kept.`)).child(sep())
+        .child(link("rv-wrap", div().text_color(this.wrapOn() ? t.foreground : t.muted).child(`Wrap ${this.wrapOn() ? "on" : "off"}`), () => setShared("review.wrap", !this.wrapOn()))
+          .tooltip(this.wrapOn() ? "Long lines wrap. Click to keep them on one line and scroll sideways." : "Long lines stay on one line: scroll sideways with shift+wheel or the bar under the diff. Click to wrap them.")).child(sep()))
       .child(link("rv-values", div().text_color(valuesOn() ? t.foreground : t.muted).child(`Example values ${valuesOn() ? "on" : "off"}`), () => setShared("review.values", !valuesOn())).tooltip("Example values from the flow traces, shown inline in the diff: click to switch"))
       .child(link("rv-keys", div().child("?"), () => openOverlay({ mod: "pr-review", props: { part: "keys" }, kind: "popup", ...KEYS_POP })).tooltip("Keyboard shortcuts").accessibility_label("Keyboard shortcuts"))
       .child(link("rv-more", div().child("⋯"), menu("more", [["Explore a topic…", false, "explore"], ["Mark done", false, "done"], ["Copy link", false, "copy-link"], ["Copy review state", false, "copy-state"], ["Copy this page as Markdown", false, "copy-md"], ...(this.checkList().length ? [["Copy context to check findings", false, "copy-md:verify"]] : []), ...(this.prSel?.url?.startsWith("https://github.com") ? [["Open on GitHub", false, "open-gh"]] : [])])).tooltip("Explore a topic, mark done, copy the link, the review's state, this page or the context to check findings as text, open on GitHub").accessibility_label("More actions"));
@@ -4249,8 +4273,10 @@ export const ReviewMode = {
   },
   // A row's code, highlighted (syntax.js); spans per row array are computed once per render (spanMap).
   // a, b: one visual line of a wrapped line (its columns a..b of the tab-expanded text, b undefined: to the end).
-  code(r, it, ri = it.ri, a = 0, b = undefined) {
+  // x: px the unwrapped code is scrolled sideways (codeShift).
+  code(r, it, ri = it.ri, a = 0, b = undefined, x = 0) {
     const m = this.spanMap?.get(it.src), text = m?.shown[ri]?.text ?? r.text, spans = m?.spans[ri] ?? [];
+    if (x > 0) return h_flex().flex_none().ml(-x).children(renderLine(div, text, spans, this.syn));
     if (!a && b === undefined) return h_flex().overflow_hidden().children(renderLine(div, text, spans, this.syn));
     return h_flex().overflow_hidden().children(renderLine(div, text.slice(a, b), sliceSpans(spans, a, b ?? text.length), this.syn));
   },
@@ -4275,7 +4301,7 @@ export const ReviewMode = {
         .when(first, (e) => e.child(h_flex().absolute().inset_0().justify_end().items_center().text_color("#00000000").hover((s) => s.text_color(t.accent_foreground).bg(t.accent + "26"))
           .child(div().w(18).h(18).mr(2).rounded(4).flex().items_center().justify_center().font_semibold().hover((s) => s.bg(t.accent)).child("+")))))
       .child(div().w(22).flex_none().text_center().font_semibold().text_color(first ? tone ?? t.muted : t.muted).when(!first, (e) => e.text_size(11)).child(!first ? "↪" : r.kind === " " ? "" : r.kind === "-" ? "−" : "+"))
-      .child(div().flex_1().min_w(0).pr(12).truncate().text_color(t.foreground).child(this.code(r, it, ri, starts[part], starts[part + 1])))
+      .child(div().flex_1().min_w(0).pr(12).overflow_hidden().text_color(t.foreground).child(this.code(r, it, ri, starts[part], starts[part + 1], this.codeShift())))
       .when(Boolean(trace), (e) => e.child(div().id("rv-trace").tooltip("Example values from the flow trace; Values in the top bar switches them").flex_none().max_w(460).mr(12).px(8).h(18).flex().items_center()
         .rounded(9).bg(t.accent + "1f").italic().text_size(12).text_color(t.muted).truncate().child(trace)))
       // The selection's last row: "+ Comment (c)" at its right end (onItem places the click by x, rowClick).
@@ -4376,7 +4402,7 @@ export const ReviewMode = {
     }
     if (this.hlQueue?.size && !this.hlBusy) { this.hlBusy = true; cx.timer.after(0, (cx) => this.drainHighlight(cx)); }
     if (items.length > 9990) items.length = 9990; // the virtual list's hard limit is 10000
-    const keys = itemKeys(items), sizes = items.map((it) => this.sizeOf(it));
+    const keys = itemKeys(items), sizes = items.map((it) => this.sizeOf(it)), hcode = this.codeScroll(listShown ? items : []);
     if (listShown) { this.items = items; this.at = at; this.byKey = new Map(keys.map((k, i) => [k, items[i]])); }
     if (heads) this.layFiles(items, keys, sizes, heads.filter((h) => h < items.length));
     if (listShown) this.settleTop(this.tab === "steps" ? "steps" : "files", at, sizes, cx);
@@ -4410,15 +4436,19 @@ export const ReviewMode = {
           .when(listShown, (e) => e.child(div().id(`${listId}-wrap`).flex_1().min_h(0).relative().on_size_change((size) => { this.listH = size.height; })
 
             // The Files list: scrolling, or dragging its scrollbar, near a folded file opens the files around the view.
-            .when(Boolean(heads), (e) => e.on_scroll_wheel((_e, cx) => this.autoFold(cx)).on_mouse_move((_e, cx) => this.autoFold(cx)).on_mouse_up("left", (_e, cx) => this.autoFold(cx)))
+            .on_scroll_wheel((e, cx) => { if (heads) this.autoFold(cx); if (hcode.maxX > 0) this.hsWheel("rv-code", e, cx); }) // sideways: the code (codeScroll)
+            .when(Boolean(heads), (e) => e.on_mouse_move((_e, cx) => this.autoFold(cx)).on_mouse_up("left", (_e, cx) => this.autoFold(cx)))
             // With the composer open, onItem decides where the keyboard goes (a press in the textarea keeps it).
             .on_mouse_down("left", (e, cx) => { this.press = { x: e.local_position?.x ?? 0, w: e.bounds?.width ?? this.listW ?? 900, shift: e.modifiers.shift, cmd: e.modifiers.platform }; if (!this.composing) this.fh.focus(); })
             .child(items.length
-              ? v_virtual_list(listId, items.length, sizes, (i) => keys[i], (range) => { if (heads) this.vis = { start: range.start, end: range.end }; return items.slice(range.start, range.end).map((it) => this.item(it, t)); })
+              ? v_virtual_list(listId, items.length, sizes, (i) => keys[i], (range) => { if (heads) this.vis = { start: range.start, end: range.end }; this.visCode = range; return items.slice(range.start, range.end).map((it) => this.item(it, t)); })
                 .track_scroll(this.lists[this.tab === "steps" ? "steps" : "files"]).on_item_click((key, cx) => this.onItem(key, cx)).size_full()
               : div().p(20).text_size(13.5).text_color(this.error ? t.ansi1 : t.muted).child(this.error || (this.loading || !this.patch
                 ? h_flex().gap(8).child(div().child(SPIN[0]).frames(SPIN, 90)).child("Loading…") : "No diff")))
-            .child(Scrollbar.vertical(listId).absolute().inset_0())))
+            .child(Scrollbar.vertical(listId).absolute().inset_0())
+            .when(hcode.maxX > 0, (e) => e.child(div().id("rv-code-hbar").tooltip("Scroll bar for long lines: drag, or shift+wheel over the code").absolute().left(0).right(0).bottom(0).h(10).bg(t.raised)
+              .child(div().absolute().top(1).left(Math.round((hcode.x / hcode.contentW) * hcode.visW)).w(Math.max(30, Math.round((hcode.view / hcode.contentW) * hcode.visW))).h(8).rounded(4).bg(t.muted).cursor_pointer()
+                .on_mouse_down("left", (ev, cx) => { this.hsDrag = { id: "rv-code", x0: ev.position.x, from: hcode.x, thumb: true }; cx.stop_propagation(); }))))))
           .when(Boolean(this.note), (e) => e.child(div().flex_none().px(14).py(8).border_t(1).border_color(t.border).text_size(12.5).text_color(/Could not|Not sent|Not posted|Select a line/.test(this.note ?? "") ? t.ansi1 : t.muted).child(this.note)))
           .when(Boolean(this.saveErr), (e) => e.child(this.saveErrBar(t)))
           .when(Boolean(this.replyTo), (e) => e.child(this.replyBar(t)))
