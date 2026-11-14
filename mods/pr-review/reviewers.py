@@ -28,6 +28,7 @@ import subprocess
 import sys
 import time
 
+sys.dont_write_bytecode = True  # a .pyc written into the mod's folder reloads the mod: the view waiting for this run is gone
 import llm  # noqa: E402  (this folder)
 import review  # noqa: E402  (the severity scale and the areas of a run's self-report)
 
