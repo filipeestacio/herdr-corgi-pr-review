@@ -107,13 +107,16 @@ SCALE_TEXT = "; ".join(f"{level}: " + ", ".join(f"{k} ({v[1]})" for k, v in IMPA
 # How sure a finding is: confirmed (something that ran shows it), derived (it follows from the code that was read),
 # assumed (it needs something that could not be checked; the preconditions name it).
 CERTAINTY = ["confirmed", "derived", "assumed"]
-JUDGED = {"category": {"enum": CATEGORIES}, "impact": {"enum": list(SCALE)}, "effect": S, "preconditions": STRINGS, "certainty": {"enum": CERTAINTY}}
+EFFORT = ["quick", "moderate", "heavy"]  # what the fix takes
+JUDGED = {"category": {"enum": CATEGORIES}, "impact": {"enum": list(SCALE)}, "effect": S, "preconditions": STRINGS, "certainty": {"enum": CERTAINTY},
+          "effort": {"enum": EFFORT}}
 JUDGED_TEXT = ("impact (the gravest that applies; it sets the severity. " + SCALE_TEXT + "), effect (one sentence: what happens to "
                "whom when it occurs), preconditions (what must hold for it to occur, each one checkable, e.g. \"API_TOKEN is "
                "unset in the deployment\"; empty when it always occurs), certainty (confirmed: something that ran shows it, e.g. a "
                "test in the repo or a command's output; derived: it follows from the code you read, every step is in the files; "
                "assumed: it needs something you could not check, such as deployment settings or how a gateway or library "
-               "behaves, and preconditions names it)")
+               "behaves, and preconditions names it), effort (what the fix takes: quick: a few lines in one place; moderate: "
+               "several places or a new test; heavy: a design change, a migration or a change other teams must agree to)")
 # How the texts a person reads are written: markdown where it shortens the reading, never longer than prose. The UI
 # renders it in findings and comments; a title stands in one-line lists and stays plain.
 TEXTS = ("Texts: detail, suggestion, effect, why and a suggestion's text are markdown. Identifiers, paths and calls are "
@@ -166,8 +169,8 @@ SCHEMA = {"type": "object", "required": ["title", "summary", "behavior", "merge_
     "components": {"type": "array", "maxItems": 16, "items": {"type": "object", "required": ["name", "kind", "status", "at", "operate"], "properties": {
         "name": S, "kind": S, "status": {"enum": ["new", "changed"]}, "at": S, "node": S, "operate": STRINGS}}},
     "checked": checked_schema(AREAS_CODE),
-    "steps": {"type": "array", "items": {"type": "object", "required": ["title", "risk", "why_it_matters", "explanation", "reading_order", "hunks", "check_questions", "question_files"], "properties": {
-        "title": S, "risk": {"enum": LEVELS + ["skim"]}, "why_it_matters": S, "explanation": S, "reading_order": {"type": "integer"},
+    "steps": {"type": "array", "items": {"type": "object", "required": ["title", "risk", "why_it_matters", "explanation", "reading_order", "hunks", "check_questions", "question_files", "depends_on"], "properties": {
+        "title": S, "depends_on": STRINGS, "risk": {"enum": LEVELS + ["skim"]}, "why_it_matters": S, "explanation": S, "reading_order": {"type": "integer"},
         "hunks": STRINGS, "check_questions": {**STRINGS, "maxItems": 3}, "question_files": {**STRINGS, "maxItems": 3},
         "suggestions": {"type": "array", "items": {"type": "object", "required": ["hunk", "line", "side", "severity", "category", "text"], "properties": {
             "hunk": S, "line": {"type": "integer"}, "side": {"enum": ["new", "old"]}, "severity": {"enum": LEVELS}, "category": {"enum": CATEGORIES}, "text": S}}},
@@ -350,7 +353,8 @@ def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None,
             "low: configuration, small things; skim: renames, formatting, generated code, docs; tests are a layer of their own, titled "
             "\"Tests\", never skim and never part of \"Skimmed (low value)\": read what they cover and give the layer the risk of "
             "what they leave untested); why_it_matters (one sentence); "
-            "explanation (2-4 sentences: what changes and why); reading_order (1, 2, …: the order in which the PR is best "
+            "explanation (2-4 sentences: what changes and why); depends_on (the titles of the other layers whose code this "
+            "layer calls or whose types it uses, empty when none); reading_order (1, 2, …: the order in which the PR is best "
             "understood); hunks (aliases like h1); check_questions (1-3 concrete questions on what to check in exactly these lines; "
             "at most one for skim); question_files (one entry per check question, in the same order: the path of the file the "
             "question is about when that is exactly one file, else \"\"); suggestions (concrete suspicious lines in these hunks: "
@@ -588,7 +592,7 @@ def judge(f, breaks_requirement=False):
     """A finding's severity by the fixed scale: from its impact (a finding that breaks a requirement is high; a gap in
     the tests leaves it unguarded, which is "untested"). One without an impact (an older analysis, a review turned
     from text) keeps its own. Unknown enum values go."""
-    for key, allowed in (("impact", SCALE), ("category", CATEGORIES), ("certainty", CERTAINTY)):
+    for key, allowed in (("impact", SCALE), ("category", CATEGORIES), ("certainty", CERTAINTY), ("effort", EFFORT)):
         if f.get(key) not in allowed:
             f.pop(key, None)
     if f.get("category") == "test" and f.get("impact"):
@@ -673,7 +677,8 @@ def finish(answer, root=None, path_of=None):
     state, for readers of the older field), findings (ids of the findings that break it; a "met" one with findings is
     partly). answer.unlinked: the ids of the requirements that are partly, broken or not_done although no finding names
     them (the model owes one; the UI can say so instead of showing an empty list). Findings: id (the UI's: "a" + fnv(category|file|title)), severity by the scale (judge), criteria only
-    those asks has, breaks only when the picture has it (place). Check questions: question_files as long as the
+    those asks has, breaks only when the picture has it (place). A layer's depends_on: only titles of other layers.
+    Check questions: question_files as long as the
     questions, a path only when it is a file of the diff (path_of: {hunk alias: path}) or the checkout. State diagrams
     sit in the layer of their state machine (seat_state_diagrams). Components: owner from CODEOWNERS (None:
     nobody), and component_counts {new, changed, no_owner, codeowners: the repo has such a file}.
@@ -688,10 +693,13 @@ def finish(answer, root=None, path_of=None):
         a["findings"] = []
     by_id = {a["id"]: a for a in asks}
     root = pathlib.Path(root) if root else None
+    titles = {st.get("title") for st in answer.get("steps") or []}
     for st in answer.get("steps") or []:
         files = [str(x or "").strip().removeprefix("./") for x in st.get("question_files") or []]
         known = lambda f: f in paths or bool(root and f and (root / f).is_file())  # noqa: E731
         st["question_files"] = [files[k] if k < len(files) and known(files[k]) else "" for k in range(len(st.get("check_questions") or []))]
+        if "depends_on" in st:
+            st["depends_on"] = [x for x in dict.fromkeys(st["depends_on"] or []) if x in titles and x != st.get("title")]
         for f in st.get("findings") or []:
             f["criteria"] = [c for c in dict.fromkeys(f.get("criteria") or []) if c in by_id]
             judge(f, any(by_id[c]["state"] != "extra" for c in f["criteria"]))

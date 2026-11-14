@@ -205,6 +205,10 @@ assert [review.SCALE[k] for k in ("breaks_requirement", "dead_path", "unauthoriz
 assert review.judge({"impact": "dead_path", "severity": "low"})["severity"] == "high", "the impact sets the severity"
 assert review.judge({"impact": "nonsense", "severity": "low", "category": "x"}) == {"severity": "low"}, "no impact: its own severity; unknown values go"
 assert review.judge({"impact": "edge_case"}, True) == {"impact": "breaks_requirement", "severity": "high"}
+assert review.judge({"impact": "edge_case", "effort": "heavy"})["effort"] == "heavy" and "effort" not in review.judge({"impact": "edge_case", "effort": "huge"})
+deps = review.finish({"steps": [{"title": "Model", "depends_on": []}, {"title": "API", "depends_on": ["Model", "Model", "API", "Nowhere"]}, {"title": "Old"}]})["steps"]
+assert deps[1]["depends_on"] == ["Model"] and "depends_on" not in deps[2], "only other layers; a cached layer without it stays without"
+assert "effort (what the fix takes" in review.prompt([], [], None, True) and "depends_on (the titles" in review.prompt([], [], None, True)
 assert review.judge({"impact": "breaks_requirement", "category": "test"}, True)["severity"] == "medium", "a test gap leaves a requirement unguarded, it does not break it"
 wt = pathlib.Path(tempfile.mkdtemp())
 (wt / ".github").mkdir(); (wt / ".github/CODEOWNERS").write_text("# owners\n*.yaml @ops\n/library/ @lib-team @lead\nlibrary/tests/ \n")
