@@ -59,15 +59,17 @@ assert p[3]["probe"] is None and p[3]["limited_by"] == "library/x.py:4"
 assert [(c["check"], c["result"]) for c in v["checks"]] == [("cors", "clean"), ("rollback", "not_checkable")]
 assert [(x["id"], x["status"]) for x in v["probes"]] == [("r1", "proposed")] and v["not_checked"] == ["load under real traffic"]
 assert "ref" not in new[0], "the ref is the model's, the id stays"
-fresh_pic = {"architecture": {"nodes": [{"id": "consumer", "status": "new"}, {"id": "mailer", "status": "unchanged"}], "edges": [{"from": "consumer", "to": "mailer", "status": "new"}]}}
-old_line = [{"id": "m1", "ref": "r_f1", "introduced_here": False}, {"id": "m2", "ref": "r_f2", "introduced_here": False}]
-resilience.view({"paths": [{"kind": "silent", "steps": ["consumer", "library/mailer.py:14"], "result": "finding", "findings": ["r_f1"], "failing": [], "visible": False},
-                           {"kind": "other", "steps": ["mailer"], "result": "finding", "findings": ["r_f2"], "failing": [], "visible": True}]}, old_line, fresh_pic, [])
-assert [f["introduced_here"] for f in old_line] == [True, False], "on a path through the PR's new consumer the old mailer's flaw is the PR's; off it, it stays as said"
-by_file = [{"id": "m3", "ref": "r_f1", "introduced_here": False}]
-resilience.view({"paths": [{"kind": "silent", "steps": ["library/consumer.py:21", "library/mailer.py:14"], "result": "finding", "findings": ["r_f1"], "failing": [], "visible": False}]},
-                by_file, {"architecture": {"nodes": [{"id": "consumer", "status": "new", "at": "library/consumer.py:11"}], "edges": []}}, [])
-assert by_file[0]["introduced_here"] is True, "a step in the file of a new node counts as the node"
+# The base rule (wave R2, D5): a new finding is the PR's only in lines the diff adds; one whose lines stand unchanged
+# in the base was there before, also on a path through a new node; without the diff: unknown (None).
+base = [{"id": "m1", "ref": "r_f1", "file": "library/mailer.py", "line": 14, "introduced_here": True},
+        {"id": "m2", "ref": "r_f2", "file": "library/consumer.py", "line": 21, "end": 23, "introduced_here": False}]
+fresh_pic = {"architecture": {"nodes": [{"id": "consumer", "status": "new", "at": "library/consumer.py:11"}, {"id": "mailer", "status": "unchanged"}], "edges": []}}
+resilience.view({"paths": [{"kind": "silent", "steps": ["consumer", "library/mailer.py:14"], "result": "finding", "findings": ["r_f1", "r_f2"], "failing": [], "signal": "none", "seen_as": ""}]},
+                base, fresh_pic, [], {"library/consumer.py": {22}})
+assert [f["introduced_here"] for f in base] == [False, True], "the old mailer line was there before, whatever the model said; the consumer's added line is the PR's"
+unknown = [{"id": "u1", "ref": "r_f1", "file": "a.py", "line": 3}]
+resilience.view({}, unknown, {}, [], None)
+assert unknown[0]["introduced_here"] is None, "without the diff: old or new unclear"
 assert resilience.view({}, [], {}, []) == {"deps": [], "effects": [], "state": [], "races": [], "additions": [], "db_calls": [], "caches": [], "clocks": [], "blind_spots": [], "paths": [],
                                            "checks": [], "probes": [], "not_checked": []}
 
@@ -94,4 +96,29 @@ assert resilience.complexity_findings(adds) == [], "once linked, no second findi
 plain2 = reviewers.PLAIN["resilience"].format(base="b", number=2)
 assert "Recommend no mechanism by default" in plain2 and "came in because it sounded right" in plain2 and "additions (one per component" in resilience.ASK and "action (what to do" in resilience.ASK
 assert "complexity" in reviewers.review.CATEGORIES
+# Wave R2: calls bound to the map (node), what shows a failure (signal, seen_as), what on-call sees in a race, every
+# writer of a field with its invariant, the purpose and next step of each added part; and the prompt asks for them.
+r2 = resilience.view({"deps": [{"edge": "e1", "node": "consumer", "at": "template.yaml:32", "mode": "async"}, {"node": "ghost", "at": "x.py:1", "mode": "sync"}],
+                      "paths": [{"kind": "request", "steps": ["handler"], "result": "not_assessed", "failing": ["dishonest_response"], "signal": "platform_only", "seen_as": "Lambda Errors only"},
+                                {"kind": "silent", "steps": [], "result": "not_assessed", "failing": [], "signal": "none", "seen_as": "nothing"},
+                                {"kind": "other", "steps": [], "result": "not_assessed", "failing": [], "visible": True}],
+                      "races": [{"id": "x1", "shared": "s", "pattern": "lost_update", "actors": [], "steps": [], "breaks_at": 0, "oncall": "a second mail, no error", "possible_today": False, "note": "see p6"}],
+                      "state": [{"id": "st", "what": "loan.status", "invariant": "only transition() changes the status", "writers": [{"node": "consumer", "at": "consumer.py:23", "breaks": True}], "readers": []}],
+                      "additions": [{"what": "Mailer retry", "kind": "retry", "at": "mailer.py:13", "solves": "", "likelihood": "possible", "cost": {}, "simpler": "", "result": "unjustified",
+                                     "purpose": "survive a flaky SMTP", "next": "Drop the mailer retry; the queue redelivers"}]},
+                     [], {"architecture": {"nodes": [{"id": "consumer"}, {"id": "handler"}], "edges": [{"from": "h", "to": "c"}, {"from": "q", "to": "consumer"}]}}, [], {})
+assert [(d["edge"], d["node"]) for d in r2["deps"]] == [("e1", "consumer"), (None, None)]
+assert [(x["kind"], x["signal"], x["visible"], x["seen_as"]) for x in r2["paths"]] == [("request", "platform_only", True, "Lambda Errors only"), ("silent", "none", False, "nothing"), ("other", None, True, "")], \
+    "visible follows the signal (only none is silent); an older answer's visible stays"
+assert r2["paths"][0]["failing"] == ["dishonest_response"] and (r2["races"][0]["oncall"], r2["races"][0]["possible_today"], r2["races"][0]["note"]) == ("a second mail, no error", False, "see p6")
+assert r2["state"][0]["invariant"] == "only transition() changes the status" and r2["state"][0]["writers"][0]["breaks"] is True
+assert (r2["additions"][0]["purpose"], r2["additions"][0]["next"]) == ("survive a flaky SMTP", "Drop the mailer retry; the queue redelivers")
+sch = reviewers.findings_schema("resilience")
+assert "node" in sch["properties"]["deps"]["items"]["required"] and {"signal", "seen_as"} <= set(sch["properties"]["paths"]["items"]["required"])
+pr2 = reviewers.PLAIN["resilience"].format(base="b", number=2)
+for part in ("every public route's request, always", "answers 202 while the mail is lost", "per field or row that two or more places write", "a retry layer under another one",
+             "measured by its purpose, not by a bug in it"):
+    assert part in pr2, part
+for part in ("for a queue trigger the consumer", "only when a protection stands behind it", "not possible today, see p6", "seen_as (one sentence", "oncall (one sentence", "next (one sentence with a verb"):
+    assert part in resilience.ASK, part
 print("ok")

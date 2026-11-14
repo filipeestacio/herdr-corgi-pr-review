@@ -22,7 +22,7 @@ SIGNALS = ["alarm", "log", "metric", "dlq", "platform_only", "none"]
 ALARMS = ["in_repo", "elsewhere", "none", "unknown"]
 RESULTS = ["finding", "mitigated", "not_assessed"]
 CHECK_RESULTS = ["finding", "clean", "not_checkable", "elsewhere"]
-PATH_KINDS = ["retry", "timeout", "race", "state", "effect", "load", "silent", "other"]
+PATH_KINDS = ["retry", "timeout", "race", "state", "effect", "load", "silent", "request", "other"]
 ADD_RESULTS = ["justified", "questionable", "unjustified"]
 LIKELIHOOD = ["likely", "possible", "rare", "cannot_happen"]
 PROBE_KINDS = ["retry", "redelivery", "race", "idempotency", "clock", "db_count", "telemetry", "budget"]
@@ -30,13 +30,13 @@ STRENGTHS = ["runs_pr_code", "forced_schedule", "models_env"]
 # What a path breaks, in the words pr.js turns into a blocker's reason (pr.js RES_BLOCKING).
 FAILING = ["unbounded_retry", "no_dlq", "poison_message", "over_timeout", "duplicate_effect", "lost_effect", "swallowed_retry",
            "shared_resource", "no_timeout_public", "silent", "removed_signal", "reads_foreign_state", "race", "no_jitter", "no_alarm",
-           "no_breaker", "no_trace", "cardinality", "n_plus_one", "unbounded_queue", "no_throttle", "stale_cache", "clock"]
+           "no_breaker", "no_trace", "cardinality", "n_plus_one", "unbounded_queue", "no_throttle", "stale_cache", "clock", "dishonest_response"]
 FINDS = {"findings": {**STRINGS, "description": "ids of findings that show it: an existing finding's id from the list, or the ref of a new one"}}
 AT = {**S, "description": "file:line"}
 
 SCHEMA = {
-    "deps": {"type": "array", "items": {"type": "object", "required": ["at", "mode"], "properties": {
-        "edge": S, "at": AT, "mode": {"enum": MODES},
+    "deps": {"type": "array", "items": {"type": "object", "required": ["at", "mode", "node"], "properties": {
+        "edge": S, "node": S, "at": AT, "mode": {"enum": MODES},
         "timeout": {"type": "object", "properties": {"s": NUM, "source": S}},
         "retry": {"type": "object", "properties": {"layer": S, "attempts": INT, "backoff": S, "jitter": BOOL, "on": S, "exhausted": {"enum": EXHAUSTED}, "at": AT}},
         "trigger": {"type": "object", "properties": {"batch": INT, "partial_batch": BOOL, "fn_timeout_s": NUM, "visibility_s": NUM, "retention_s": NUM,
@@ -46,10 +46,11 @@ SCHEMA = {
     "effects": {"type": "array", "items": {"type": "object", "required": ["id", "kind", "at", "order"], "properties": {
         "id": S, "kind": S, "at": AT, "node": S, "order": {"enum": ORDERS}, "idempotency_key": S, "retried_by": STRINGS, **FINDS}}},
     "state": {"type": "array", "items": {"type": "object", "required": ["id", "what", "writers", "readers"], "properties": {
-        "id": S, "what": S, "store": S, "writers": {"type": "array", "items": {"type": "object", "properties": {"node": S, "at": AT, "guard": S}}},
+        "id": S, "what": S, "store": S, "invariant": S, "writers": {"type": "array", "items": {"type": "object", "required": ["at"], "properties": {"node": S, "at": AT, "guard": S, "breaks": BOOL}}},
         "readers": {"type": "array", "items": {"type": "object", "properties": {"node": S, "at": AT}}}, "shared_across_process": BOOL, "isolation": S, "note": S}}},
     "races": {"type": "array", "items": {"type": "object", "required": ["id", "shared", "pattern", "actors", "steps", "breaks_at"], "properties": {
-        "id": S, "shared": S, "pattern": S, "actors": STRINGS, "steps": {"type": "array", "items": {"type": "array", "items": S}}, "breaks_at": INT, "needs": S, **FINDS}}},
+        "id": S, "shared": S, "pattern": S, "actors": STRINGS, "steps": {"type": "array", "items": {"type": "array", "items": S}}, "breaks_at": INT,
+        "oncall": S, "possible_today": BOOL, "note": S, "needs": S, **FINDS}}},
     "db_calls": {"type": "array", "items": {"type": "object", "required": ["entry", "calls"], "properties": {
         "entry": S, "calls": {"type": "array", "items": {"type": "object", "properties": {"op": S, "target": S, "at": AT, "in_loop": BOOL}}}, "per_request": S}}},
     "caches": {"type": "array", "items": {"type": "object", "required": ["key", "at", "invalidate"], "properties": {
@@ -57,14 +58,14 @@ SCHEMA = {
     "clocks": {"type": "array", "items": {"type": "object", "required": ["kind", "at", "effect"], "properties": {"kind": S, "at": AT, "effect": S, **FINDS}}},
     "blind_spots": {"type": "array", "items": {"type": "object", "required": ["id", "failure", "at", "signal", "alarm"], "properties": {
         "id": S, "failure": S, "at": AT, "signal": {"enum": SIGNALS}, "alarm": {"enum": ALARMS}, **FINDS}}},
-    "paths": {"type": "array", "items": {"type": "object", "required": ["id", "kind", "trigger", "steps", "end", "result", "failing", "visible"], "properties": {
+    "paths": {"type": "array", "items": {"type": "object", "required": ["id", "kind", "trigger", "steps", "end", "result", "failing", "signal", "seen_as"], "properties": {
         "id": S, "kind": {"enum": PATH_KINDS}, "trigger": S, "steps": STRINGS, "end": S, "result": {"enum": RESULTS}, "limited_by": AT,
-        "failing": {"type": "array", "items": {"enum": FAILING}}, "visible": BOOL, **FINDS, "probe": S, "note": S, "action": S}}},
+        "failing": {"type": "array", "items": {"enum": FAILING}}, "signal": {"enum": SIGNALS}, "seen_as": S, **FINDS, "probe": S, "note": S, "action": S}}},
     "checks": {"type": "array", "items": {"type": "object", "required": ["check", "result", "why"], "properties": {
         "check": S, "result": {"enum": CHECK_RESULTS}, "at": AT, "why": S, **FINDS}}},
     "additions": {"type": "array", "items": {"type": "object", "required": ["what", "kind", "at", "solves", "likelihood", "cost", "simpler", "result"], "properties": {
         "what": S, "kind": S, "at": AT, "solves": S, "likelihood": {"enum": LIKELIHOOD}, "cost": {"type": "object", "properties": {"mental": S, "ops": S, "money": S}},
-        "simpler": S, "result": {"enum": ADD_RESULTS}, **FINDS}}},
+        "simpler": S, "result": {"enum": ADD_RESULTS}, "purpose": S, "next": S, **FINDS}}},
     "probes": {"type": "array", "items": {"type": "object", "required": ["id", "claim", "of", "kind", "strength"], "properties": {
         "id": S, "claim": S, "of": S, "kind": {"enum": PROBE_KINDS}, "strength": {"enum": STRENGTHS}}}},
     "not_checked": STRINGS}
@@ -99,8 +100,18 @@ STEPS = (
     "code, or clearly central (elsewhere: no finding);\n"
     "- operations: rollback (migrations both ways, a flag), health and readiness, graceful shutdown, limits and quotas, "
     "new single points of failure, defaults that only bite under load.\n"
+    "- every public route's request, always: each synchronous call it makes, the time the request can spend in them "
+    "against its timeout, its throttle, and whether its answer is honest (a 2xx only when the work really happened or "
+    "is safely queued); one path of kind request for each synchronous dependency in such a request, e.g. a route that "
+    "calls a consumer in its own process, waits out a mail retry and answers 202 while the mail is lost;\n"
+    "- shared state, per field or row that two or more places write: every writer with its line, also writers outside "
+    "the diff, and the rule it should keep (invariant, e.g. \"only transition() changes the status\"), marking the "
+    "writers that break it;\n"
     "- what the PR adds: every component or mechanism it brings in (queue, dead-letter queue, step function, retry "
-    "layer, breaker, bulkhead, cache, scheduler, new service or library): what failure it solves at which line, how "
+    "layer, breaker, bulkhead, cache, scheduler, new service or library, a new route, a shortcut past an existing "
+    "path such as a route that calls a consumer directly), each measured by its purpose, not by a bug in it (a queue "
+    "nothing publishes to is a finding, not a question of its use); a retry layer under another one (a client retry "
+    "under a queue's redelivery) is unjustified: what failure it solves at which line, how "
     "likely and how grave that failure is here, what it costs (parts, states and places to look; alarms, redrives, "
     "deploys; money, latency), the simpler alternative (a direct call instead of a step function, synchronous instead of "
     "a queue, no retry because the caller already retries) and what that would lose, and whether it fits the problem "
@@ -114,23 +125,31 @@ STEPS = (
 ASK = (
     " Answer with: findings (only new problems; one already in the list is named by its id in the parts below, not "
     "written again; each new one with ref r_f1, r_f2, …; category availability, consistency, observability, performance "
-    "or another of the list; impact as always). deps (one per call: edge (the picture's e<k>, if it is on the picture), "
-    "at, mode, timeout {s, source}, retry {layer, attempts, backoff, jitter, on, exhausted, at}, trigger for a consumer "
+    "or another of the list; impact as always). deps (one per call: edge (the picture's e<k> of this call; for a queue trigger the edge from the queue to its consumer), "
+    "node (the picture's node that makes the call; for a queue trigger the consumer), at, mode, timeout {s, source}, retry {layer, attempts, backoff, jitter, on, exhausted, at}, trigger for a consumer "
     "{batch, partial_batch, fn_timeout_s, visibility_s, retention_s, dlq, max_receive, worst_record_s}, request_path, "
     "entry, throttle, context {carrier, kind, missing, receiver_logs, at}); effects; state; races (steps as [actor, text, "
-    "file:line], breaks_at the index of the step that breaks); db_calls; caches; clocks; blind_spots; paths (one for each "
+    "file:line], breaks_at the index of the step that breaks, oncall (one sentence: what on-call sees while it happens), "
+    "possible_today (false when something else keeps it from happening today, with note naming that path)); state (per "
+    "written field or row: what, store, invariant, writers [{node, at, guard, breaks}], readers); db_calls; caches; clocks; blind_spots; paths (one for each "
     "distinct way a failure spreads, not only the first you find: go through every way in, every effect and every finding "
     "in the list about availability, consistency, effects or missing signals, and give each its own path, also one that "
     "a limit stops (mitigated) or that you could not assess; a change that adds a queue usually has several; p1, p2, …: "
     "kind, trigger, steps (node ids, edge ids e<k> or file:line, in order), end, result (finding: a finding shows it; "
-    "mitigated: limited_by names the file:line that limits it; not_assessed), failing (what it breaks, from: "
-    + ", ".join(FAILING) + "), visible (whether anything signals it), findings, probe (the id of a probe that would show "
+    "mitigated: only when a protection stands behind it (a dead-letter queue, a limit, a guard, a timeout) and limited_by "
+    "names its file:line; not_assessed, also for a path that cannot happen today for another reason, with a note such "
+    "as \"not possible today, see p6\"), failing (what it breaks, from: "
+    + ", ".join(FAILING) + "), signal (what shows the failure: alarm, log at warning or above, metric, dlq, platform_only "
+    "for the platform's own error metrics of a function that raises, none when nothing does), seen_as (one sentence: what "
+    "on-call sees, e.g. \"Lambda Errors on the consumer, no message\"), findings, probe (the id of a probe that would show "
     "it), note, action (what to do about it as one sentence starting with a verb, e.g. \"Decouple: add a dead-letter queue "
     "with maxReceiveCount\", only for this path's failure)); additions (one per component or mechanism the PR adds: what, "
     "kind, at, solves (the failure it solves, with its line), likelihood (likely, possible, rare, cannot_happen), cost "
     "{mental, ops, money}, simpler (the simpler alternative and what it would lose), result (justified: it solves a "
     "failing path of this PR; questionable: small use against its cost; unjustified: it solves nothing that can happen "
-    "here), findings); checks (one row for each of cors, cache_control, rollback, limits, cardinality, clocks, health, shutdown, "
+    "here, or it is a retry layer under another one), purpose (what it is for, one sentence), next (one sentence with a "
+    "verb: keep, drop or change it, together with what its findings ask, e.g. \"Keep the queue, add a dead-letter queue, "
+    "drop the mailer retry\"), findings); checks (one row for each of cors, cache_control, rollback, limits, cardinality, clocks, health, shutdown, "
     "and any other check you made beyond the paths: result finding|clean|not_checkable|elsewhere, at, why); probes (r1, r2, …: a small "
     "script that would show a claim with stubs and a forced schedule, never sleep: claim (one sentence with the number "
     "it would show), of (a path, race, effect or blind spot id), kind, strength); not_checked. Every list may be empty.")
@@ -152,9 +171,8 @@ def view(answer, findings, pic, known, changed=None):
     """The run's answer as the block `resilience`, checked: enums kept only when known (else dropped), a path's steps
     only the picture's node and edge ids or a file:line, edges only the picture's, findings only known ids or refs of
     this run's new findings (mapped to their ids), probes linked from paths only when they exist. A new finding on a
-    path through a new node or call (or a line in a new node's file) is introduced_here; one that is neither in lines
-    the diff adds nor on such a path was there before (the base rule wins over the model's word; changed: {path: added
-    lines}, None when unknown). findings: this run's new findings (normalized, with ref); known: ids of findings already
+    finding is introduced_here only in lines the diff adds, else it was there before (the base rule wins over the
+    model's word; changed: {path: added lines}; None: unknown). findings: this run's new findings (normalized, with ref); known: ids of findings already
     there. Pure but for popping each ref and setting introduced_here."""
     arch = pic.get("architecture") or {}
     nodes = {n.get("id") for n in arch.get("nodes") or []}
@@ -169,7 +187,8 @@ def view(answer, findings, pic, known, changed=None):
 
     deps = []
     for d in lst("deps"):
-        row = {"edge": d.get("edge") if d.get("edge") in edges else None, "at": at(d.get("at")), "mode": enum(d.get("mode"), MODES)}
+        row = {"edge": d.get("edge") if d.get("edge") in edges else None, "node": d.get("node") if d.get("node") in nodes else None, "at": at(d.get("at")),
+               "mode": enum(d.get("mode"), MODES)}
         for k in ("timeout", "retry", "trigger", "context"):
             if isinstance(d.get(k), dict):
                 row[k] = dict(d[k])
@@ -181,13 +200,15 @@ def view(answer, findings, pic, known, changed=None):
     effects = [{**{k: e.get(k) for k in ("id", "kind", "idempotency_key")}, "at": at(e.get("at")), "node": e.get("node") if e.get("node") in nodes else None,
                 "order": enum(e.get("order"), ORDERS), "retried_by": [str(x) for x in e.get("retried_by") or []], "findings": fids(e.get("findings"))}
                for e in lst("effects") if e.get("id")]
-    state = [{**{k: s.get(k) for k in ("id", "what", "store", "isolation", "note")}, "shared_across_process": bool(s.get("shared_across_process")),
-              "writers": [{"node": w.get("node") if w.get("node") in nodes else None, "at": at(w.get("at")), "guard": w.get("guard") or ""} for w in s.get("writers") or [] if isinstance(w, dict)],
+    state = [{**{k: s.get(k) for k in ("id", "what", "store", "isolation", "note")}, "invariant": str(s.get("invariant") or ""), "shared_across_process": bool(s.get("shared_across_process")),
+              "writers": [{"node": w.get("node") if w.get("node") in nodes else None, "at": at(w.get("at")), "guard": w.get("guard") or "", "breaks": bool(w.get("breaks"))}
+                          for w in s.get("writers") or [] if isinstance(w, dict)],
               "readers": [{"node": w.get("node") if w.get("node") in nodes else None, "at": at(w.get("at"))} for w in s.get("readers") or [] if isinstance(w, dict)]}
              for s in lst("state") if s.get("id")]
     races = [{**{k: r.get(k) for k in ("id", "shared", "pattern", "needs")}, "actors": [str(x) for x in r.get("actors") or []],
               "steps": [[str(x) for x in s][:3] for s in r.get("steps") or [] if isinstance(s, list) and len(s) >= 2][:6],
-              "breaks_at": r.get("breaks_at") if isinstance(r.get("breaks_at"), int) else None, "findings": fids(r.get("findings"))}
+              "breaks_at": r.get("breaks_at") if isinstance(r.get("breaks_at"), int) else None, "findings": fids(r.get("findings")),
+              "oncall": str(r.get("oncall") or ""), "possible_today": r.get("possible_today") if isinstance(r.get("possible_today"), bool) else None, "note": str(r.get("note") or "")}
              for r in lst("races") if r.get("id")]
     probes = [{**{k: p.get(k) for k in ("id", "claim", "of")}, "kind": enum(p.get("kind"), PROBE_KINDS), "strength": enum(p.get("strength"), STRENGTHS), "status": "proposed"}
               for p in lst("probes") if p.get("id") and p.get("claim")]
@@ -203,28 +224,20 @@ def view(answer, findings, pic, known, changed=None):
         paths.append({"id": f"p{k}", "kind": enum(p.get("kind"), PATH_KINDS) or "other", "trigger": str(p.get("trigger") or ""),
                       "steps": [s for s in (step(x) for x in p.get("steps") or []) if s], "end": str(p.get("end") or ""), "result": result,
                       "limited_by": at(p.get("limited_by")) or None, "failing": [x for x in dict.fromkeys(p.get("failing") or []) if x in FAILING],
-                      "visible": bool(p.get("visible")), "findings": found, "probe": p.get("probe") if p.get("probe") in probe_ids else None, "note": str(p.get("note") or ""),
+                      # signal (what shows the failure) and seen_as; visible is kept for older readers: anything but none
+                      "signal": enum(p.get("signal"), SIGNALS), "seen_as": str(p.get("seen_as") or ""),
+                      "visible": enum(p.get("signal"), SIGNALS) not in (None, "none") if p.get("signal") else bool(p.get("visible")), "findings": found, "probe": p.get("probe") if p.get("probe") in probe_ids else None, "note": str(p.get("note") or ""),
                       "action": str(p.get("action") or "")})
-    # As for security: a new finding on a path through a node or call this PR adds or changes is the PR's, also when its
-    # own line is old (the mailer that swallowed errors before, now reached by the PR's new consumer).
-    fresh = {n.get("id") for n in arch.get("nodes") or [] if n.get("status") == "new"} | \
-            {f"e{k}" for k, e in enumerate(arch.get("edges") or []) if e.get("status") == "new"}
-    fresh_files = {str(n.get("at") or "").rsplit(":", 1)[0] for n in arch.get("nodes") or [] if n.get("status") == "new" and n.get("at")}
-    mine = {f["id"]: f for f in findings}
-    for p in paths:  # a step is the node or call itself, or a line in the file of a new node
-        if fresh & set(p["steps"]) or any(str(x).rsplit(":", 1)[0] in fresh_files for x in p["steps"] if ":" in str(x)):
-            for fid in p["findings"]:
-                if fid in mine:
-                    mine[fid]["on_new_path"] = True
-    for f in findings:  # the base rule: in added lines (review.introduced) or on a new path, else from before this PR
-        if f.pop("on_new_path", False):
-            f["introduced_here"] = True
-        elif changed is not None:
-            line, end = int(f.get("line") or 0), int(f.get("end") or f.get("line") or 0)
-            f["introduced_here"] = bool(line and any(line <= n <= max(line, end) for n in changed.get(str(f.get("file") or "").removeprefix("./"), ())))
+    # The base rule: a new finding is the PR's only when its lines are lines the diff adds; a flaw whose lines stand
+    # unchanged in the base was there before (the one-day window in reminders.py on the demo's base); without the diff
+    # it is unknown (None: "old or new unclear").
+    for f in findings:
+        line, end = int(f.get("line") or 0), int(f.get("end") or f.get("line") or 0)
+        f["introduced_here"] = None if changed is None else bool(line and any(line <= n <= max(line, end) for n in changed.get(str(f.get("file") or "").removeprefix("./"), ())))
     additions = [{"what": str(a.get("what") or ""), "kind": str(a.get("kind") or ""), "at": at(a.get("at")), "solves": str(a.get("solves") or ""),
                   "likelihood": enum(a.get("likelihood"), LIKELIHOOD), "cost": {k: str((a.get("cost") or {}).get(k) or "") for k in ("mental", "ops", "money")},
-                  "simpler": str(a.get("simpler") or ""), "result": enum(a.get("result"), ADD_RESULTS) or "questionable", "findings": fids(a.get("findings"))}
+                  "simpler": str(a.get("simpler") or ""), "result": enum(a.get("result"), ADD_RESULTS) or "questionable", "findings": fids(a.get("findings")),
+                  "purpose": str(a.get("purpose") or ""), "next": str(a.get("next") or "")}
                  for a in lst("additions") if a.get("what")]
     return {"deps": deps, "effects": effects, "state": state, "races": races, "additions": additions,
             "db_calls": [{"entry": str(d.get("entry") or ""), "per_request": str(d.get("per_request") or ""),

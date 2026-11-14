@@ -898,7 +898,7 @@ console.log("ok");
   const p1 = P("p1", "retry", ["queue", "e5", "library/consumer.py:14", "library/mailer.py:14"], "finding", ["no_dlq"]);
   assert.deepEqual(ladderOf(p1, deps), { factors: [{ label: "the whole batch of 10 again", n: 10, at: "library/consumer.py:14" },
     { label: "redelivered until the message expires (4 days)", n: null, at: "library/consumer.py:14", until: " (4 days)" }, { label: "mailer: 3 attempts", n: 3, at: "library/mailer.py:14" }],
-    text: "no limit until the message expires (4 days)" });
+    text: "30 × without limit until the message expires (4 days)" });
   assert.deepEqual(ladderOf(P("p", "retry", ["e7", "library/mailer.py:14"], "finding", []), deps).text, "up to 15 times", "a receive limit times the retries");
   assert.equal(ladderOf(P("p", "retry", ["nothing"], "finding", []), deps), null);
   assert.deepEqual(budgetOf(p1, deps), { value_s: 70, limit_s: 10, over_s: 60, at: "library/consumer.py:14", text: "up to 70 s for a batch of 10 against a 10 s timeout: 60 s over" });
@@ -910,12 +910,21 @@ console.log("ok");
   assert.deepEqual([blockerOf(P("p", "effect", ["mailer"], "finding", ["duplicate_effect"]), null, null, fx)?.why, blockerOf(P("p", "effect", ["library/audit.py:3"], "finding", ["duplicate_effect"]), null, null, fx),
     blockerOf(P("p", "silent", ["events.py:20"], "finding", ["lost_effect"], { end: "no mails and no signal" }), null, null, fx)?.why],
     ["a visible effect happens twice", null, "a visible effect is lost"], "a mail twice blocks, a log line twice does not; the end can name the mail");
-  // A path named by its lines finds its calls in the same files; the map's marks come from the same facts.
-  const byLines = P("p", "retry", ["library/consumer.py:21", "library/mailer.py:20"], "finding", ["no_dlq"], { visible: false });
-  assert.equal(ladderOf(byLines, deps).text, "no limit until the message expires (4 days)", "consumer.py:21 finds the consumer's call at consumer.py:14");
-  const { marksOf } = await import("./pr.js");
-  assert.deepEqual(marksOf(byLines, [{ ...deps[0], timeout: { s: 10 } }, deps[1]]), [{ at: "e5", mark: "⏱ 10 s" }, { at: "e5", mark: "no DLQ" },
+  // Wave R2: a path named by its lines reaches the cards of those lines (reachOf), and a call counts when its node is one
+  // of them; a call that only shares a file with a step does not (p6 reaches the consumer, never the mailer).
+  const { marksOf, reachOf } = await import("./pr.js");
+  const map = { nodes: [{ id: "queue", at: "template.yaml:11" }, { id: "consumer", at: "library/consumer.py:11" }, { id: "mailer", at: "library/mailer.py:10" }],
+    edges: [{ from: "queue", to: "consumer" }, { from: "consumer", to: "mailer" }] };
+  const bound = [{ ...deps[0], edge: null, node: "consumer", at: "template.yaml:32" }, { ...deps[1], node: "mailer" }];
+  const q1 = P("p1", "retry", ["e0", "library/consumer.py:21"], "finding", ["no_dlq"]), q6 = P("p6", "state", ["library/consumer.py:19", "library/api.py:15"], "finding", []);
+  assert.deepEqual([[...reachOf(q1, map)], [...reachOf(q6, map)]], [["queue", "consumer"], ["consumer"]]);
+  assert.equal(ladderOf({ ...q1, reach: reachOf(q1, map) }, bound).text, "10 × without limit until the message expires (4 days)", "the trigger by its consumer node; no mailer ×3");
+  assert.equal(ladderOf({ ...q6, reach: reachOf(q6, map) }, bound).factors.some((f) => f.label.startsWith("mailer")), false, "p6 has no mailer ladder");
+  assert.equal(ladderOf(P("p", "retry", ["library/consumer.py:21"], "finding", []), bound), null, "without the map a line alone finds no call");
+  const byLines = { ...P("p", "retry", ["library/consumer.py:21", "library/mailer.py:20"], "finding", ["no_dlq"], { visible: false }), reach: new Set(["consumer", "mailer"]) };
+  assert.deepEqual(marksOf(byLines, [{ ...bound[0], timeout: { s: 10 } }, bound[1]]), [{ at: "consumer", mark: "⏱ 10 s" }, { at: "consumer", mark: "no DLQ" },
     { at: "library/mailer.py:14", mark: "×3" }, { at: "library/mailer.py:20", mark: "✕ silent" }]);
+  assert.deepEqual(marksOf(P("p", "x", ["a.py:3"], "finding", [], { signal: "platform_only", visible: false }), []), [], "a path the platform's metrics show is not silent");
   assert.deepEqual(marksOf(P("p", "timeout", ["e2", "handler.py:21"], "finding", ["no_timeout_public", "poison_message"], { visible: false }), [{ edge: "e2", at: "handler.py:20", mode: "sync" }]),
     [{ at: "e2", mark: "⏱ no timeout" }, { at: "handler.py:21", mark: "no DLQ" }, { at: "handler.py:21", mark: "✕ silent" }], "a sync call without a timeout; what failing says where the calls say nothing");
   assert.deepEqual(marksOf(P("p", "other", ["a.py:3"], "finding", ["no_dlq", "silent"]), []), [{ at: "a.py:3", mark: "no DLQ" }, { at: "a.py:3", mark: "✕ silent" }], "without calls, from failing alone");
@@ -935,7 +944,8 @@ console.log("ok");
   assert.equal(blockerOf(P("p", "retry", ["e5"], "mitigated", ["no_dlq"], { limited_by: "a.py:1" }), ladderOf(p1, deps), null), null, "only a path with a finding blocks");
   assert.deepEqual(blockerOf(P("p", "silent", ["events.py:20"], "finding", [], { visible: false }), null, null), { why: "the path repeats or loses effects and nothing signals it", at: "events.py:20" });
   const block = { head: "h1", deps, paths: [P("p2", "effect", ["reminders.py:20"], "finding", ["no_alarm"]), p1, P("p3", "effect", [], "mitigated", [], { limited_by: "x.py:9" }), P("p4", "race", [], "not_assessed", [])],
-    checks: [{ check: "cors", result: "clean" }, { check: "rollback", result: "not_checkable" }], blind_spots: [{ id: "b1", failure: "publish never reaches SQS", at: "events.py:20", alarm: "none" }] };
+    checks: [{ check: "cors", result: "clean" }, { check: "rollback", result: "not_checkable" }], blind_spots: [{ id: "b1", failure: "publish never reaches SQS", at: "events.py:20", signal: "none", alarm: "none" },
+      { id: "b2", failure: "Mail fails", at: "mailer.py:19", signal: "log", alarm: "none" }] };
   const r = withResilience(mapReview({ steps: [] }, []), block, "h2").resilience;
   assert.deepEqual([r.paths.map((p) => p.id), r.blockers, r.older], [["p1", "p2", "p3", "p4"], ["p1"], true], "blockers first; another head is older");
   assert.equal(r.summary, "1 of 4 paths blocks the merge: a message that always fails comes back until it expires; 1 not assessed.");
@@ -945,11 +955,18 @@ console.log("ok");
     additions: [{ result: "justified" }, { result: "justified" }, { result: "questionable" }, { result: "unjustified" }] }, null, [{ id: "tok", security: true, sources: [] }]).resilience;
   assert.deepEqual([ad.additionsLine, ad.counts.additions, ad.paths[0].also_security], ["This PR adds 4 parts: 2 justified, 1 questionable and 1 solves nothing here.",
     { justified: 2, questionable: 1, unjustified: 1 }, true], "the parts weighed against their cost; a path whose finding is also security says so");
-  assert.deepEqual(r.watch, ["publish never reaches SQS (events.py:20): nothing in the repository alarms on it", "the age of the oldest message at e5", "the age of the oldest message at e7"]);
+  assert.deepEqual(r.unseen, ["publish never reaches SQS (events.py:20): nothing shows it"], "what nothing shows goes before the merge");
+  assert.deepEqual(r.watch, ["Mail fails (mailer.py:19): seen as log, but nothing alarms on it", "the age of the oldest message at e5", "the age of the oldest message at e7"],
+    "watched after the merge: a signal without an alarm, the queues' age, once per resource");
   assert.equal(withResilience(mapReview({ steps: [] }, []), { paths: [P("p1", "retry", [], "mitigated", [], { limited_by: "q.yaml:4" })] }).resilience.summary, "Every assessed path is limited, e.g. at q.yaml:4.");
   const pre = withResilience(mapReview({ steps: [] }, []), { paths: [P("p1", "other", ["reminders.py:13"], "finding", ["lost_effect"], { findings: ["w"] })] }, null,
     [{ id: "w", introduced_here: false }]).resilience;
   assert.deepEqual([pre.paths[0].pre_existing, pre.paths[0].blocker, pre.counts.blockers], [true, null, 0], "a path made only of flaws from before this PR blocks nothing");
+  const unk = withResilience(mapReview({ steps: [] }, []), { deps, paths: [{ ...p1, findings: ["w"] }] }, null, [{ id: "w", introduced_here: null }]).resilience;
+  assert.deepEqual([unk.paths[0].pre_existing, unk.paths[0].blocker?.unclear, unk.counts.blockers], ["unknown", true, 1], "base not comparable: the blocker stays, marked unclear");
+  const two = withResilience(mapReview({ steps: [] }, []), { deps, paths: [{ ...p1, action: "Add a dead-letter queue." },
+    P("p2", "timeout", ["x.py:3"], "finding", ["no_dlq"], { findings: ["slow"], action: "add a dead-letter queue", visible: false })] }).resilience;
+  assert.deepEqual([two.counts.blockers, two.paths[0].triggers, two.paths[1].same_cause], [1, ["p1", "p2"], "p1"], "the same action is one blocker with two triggers");
   assert.deepEqual([withResilience(mapReview({ steps: [] }, []), null).resilience, withResilience(mapReview({ steps: [] }, []), { paths: [] }).resilience.summary], [null, "The run found no path a failure takes through this change."]);
   // Before the run: what the diff adds, without a model (PR #2's template and handler).
   const files = splitPatch(["diff --git a/template.yaml b/template.yaml", "--- a/template.yaml", "+++ b/template.yaml", "@@ -0,0 +1,6 @@", "+  LoanEvents:", "+    Type: AWS::SQS::Queue",
