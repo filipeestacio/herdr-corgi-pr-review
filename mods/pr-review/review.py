@@ -59,10 +59,20 @@ def git_hint(root):
             "or ls-files and paths relative to the checkout; plain git is refused.\n\n") if root else ""
 
 
+# The fixed git commands that the slash commands' own templates run before the model starts (/security-review,
+# /code-review: `!git status` and the like). Allowed word for word, without wildcards: no argument of the model's can
+# ride along. Any other git call is refused (dontAsk), so a run reaches git only through safegit.py.
+# A second line for the git calls Claude Code itself lets through as read-only (git log, git show in the checkout):
+# no argument that is a path outside (/…, ~…, ../…, also after = or :) and none of safegit's refused options.
+GIT_DENIED = ("* /*", "* ~*", "*../*", "*=/*", "*=~*", "*:/*", "*:~*", "*--ou*", "*--ext*", "*--textc*", "*--no-in*", "*--con*", "*--ignore-revs*", "*-O*", "blame*-S*")
+TEMPLATE_GIT = ("git status", "git diff HEAD", "git branch --show-current", "git log --oneline -10", "git diff --name-only origin/HEAD...",
+                "git log --no-decorate origin/HEAD...", "git diff origin/HEAD...")
+
+
 def permissions(root, *tools):
     """The CLI flags for a run with these tools plus read-only git in root (None: no git)."""
-    denied = ["Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Bash(git *)"]
-    return ("--restricted", "--permission-mode", "dontAsk", "--allowedTools", *tools, *([f"Bash({git_call(root)} *)"] if root else []),
+    denied = ["Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch", *(f"Bash(git {p})" for p in GIT_DENIED)]
+    return ("--restricted", "--permission-mode", "dontAsk", "--allowedTools", *tools, *([f"Bash({git_call(root)} *)", *(f"Bash({c})" for c in TEMPLATE_GIT)] if root else []),
             "--disallowedTools", *denied)
 SYSTEM = ("You are a thorough, experienced code reviewer and guide a person through the review of a pull request in {lang}: "
           "ordered by risk, with concrete check points and only real suspicious spots verified in the code, no style "

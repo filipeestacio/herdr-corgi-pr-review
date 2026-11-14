@@ -106,7 +106,8 @@ ASK_SECURITY = (
     "in the code uses the grant), at (file:line), node (the id of its picture node, if any). Ways of operators and CI that "
     "the PR adds or changes (admin scripts, workflows, deploy jobs, guardrails they switch) are rows of their own; empty "
     "when the PR touches no such place. A crossing is an access row, or a call between two picture nodes in zones of "
-    "different trust. gates: the check at each crossing the PR adds or changes, where it really happens: where (access: "
+    "different trust: once you have the zones, go through the picture's edges and take every edge whose two ends lie in "
+    "zones of different trust; the PR adds or changes it when the edge or one of its ends is new or changed. gates: the check at each crossing the PR adds or changes, where it really happens: where (access: "
     "the id of an access row; or from and to: the two picture nodes), principal (the identity the request goes on with), "
     "check (none, network, token, signature, iam), at (file:line of the check), source (config: a gateway, authorizer or "
     "policy checks before the code runs; code: the receiving function's own code checks), holds_if (what must be true for "
@@ -313,8 +314,10 @@ def security_view(answer, findings, pic, changed):
     name = lambda n: (zone_of.get(n) or {}).get("name") or n  # noqa: E731
     open_ = [({"access": r["id"]}, f"{r.get('principal') or 'caller'} → {r['resource']}") for r in rows if place({"access": r["id"]})[2]] + \
             [(dict(c), f"{name(c['from'])} → {name(c['to'])}") for c in crossing if place(c)[2]]
+    # A call from a public card into a card with a public access row is that row's way in, not a second crossing.
+    same = lambda w: [{"access": r["id"]} for r in rows if w.get("edge") and r.get("public") and r.get("node") == w["to"] and trust(w["from"]) == "public"]  # noqa: E731
     for where, boundary in open_:
-        if not any(t["where"] == where for t in threats):
+        if not any(t["where"] in (where, *same(where)) for t in threats):
             threats.append({"id": f"t{len(threats) + 1}", "where": where, "boundary": boundary, "threat": "No threat was named for this crossing.", "stride": "",
                             "findings": [], "result": "not_assessed", "goal": "", "evidence": "", "note": "", "derived": True})
     effective = {}

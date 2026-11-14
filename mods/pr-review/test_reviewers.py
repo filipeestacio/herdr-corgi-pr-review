@@ -21,8 +21,14 @@ p = reviewers.permissions("/work/check out")
 assert p[:3] == ("--restricted", "--permission-mode", "dontAsk"), "file tools confined to the checkout, its .claude settings ignored, the rest refused"
 allowed, denied = p[p.index("--allowedTools") + 1:p.index("--disallowedTools")], p[p.index("--disallowedTools") + 1:]
 git = f"Bash(python3 {reviewers.review.SAFEGIT} '/work/check out' *)"
-assert allowed == ("Read", "Grep", "Glob", "Agent", git), allowed
-assert "Bash(git *)" in denied, "git only through safegit.py, fixed to this checkout"
+assert allowed[:5] == ("Read", "Grep", "Glob", "Agent", git), allowed
+assert all(a.startswith("Bash(git ") and "*" not in a for a in allowed[5:]) and "Bash(git status)" in allowed, "plain git only as the templates' fixed commands, word for word"
+import fnmatch  # noqa: E402
+hit = lambda c: [d for d in denied if d.startswith("Bash(") and fnmatch.fnmatchcase(c, d[5:-1])]  # noqa: E731
+assert not [c for c in reviewers.review.TEMPLATE_GIT if hit(c)], "the templates' commands are not denied"
+assert not [c for c in ("git log --oneline -5", "git show HEAD:lib/x.py", "git diff base..head -- lib/x.py", "git log -Sfoo") if hit(c)]
+assert all(hit(c) for c in ("git diff /etc/hosts README.md", "git diff ~/.ssh/id README.md", "git diff ../../x README.md", "git diff a/../../x b",
+                            "git diff --relative=/x", "git show HEAD:/x", "git blame --con x a.py", "git diff --ou=x", "git diff -O/x", "git blame -S x a.py"))
 assert reviewers.review.git_hint("/work/check out").startswith(f"Call git only as `python3 {reviewers.review.SAFEGIT} '/work/check out' <command>")
 assert reviewers.review.git_hint("/w") in reviewers.findings_schema("claude", "/w")["description"], "a slash command's fork sees the schema"
 assert reviewers.review.permissions(None, "Read")[3:5] == ("--allowedTools", "Read") and reviewers.review.git_hint(None) == "", "no checkout: no git"
@@ -121,6 +127,11 @@ assert "opened_by_pr" not in lone["access"][0] and "principal_kind" not in lone[
 assert [x["result"] for x in lone["threats"]] == ["not_assessed"], "no diff: the row stays; a finding result needs a finding"
 assert reviewers.security_view({"access": [{"resource": "Old", "at": "t.yaml:3", "change": "unchanged"}]}, [], {}, {"t.yaml": {3}})["threats"] == [], "an unchanged grant needs no entry"
 assert reviewers.security_view({}, [], {}, {}) == {"zones": [], "access": [], "crossing": [], "gates": [], "threats": [], "effective_zones": []}
+entry = {"architecture": {"nodes": [{"id": "c", "status": "unchanged"}, {"id": "h", "status": "changed"}], "edges": [{"from": "c", "to": "h", "status": "changed"}]}}
+ez = {"zones": [{"id": "p", "trust": "public", "nodes": ["c"]}, {"id": "a", "trust": "authenticated", "nodes": ["h"]}],
+      "access": [{"resource": "Api", "public": True, "node": "h", "at": "t.yaml:1", "change": "added"}], "threats": [{"where": {"access": "acc1"}, "threat": "x", "result": "not_assessed"}]}
+assert [x["where"] for x in reviewers.security_view(ez, [], entry, None)["threats"]] == [{"access": "acc1"}], "the caller's edge into a public entry is that entry, not a second crossing"
+assert [x["where"] for x in reviewers.security_view({**ez, "threats": []}, [], entry, None)["threats"]] == [{"access": "acc1"}], "one way in, one not assessed entry"
 
 # The view lands in the findings file next to the runs; a run without one leaves it.
 file = home / "findings" / "123.json"
