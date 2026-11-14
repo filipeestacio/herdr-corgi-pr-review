@@ -799,3 +799,26 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.equal(both - finding, RES_MARK_ROW.h + RES_MARK_ROW.below + 3, "the mark's line, the space under it and the card's gap");
   assert.ok(finding >= base, "a finding's row keeps its 18 px");
 }
+
+// ---- wave C2: the verdict as a short sentence and a count; the map starts at the path's first card
+{
+  const { resVerdictParts, resStartCard } = await import("./views.js");
+  assert.deepEqual(resVerdictParts([{ blocker: { why: "lost" } }, { blocker: { why: "twice" } }, { blocker: { why: "lost" } }, {}]), { head: "3 of 4 paths block the merge.", counts: ["lost: 2", "twice: 1"] });
+  assert.equal(resVerdictParts([{}]), null);
+  const arch = { nodes: [{ id: "r", at: "library/reminders.py:16" }, { id: "q" }, { id: "c" }], edges: [{ from: "q", to: "c" }] };
+  assert.deepEqual([resStartCard({ steps: ["e0", "c"] }, arch), resStartCard({ steps: ["reminders.py:21", "e0"] }, arch), resStartCard({ steps: [], reach: ["c"] }, arch)], ["q", "r", "c"]);
+}
+
+// ---- wave C2: a finding marks only the transition it names, not every one in its lines
+{
+  const { transitionMarks } = await import("./views.js");
+  const t = (from, to, evidence) => ({ from, to, evidence });
+  const v = { transitions: [t("BORROWED", "REMINDED", "library/status.py:46"), t("BORROWED", "OVERDUE", "library/status.py:45"), t("REMINDED", "OVERDUE", "library/status.py:45"),
+    t("BORROWED", "RETURNED", "library/status.py:48"), t("REMINDED", "RETURNED", "library/status.py:48"), t("OVERDUE", "OVERDUE", "library/reminders.py:33")] };
+  const f = (id, file, line, end, extra = {}) => ({ id, file, line, end, severity: "high", ...extra });
+  const at = (fs) => [...transitionMarks(v, fs)].map(([i, x]) => [i, x.findings.map((g) => g.id)]);
+  assert.deepEqual(at([f("a", "library/status.py", 46, 50)]), [[0, ["a"]]], "the transition at its first line, not all four in its range");
+  assert.deepEqual(at([f("b", "library/status.py", 45, 45)]), [[1, ["b"]], [2, ["b"]]], "two transitions on the same line both");
+  assert.deepEqual(at([f("c", "library/reminders.py", 35, 35), f("d", "library/status.py", 39, 39)]), [[5, ["c"]]], "near enough, or none");
+  assert.deepEqual(at([f("e", "library/status.py", 46, 50, { breaks: { from: "reminded", to: "returned" } })]), [[4, ["e"]]], "breaks names it");
+}

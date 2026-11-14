@@ -81,6 +81,8 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
   // Dimmed text (a call's text, its number, a chip, a card) stays at 4.5:1 against the background; lines go to `fade`.
   // L.label: the text's size from the layout (the Resilience map's is larger).
   const textFade = readableFade(t.foreground, t.background, fade), LB = L.label ?? { ...LABEL, px: 10.5 };
+  // A dimmed card's second colour (its description, a call's text in grey) stays at 4.5:1 too (wave C2 V5).
+  const cardFade = Math.max(0.6, readableFade(t.muted, t.background, 0.6));
   // A call's own tooltip (tip: the Security picture's, what the check is and holds on) says more than its label again.
   const tipOf = (p) => [p.tip ?? p.label, sourceStyle(p.source).tip, p.evidence].filter(Boolean).join("\n");
   const hop = ARCH.HOP, els = [];
@@ -177,7 +179,7 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
         .child(div().flex_1())
         .when(open && Boolean(opts.onFocus) && n.w >= ARCH.W, (e) => e.child(div().id(`${id}-o${i}`).flex_none().px(4).rounded(4).text_color(t.accent).cursor_pointer().hover((s) => s.bg(t.hover))
           .tooltip("Show this place in the diff").child("Show in diff ↗").on_click((ev, cx) => { onNode(n, ev, cx); cx.stop_propagation(); })))
-        .when(Boolean(n.status) && !(ext && n.status === "unchanged"), (e) => e.child(chip(t, n.status === "new" ? "ADDED" : n.status.toUpperCase(), c, false, `${id}-st${i}`, `Status in this PR: ${n.status === "new" ? "added" : n.status}`)))), dimN(n), Math.max(textFade, 0.6));
+        .when(Boolean(n.status) && !(ext && n.status === "unchanged"), (e) => e.child(chip(t, n.status === "new" ? "ADDED" : n.status.toUpperCase(), c, false, `${id}-st${i}`, `Status in this PR: ${n.status === "new" ? "added" : n.status}`)))), dimN(n), cardFade);
   });
   // An orchestrator's states: a lane down the card, one row each; a state that calls a component ends in "→" where its
   // line leaves the card.
@@ -186,7 +188,7 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
       .child(div().flex_none().w(14).text_color(s.source !== "existing" && (s.status === "new" || s.status === "changed") ? t.accent : t.muted).child(STATE_GLYPH[s.type] ?? "▭"))
       .child(div().flex_1().min_w(0).truncate().text_color(s.source === "spec" || s.source === "existing" ? t.muted : t.foreground).child(s.name))
       .when(s.source === "spec", (e) => e.child(specTag(t, `${id}-s${i}-${k}-sp`)))
-      .when(Boolean(s.calls), (e) => e.child(div().flex_none().text_color(t.muted).child("→"))))), dimN(n), Math.max(textFade, 0.6))]));
+      .when(Boolean(s.calls), (e) => e.child(div().flex_none().text_color(t.muted).child("→"))))), dimN(n), cardFade)]));
   // opts.edgeNotes: Map(edge index -> text), a path's marks on a call itself (the Resilience map: ⏱ 10 s, ↻ no limit),
   // just above the call's text, else above its number.
   const notes = !opts.edgeNotes ? [] : L.paths.flatMap((p, i) => {

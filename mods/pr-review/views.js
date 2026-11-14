@@ -585,16 +585,23 @@ export function areaFindings(area, k, findings) {
 // (`evidence` or `at`: "file:line" or "file:line-end"; a finding's own range counts). Returns Map(index in edges then
 // transitions -> {findings, severity: the highest}); a transition without a place has none.
 const RANK = { critical: 0, high: 1, medium: 2, low: 3 };
+// Wave C2 V4: a finding marks only the transition it names, not every transition in its lines: by breaks {from, to}
+// with the states' names, else the transition(s) whose line is nearest its own, within NEAR_T lines (ties: all).
+const NEAR_T = 3;
 export function transitionMarks(v, findings) {
-  const out = new Map(), place = (s) => /^(.+?):(\d+)(?:-(\d+))?/.exec(String(s ?? ""));
-  [...(v?.edges ?? []), ...(v?.transitions ?? [])].forEach((e, i) => {
-    const m = place(e.evidence) ?? place(e.at);
-    if (!m) return;
-    const [path, a, b] = [m[1], Number(m[2]), Number(m[3] ?? m[2])];
-    const hit = (findings ?? []).filter((f) => f.file && (f.file === path || f.file.endsWith(`/${path}`) || path.endsWith(`/${f.file}`)) && (f.line ?? 0) <= b && (f.end ?? f.line ?? 0) >= a);
-    if (hit.length) out.set(i, { findings: hit, severity: hit.map((f) => f.severity).sort((x, y) => (RANK[x] ?? 9) - (RANK[y] ?? 9))[0] });
-  });
-  return out;
+  const out = new Map(), place = (s) => /^(.+?):(\d+)(?:-(\d+))?/.exec(String(s ?? "")), eq = (x, y) => String(x ?? "").toLowerCase() === String(y ?? "").toLowerCase();
+  const ts = [...(v?.edges ?? []), ...(v?.transitions ?? [])].map((e, i) => { const m = place(e.evidence) ?? place(e.at); return { e, i, m: m && [m[1], Number(m[2]), Number(m[3] ?? m[2])] }; });
+  const add = (i, f) => { const x = out.get(i) ?? { findings: [] }; x.findings.push(f); out.set(i, x); };
+  for (const f of findings ?? []) {
+    const named = f.breaks && ts.filter(({ e }) => (f.breaks.from || f.breaks.to) && (!f.breaks.from || eq(f.breaks.from, e.from)) && (!f.breaks.to || eq(f.breaks.to, e.to)));
+    if (named?.length) { named.forEach(({ i }) => add(i, f)); continue; }
+    const lo = f.line ?? 0, hi = f.end ?? f.line ?? 0, file = (path) => f.file && (f.file === path || f.file.endsWith(`/${path}`) || path.endsWith(`/${f.file}`));
+    const near = ts.filter(({ m }) => m && file(m[0]) && Math.max(0, m[1] - hi, lo - m[2]) <= NEAR_T), gap = ({ m }) => (lo >= m[1] && lo <= m[2] ? 0 : Math.abs(lo - m[1]));
+    const best = Math.min(...near.map(gap));
+    near.filter((t) => gap(t) === best).forEach(({ i }) => add(i, f));
+  }
+  for (const x of out.values()) x.severity = x.findings.map((f) => f.severity).sort((a, b) => (RANK[a] ?? 9) - (RANK[b] ?? 9))[0];
+  return new Map([...out].sort(([a], [b]) => a - b));
 }
 
 // Where the runs' self-reports in "What each run checked" contradict each other or the findings: an area one run calls
@@ -1131,3 +1138,20 @@ export function resByProbe(paths, probes) {
 // in its 15 px row) below does not touch it. In arch.js extra rows of 18 px each, with the card's 3 px gap.
 export const RES_MARK_ROW = { h: 18, below: 3 };
 export const resMarkRows = () => (RES_MARK_ROW.h + RES_MARK_ROW.below + 3) / 18;
+// The page's verdict in two parts (wave C2 V2): a short sentence ("5 of 11 paths block the merge.") and the count by
+// reason, most first ("a visible effect is lost: 2 · load grows without a limit: 1"); null without a blocker.
+export function resVerdictParts(paths) {
+  const b = (paths ?? []).filter((p) => p.blocker), by = new Map();
+  if (!b.length) return null;
+  for (const p of b) { const w = p.blocker.reason ?? p.blocker.why ?? ""; by.set(w, (by.get(w) ?? 0) + 1); }
+  return { head: `${b.length} of ${paths.length} ${paths.length === 1 ? "path" : "paths"} ${b.length === 1 ? "blocks" : "block"} the merge.`,
+    counts: [...by].sort((x, y) => y[1] - x[1]).map(([w, n]) => `${w}: ${n}`) };
+}
+// Where a chosen path starts on the map: the card of its first step (a call e<k> by the card it leaves), else null.
+export function resStartCard(p, arch) {
+  for (const s of p?.steps ?? []) {
+    const e = /^e(\d+)$/.exec(String(s)), id = e ? arch?.edges?.[Number(e[1])]?.from : resCardOf(s, arch);
+    if (id) return id;
+  }
+  return p?.reach?.[0] ?? null;
+}

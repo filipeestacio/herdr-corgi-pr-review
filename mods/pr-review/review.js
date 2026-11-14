@@ -38,7 +38,7 @@ import { pollDue, pollAfter, windowActive } from "./pr.js"; // background fetche
 import { hasSources, archLayout, archBands } from "./arch.js";
 import { archMarks, transitionText } from "./arch.js";
 import { resStartOf, resOrder, resPicture, budgetBar, resPathView, resCardOf, resSentence, resMarksOn } from "./views.js";
-import { resWord, resToolText, resVerdict, resWatch, resTwice, PROBE_TYPICAL, resEdgeMarks, resByProbe, RES_MARK_ROW, resMarkRows } from "./views.js"; // wave R2: words, verdict, watch, doubled ways
+import { resWord, resToolText, resVerdict, resWatch, resTwice, PROBE_TYPICAL, resEdgeMarks, resByProbe, RES_MARK_ROW, resMarkRows, resVerdictParts, resStartCard } from "./views.js"; // wave R2: words, verdict, watch, doubled ways
 import { withResilience, resilienceStart, RUN_TYPICAL } from "./pr.js"; // the Resilience run's data // the Resilience page
 import { wayOf, wayText, passZones, runsIn } from "./views.js"; // panel round 3: ways through every gate, zones passed on
 import { transitionMarks, effectiveFrom, inProcess, mapArch, crossingsOf, crossingChanged, secSentence, TRUST_ORDER } from "./views.js";
@@ -2728,7 +2728,7 @@ export const ReviewMode = {
     return v_flex().id(`rv-step-${i}`).tooltip(`${s.why ? `${plain(s.why)} ` : ""}Click to open this layer: its explanation, flows and changed code.`).flex_none().px(10).py(8).gap(6).rounded(8).cursor_pointer().when(on, (e) => e.bg(t.selected)).hover((st) => st.bg(t.hover))
       .on_click((_e, cx) => { this.goStep(i, cx); cx.notify(); })
       .child(h_flex().gap(8).items_center()
-        .child(div().id(`rv-chk-${i}`).tooltip(done ? "You ticked every file in this layer as viewed" : "The layer gets its tick once you ticked every file in it as viewed").w(18).flex_none().text_size(14).text_color(done ? t.ansi2 : t.dim).child(done ? "✓" : String(i + 1)))
+        .child(div().id(`rv-chk-${i}`).tooltip(done ? "You ticked every file in this layer as viewed" : "The layer gets its tick once you ticked every file in it as viewed").w(18).flex_none().text_size(14).text_color(done ? t.ansi2 : t.muted).child(done ? "✓" : String(i + 1)))
         .child(div().flex_1().min_w(0).text_size(14.5).font_semibold().text_color(s.stale ? t.dim : t.foreground).when(!on, (e) => e.truncate()).child(plain(s.title)))
         .when(Boolean(s.isNew), (e) => e.child(badge(t, "new", t.accent).id(`rv-new-${i}`).tooltip("New since the previous analysis")))
         .when(Boolean(s.stale), (e) => e.child(badge(t, "outdated", t.ansi3).id(`rv-old-${i}`).tooltip("These hunks are no longer in the diff: the code changed since the analysis")))
@@ -4057,10 +4057,12 @@ export const ReviewMode = {
     const paths = resOrder((res.paths ?? []).map((p) => resPathView(p, res))), blockers = paths.filter((p) => p.blocker), cur = this.resPathOf(paths), now = this.worktree?.head ?? this.head;
     const stale = Boolean(res.older) || Boolean(res.head && now && res.head !== now), short = (h) => String(h ?? "").slice(0, 7);
     const clean = (res.checks ?? []).filter((c) => c.result === "clean").length, nc = (res.checks ?? []).filter((c) => c.result === "not_checkable").length + (res.not_checked ?? []).length;
-    const verdict = resVerdict(paths) || res.summary || (blockers.length ? `${blockers.length} ${blockers.length === 1 ? "path stands" : "paths stand"} before the merge.` : "No path grows without limit or doubles an effect.");
+    const vp = resVerdictParts(paths); // wave C2 V2: a short sentence, the reasons counted under it
+    const verdict = vp?.head || res.summary || (blockers.length ? `${blockers.length} ${blockers.length === 1 ? "path stands" : "paths stand"} before the merge.` : "No path grows without limit or doubles an effect.");
     const context = [`${paths.length} ${paths.length === 1 ? "path" : "paths"}`, `${clean} ${clean === 1 ? "check" : "checks"} clean`, `${nc} not checkable`, `analysis of ${short(res.head)}${res.at ? `, ${ago(res.at)}` : ""}`, (res.cost ?? this.find.runs?.resilience?.cost) != null && `$${Number(res.cost ?? this.find.runs.resilience.cost).toFixed(2)}`].filter(Boolean).join(" · ");
     const top = v_flex().id("rv-res-top").gap(4).when(stale, (e) => e.opacity(0.55))
       .child(div().text_size(15).font_semibold().line_height(1.4).whitespace_normal().child(`${blockers.length ? "" : "✓ "}${verdict}`))
+      .when(Boolean(vp), (e) => e.child(div().id("rv-res-why").text_size(13).whitespace_normal().line_height(1.45).child(vp.counts.join(" · "))))
       .child(div().text_size(12.5).text_color(t.muted).child(context))
       .when((res.additions ?? []).length > 0, (e) => e.child(this.resAdditions(t, res)));
     // Another head: the whole page grey, the line that says so and Re-run not.
@@ -4118,7 +4120,9 @@ export const ReviewMode = {
     const key = p?.id ?? "start", s = this.hsOf("rv-res-canvas");
     if (this.resMapFor !== key) {
       const lit = L.nodes.filter((n) => on.has(n.id)), room = this.wrapX().room("rv-res-canvas");
-      if (lit.length) { const lo = Math.min(...lit.map((n) => n.x)) - 40, hi = Math.max(...lit.map((n) => n.x + n.w)) + 40; s.x = Math.max(0, !room ? lo : hi - lo > room ? hi - room : lo < s.x || hi > s.x + room ? lo : s.x); }
+      // Its start in view (wave C2 V2): the card of its first step, else the leftmost lit card; all of it when it fits.
+      const first = L.nodes.find((n) => n.id === resStartCard(p, a));
+      if (lit.length) { const lo = Math.min(...lit.map((n) => n.x)) - 40, hi = Math.max(...lit.map((n) => n.x + n.w)) + 40, from = first ? first.x - 40 : lo; s.x = Math.max(0, !room ? from : hi - lo > room ? from : lo < s.x || hi > s.x + room ? lo : s.x); }
       if (room || !lit.length) this.resMapFor = key;
     }
     const deco = (n) => (byNode.has(n.id) ? [div().id(`rv-res-mk-${n.id}`).flex_none().h(RES_MARK_ROW.h).mb(RES_MARK_ROW.below).flex().items_center().text_size(13).font_semibold().text_color(/✕|∞|no /.test(byNode.get(n.id)) ? t.ansi1 : t.foreground).child(byNode.get(n.id))]
