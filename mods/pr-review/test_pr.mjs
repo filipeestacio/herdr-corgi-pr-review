@@ -865,3 +865,24 @@ console.log("ok");
   assert.deepEqual(withSecurity(mapReview({ steps: [] }, []), null, null).bypasses, []);
   console.log("ok merge by ranges");
 }
+
+// One defect at one named resource is one finding, also a few lines further apart (PR #2: the analysis' token finding
+// at the env block, template.yaml:14, and the security review's at the function, 18-20); findings about different
+// resources stay apart, also next to each other.
+{
+  const { mergeFindings, resourcesOf, sameDefect } = await import("./pr.js");
+  const F = (id, reviewer, line, end, title, impact = "unauthorized_access") => ({ id, reviewer, file: "template.yaml", line, end, severity: "high", category: "security", impact, title, detail: "" });
+  assert.deepEqual([...resourcesOf("FrontDesk has no FRONT_DESK_TOKEN, so the `token` is empty")], ["FRONT_DESK_TOKEN", "token"]);
+  assert.deepEqual([...resourcesOf("Queue has no dead-letter queue")], [], "plain words are no resource");
+  const m = mergeFindings([F("ana", "analysis", 14, 14, "FrontDesk has no FRONT_DESK_TOKEN, so the token is empty"),
+    F("sec", "security", 18, 20, "FRONT_DESK_TOKEN is never set in the deployment and the route has no authorizer"),
+    F("pol", "security", 21, 23, "SQSSendMessagePolicy granted to FrontDesk but no code sends to the queue", "maintainability"),
+    F("far", "claude", 60, 60, "FRONT_DESK_TOKEN is never set in the deployment"),
+    F("key", "analysis", 30, 30, "API_KEY is never set in the deployment"), F("pw", "analysis", 31, 31, "DB_PASSWORD is never set in the deployment"),
+    F("log", "claude", 16, 16, "FRONT_DESK_TOKEN is written to the log", "data_exposure")]).findings;
+  assert.deepEqual(m.map((f) => f.ids.sort().join("+")).sort(), ["ana+sec", "far", "key", "log", "pol", "pw"],
+    "same resource and impact 4 lines apart: one; 40 lines away, another impact, or other resources (also a line apart): apart");
+  assert.equal(m.find((f) => f.ids.includes("sec")).sources.length, 2, "both runs named");
+  assert.equal(sameDefect({ file: "a", line: 1, title: "x is wrong" }, { file: "a", line: 2, title: "x is wrong" }), true, "the old rule still holds without resources");
+  console.log("ok one resource, one finding");
+}
