@@ -28,6 +28,8 @@ import { orderDiffers, worst, byUrgency } from "./views.js";
 import { archView, archLegend, visualsCard, visualCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
 import { visualPlan } from "./stack.js";
 import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCALE } from "./views.js";
+import { wrapCode, codeCols, sliceSpans } from "./views.js"; // long lines wrap
+import { pairRows, pairSide, HALF_GUTTER, diffModeOf, oneSided } from "./views.js"; // side by side
 import { plainText } from "./pr.js";
 import { hasSources, archLayout, archBands } from "./arch.js";
 import { archMarks, zoneArch } from "./arch.js";
@@ -48,6 +50,9 @@ const FOLD_MARGIN = 1500 * 22; // px: open the files around the view again this 
 const SPLIT = 6, ROW = 22, GUTTER = 4 + 48 + 48 + 22, GAP_SEG = 110, BTN = 110, BTN_GAP = 8, ACT = 44;
 const FILE_CHEV = 30, FILE_SEEN = 100, FILE_WHOLE = 124;
 const MORE = 20; // lines per ↑/↓ click
+const ONE_LINE = [0]; // a code line that fits: one visual line from its start (wrapsOf)
+// The items that start a card under a line: side by side they carry the mark of their half (item).
+const SIDE_HEAD = new Set(["find", "ch", "gh", "compose", "sug", "def", "hidden"]);
 const KEYS_POP = { width: 340, height: 330 }; // the "?" popup: sized to its rows and the last line
 const COMPOSE = 168; // the composer row: header + a fixed-height textarea (the list needs every row's height up front)
 const progressFile = () => `${appHome()}/pr-data/review-progress.json`; // per PR: progress and where you were (bounded)
@@ -436,6 +441,11 @@ export const ReviewMode = {
       if (v) setShared(key, [v, ...(shared(key) ?? []).filter((x) => x !== v)].slice(0, 200));
       this.applyExploreTrust();
     }
+    // line:<l|r>:<line key>:<select|shift|comment|chip>:<path>: a click on that line in the shown diff, on its half side
+    // by side (the unified view takes the line): on its code, shift-click on its code, on its line number, on its
+    // "+ Comment" chip. The same handler as the click (onItem).
+    else if (name === "line") this.pressLine(arg, cx);
+    else if (name === "diff") setShared("review.diff", arg === "split" || arg === "unified" ? arg : null); // diff:split | unified (the top bar's switch), diff:auto: what fits
     else if (name === "copy-link") copyText(this.prSel?.url ?? "");
     else if (name === "copy-state") this.copyState();
     else if (name === "copy-md") this.copyMd(arg); // copy-md: this page; copy-md:verify: the context for an agent that checks the open finding, or the unresolved security findings
@@ -1132,9 +1142,9 @@ export const ReviewMode = {
 
   lspRoot() { return this.exMode ? this.ex?.root ?? null : this.worktree?.path ?? (this.prSel?.space ? this.root : null); },
 
-  define(it, r, cx) {
-    const spans = this.spanMap?.get(it.src)?.spans?.[it.ri] ?? [];
-    const tok = tokenAt(r, spans, this.press.x, GUTTER, this.charW ?? 7.8);
+  define(it, r, cx, x = this.press.x, left = GUTTER, ri = it.ri) {
+    const spans = this.spanMap?.get(it.src)?.spans?.[ri] ?? [];
+    const tok = tokenAt(r, spans, x, left, this.charW ?? 7.8);
     if (!tok) { this.note = "⌘-click a name for its definition"; return cx.notify(); }
     this.lookupDef(it.path, r, tok, cx);
   },
@@ -1320,11 +1330,12 @@ export const ReviewMode = {
     const ths = this.threads().filter((x) => x.file === path), notes = codePins(this.pins(), path);
     const show = this.show();
     const thread = { gh, editId: this.composing ? this.editing?.id ?? null : null, composeKey: range && at.compose === undefined ? lineKey(rows[range[1]]) : null };
-    rows.forEach((r, ri) => {
-      if (r.kind === "gap") { items.push({ t: "gap", path, r }); return; }
-      const hunk = hunkOf(r);
-      if (hunk && at[hunk] === undefined) at[hunk] = items.length;
-      items.push({ t: "row", path, src: rows, ri, hunk });
+    const cardsUnder = (r, side) => {
+      const from = items.length;
+      underRow(r);
+      if (side) for (let k = from; k < items.length; k++) items[k] = { ...items[k], side };
+    };
+    const underRow = (r) => {
       if (r.number === undefined) return;
       if (this.defAt && this.defAt.key === `${path}:${lineKey(r)}`) items.push({ t: "def", d: this.defAt });
       // The Show switch: a kind switched off folds away here, never silently ("n hidden").
@@ -1345,10 +1356,32 @@ export const ReviewMode = {
       if (r.kind !== "-") for (const f of finds) if (under.get(f) === r.number) { if (show.ai) items.push({ t: "find", f }, ...(this.findOpen(f) ? [{ t: "fact", f }] : [])); else hide("Findings"); }
       const n = Object.values(hidden).reduce((a, b) => a + b, 0);
       if (n) items.push({ t: "hidden", text: `${n} hidden · ${Object.keys(hidden).join(", ")}`, key: `${path}:${lineKey(r)}` });
-    });
+    };
+    // Side by side a unit is a pair of rows (l old, r new; one may be null), else one row; a longer line wraps: one
+    // item per visual line (part). What hangs under a line follows its unit, over the whole width, marked with its side.
+    const { cols, units, parts } = this.rowLayout(rows);
+    for (const u of units) {
+      const r = rows[u.ri];
+      if (r.kind === "gap") { items.push({ t: "gap", path, r }); continue; }
+      const hunk = hunkOf(r);
+      if (hunk && at[hunk] === undefined) at[hunk] = items.length;
+      for (let part = 0, n = parts(u); part < n; part++) items.push({ t: "row", path, src: rows, ri: u.ri, hunk, part, cols, ...(u.l === undefined ? {} : { l: u.l, r: u.r }) });
+      if (u.l === undefined || u.l === u.r) cardsUnder(r, null);
+      else { if (u.l !== null) cardsUnder(rows[u.l], "l"); if (u.r !== null) cardsUnder(rows[u.r], "r"); }
+    }
     // What found no line here (pending comments, GitHub's outdated ones): the file's end shows them (filesItems).
     return [...cms.filter((c) => !used.has(c)), ...gh.filter((g) => !ghUsed.has(g)).map((g) => ({ gh: g }))];
   },
+  // How a file's rows are drawn: the code columns per visual line, the units top to bottom ({ri} one row; side by side
+  // {ri, l, r}, ri the row the item's key names) and how many visual lines a unit takes (its longer half's).
+  rowLayout(rows) {
+    const split = this.diffMode() === "split" && !oneSided(rows), lw = this.listW ?? 900, cw = this.codeCharW();
+    const cols = split ? codeCols(lw / 2, HALF_GUTTER, cw) : codeCols(lw, GUTTER, cw), n = (ri) => (ri === null ? 1 : this.wrapsOf(rows, ri, cols).length);
+    const units = split ? pairRows(rows).map((p) => (p.full !== undefined ? { ri: p.full } : { ri: p.r ?? p.l, l: p.l, r: p.r })) : rows.map((_, ri) => ({ ri }));
+    return { split, cols, units, parts: (u) => (u.l === undefined ? n(u.ri) : Math.max(n(u.l), n(u.r))) };
+  },
+  // Side by side or unified: the person's choice (shared "review.diff", the switch in the top bar), else what fits.
+  diffMode() { return diffModeOf(shared("review.diff"), this.listW ?? 900, this.codeCharW()); },
 
   stepsItems(steps = this.steps()) {
     const items = [], at = {};
@@ -1411,11 +1444,23 @@ export const ReviewMode = {
   },
   // A folded file's height: what it took when last open (renderReview keeps openH), else its rows'.
   foldH(path, rows) {
-    const o = this.openH?.get(path);
-    if (o?.rows === rows) return o.h;
+    const o = this.openH?.get(path), L = this.rowLayout(rows), key = `${L.split}|${L.cols}`;
+    if (o?.rows === rows && o.key === key) return o.h;
     const memo = (this.rowsH ??= new WeakMap());
-    if (!memo.has(rows)) memo.set(rows, rows.reduce((h, r) => h + (r.kind === "@" || r.kind === "gap" ? 30 : ROW), 0));
-    return memo.get(rows);
+    if (memo.get(rows)?.key !== key) memo.set(rows, { key, h: L.units.reduce((h, u) => h + (rows[u.ri].kind === "@" || rows[u.ri].kind === "gap" ? 30 : ROW * L.parts(u)), 0) });
+    return memo.get(rows).h;
+  },
+  // A code character's width in the list's px: the probe measures it zoomed, listW is not (renderReview).
+  codeCharW() { return (this.charW ?? 7.8 * (settings().zoom || 1)) / (settings().zoom || 1); },
+  // A row's visual lines at `cols` columns of code (views.js wrapCode): the offset each starts at in its tab-expanded
+  // text, kept per row array and width (rows are memoized across renders, memoRows).
+  wrapsOf(src, ri, cols) {
+    const r = src[ri];
+    if (r?.number === undefined || (r.text.length <= cols && !r.text.includes("\t"))) return ONE_LINE;
+    const m = (this.wraps ??= new WeakMap());
+    if (!m.has(src)) m.set(src, {});
+    const at = (m.get(src)[cols] ??= []);
+    return (at[ri] ??= wrapCode(expandTabs(r.text), cols));
   },
   // Scrolled near a folded file in another file than the room was given around: give it around this one, keeping
   // the item at the top of the view where it is (renderReview: anchor).
@@ -1430,6 +1475,20 @@ export const ReviewMode = {
 
   // ---- clicks in the list: one handler for all rows (gpui-kit); where in the row comes from the press
 
+  pressLine(arg, cx) {
+    const [side, k, how, ...p] = String(arg).split(":"), path = p.join(":"), w = this.listW ?? 900, hits = [];
+    for (const [key, it] of this.byKey ?? []) {
+      if (it.t !== "row" || it.path !== path) continue;
+      const ri = it.l === undefined ? it.ri : side === "l" ? it.l : it.r;
+      if (ri !== null && lineKey(it.src[ri]) === k) hits.push([key, it, ri]);
+    }
+    if (!hits.length) { this.note = `Line ${k} of ${path} is not in the shown diff`; return; }
+    const [, it0, ri] = hits[0], pair = it0.l !== undefined, hw = pair ? w / 2 : w, base = pair && side === "r" ? hw : 0, gw = pair ? HALF_GUTTER : GUTTER;
+    const [key] = how === "chip" ? hits[Math.min(hits.length, this.wrapsOf(it0.src, ri, it0.cols).length) - 1] : hits[0]; // the chip: on the line's last visual line
+    this.press = { x: base + (how === "comment" ? 10 : how === "chip" ? hw - 12 - CHIP_W / 2 : gw + 4), w, shift: how === "shift", cmd: false };
+    this.onItem(key, cx);
+  },
+
   onItem(key, cx) {
     const it = this.byKey?.get(key); // a stable key: the item pressed, even if the list changed since
     if (!it) return;
@@ -1438,17 +1497,23 @@ export const ReviewMode = {
     this.fh.focus();
     if (it.t === "row") {
       if (it.hunk) this.visit(it.hunk, cx);
-      const r = it.src[it.ri];
-      if (r.number === undefined) return;
-      if (this.press.cmd) return this.define(it, r, cx); // ⌘-click a name: its definition
+      // Side by side: the half pressed is the line, x and the width are the half's (views.js pairSide).
+      const h = it.l === undefined ? { ri: it.ri, x, w: this.press.w, side: null } : pairSide(x, this.press.w, it.l, it.r), r = h.ri === null ? null : it.src[h.ri];
+      if (!r || r.number === undefined) return;
+      // A wrapped line's next visual line: its code starts that many columns into the line.
+      const starts = this.wrapsOf(it.src, h.ri, it.cols), part = it.part ?? 0, a = starts[part], lastPart = part === starts.length - 1, gw = h.side ? HALF_GUTTER : GUTTER;
+      if (a === undefined) return; // the blank under a half's shorter line
+      if (this.press.cmd) return this.define(it, r, cx, h.x < gw ? h.x : h.x + a * (this.charW ?? 7.8), gw, h.ri); // ⌘-click a name: its definition
       // Selections are (file, line keys), not row indexes: rows are rebuilt on every render.
-      // A line number (GitHub's gutter "+") opens the composer there; shift-click makes it a range.
-      const k = lineKey(r), f = this.fsel;
-      const d = rowClick({ x, w: this.press.w, shift, gutterW: GUTTER, composing: this.composing, editing: Boolean(this.editing), sel: f, path: it.path, k,
+      // A line number (GitHub's gutter "+") opens the composer there; shift-click makes it a range. Side by side a
+      // selection stays on its half: a press on the other half starts a new one there.
+      const k = lineKey(r), same = !h.side || !this.fsel?.side || this.fsel.side === h.side, f = same ? this.fsel : null;
+      // The selection's chips sit on a wrapped line's last visual line: as far right on the others is code.
+      const d = rowClick({ x: lastPart ? h.x : Math.min(h.x, h.w - 21 - CHIP_W - ASK_W), w: h.w, shift, gutterW: gw, composing: this.composing, editing: Boolean(this.editing), sel: f, path: it.path, k,
         rangeOk: Boolean(f && f.path === it.path && rangeOf(this.rowsFor(it.path), f.a, k)) });
       if (d.focus) return this.draft.focus(); // the open composer keeps its line
       if (d.ask) { this.setDrawer("open", cx, null); return cx.notify(); }
-      this.fsel = d.sel; this.sug = null;
+      this.fsel = d.sel && h.side ? { ...d.sel, side: h.side } : d.sel; this.sug = null;
       if (d.open) this.openComposer(cx);
     } else if (it.t === "sug") { this.sug = this.sug === it.s.key ? null : it.s.key; this.visit(it.s.hunk, cx); }
     else if (it.t === "ch" || it.t === "cb" || it.t === "cr") this.cardClick(it, x, cx);
@@ -1572,7 +1637,9 @@ export const ReviewMode = {
 
   // The selected range as a comment anchor (lines, side, quoted code); null when nothing (or nothing valid) is selected.
   selAnchor() {
-    const f = this.fsel, rows = f ? this.rowsFor(f.path) : null, range = rows && rangeOf(rows, f.a, f.b);
+    // Side by side a selection is one half's lines: the other half's changed lines between its ends are not in it.
+    const f = this.fsel, all = f ? this.rowsFor(f.path) : null, drop = f?.side && this.diffMode() === "split" ? (f.side === "l" ? "+" : "-") : null;
+    const rows = all && drop ? all.filter((r) => r.kind !== drop) : all, range = rows && rangeOf(rows, f.a, f.b);
     return range ? selection(rows, range[0], range[1]) : null;
   },
 
@@ -2511,6 +2578,8 @@ export const ReviewMode = {
       .child(link("rv-model", h_flex().gap(4).child(this.aiBusy ? div().child(SPIN[0]).frames(SPIN, 90) : div()).child(modelText).child("▾"),
         menu("models", modelChoices(this.ctxId()).map((c) => [`${c.value === m ? "✓ " : ""}${c.label} · ${priceText(c.value)} · ${this.estimate(c.value)}`, false, `model:${c.value}`]), 470)).tooltip("Pick the model for the AI analysis; each option shows its cost estimate").accessibility_label("Model"))
       .child(sep())
+      .child(h_flex().gap(10).items_center().child(link("rv-diffmode", div().child(this.diffMode() === "split" ? "Side by side" : "Unified"), () => setShared("review.diff", this.diffMode() === "split" ? "unified" : "split"))
+        .tooltip(`The diff ${this.diffMode() === "split" ? "shows the old and the new lines side by side" : "shows old and new lines in one column"}. Click to switch; your choice is kept.`)).child(sep()))
       .child(link("rv-values", div().text_color(valuesOn() ? t.foreground : t.muted).child(`Example values ${valuesOn() ? "on" : "off"}`), () => setShared("review.values", !valuesOn())).tooltip("Example values from the flow traces, shown inline in the diff: click to switch"))
       .child(link("rv-keys", div().child("?"), () => openOverlay({ mod: "pr-review", props: { part: "keys" }, kind: "popup", ...KEYS_POP })).tooltip("Keyboard shortcuts").accessibility_label("Keyboard shortcuts"))
       .child(link("rv-more", div().child("⋯"), menu("more", [["Explore a topic…", false, "explore"], ["Mark done", false, "done"], ["Copy link", false, "copy-link"], ["Copy review state", false, "copy-state"], ["Copy this page as Markdown", false, "copy-md"], ...(this.checkList().length ? [["Copy context to check findings", false, "copy-md:verify"]] : []), ...(this.prSel?.url?.startsWith("https://github.com") ? [["Open on GitHub", false, "open-gh"]] : [])])).tooltip("Explore a topic, mark done, copy the link, the review's state, this page or the context to check findings as text, open on GitHub").accessibility_label("More actions"));
@@ -4016,6 +4085,10 @@ export const ReviewMode = {
   },
 
   item(it, t) {
+    // Side by side, a card over the whole width says in the gutter which half's line it hangs under.
+    if (it.side && SIDE_HEAD.has(it.t)) return div().w_full().relative().child(this.item({ ...it, side: null }, t))
+      .child(div().absolute().top(0).left(0).w(GUTTER - 10).h(ROW).flex().items_center().justify_end().text_size(11.5).text_color(it.side === "l" ? t.ansi1 : t.ansi2)
+        .child(it.side === "l" ? "− old side" : "+ new side"));
     const mono = (e) => e.font_family(settings().font_family ?? "JetBrains Mono");
     if (it.t === "row") {
       const r = it.src[it.ri];
@@ -4024,27 +4097,11 @@ export const ReviewMode = {
         return mono(h_flex()).h(30).w_full().pl(GUTTER - 4).pr(12).gap(10).items_center().bg(t.accent + "14").border_t(1).border_b(1).border_color(t.border).text_size(12.5)
           .child(div().flex_none().text_color(t.muted).child(m[1])).child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(m[2]));
       }
-      const on = Boolean(this.selKeys && this.fsel?.path === it.path && this.selKeys.has(lineKey(r)));
-      const tone = r.kind === "+" ? t.ansi2 : r.kind === "-" ? t.ansi1 : null, focus = it.hunk && it.hunk === this.focusHunk;
-      const num = (n) => div().w(48).h_full().flex_none().pr(8).flex().items_center().justify_end().text_color(t.muted).child(n === undefined ? "" : String(n));
-      return mono(h_flex()).h(ROW).w_full().text_size(13).cursor_pointer()
-        .when(Boolean(tone), (e) => e.bg(tint(r.kind) + "1a")).when(on, (e) => e.bg(t.selection))
-        .child(div().w(4).h_full().flex_none().when(on, (e) => e.bg(t.accent)).when(!on && Boolean(focus), (e) => e.bg(t.accent + "55"))
-          .when(!on && !focus && Boolean(this.pinMarks?.has(`${it.path}:${r.n}`)), (e) => e.bg(t.ansi5))
-          .when(!on && r.kind !== "-" && Boolean(this.fmarks?.get(it.path)?.get(r.n)), (e) => e.bg(t[this.fmarks.get(it.path).get(r.n)]))) // the lines of an open finding
-        .child(h_flex().h_full().flex_none().relative().when(Boolean(tone), (e) => e.bg(tint(r.kind) + "40")).child(num(r.o)).child(num(r.n))
-          // GitHub's "+" on hover: the line numbers are the comment button (onItem: x inside the gutter).
-          .child(h_flex().absolute().inset_0().justify_end().items_center().text_color("#00000000").hover((s) => s.text_color(t.accent_foreground).bg(t.accent + "26"))
-            .child(div().w(18).h(18).mr(2).rounded(4).flex().items_center().justify_center().font_semibold().hover((s) => s.bg(t.accent)).child("+"))))
-        .child(div().w(22).flex_none().text_center().font_semibold().text_color(tone ?? t.muted).child(r.kind === " " ? "" : r.kind === "-" ? "−" : "+"))
-        .child(div().flex_1().min_w(0).pr(12).truncate().text_color(t.foreground).child(this.code(r, it)))
-        .when(Boolean(this.traces?.get(`${it.path}:${r.n}`)) && r.kind !== "-", (e) => e.child(div().id("rv-trace").tooltip("Example values from the flow trace; Values in the top bar switches them").flex_none().max_w(460).mr(12).px(8).h(18).flex().items_center()
-          .rounded(9).bg(t.accent + "1f").italic().text_size(12).text_color(t.muted).truncate().child(this.traces.get(`${it.path}:${r.n}`))))
-        // The selection's last row: "+ Comment (c)" at its right end (onItem places the click by x, rowClick).
-        .when(on && !this.composing && this.fsel?.b === lineKey(r), (e) => e.child(div().w(ASK_W).h(18).mr(8).flex_none().flex().items_center().justify_center()
-          .rounded(9).border_1().border_color(t.accent).text_size(12).text_color(t.accent).child("Ask").id("rv-sel-ask").tooltip("Ask one model question about the selected lines")))
-        .when(on && !this.composing && this.fsel?.b === lineKey(r), (e) => e.child(div().w(CHIP_W).h(18).mr(12).flex_none().flex().items_center().justify_center()
-          .rounded(9).bg(t.accent).text_size(12).font_semibold().text_color(t.accent_foreground).child("+ Comment (c)").id("rv-sel-comment").tooltip("Comment on the selected lines (c)")));
+      // Side by side: two halves of equal width and height; an empty one (a line only on the other side) is grey.
+      if (it.l !== undefined) return h_flex().h(ROW).w_full()
+        .child(it.l === null ? div().flex_1().min_w(0).h_full().bg(t.muted + "14") : this.lineView(it, t, it.l, "l").flex_1().min_w(0))
+        .child(it.r === null ? div().flex_1().min_w(0).h_full().bg(t.muted + "14").border_l(1).border_color(t.border) : this.lineView(it, t, it.r, "r").flex_1().min_w(0).border_l(1).border_color(t.border));
+      return this.lineView(it, t, it.ri, null).w_full();
     }
     if (it.t === "gap") {
       const h = it.r.hidden, seg = (label) => div().w(GAP_SEG).flex_none().child(label);
@@ -4177,9 +4234,41 @@ export const ReviewMode = {
     cx.notify();
   },
   // A row's code, highlighted (syntax.js); spans per row array are computed once per render (spanMap).
-  code(r, it) {
-    const m = this.spanMap?.get(it.src);
-    return h_flex().overflow_hidden().children(renderLine(div, m?.shown[it.ri]?.text ?? r.text, m?.spans[it.ri] ?? [], this.syn));
+  // a, b: one visual line of a wrapped line (its columns a..b of the tab-expanded text, b undefined: to the end).
+  code(r, it, ri = it.ri, a = 0, b = undefined) {
+    const m = this.spanMap?.get(it.src), text = m?.shown[ri]?.text ?? r.text, spans = m?.spans[ri] ?? [];
+    if (!a && b === undefined) return h_flex().overflow_hidden().children(renderLine(div, text, spans, this.syn));
+    return h_flex().overflow_hidden().children(renderLine(div, text.slice(a, b), sliceSpans(spans, a, b ?? text.length), this.syn));
+  },
+  // One visual line of a diff line (it.part; a wrapped line takes one list item per visual line, rows of ROW px): the
+  // marks bar, line numbers and sign on its first, a muted "↪" and no number on the next ones; the example values and
+  // the selection's chips on its last. side: null in the unified view, else the half ("l" old, "r" new) it draws.
+  lineView(it, t, ri, side) {
+    const r = it.src[ri], starts = this.wrapsOf(it.src, ri, it.cols), part = it.part ?? 0, first = part === 0, last = part === starts.length - 1;
+    const on = Boolean(this.selKeys && this.fsel?.path === it.path && this.selKeys.has(lineKey(r)) && (!side || !this.fsel.side || this.fsel.side === side));
+    const tone = r.kind === "+" ? t.ansi2 : r.kind === "-" ? t.ansi1 : null, focus = it.hunk && it.hunk === this.focusHunk, newSide = side !== "l";
+    if (starts[part] === undefined) return h_flex().h(ROW).when(Boolean(tone), (e) => e.bg(tint(r.kind) + "1a")).when(on, (e) => e.bg(t.selection)) // under a half's shorter line
+      .child(div().w(4).h_full().flex_none().when(on, (e) => e.bg(t.accent))).child(div().w(side ? 48 : 96).h_full().flex_none().when(Boolean(tone), (e) => e.bg(tint(r.kind) + "40")));
+    const num = (n) => div().w(48).h_full().flex_none().pr(8).flex().items_center().justify_end().text_color(t.muted).child(n === undefined || !first ? "" : String(n));
+    const sel = on && !this.composing && this.fsel?.b === lineKey(r) && last, trace = last && newSide && r.kind !== "-" && this.traces?.get(`${it.path}:${r.n}`);
+    return h_flex().h(ROW).font_family(settings().font_family ?? "JetBrains Mono").text_size(13).cursor_pointer()
+      .when(Boolean(tone), (e) => e.bg(tint(r.kind) + "1a")).when(on, (e) => e.bg(t.selection))
+      .child(div().w(4).h_full().flex_none().when(on, (e) => e.bg(t.accent)).when(!on && Boolean(focus), (e) => e.bg(t.accent + "55"))
+        .when(!on && !focus && newSide && Boolean(this.pinMarks?.has(`${it.path}:${r.n}`)), (e) => e.bg(t.ansi5))
+        .when(!on && newSide && r.kind !== "-" && Boolean(this.fmarks?.get(it.path)?.get(r.n)), (e) => e.bg(t[this.fmarks.get(it.path).get(r.n)]))) // the lines of an open finding
+      .child(h_flex().h_full().flex_none().relative().when(Boolean(tone), (e) => e.bg(tint(r.kind) + "40")).children(side === "l" ? [num(r.o)] : side === "r" ? [num(r.n)] : [num(r.o), num(r.n)])
+        // GitHub's "+" on hover: the line numbers are the comment button (onItem: x inside the gutter).
+        .when(first, (e) => e.child(h_flex().absolute().inset_0().justify_end().items_center().text_color("#00000000").hover((s) => s.text_color(t.accent_foreground).bg(t.accent + "26"))
+          .child(div().w(18).h(18).mr(2).rounded(4).flex().items_center().justify_center().font_semibold().hover((s) => s.bg(t.accent)).child("+")))))
+      .child(div().w(22).flex_none().text_center().font_semibold().text_color(first ? tone ?? t.muted : t.muted).when(!first, (e) => e.text_size(11)).child(!first ? "↪" : r.kind === " " ? "" : r.kind === "-" ? "−" : "+"))
+      .child(div().flex_1().min_w(0).pr(12).truncate().text_color(t.foreground).child(this.code(r, it, ri, starts[part], starts[part + 1])))
+      .when(Boolean(trace), (e) => e.child(div().id("rv-trace").tooltip("Example values from the flow trace; Values in the top bar switches them").flex_none().max_w(460).mr(12).px(8).h(18).flex().items_center()
+        .rounded(9).bg(t.accent + "1f").italic().text_size(12).text_color(t.muted).truncate().child(trace)))
+      // The selection's last row: "+ Comment (c)" at its right end (onItem places the click by x, rowClick).
+      .when(sel, (e) => e.child(div().w(ASK_W).h(18).mr(8).flex_none().flex().items_center().justify_center()
+        .rounded(9).border_1().border_color(t.accent).text_size(12).text_color(t.accent).child("Ask").id("rv-sel-ask").tooltip("Ask one model question about the selected lines")))
+      .when(sel, (e) => e.child(div().w(CHIP_W).h(18).mr(12).flex_none().flex().items_center().justify_center()
+        .rounded(9).bg(t.accent).text_size(12).font_semibold().text_color(t.accent_foreground).child("+ Comment (c)").id("rv-sel-comment").tooltip("Comment on the selected lines (c)")));
   },
 
   // The left column's width: while dragging the pointer's, else the kept one (default 560, 340 to 65% of the window).
@@ -4194,7 +4283,7 @@ export const ReviewMode = {
     heads.forEach((h, k) => {
       const end = heads[k + 1] ?? n, it = items[h + 1];
       if (it?.t === "fold") folds.push([top[h + 1], top[h + 2]]);
-      else if (it?.t === "row") openH.set(it.path, { rows: it.src, h: top[end] - top[h + 1] }); // rows first: no "Loading file…" note
+      else if (it?.t === "row") openH.set(it.path, { rows: it.src, h: top[end] - top[h + 1], key: `${it.l !== undefined}|${it.cols}` }); // rows first: no "Loading file…" note; key: as drawn (foldH)
     });
     this.filesList = { heads, top, folds, keys };
     const a = this.anchor;

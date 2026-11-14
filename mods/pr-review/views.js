@@ -372,3 +372,69 @@ export function blastLine({ zone, rights }) {
   if (!rights.length) return `If ${name} is compromised, it holds no right the analysis names.`;
   return `If ${name} is compromised, it can ${rights.map((r) => `${r.actions.join(", ") || "act"} on ${r.resource}${r.used === false ? " (granted, never used)" : ""}`).join("; ")}.`;
 }
+
+// ---- the diff with the old and the new side next to each other (review.js pushRows)
+
+// A file's rows (pr.js fileRows or a hunk's diffRows: {kind: "@" | "gap" | " " | "-" | "+" | "", …}) as what the
+// side-by-side view draws, top to bottom, by index into `rows`:
+// {full: i} a row over the whole width (a hunk header, a gap that still hides lines, a note);
+// {l, r} a pair: an unchanged line on both sides (l === r); a changed block's removed lines beside its added ones,
+// first with first, and where the block has more lines on one side the other side is empty (null).
+export function pairRows(rows) {
+  const out = [];
+  for (let i = 0; i < rows.length;) {
+    const k = rows[i].kind;
+    if (k === " ") out.push({ l: i, r: i++ });
+    else if (k !== "-" && k !== "+") out.push({ full: i++ });
+    else {
+      // One changed block: its removed lines, then its added ones (a diff writes them in this order).
+      let a = i;
+      while (a < rows.length && rows[a].kind === "-") a++;
+      let b = a;
+      while (b < rows.length && rows[b].kind === "+") b++;
+      for (let n = 0; n < Math.max(a - i, b - a); n++) out.push({ l: i + n < a ? i + n : null, r: a + n < b ? a + n : null });
+      i = b;
+    }
+  }
+  return out;
+}
+
+// ---- long code lines wrap (review.js pushRows: one list item per visual line, so a click knows its line by its key)
+
+// Where a code line breaks to fit `cols` columns: the offset each visual line starts at ([0] when it fits). A break
+// goes after the last space or , ; ( [ { in the line's last third, else at `cols` exactly. At most `max` lines; the
+// last one is cut as before.
+export const WRAP_MAX = 40;
+const WRAP_AFTER = /[\s,;([{]/;
+export function wrapCode(text, cols, max = WRAP_MAX) {
+  const s = String(text ?? ""), c = Math.max(8, Math.floor(cols)), out = [0];
+  for (let a = 0; s.length - a > c && out.length < max;) {
+    let e = a + c;
+    for (let j = e; j > a + Math.ceil((2 * c) / 3); j--) if (WRAP_AFTER.test(s[j - 1])) { e = j; break; }
+    out.push(e);
+    a = e;
+  }
+  return out;
+}
+// The height a code line takes: one row per visual line.
+export const wrapHeight = (starts, row) => row * Math.max(1, starts.length);
+// The code columns of a diff row `width` px wide whose code starts `gutter` px from its left (12 px right of it).
+export const codeCols = (width, gutter, charW) => Math.max(8, Math.floor((width - gutter - 12) / (charW || 7.8)));
+// The syntax spans of text[a, b), shifted to the slice: a wrapped line keeps its colors on every visual line.
+export const sliceSpans = (spans, a, b) => spans.filter((s) => s.end > a && s.start < b).map((s) => ({ ...s, start: Math.max(s.start, a) - a, end: Math.min(s.end, b) - a }));
+
+// ---- side by side (review.js pushRows, lineView): two halves of equal width, each its own line number and sign
+export const HALF_GUTTER = 4 + 48 + 22;
+// Which half a press at x on a side-by-side row `w` px wide hit: the row index there (null: the half is empty), x from
+// the half's left edge, the half's width, and the side ("l" old, "r" new).
+export function pairSide(x, w, l, r) {
+  const half = w / 2, right = x >= half;
+  return { side: right ? "r" : "l", ri: right ? r : l, x: right ? x - half : x, w: half };
+}
+// The diff's view: the person's choice ("split" | "unified", kept in shared), else side by side when both halves of a
+// list `width` px wide hold about 80 columns of code.
+export const SPLIT_COLS = 80;
+export const diffModeOf = (chosen, width, charW) => (chosen === "split" || chosen === "unified" ? chosen : codeCols(width / 2, HALF_GUTTER, charW) >= SPLIT_COLS ? "split" : "unified");
+// A file whose lines are all on one side (a new or a deleted file): side by side it keeps one column over the whole
+// width instead of an empty half.
+export const oneSided = (rows) => !rows.some((r) => r.kind === " ") && !(rows.some((r) => r.kind === "+") && rows.some((r) => r.kind === "-"));
