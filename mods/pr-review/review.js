@@ -35,7 +35,7 @@ import { hasSources, archLayout, archBands } from "./arch.js";
 import { archMarks, zoneArch, transitionText } from "./arch.js";
 import { transitionMarks } from "./views.js";
 import { trustLegend, hasTrust } from "./stack.js";
-import { scopeTable, runSummary, AREA_NAME, areaFindings, surfaceOf, EXPOSURE, reachLevel, secOrder, extraWays, zoneRights, blastLine } from "./views.js";
+import { scopeTable, runSummary, AREA_NAME, areaFindings, surfaceOf, exposureNow, EXPOSURE, reachLevel, secOrder, extraWays, zoneRights, blastLine } from "./views.js";
 import * as TH from "./threads.js";
 import { leftWidth, rowClick, CHIP_W, ASK_W, keyRoute, scopeLine, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf, rangeLabel, pinAnchor, pinAdd, pinDrop, pinsOf, pinsOn, codePins, drillPush, drillTo, crumbs, drillKey, cachePut, mapDrill, exploreId, exploreIndex, exploreAi, pathOf, lineOf, repoOfRemote, exploreTrust, layersForNode } from "./explore.js";
 
@@ -3657,6 +3657,8 @@ export const ReviewMode = {
       return stated.length ? { ways: stated, stated: true } : { ways: surface.entries.filter((x) => (x.node && x.node === cardOf.get(f.id)) || x.at === `${f.file}:${f.line}`), stated: false };
     };
     const entriesOf = (f) => waysOf(f).ways;
+    // A way in whose check an open finding says can be passed reads "Auth, can fail open" (views.js exposureNow).
+    for (const x of surface.entries) x.exposure = exposureNow(x, open.filter((f) => entriesOf(f).includes(x)));
     // Their order (views.js secOrder): how far out they can be reached from, whether the way crosses a trust boundary
     // (a call into the finding's card that crosses one; null when the analysis names no zones), then severity.
     const zoned = (a?.zones ?? []).length > 0;
@@ -3710,13 +3712,15 @@ export const ReviewMode = {
       this.secMemo = { key, marks, hidden: a.nodes.filter((n) => !keep.has(n.id)),
         L: archLayout(zoneArch(sa), "diff", (n) => (exposure.has(n.id) ? 1 : 0) + (marks.nodes.has(n.id) ? 1 : 0), true, { lines: () => true }) };
     }
-    const { L, marks, hidden } = this.secMemo, base = this.archOpts("blast"), color = { open: t.ansi1, public: t.ansi3, internal: t.muted };
-    const mark = (e, id = null) => chip(t, EXPOSURE[e], color[e], e !== "internal", id, e === "open" ? "Reachable without credentials of the cloud account, and nothing checks the caller" : e === "public" ? "Reachable without credentials of the cloud account; something checks the caller" : "Reachable only with a right inside the cloud account");
+    const { L, marks, hidden } = this.secMemo, base = this.archOpts("blast"), color = { open: t.ansi1, failopen: t.ansi1, public: t.ansi3, internal: t.muted };
+    const TIP = { open: "Reachable without credentials of the cloud account, and nothing checks the caller", failopen: "Reachable without credentials of the cloud account; something checks the caller, but an unresolved finding says the check can be passed",
+      public: "Reachable without credentials of the cloud account; something checks the caller", internal: "Reachable only with a right inside the cloud account" };
+    const mark = (e, id = null) => chip(t, EXPOSURE[e], color[e], e !== "internal", id, TIP[e]);
     const opts = { ...base, marks, numbers: false, zoom: settings().zoom || 1, onFocus: (id, cx) => { this.fh.focus(); this.secCard(id, cx); } };
     const deco = (n) => (exposure.has(n.id) ? [h_flex().flex_none().h(15).child(mark(exposure.get(n.id), `rv-sec-ex-${n.id}`))] : []);
     return v_flex().id("rv-sec-map").gap(6)
       .child(h_flex().gap(10).items_center().flex_wrap().text_size(11.5).text_color(t.muted)
-        .children(order.map((e) => mark(e))).child("ways in and rights at a card")
+        .children(order.filter((e) => e !== "failopen" || [...exposure.values()].includes(e)).map((e) => mark(e))).child("ways in and rights at a card")
         .child(chip(t, "High · 1", t.ansi1, true)).child("unresolved security findings at a card or call")
         .when(hasTrust(L), (e) => e.child(trustLegend(L, t))))
       .child(this.archCanvas(t, L, opts, { id: "rv-sec-canvas", pic: "rv-sec-pic", decorate: deco, notes: false }))
@@ -3782,7 +3786,7 @@ export const ReviewMode = {
   // checks the caller and what it may do, whether this PR adds or changes it (its line is an added one in the diff),
   // and the unresolved security findings at it (a click goes to the finding above).
   secSurface(t, title, ctx) {
-    const color = { open: t.ansi1, public: t.ansi3, internal: t.muted }, a = this.ai?.arch;
+    const color = { open: t.ansi1, failopen: t.ansi1, public: t.ansi3, internal: t.muted }, a = this.ai?.arch;
     // A way in this PR opens that the task does not ask for (views.js extraWays: an "extra" ask in the same files as
     // the way in or its card) goes first, with a sentence; only a one-to-one match.
     const fileOf = (at) => (at ? /^(.*?)(:\d+)?$/.exec(String(at))[1] : null), cardAt = (id) => a?.nodes.find((n) => n.id === id)?.at;
@@ -3804,7 +3808,7 @@ export const ReviewMode = {
       x.at ? div().id(`rv-sec-sf-at-${x.k}`).text_color(t.accent).cursor_pointer().hover((s) => s.underline()).tooltip("Show this place in the diff").on_click((_e, cx) => this.jumpTo(x.at, cx)).child(x.at) : ""]);
     return v_flex().id("rv-sec-surface").gap(8).p(12).rounded(10).border_1().border_color(t.border).bg(t.surface)
       .child(h_flex().gap(10).items_center().flex_wrap().child(title("Attack surface")).child(div().text_size(12.5).text_color(t.muted).child("The ways in that this PR's infrastructure code defines, the most exposed first.")))
-      .child(list.length ? this.table(t, "rv-sec-sf-t", [["Exposure", 108], ["Way in, and the unresolved findings at it", null], ["Who can reach it", 140], ["Checks the caller", 230], ["May", 190], ["This PR", 124], ["Place", 120]], rows, (k) => Boolean(ctx.focus) && list[k].node === ctx.focus)
+      .child(list.length ? this.table(t, "rv-sec-sf-t", [["Exposure", 150], ["Way in, and the unresolved findings at it", null], ["Who can reach it", 140], ["Checks the caller", 230], ["May", 190], ["This PR", 124], ["Place", 120]], rows, (k) => Boolean(ctx.focus) && list[k].node === ctx.focus)
         : div().text_size(12.5).text_color(t.muted).whitespace_normal().child(!this.ai ? "No analysis yet: Analyze in the left column." : (this.ai.access ?? []).length ? "The analysis names no way in: this PR's infrastructure code defines rights only (below)."
           : "This analysis names no way in: the PR has no infrastructure code, or the analysis is older than this list."))
       // What an attacker gets with a component of a zone that has a way in (views.js zoneRights), from its rights.

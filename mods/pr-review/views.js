@@ -322,7 +322,10 @@ export const runSummary = (r, count = r?.count ?? 0) => (!r?.state ? "not run" :
 // caller), "public" (reachable so, something checks the caller), "internal". What checks: `auth_kind` (none | code |
 // gateway | iam) when the analysis has it, else the first word of the free text `auth`.
 export const exposureOf = (x) => (!x?.public ? "internal" : (x.auth_kind ? x.auth_kind === "none" : /^(|none|no|nothing|unauthenticated|-|–)$/i.test(String(x.auth ?? "").trim().replace(/[\s.(:;,].*$/, ""))) ? "open" : "public");
-export const EXPOSURE = { open: "Public, no auth", public: "Public, auth", internal: "Internal" };
+export const EXPOSURE = { open: "Public, no auth", failopen: "Auth, can fail open", public: "Public, auth", internal: "Internal" };
+// A public way in whose check an unresolved finding says can be passed (impact unauthorized_access): "failopen" while
+// that finding is open, else the row's own exposure. findings: the unresolved findings at this way in.
+export const exposureNow = (x, findings = []) => (x?.exposure === "public" && findings.some((f) => f.impact === "unauthorized_access") ? "failopen" : x?.exposure ?? "internal");
 // The analysis' access rows as the ways in (entry points: everything public, and routes, endpoints and APIs) and the
 // rights granted (the rest: IAM and resource policies). Each row keeps its index `k` and gets its `exposure`; the
 // entries come most exposed first, then in the given order.
@@ -336,7 +339,7 @@ export function surfaceOf(access) {
 // How far out a finding can be reached from: the analysis' word when it has one (stated), else from the most exposed
 // way in at it (derived: open → public, public with a check → authenticated, internal → internal_only), else unknown.
 export const REACH = ["public", "authenticated", "internal_only", "unknown"];
-const FROM_EXPOSURE = { open: "public", public: "authenticated", internal: "internal_only" };
+const FROM_EXPOSURE = { open: "public", failopen: "public", public: "authenticated", internal: "internal_only" };
 export const reachLevel = (f, ways = []) => (REACH.includes(f?.reachability) ? f.reachability
   : ways.map((x) => FROM_EXPOSURE[x.exposure]).filter(Boolean).sort((a, b) => REACH.indexOf(a) - REACH.indexOf(b))[0] ?? "unknown");
 const SEV_RANK = { critical: 0, high: 1, medium: 2, low: 3 };

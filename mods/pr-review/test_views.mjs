@@ -444,3 +444,14 @@ assert.equal(oneSided(rowsOf("-+")), false, "a line changed");
   assert.deepEqual([...m].map(([i, x]) => [i, x.findings.map((g) => g.id), x.severity]), [[0, ["x"], "medium"], [1, ["y", "z"], "high"]]);
   assert.equal(transitionMarks(v, []).size, 0); assert.equal(transitionMarks(null, null).size, 0);
 }
+
+// ---- a way in whose check an open finding can pass
+{
+  const { exposureNow, surfaceOf, EXPOSURE } = await import("./views.js");
+  const api = { exposure: "public" };
+  assert.equal(exposureNow(api, [{ impact: "unauthorized_access" }]), "failopen"); assert.equal(EXPOSURE.failopen, "Auth, can fail open");
+  assert.equal(exposureNow(api, [{ impact: "data_loss" }]), "public"); assert.equal(exposureNow(api), "public");
+  assert.equal(exposureNow({ exposure: "open" }, [{ impact: "unauthorized_access" }]), "open", "nothing checks it anyway");
+  assert.equal(exposureNow({ exposure: "internal" }, [{ impact: "unauthorized_access" }]), "internal");
+  assert.deepEqual(surfaceOf([{ resource: "a", public: true, auth: "token" }, { resource: "b", public: true, auth: "none" }]).entries.map((x) => x.resource), ["b", "a"], "the order is unchanged");
+}
