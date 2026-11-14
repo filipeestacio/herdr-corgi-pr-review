@@ -1202,7 +1202,7 @@ export const ReviewMode = {
     const root = this.lspRoot();
     cx.spawn(async (cx) => {
       const text = def.inRoot ? await readTextFile(`${root}/${def.path}`).catch(() => null) : await contents(root, def.uri).catch(() => null);
-      if (text === null || text === undefined) { this.note = `Could not open ${where(def)}`; return cx.notify(); }
+      if (text === null || text === undefined) { this.note = this.jumpNote = `Could not open ${where(def)}`; return cx.notify(); }
       const all = text.replace(/\n$/, "").split("\n"), from = Math.max(0, def.line - 3000);
       const lines = all.slice(from, from + 6000).map(expandTabs);
       this.defFile = { path: def.path, line: def.line, from, lines, spans: highlightLines(lines, langOf(def.path), `def:${def.uri ?? def.path}:${from}`) };
@@ -1282,14 +1282,19 @@ export const ReviewMode = {
     cx.timer.after(0, (cx) => cx.notify());
   },
 
-  // A flow's "path:line" to the hunk that holds it (in the AI list, else the Files view).
+  // A flow's "path:line" to the hunk that holds it (in the AI list, else the Files view). A line outside the diff (a
+  // finding on unchanged code) opens its file read-only at that line, as a definition outside the diff does; what a
+  // jump could not do is said until the next jump.
   jumpTo(at, cx) {
+    if (this.note && this.note === this.jumpNote) this.note = null;
     if (this.exMode) return this.openExploreFile(pathOf(at), lineOf(at) ?? 1, cx); // no diff: the file itself
     const [, path, line] = /^(.*?):(\d+)/.exec(at ?? "") ?? [];
-    const h = (this.hunks ?? []).find((x) => path && (x.path === path || x.path.endsWith(`/${path}`)) && x.rows.some((r) => r.n === Number(line)))
-      ?? (this.hunks ?? []).find((x) => path && (x.path === path || x.path.endsWith(`/${path}`)));
-    if (!h) { this.note = `Could not find ${at} in the diff`; return cx.notify(); }
-    this.visit(h.id, cx); this.page = null; // from a Layers page: show the diff
+    const file = (this.hunks ?? []).find((x) => path && (x.path === path || x.path.endsWith(`/${path}`)));
+    const h = (this.hunks ?? []).find((x) => file && x.path === file.path && x.rows.some((r) => r.n === Number(line)))
+      ?? (file && (!line || this.rowsFor(file.path, true).some((r) => atLine(r, Number(line), false))) ? file : null); // or context opened around a hunk
+    if (!h && line && this.lspRoot()) return this.goDef({ path, line: Number(line), inRoot: true }, cx);
+    if (!h) { this.note = this.jumpNote = `Could not find ${at} in the diff`; return cx.notify(); }
+    this.visit(h.id, cx); this.page = null; this.defFile = null; // from a Layers page or a file outside the diff: show the diff
     const view = this.tab === "steps" && this.itemsOf("steps").at[h.id] !== undefined ? "steps" : "files";
     if (view === "files") { if (this.tab !== "findings" && this.tab !== "comments") this.tab = "files"; this.unfold(h.path); this.sinceOn = false; } // the whole PR has every hunk
     const k = `+${line}`, { items } = this.itemsOf(view), row = items.findIndex((x) => x.t === "row" && x.path === h.path && lineKey(x.src[x.ri]) === k);

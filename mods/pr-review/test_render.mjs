@@ -137,6 +137,11 @@ for (const n of [0, 3, 310]) {
     ok("the Findings tab: a step's details open, an owner, sorted by effort", () => v.render(cx));
     v.command("finding-step:sent", cx); assert.equal(v.fstep, null, "the step's click again folds it");
     v.command("findings-sort:", cx); assert.equal(v.fsort, false);
+    // A finding outside the diff opens its file read-only (as a definition does); a jump that failed says so until the next one.
+    { const calls = [], go = v.goDef, wt = v.worktree, ps = v.prSel; v.goDef = (d) => calls.push([d.path, d.line]); v.worktree = { ...wt, path: "/checkout" };
+      v.jumpTo("library/loans.py:41", cx); v.jumpTo("src/f0.ts:1", cx); v.worktree = null; v.prSel = { ...v.prSel, space: false }; v.jumpTo("nowhere.py:3", cx);
+      assert.deepEqual([calls, v.note], [[["library/loans.py", 41]], "Could not find nowhere.py:3 in the diff"]);
+      v.jumpTo("src/f0.ts:1", cx); assert.equal(v.note, null, "the next jump clears it"); v.goDef = go; v.worktree = wt; v.prSel = ps; }
     v.tab = "files"; v.page = null; v.sug = v.openSugs()[0].key;
     ok("the diff: the finding's card and the note, opened", () => { v.render(cx); layout(0); });
     assert.deepEqual(v.items.filter((it) => ["find", "fact", "sug"].includes(it.t)).map((it) => it.t), ["find", "fact", "sug"], "a fix sent stays in the diff; one note, no buttons");
