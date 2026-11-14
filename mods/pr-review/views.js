@@ -293,3 +293,29 @@ export function mdHeight(text, width, lh = 21, size = 13.5) {
   }
   return Math.ceil(blocks.reduce((a, b) => a + b, lh * !blocks.length) + MD.GAP * Math.max(0, blocks.length - 1));
 }
+
+// ---- the diff with the old and the new side next to each other (review.js pushRows)
+
+// A file's rows (pr.js fileRows or a hunk's diffRows: {kind: "@" | "gap" | " " | "-" | "+" | "", …}) as what the
+// side-by-side view draws, top to bottom, by index into `rows`:
+// {full: i} a row over the whole width (a hunk header, a gap that still hides lines, a note);
+// {l, r} a pair: an unchanged line on both sides (l === r); a changed block's removed lines beside its added ones,
+// first with first, and where the block has more lines on one side the other side is empty (null).
+export function pairRows(rows) {
+  const out = [];
+  for (let i = 0; i < rows.length;) {
+    const k = rows[i].kind;
+    if (k === " ") out.push({ l: i, r: i++ });
+    else if (k !== "-" && k !== "+") out.push({ full: i++ });
+    else {
+      // One changed block: its removed lines, then its added ones (a diff writes them in this order).
+      let a = i;
+      while (a < rows.length && rows[a].kind === "-") a++;
+      let b = a;
+      while (b < rows.length && rows[b].kind === "+") b++;
+      for (let n = 0; n < Math.max(a - i, b - a); n++) out.push({ l: i + n < a ? i + n : null, r: a + n < b ? a + n : null });
+      i = b;
+    }
+  }
+  return out;
+}

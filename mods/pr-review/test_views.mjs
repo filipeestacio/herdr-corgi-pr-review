@@ -277,3 +277,19 @@ assert.ok(mdHeight(`- ${long}`, 300) >= mdHeight(long, 300));
 assert.ok(mdHeight("# Title", 600) > mdHeight("Title", 600));
 // It never gives less than the plain wrapped text does, so nothing that fit before is cut now.
 for (const w of [200, 420, 900]) assert.ok(mdHeight(long, w) >= 21 * wrapCount(long, w));
+
+// ---- old and new side by side: which rows stand next to each other
+import { pairRows } from "./views.js";
+const kinds = (s) => [...s].map((c) => ({ kind: c === "g" ? "gap" : c === "n" ? "" : c }));
+const pairs = (s) => pairRows(kinds(s)).map((p) => (p.full !== undefined ? `=${p.full}` : `${p.l ?? "_"}|${p.r ?? "_"}`)).join(" ");
+assert.equal(pairs("@  "), "=0 1|1 2|2", "context: the same line on both sides");
+assert.equal(pairs("@ -+ "), "=0 1|1 2|3 4|4", "changed: the removed line beside the added one");
+assert.equal(pairs("++"), "_|0 _|1", "added only: nothing on the left");
+assert.equal(pairs("-- "), "0|_ 1|_ 2|2", "removed only: nothing on the right");
+assert.equal(pairs("---+"), "0|3 1|_ 2|_", "more removed than added: the rest has nothing beside it");
+assert.equal(pairs("-+++ "), "0|1 _|2 _|3 4|4", "more added than removed");
+assert.equal(pairs(" -+ -+"), "0|0 1|2 3|3 4|5", "two blocks with a line between them pair on their own");
+assert.equal(pairs("-+-+"), "0|1 2|3", "blocks written one after the other pair one by one");
+assert.equal(pairs("+-"), "_|0 1|_", "an added line before a removed one is not its change");
+assert.equal(pairs(" g @-+n"), "0|0 =1 2|2 =3 4|5 =6", "a gap that still hides lines, a hunk header and a note take the whole width");
+assert.equal(pairs(""), "");
