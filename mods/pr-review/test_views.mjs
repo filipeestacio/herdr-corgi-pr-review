@@ -245,6 +245,14 @@ assert.equal(pendingText([{ file: "a.py" }, { file: "a.py" }, { file: "b.py" }])
   assert.deepEqual(stateHints({ checkout: { error: "no such ref" }, pendingRun: true }).map((h) => [h.text, Boolean(h.error)]), [["Could not check out the PR head: no such ref", true]]);
   assert.deepEqual(stateHints({ pendingRun: true }).map((h) => h.key), ["wait"]);
   assert.deepEqual(stateHints({}), []);
+  // A note about an action: an error stays (no ttl), anything else goes after NOTE_TTL.
+  const { noteRule, NOTE_TTL } = await import("./views.js");
+  for (const e of ["Could not verify: no checkout", "Not posted: GitHub takes line comments only on lines of the PR diff.", "Nothing to send: add a comment first",
+    "Select a line first (click its number; shift-click: a range)", "No loan_id on a.py:3", "Line 4 of a.py is not in the shown diff", "Opened it, but Could not save"])
+    assert.deepEqual(noteRule(e), { error: true, ttl: null }, e);
+  for (const ok of ["Posted to GitHub: https://x", "Dismissed \"x\" (Analysis). It stays in the Findings tab under Dismissed", "Dry run: nothing posted, the payload is in ~/x",
+    "No fix to verify yet: no fix agent has reported a commit", "Marked done: it leaves the open reviews"])
+    assert.deepEqual(noteRule(ok), { error: false, ttl: NOTE_TTL }, ok);
 }
 // ---- a finding's facts, its card's line, the rows' heights, the sequence diagram (the diff and a layer's head)
 import { factRows, findingAnchor, wrapCount, seqLayout, IMPACT, SEVERITY_SCALE, SEQ } from "./views.js";

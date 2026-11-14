@@ -26,7 +26,7 @@ import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf,
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState, codeOf, isStale } from "./pr.js";
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible, pastTop } from "./views.js";
-import { worst, byUrgency, byFocus, attentionCounts, layerAccess, analysisAge, stateHints } from "./views.js";
+import { worst, byUrgency, byFocus, attentionCounts, layerAccess, analysisAge, stateHints, noteRule } from "./views.js";
 import { archView, archLegend, visualsCard, visualCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
 import { visualPlan } from "./stack.js";
 import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCALE } from "./views.js";
@@ -381,6 +381,7 @@ export const ReviewMode = {
 
   command(c, cx) {
     const [name, ...rest] = c.split(":"), arg = rest.join(":");
+    this.note = null; // the next action ends a note that stays (an error); its own note follows
     if (name === "steps" || name === "files" || name === "findings" || name === "comments") this.tab = name;
     else if (name === "analysis") this.tab = "steps"; // the tab's name; "steps" stays valid
     else if (name === "def") this.defineAt(arg, cx);
@@ -3493,7 +3494,7 @@ export const ReviewMode = {
           .child(div().id("rv-probe").absolute().top(-100).font_family(settings().font_family ?? "JetBrains Mono").text_size(13).whitespace_nowrap()
             .on_size_change((size, cx) => { const w = size.width / PROBE.length; if (w > 0 && Math.abs((this.charW ?? 0) - w) > 0.01) { this.charW = w; cx.notify(); } }).child(PROBE))
           .child(page)
-          .when(Boolean(this.note), (e) => e.child(div().flex_none().px(14).py(8).border_t(1).border_color(t.border).text_size(12.5).text_color(t.muted).child(this.note)))
+          .when(Boolean(this.note), (e) => e.child(noteBar(this, t, cx)))
           .when(this.drawerState() === "open", (e) => e.child(div().absolute().top(0).right(0).bottom(0).child(this.askDrawer(t))))
           .when(this.drawerState() === "collapsed", (e) => e.child(div().absolute().top(0).right(0).bottom(0).child(this.drawerStrip(t))))));
   },
@@ -4703,7 +4704,7 @@ export const ReviewMode = {
             .when(hcode.maxX > 0, (e) => e.child(div().id("rv-code-hbar").tooltip("Scroll bar for long lines: drag, or shift+wheel over the code").absolute().left(0).right(0).bottom(0).h(10).bg(t.raised)
               .child(div().absolute().top(1).left(Math.round((hcode.x / hcode.contentW) * hcode.visW)).w(Math.max(30, Math.round((hcode.view / hcode.contentW) * hcode.visW))).h(8).rounded(4).bg(t.muted).cursor_pointer()
                 .on_mouse_down("left", (ev, cx) => { this.hsDrag = { id: "rv-code", x0: ev.position.x, from: hcode.x, thumb: true }; cx.stop_propagation(); }))))))
-          .when(Boolean(this.note), (e) => e.child(div().flex_none().px(14).py(8).border_t(1).border_color(t.border).text_size(12.5).text_color(/Could not|Not sent|Not posted|Select a line/.test(this.note ?? "") ? t.ansi1 : t.muted).child(this.note)))
+          .when(Boolean(this.note), (e) => e.child(noteBar(this, t, cx)))
           .when(Boolean(this.saveErr), (e) => e.child(this.saveErrBar(t)))
           .when(Boolean(this.replyTo), (e) => e.child(this.replyBar(t)))
           .when(this.selected().length > 0, (e) => e.child(this.selectionBar(t)))
@@ -5000,3 +5001,15 @@ function certaintyWord(t, f, id) {
 }
 // A finding's state as a word only when it is not the usual one: unresolved goes without saying.
 const stateWord = (st) => (st === "open" ? null : st === "recheck" ? "line changed" : FSTATUS[st]?.[0] ?? st);
+
+// The note about an action just taken, under the right pane (views.js noteRule): in the text color and gone after a
+// few seconds, or, when the action did not happen, in red with a mark and a ✕, kept until closed or the next action.
+function noteBar(v, t, cx) {
+  const note = v.note, rule = noteRule(note);
+  if (rule.ttl && v.noteTimed !== note) { v.noteTimed = note; cx.timer.after(rule.ttl, (cx) => { if (v.note === note) { v.note = null; cx.notify(); } }); }
+  return h_flex().flex_none().px(14).py(8).gap(8).items_center().border_t(1).border_color(t.border).text_size(12.5).text_color(rule.error ? t.ansi1 : t.foreground)
+    .when(rule.error, (e) => e.child(div().flex_none().child("⚠")))
+    .child(div().flex_1().min_w(0).whitespace_normal().child(note))
+    .when(rule.error, (e) => e.child(div().id("rv-note-x").tooltip("Close this message").flex_none().px(4).cursor_pointer().text_color(t.muted).hover((s) => s.text_color(t.foreground))
+      .on_click((_e, cx) => { v.note = null; cx.notify(); }).child("✕")));
+}
