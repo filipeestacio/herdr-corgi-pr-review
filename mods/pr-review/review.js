@@ -1222,7 +1222,7 @@ export const ReviewMode = {
   // Files beyond 6000 lines (system headers) show 6000 lines around it.
   goDef(def, cx) {
     const inDiff = def.inRoot && this.fileHunks?.has(def.path) && this.rowsFor(def.path).some((r) => atLine(r, def.line, false));
-    if (inDiff) { this.defAt = null; return this.jumpTo(`${def.path}:${def.line}`, cx); }
+    if (inDiff) { this.defAt = null; return this.jumpTo(`${def.path}:${def.line}`, cx, true); } // true: no way back here
     const root = this.lspRoot();
     cx.spawn(async (cx) => {
       const text = def.inRoot ? await readTextFile(`${root}/${def.path}`).catch(() => null) : await contents(root, def.uri).catch(() => null);
@@ -1309,14 +1309,14 @@ export const ReviewMode = {
   // A flow's "path:line" to the hunk that holds it (in the AI list, else the Files view). A line outside the diff (a
   // finding on unchanged code) opens its file read-only at that line, as a definition outside the diff does; what a
   // jump could not do is said until the next jump.
-  jumpTo(at, cx) {
+  jumpTo(at, cx, fromDef = false) { // fromDef: called by goDef, so a miss never goes back to it (no loop)
     if (this.note && this.note === this.jumpNote) this.note = null;
     if (this.exMode) return this.openExploreFile(pathOf(at), lineOf(at) ?? 1, cx); // no diff: the file itself
     const [, path, line] = /^(.*?):(\d+)/.exec(at ?? "") ?? [];
     const file = (this.hunks ?? []).find((x) => path && (x.path === path || x.path.endsWith(`/${path}`)));
     const h = (this.hunks ?? []).find((x) => file && x.path === file.path && x.rows.some((r) => r.n === Number(line)))
       ?? (file && (!line || this.rowsFor(file.path, true).some((r) => atLine(r, Number(line), false))) ? file : null); // or context opened around a hunk
-    if (!h && line && this.lspRoot()) return this.goDef({ path, line: Number(line), inRoot: true }, cx);
+    if (!h && line && !fromDef && this.lspRoot()) return this.goDef({ path: file?.path ?? path, line: Number(line), inRoot: true }, cx);
     if (!h) { this.note = this.jumpNote = `Could not find ${at} in the diff`; return cx.notify(); }
     this.visit(h.id, cx); this.page = null; this.defFile = null; // from a Layers page or a file outside the diff: show the diff
     const view = this.tab === "steps" && this.itemsOf("steps").at[h.id] !== undefined ? "steps" : "files";
