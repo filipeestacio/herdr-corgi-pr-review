@@ -663,6 +663,15 @@ console.log("ok");
   const same = mergeFindings(pr2.slice(0, 2), [keyErr, { ...keyErr, key: "k21", line: 21 }, { ...keyErr, key: "k22", line: 22, category: "availability" }, { ...keyErr, key: "k22b", line: 22, severity: "low" }]);
   assert.deepEqual([same.findings.map((f) => `${f.line} ${f.sources.map((y) => y.reviewer).join("+")}`), same.notes.map((x) => x.key)], [["19 analysis+claude+ai", "22 ai+ai"], ["k21"]]);
   assert.deepEqual(mergeFindings([{ ...pr2[0], criteria: ["c4"] }, { ...pr2[1], criteria: ["c2", "c4"] }]).findings[0].criteria, ["c4", "c2"]);
+  // A note in a file the public reaches is a finding whatever its category word (handler.py:20 on PR #2: the
+  // route is in template.yaml, its handler in library/handler.py).
+  const { publicFiles } = await import("./pr.js");
+  const pub = publicFiles([{ public: true, at: "template.yaml:24", node: "handler" }, { public: false, at: "template.yaml:20", node: "sqs" }],
+    [{ id: "handler", at: "library/handler.py:18" }, { id: "sqs", at: "template.yaml:11" }]);
+  assert.deepEqual([...pub], ["template.yaml", "library/handler.py"]);
+  const n500 = { key: "k20", path: "library/handler.py", line: 20, old: false, severity: "medium", category: "bug", reason: "A missing 'id' key raises KeyError and returns an unhandled 500." };
+  assert.deepEqual([mergeFindings([], [n500]).notes.length, mergeFindings([], [n500], {}, pub).findings.map((f) => [f.line, f.reviewer])], [1, [[20, "ai"]]]);
+  assert.deepEqual([...publicFiles(undefined, undefined)], []);
   console.log("ok neighbouring lines");
 }
 

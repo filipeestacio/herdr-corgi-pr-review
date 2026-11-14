@@ -462,14 +462,15 @@ const NEAR = 3; // lines between two findings of one defect at most (PR #2: 19/2
 // reviewer, or a category). Being on the same line or in the same function is not enough: on PR #2 consumer.py 20
 // and 23, in one function, say different things. An AI suggestion joins a finding on its own line (it is worded as a
 // fix, so no word measure tells its claim: on PR #2 the same and the different ones both score 0 to 0.38). A
-// suggestion without one is a note (not a finding, not counted), unless it is high or about security or availability:
-// then it is a finding of its own. line..end spans all sources, the anchor in the diff is the first line; criteria are
+// suggestion without one is a note (not a finding, not counted), unless it is high, about security or availability,
+// or in a file the public can reach (publicFiles: then the category word the model chose does not decide): then it is
+// a finding of its own. line..end spans all sources, the anchor in the diff is the first line; criteria are
 // those of all sources. The id is the source's that already has a status (so "Fix sent" and its report survive a run
 // that adds a source to the line), else the leading one's; `ids` has them all.
 // → {findings: [{...the leading source, id, ids, severity, security, step, sources: [{id, reviewer, severity, title,
 // detail, suggestion}]}], notes: [suspect]}, findings by severity, then file and line. The facts of a finding
 // (findingFacts) are the leading source's; one it does not have comes from the first source that does.
-export function mergeFindings(findings, suspects = [], status = {}) {
+export function mergeFindings(findings, suspects = [], status = {}, publicFiles = new Set()) {
   const notes = [], at = (x) => `${x.file}:${x.line}`;
   const own = (s) => { const [title, detail] = titled(s.reason); return { id: `s${hash(s.key)}`, reviewer: "ai", file: s.path, line: s.line, end: s.line, severity: s.severity, category: s.category ?? "bug", title, detail, suggestion: "" }; };
   // In line order, so 19, 20 and 22 can become one; a finding without a line stays alone.
@@ -481,7 +482,7 @@ export function mergeFindings(findings, suspects = [], status = {}) {
   }
   // ponytail: a suggestion on a removed line stays a note (findings sit on new-side lines).
   const sugs = suspects.filter((s) => !s.old).map((s) => [s, own(s)]);
-  const raised = new Set(sugs.filter(([s, x]) => !byLine.has(at(x)) && (s.severity === "high" || RAISE.has(s.category))).map(([s]) => s));
+  const raised = new Set(sugs.filter(([s, x]) => !byLine.has(at(x)) && (s.severity === "high" || RAISE.has(s.category) || publicFiles.has(s.path))).map(([s]) => s));
   for (const [s, x] of sugs) if (raised.has(s) && !byLine.has(at(x))) { kept.push([x]); byLine.set(at(x), kept.at(-1)); }
   for (const [s, x] of sugs) { const g = byLine.get(at(x)); if (g && !g.includes(x)) g.push(x); else if (!g) notes.push(s); }
   for (const s of suspects) if (s.old) notes.push(s);
@@ -983,4 +984,11 @@ export function securityStart({ trigger = null, trusted = false, head = null, ct
   const reasons = (trigger?.reasons ?? []).map((x) => String(x?.text ?? "")).filter(Boolean);
   const due = Boolean(trigger?.run) && known && Boolean(head) && ctxHead === head && run?.head !== head && run?.state !== "running";
   return { start: due && trusted && ready, offer: due && !trusted, reasons };
+}
+
+// The files a way in from outside reaches (access entries with public: their own line's file and the file of the
+// architecture card they open, e.g. template.yaml for the route and library/handler.py for its handler).
+export function publicFiles(access = [], nodes = []) {
+  const file = (at) => String(at ?? "").replace(/:\d+.*$/, "");
+  return new Set((access ?? []).filter((a) => a?.public).flatMap((a) => [file(a.at), file((nodes ?? []).find((n) => n.id === a.node)?.at)]).filter(Boolean));
 }
