@@ -9,7 +9,7 @@ import { resPathView } from "./views.js";
 import { resWord, resToolText, resVerdict, resWatch } from "./views.js"; // wave R2: the page's words, verdict and watch list
 
 const STATE = { open: "Unresolved", progress: "Fix sent", fixed: "Fixed", dismissed: "Dismissed", recheck: "Unresolved, line changed" };
-const SOURCE = { analysis: "Analysis", security: "Security review", claude: "Claude code review", codex: "Codex review", ai: "AI suggestion" };
+const SOURCE = { analysis: "Analysis", security: "Security review", claude: "Claude code review", codex: "Codex review", ai: "AI note" };
 const ASK = { met: "met", partly: "partly", broken: "broken", not_done: "not done", extra: "extra" };
 const KIND = { architecture: "Architecture", flow: "Flow", sequence: "Sequence", state_machine: "State diagram", steps: "Steps" };
 const RANK = { critical: 0, high: 1, medium: 2, low: 3 };
