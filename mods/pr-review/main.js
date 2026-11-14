@@ -376,12 +376,18 @@ export default class PrReview extends View {
   // A new source: its pending comments, and its walkthrough when that view is open.
   async syncSource(cx) {
     const key = this.sourceKey();
-    if (key === this.reviewKey) return;
+    if (key === this.reviewKey) {
+      // The review on a new head of the same PR (checkHead): its hunks, checkout and analysis state again; whole files
+      // were read at the old head.
+      const head = this.prSel?.headSha;
+      if (this.part === "review" && head && this.srcHead && head !== this.srcHead) { this.srcHead = head; this.full = {}; await this.onSource(cx); }
+      return;
+    }
     this.reviewKey = key; this.editing = null; this.walk = null; this.walkError = null; this.read = new Set(); this.step = 0;
     const text = key ? await readTextFile(reviews()).catch(() => null) : null;
     this.comments = (text ? JSON.parse(text)[key] : null) ?? [];
     if (this.view === "walk") this.openWalk(cx, false);
-    if (this.part === "review") await this.onSource(cx);
+    if (this.part === "review") { this.srcHead = this.prSel?.headSha ?? null; await this.onSource(cx); }
   }
 
   async load(path, context) {
