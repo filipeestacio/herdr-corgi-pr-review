@@ -58,12 +58,13 @@ title bar (traffic lights at 12, 16):
   `Values: On`, the model picker (Haiku / Sonnet / Opus) and the shown analysis' model and cost (it truncates first
   when the window is narrow), and at the right GitHub's green (`#238636`) `Review changes ▾`, which reads
   `Finish your review (n) ▾` while n comments are pending.
-- The body (`{part: "review"}`): a 420 px left column. On top the PR's pages as one row (Overview, Architecture
-  impact, Security blast radius with `⛨ n` in `ansi1`), reachable from every tab; below it the tabs `Files · n`,
-  `Layers · n`, `Comments · n`, `Findings · n`.
-  Layers: `‹ Prev`, `Next ›`, `Re-analyze` (its tooltip has the run's model, cost, time and age), and
+- The body (`{part: "review"}`): a 420 px left column with the tabs `Files · n`, `Analysis · n`, `Comments · n`,
+  `Findings · n`; a tab's help text opens under the tab row after a short rest.
+  Analysis: on top the PR's pages as a small group (Overview, Architecture impact with a plain `Changed`, Security
+  blast radius with a plain `⛨ n` in its worst severity's color), then `‹ Prev`, `Next ›`, `Re-analyze` (its tooltip has the run's model, cost, time and age), and
   `Layers / By focus` only when the two orders differ; a yellow "Needs your attention" box with the merge blockers
-  by severity, security first, one line each (five, then "n more"), folded to its heading while a layer is open;
+  by severity, security first, one line each (five, then "n more"), folded to its heading while a layer is open
+  and, under the pages, when it would leave a short column too little room for the layers;
   the layers (number, title, the highest unresolved severity with its count such as `2 high`, `⛨` when one of them
   is a security finding, "n of m files viewed", why it matters; the current one expanded with its files, each with a
   "Viewed" tick, the explanation, check questions and flow cards). A layer shows ✓ once every file in it is ticked

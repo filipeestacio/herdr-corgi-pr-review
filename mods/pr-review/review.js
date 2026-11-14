@@ -2,15 +2,15 @@
 // Part "bar": back, PR, context tag, model picker, cost. Part "review": left the AI's steps in risk order (or the file
 // tree), right every diff line in one virtual list with suggestions and comments inline. Mixed into PrReview
 // (main.js), so comments, the pending review and "Send review" are the panel's own code.
-// Tabs: Files (since your last review, or the full PR), Layers (Overview, Security blast radius, Architecture impact,
-// Verify, then the AI's layers; stack.js draws the pictures), Findings. Cheap context (since-diff, related PRs, CI checks)
+// Tabs: Files (since your last review, or the full PR), Analysis (Overview, Architecture impact, Security blast radius,
+// then the AI's layers; stack.js draws the pictures), Findings. Cheap context (since-diff, related PRs, CI checks)
 // loads by itself; every LLM call (Analyze, Only new changes, Verify fixes) is a click.
-// UI text is English; the AI's content stays as it answers. Keys (diff focused): j/k step (Files tab: file), n/p hunk, c comment, a/x take/drop suggestion, s/f Layers/Files, Esc back.
+// UI text is English; the AI's content stays as it answers. Keys (diff focused): j/k step (Files tab: file), n/p hunk, c comment, a/x take/drop suggestion, s/f Analysis/Files, Esc back.
 // Commenting works like GitHub's "Files changed": a click on a line number (shift-click: a range) or c opens the
 // composer under that line, pending comments show as threads there, and "Finish your review" in the bar opens the
 // submit popover: one GitHub review (gh api) or, for a PR with an agent session, the prompt to that session.
 import { div } from "gpui-kit";
-import { v_flex, h_flex, Scrollbar, TextView, v_virtual_list, VirtualListScrollHandle, ScrollHandle, Textarea, TextareaState, Input, InputState } from "gpui-base";
+import { v_flex, h_flex, Scrollbar, TextView, v_virtual_list, VirtualListScrollHandle, ScrollHandle, Textarea, TextareaState, Input, InputState, HoverCard } from "gpui-base";
 import { exec, hc, run, spaces, agents, terminals, focused, pickFolder, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, nextCommand, watchFolder, openOverlay, closeOverlay, props, home } from "herdr";
 import { parseReports, findingStatus, mergeFindings, findingCounts, countLine, runsOf, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
 import * as C from "./context.js";
@@ -102,7 +102,7 @@ const SOURCE = { mine: "accent", ai: "ansi3", agents: "ansi6", github: "ansi4", 
 // Hover texts for the Show chips, the Comments tab's filters and its state chips.
 const SHOW_TIP = { mine: "Comments you wrote: drafts (local until you finish the review), sent to agents, or posted", ai: "Findings and AI notes under their lines", agents: "Replies from agent sessions", github: "Comments other people left on GitHub", notes: "Your pinned notes, private to you" };
 
-const TAB_TIP = { files: "The changed files; tick the ones you have viewed", steps: "The AI's layers of this change, with explanations and pictures", findings: "Every finding once, with its sources and its state; fixes sent to an agent and their verification", comments: "All comments on this PR: yours, the agents' and GitHub's" };
+const TAB_TIP = { files: "The changed files; tick the ones you have viewed", steps: "The AI analysis: the PR's pages and the layers of this change, with explanations and pictures", findings: "Every finding once, with its sources and its state; fixes sent to an agent and their verification", comments: "All comments on this PR: yours, the agents' and GitHub's" };
 const COVER_TIP = { seen: "The diff does what this asks", partly: "The diff does only part of what this asks", absent: "Nothing in the diff does this", extra: "The diff does this, but it was not asked for" };
 const COMPOSE_TIP = { insertSuggestion: "Insert the selected lines as a GitHub suggestion block", closeComposer: "Close the composer without saving (Esc)", addDraft: "Add to your pending review; nothing is posted yet (⌘↩)", singleComment: "Post this one comment at once, or preview it first when it goes to an agent" };
 const STATE_TIP = { pending: "Pending: written by you, not sent yet", waiting: "Sent to agent: no reply yet", replied: "Agent replied, or someone answered on GitHub", fixed: "Reported fixed: the agent says it is done; nothing has checked it", declined: "Declined: the agent chose not to change it", github: "A comment from GitHub", note: "A pinned note, private to you" };
@@ -116,7 +116,7 @@ const OPEN_ST = ["open", "progress", "recheck"];
 const FIND_FOLDED = 34, FIND_LABEL = 112, FIND_LINK = 150;
 // A layer's head over its code: its texts wrap at about 95 characters instead of running across the whole column.
 const LAYER_TEXT = 640;
-// The Layers tab's pages (left nav); null: the diff of the current layer.
+// The Analysis tab's pages (at its top, above the layers); null: the diff of the current layer.
 const PAGES = [["overview", "Overview"], ["blast", "Security blast radius"], ["arch", "Architecture impact"]]; // measures the mono font's character width, for clicks on tokens inside the virtual list
 
 // "Reviews ▾" in the bar opens this popup (props {part: "reviews"}): each reviewer with its last run; Run reaches the
@@ -362,6 +362,7 @@ export const ReviewMode = {
   command(c, cx) {
     const [name, ...rest] = c.split(":"), arg = rest.join(":");
     if (name === "steps" || name === "files" || name === "findings" || name === "comments") this.tab = name;
+    else if (name === "analysis") this.tab = "steps"; // the tab's name; "steps" stays valid
     else if (name === "def") this.defineAt(arg, cx);
     // page:verify is the Findings tab now: fixes sent and their verification sit there, under "Fix sent".
     else if (name === "page" && arg === "verify") this.tab = "findings";
@@ -2563,7 +2564,7 @@ export const ReviewMode = {
     return out;
   },
 
-  // ---- the left column: the pages row above the tabs, the Layers tab (what needs attention, the layers), the pages
+  // ---- the left column: the Analysis tab (its pages, what needs attention, the layers), the pages
 
   checksNow() { return preMergeChecks({ title: this.pr?.title ?? this.prSel?.title, rules: this.ai?.rules ?? [], ctx: this.ctx }); },
   openFindings() { return this.findings().filter((f) => OPEN_ST.includes(this.fstatus(f))); },
@@ -2613,19 +2614,32 @@ export const ReviewMode = {
           .child(`${rest.length} more: ${worst(rest).words} →`))));
   },
 
-  // The PR's pages (Overview, Architecture, Security) above the tabs: reachable from every tab, and not layers.
-  pagesRow(t) {
-    const sec = this.prSel ? this.counts().security : 0, changed = (this.ai?.arch?.nodes ?? []).some((n) => n.status && n.status !== "unchanged");
-    const mark = { blast: sec > 0 && badge(t, `⛨ ${sec}`, t.ansi1).id("rv-nav-sec").tooltip(`${sec} unresolved security ${sec === 1 ? "finding" : "findings"}`),
-      arch: changed && badge(t, "Changed", t.accent).id("rv-nav-arch").tooltip("The architecture picture differs before and after this PR") };
-    return h_flex().flex_none().px(8).pt(8).gap(4)
+  // The PR's pages (Overview, Architecture, Security) at the top of the Analysis tab, above its layers: they are part
+  // of the analysis. A count stands plain at the row's right, the security one in its worst severity's color.
+  pagesGroup(t) {
+    const sec = this.prSel ? this.openFindings().filter((f) => f.security) : [], changed = (this.ai?.arch?.nodes ?? []).some((n) => n.status && n.status !== "unchanged");
+    const worstSec = ["high", "medium", "low"].find((s) => sec.some((f) => f.severity === s));
+    const plain = (id, tip, color, text) => div().id(id).tooltip(tip).flex_none().text_size(12.5).font_semibold().text_color(color).child(text);
+    const mark = { blast: sec.length > 0 && plain("rv-nav-sec", `${sec.length} unresolved security ${sec.length === 1 ? "finding" : "findings"}`, t[SEV[worstSec]] ?? t.ansi1, `⛨ ${sec.length}`),
+      arch: changed && plain("rv-nav-arch", "The architecture picture differs before and after this PR", t.accent, "Changed") };
+    return v_flex().flex_none().px(8).pt(8).gap(2)
       .children(["overview", "arch", "blast"].map((k) => {
-        const label = PAGES.find(([p]) => p === k)[1], on = this.tab === "steps" && this.page === k;
+        const label = PAGES.find(([p]) => p === k)[1], on = this.page === k;
         return h_flex().id(`rv-nav-${k}`).tooltip(`Open the ${label} page`).min_w(0).h(28).px(10).gap(6).items_center().rounded(7).cursor_pointer()
-          .when(on, (e) => e.bg(t.selected).font_semibold()).hover((st) => st.bg(t.hover)).on_click((_e, cx) => { this.tab = "steps"; this.page = k; cx.notify(); })
-          .child(div().min_w(0).truncate().text_size(13).text_color(on ? t.foreground : t.muted).child(label))
+          .when(on, (e) => e.bg(t.selected).font_semibold()).hover((st) => st.bg(t.hover)).on_click((_e, cx) => { this.page = k; cx.notify(); })
+          .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(on ? t.foreground : t.muted).child(label))
           .children([mark[k]].filter(Boolean));
       }));
+  },
+
+  // The attention box starts folded while a layer is open, and on a page when, open under the pages, the block would
+  // take about half the column. A click on its heading (attFold) decides until another page or layer.
+  attFolded(list) {
+    if (this.attFold != null) return this.attFold;
+    const boxH = 46 + 30 * Math.min(list.length, 5) + (list.length > 5 ? 26 : 0);
+    // ponytail: estimated heights (150 px: the pages and the buttons); the block may take 45 % of the column. paneH is
+    // logical px, the boxes grow with the zoom: the column in their px.
+    return !this.page || 150 + boxH > 0.45 * ((this.paneH ?? Infinity) / (settings().zoom || 1));
   },
 
   stepsPane(t, cx) {
@@ -2645,7 +2659,8 @@ export const ReviewMode = {
       else { this.leftTop = 0; this.leftScroll.scroll_to_item(first + this.cur); }
     }
     const canInc = Boolean(ai && this.aiFile && this.since?.files.length && !this.aiBusy);
-    return v_flex().flex_1().min_h(0)
+    return v_flex().flex_1().min_h(0).on_size_change((size, cx) => { if (Math.abs((this.paneH ?? 0) - size.height) > 8) { this.paneH = size.height; cx.notify(); } })
+      .child(this.pagesGroup(t))
       .child(v_flex().flex_none().px(14).py(10).gap(8).border_b(1).border_color(t.border)
         .when(!ai && !this.aiBusy, (e) => e.child(v_flex().gap(8).py(4)
           .child(div().text_size(13.5).line_height(1.5).child(`No ${modelLabel(m)} analysis for this diff yet. One thorough run reads the code around the changes and groups them into layers by intent, with explanations, check questions, suspicious lines, merge risk, review effort, repo rule checks, pictures and example values. It can take several minutes.`))
@@ -2668,7 +2683,7 @@ export const ReviewMode = {
           .when(canInc, (e) => e.child(pill("rv-reinc", t, "Only new changes", (_e, cx) => this.loadAi(cx, "run", true), false, t.accent)
             .tooltip(`Analyze only the ${this.since.files.length} files changed since your last review and merge the new layers in`))))
         // Above the list, not in it: folded to one line while a layer is open, it still says what is left to decide.
-        .when(attention.length > 0, (e) => e.child(this.attentionBox(t, attention, this.attFold ?? !this.page))))
+        .when(attention.length > 0, (e) => e.child(this.attentionBox(t, attention, this.attFolded(attention)))))
       .child(div().flex_1().min_h(0).relative()
         .child(v_flex().id("rv-steps-left").absolute().inset_0().overflow_y_scroll().track_scroll(this.leftScroll).p(8).gap(4)
           .child(h_flex().flex_none().mt(2).px(10).gap(8).items_center().text_size(11.5).font_semibold().text_color(t.muted)
@@ -3984,16 +3999,15 @@ export const ReviewMode = {
     const listId = `rv-list-${this.tab === "steps" ? "steps" : "files"}`;
     const range = this.fsel && rangeOf(this.rowsFor(this.fsel.path), this.fsel.a, this.fsel.b);
     this.selKeys = range ? new Set(this.rowsFor(this.fsel.path).slice(range[0], range[1] + 1).map(lineKey)) : null;
-    const tabBtn = (id, label) => div().id(`rv-tab-${id}`).tooltip(TAB_TIP[id]).flex_1().h(32).flex().items_center().justify_center().rounded(7).text_size(13.5).cursor_pointer()
+    const tabBtn = (id, label) => div().id(`rv-tab-${id}`).flex_1().min_w(0).h(32).flex().items_center().justify_center().rounded(7).text_size(13.5).cursor_pointer()
       .bg(this.tab === id ? t.selected : t.chrome).text_color(this.tab === id ? t.foreground : t.muted).when(this.tab === id, (e) => e.font_semibold()).hover((s) => s.text_color(t.foreground))
-      .on_click((_e, cx) => { this.tab = id; cx.notify(); }).child(label);
+      .on_click((_e, cx) => { this.tab = id; cx.notify(); }).child(tabTip(`rv-tab-${id}`, t, TAB_TIP[id], div().child(label)));
     return root
       .child(this.metaRow(t))
       .child(h_flex().flex_1().min_h(0)
         .child(v_flex().w(this.leftW()).flex_none().h_full().bg(t.chrome)
-          .child(this.pagesRow(t))
           .child(h_flex().flex_none().p(8).gap(6).border_b(1).border_color(t.border)
-            .child(tabBtn("files", `Files · ${this.shown().patch.length}`)).child(tabBtn("steps", `Layers${this.ai ? ` · ${this.ai.steps.filter((s) => !s.pseudo).length}` : ""}`))
+            .child(tabBtn("files", `Files · ${this.shown().patch.length}`)).child(tabBtn("steps", `Analysis${this.ai ? ` · ${this.ai.steps.filter((s) => !s.pseudo).length}` : ""}`))
             .child(tabBtn("comments", `Comments${this.commentRowsNow().length ? ` · ${this.commentRowsNow().length}` : ""}`))
             .child(tabBtn("findings", `Findings${this.findings().length ? ` · ${this.counts().unresolved}` : ""}`)))
           .child(this.tab === "steps" ? this.stepsPane(t, cx) : this.tab === "findings" ? this.findingsPane(t) : this.tab === "comments" ? this.commentsPane(t) : this.filesPane(t)))
@@ -4128,3 +4142,11 @@ function tickBox(t, on) {
 }
 const DRY_TIP = "Dry run: this installation posts nothing to GitHub. What a post would send is written to a file instead (\"dryRun\": true in pr-review.config.json).";
 const PUBLIC_TIP = "This comes from a security finding: once posted, its text is readable by everyone who can see the PR.";
+
+// A tab's help text: under the tab row and after a rest, in a hover card on the tab's label (the card takes no size
+// styles, so the tab around it keeps its width). A tooltip there covered the neighbouring tabs' labels, and a
+// tooltip's side and delay are not a script's to choose.
+function tabTip(id, t, tip, label) {
+  return HoverCard.new(`${id}-tip`).anchor("top_center").open_delay(700).trigger(label)
+    .content(div().max_w(280).px(10).py(6).rounded(6).border_1().border_color(t.border).bg(t.popover).text_size(12.5).text_color(t.foreground).whitespace_normal().child(tip));
+}
