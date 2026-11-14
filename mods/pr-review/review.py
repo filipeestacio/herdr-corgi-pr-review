@@ -23,6 +23,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -42,21 +43,35 @@ LEVELS = ["high", "medium", "low"]
 # What a model run that reads a PR may do (this analysis, and the reviewers in reviewers.py): it reads someone else's
 # code and text, which may carry instructions to it. --restricted confines the file tools to the checkout (and
 # --add-dir) and ignores the checkout's own .claude settings; dontAsk refuses whatever no rule allows. Allowed: the
-# file tools and the git commands that read history; no network, no writes. Denied: options that write a file
-# (--output), run a program (--ext-diff, --textconv) or read a file outside the checkout (--no-index, blame --contents,
-# -S, --ignore-revs-file), each by its shortest unambiguous prefix, since git takes abbreviated long options in some
-# commands (blame --con is --contents). llm.py also sets GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS for the run.
-GIT_READ = ("diff", "log", "show", "status", "blame", "merge-base", "rev-parse", "ls-files")
-GIT_DENIED = ("--ou", "--ext", "--textc", "--no-in", "--con", "--ignore-revs")
+# file tools and read-only git through safegit.py, fixed to this checkout (git diff with a path outside the repository
+# silently turns into --no-index and reads any file; safegit refuses such paths and the options that write a file,
+# run a program or read one, also abbreviated). git itself is denied; no network, no writes.
+SAFEGIT = pathlib.Path(__file__).with_name("safegit.py")
 
 
-def permissions(*tools):
-    """The CLI flags for a run with these tools plus read-only git."""
-    denied = ["Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch", *(f"Bash(git *{o}*)" for o in GIT_DENIED), "Bash(git blame*-S*)"]
-    return ("--restricted", "--permission-mode", "dontAsk", "--allowedTools", *tools, *(f"Bash(git {c} *)" for c in GIT_READ), "--disallowedTools", *denied)
+def git_call(root):
+    """The one way a run may call git: `python3 <safegit.py> <checkout>`, as the allow rule and the prompt say it."""
+    return f"python3 {shlex.quote(str(SAFEGIT))} {shlex.quote(str(root))}"
 
 
-READ_ONLY = permissions("Read", "Grep", "Glob")
+def git_hint(root):
+    """The prompt's line on how to call git (empty without a checkout)."""
+    return (f"Call git only as `{git_call(root)} <command> <args>`, with diff, log, show, status, blame, merge-base, rev-parse "
+            "or ls-files and paths relative to the checkout; plain git is refused.\n\n") if root else ""
+
+
+def permissions(root, *tools):
+    """The CLI flags for a run with these tools plus read-only git in root (None: no git): git only through safegit.py
+    (an allowlist); git itself is denied, also the calls Claude Code would let through as read-only by itself."""
+    denied = ["Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Bash(git *)"]
+    return ("--restricted", "--permission-mode", "dontAsk", "--allowedTools", *tools, *([f"Bash({git_call(root)} *)"] if root else []),
+            "--disallowedTools", *denied)
+
+
+def allowed_rules(flags):
+    """The allow rules of permissions(): what a run was allowed to do, for its record."""
+    flags = list(flags)
+    return flags[flags.index("--allowedTools") + 1:flags.index("--disallowedTools")] if "--allowedTools" in flags else []
 SYSTEM = ("You are a thorough, experienced code reviewer and guide a person through the review of a pull request in {lang}: "
           "ordered by risk, with concrete check points and only real suspicious spots verified in the code, no style "
           "criticism. Take your time: read callers, types and surrounding code before you claim anything. "
@@ -186,7 +201,7 @@ SCHEMA = {"type": "object", "required": ["title", "summary", "behavior", "merge_
                                         "components", "checked", "what_changed", "read"], "properties": {
     "title": S, "summary": S, "behavior": S,
     "what_changed": {"type": "object", "required": ["adds", "changes", "runtime"], "properties": {
-        "adds": {**STRINGS, "maxItems": 3}, "changes": {**STRINGS, "maxItems": 3}, "runtime": {**STRINGS, "maxItems": 3}}},
+        **{k: {"type": "array", "maxItems": 3, "items": {**S, "description": "One thought, at most twelve words."}} for k in ("adds", "changes", "runtime")}}},
     "read": STRINGS,
     "merge_risk": {"type": "object", "required": ["level", "why"], "properties": {"level": {"enum": ["minimal", "low", "medium", "high", "critical"]}, "why": S}},
     "effort": {"type": "object", "required": ["score", "why"], "properties": {"score": {"type": "integer", "minimum": 1, "maximum": 5}, "why": S}},
@@ -195,7 +210,7 @@ SCHEMA = {"type": "object", "required": ["title", "summary", "behavior", "merge_
     "architecture": ARCHITECTURE, "blast_radius": BLAST, "visuals": VISUALS,
     "intent": {"type": "array", "maxItems": 6, "items": STATEMENT}, "behavior_points": {"type": "array", "maxItems": 6, "items": STATEMENT},
     "asks": {"type": "array", "items": {"type": "object", "required": ["id", "text", "short", "acceptance", "state", "why", "hunks"], "properties": {
-        "id": S, "text": S, "short": S, "acceptance": {"type": "boolean"}, "state": {"enum": ASK_STATES}, "why": S, "hunks": STRINGS, "elements": STRINGS}}},
+        "id": S, "text": S, "short": S, "acceptance": {"type": "boolean"}, "state": {"enum": ASK_STATES}, "why": {**S, "description": "One sentence, at most 20 words."}, "hunks": STRINGS, "elements": STRINGS}}},
     "components": {"type": "array", "maxItems": 16, "items": {"type": "object", "required": ["name", "kind", "status", "at", "operate"], "properties": {
         "name": S, "kind": S, "status": {"enum": ["new", "changed"]}, "at": S, "node": S, "operate": STRINGS}}},
     "checked": checked_schema(AREAS_CODE),
@@ -437,8 +452,9 @@ def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None,
             "codebase and unchanged; evidence where known), spec (only described in the PR description, the linked ticket, "
             "ADRs or spec docs, and NOT found in the diff: planned or missing). Never present a spec-only item as implemented: "
             "when you can't point at the diff, use spec.\n\ntitle/summary: the PR in one line and "
-            "in 2-3 sentences. what_changed: the change as three short lists, each at most three short sentences, empty when "
-            "none: adds (what is new: a module, an endpoint, a queue), changes (what existing code now does differently), runtime "
+            "in 2-3 sentences. what_changed: the change as three short lists of at most three entries each, empty when none; "
+            "each entry is one thought in at most twelve words, no list inside it, e.g. \"`consumer.py`: a Lambda that mails from the "
+            "queue\": adds (what is new: a module, an endpoint, a queue), changes (what existing code now does differently), runtime "
             "(what changes when it runs: a new call between services, a new permission, a new schedule). read: the paths of the "
             "files outside the diff that you read to check the change. behavior: 2-3 sentences on how the application's behavior changes, also for users (no code). "
             "intent and behavior_points: the PR's intent and its behavior change as single statements (at most 6 each), each "
@@ -478,7 +494,7 @@ def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None,
                  "acceptance (true: the task lists it as an acceptance criterion or in a checklist of requirements; false: you "
                  "derived it from the prose), state (met: the diff does it and no finding breaks it; partly: the diff does some "
                  "of it, or it holds only in some cases; broken: the code for it is in the diff and breaks the rule; not_done: "
-                 "nothing in the diff does it), why (one sentence: the reason for the state, naming the code), hunks, elements "
+                 "nothing in the diff does it), why (one sentence of at most 20 words: the reason for the state, naming the code), hunks, elements "
                  "(ids of the architecture or visual nodes with source spec that this requirement describes, if any). Plus one "
                  "entry with state extra for each change the task doesn't ask for (text: what, why: what it adds, hunks: where, "
                  "acceptance false). Every finding that breaks a requirement names it in criteria, and every requirement with "
@@ -727,11 +743,14 @@ def changed_lines(hunks):
     return out
 
 
-def introduced(f, changed):
+def introduced(f, changed, breaks_requirement=False):
     """introduced_here from the diff where it can tell (changed: {path: added line numbers}, None when unknown): a
-    finding whose lines the PR adds is the PR's. Otherwise the model's word, and without one true (a blocker stays one)."""
+    finding whose lines the PR adds is the PR's, and so is one that breaks a requirement of this PR, also in old lines
+    (an old status write that the PR's new rule forbids). Otherwise the model's word, and without one true (a blocker
+    stays one)."""
     path, line = str(f.get("file") or "").strip().removeprefix("./"), int(f.get("line") or 0)
-    if changed is not None and line and set(range(line, max(line, int(f.get("end") or line)) + 1)) & set(changed.get(path, ())):
+    end = max(line, int(f.get("end") or line))  # the model's end: compared with, never enumerated
+    if breaks_requirement or changed is not None and line and any(line <= n <= end for n in changed.get(path, ())):
         f["introduced_here"] = True
     elif not isinstance(f.get("introduced_here"), bool):
         f["introduced_here"] = True
@@ -772,8 +791,9 @@ def finish(answer, root=None, path_of=None, changed=None):
             st["depends_on"] = [x for x in dict.fromkeys(st["depends_on"] or []) if x in titles and x != st.get("title")]
         for f in st.get("findings") or []:
             f["criteria"] = [c for c in dict.fromkeys(f.get("criteria") or []) if c in by_id]
-            judge(f, any(by_id[c]["state"] != "extra" for c in f["criteria"]))
-            introduced(f, changed)
+            mine = any(by_id[c]["state"] != "extra" for c in f["criteria"])
+            judge(f, mine)
+            introduced(f, changed, mine)
             f["id"] = "a" + fnv(f"{f.get('category') or 'structure'}|{str(f.get('file') or '').strip().removeprefix('./')}|{str(f.get('title') or '').strip()}")
             for c in f["criteria"]:
                 if f["id"] not in by_id[c]["findings"]:
@@ -915,9 +935,9 @@ def main_diagrams(req):
     prev = json.loads(pathlib.Path(req["diagrams"]).read_text())
     t = task(req.get("pr"), (ctx or {}).get("tickets", True))
     tools = bool(wt and pathlib.Path(wt).is_dir())
-    extra = READ_ONLY if tools else ()
+    extra = permissions(wt, "Read", "Grep", "Glob") if tools else ()
     meta = {}
-    answer = llm.claude(FEATURE_DIAGRAMS, diagrams_prompt(req["hunks"], prev, t and t["text"], tools, lang), context=ctx, model=model,
+    answer = llm.claude(FEATURE_DIAGRAMS, git_hint(wt if tools else None) + diagrams_prompt(req["hunks"], prev, t and t["text"], tools, lang), context=ctx, model=model,
                         schema=DIAGRAMS_SCHEMA, system=SYSTEM.format(lang=lang), budget=BUDGET_DIAGRAMS[llm.tier(model)], timeout=TIMEOUT,
                         cwd=wt if tools else pathlib.Path.home(), tools="Read,Grep,Glob,Bash" if tools else "", meta=meta, extra=extra)
     if not answer:
@@ -1045,8 +1065,8 @@ def main(req):
     index = write_run(run, hunks)
     cap, aliases = BUDGET[llm.tier(model)], [h["alias"] for h in hunks]
     # Read-only tools in the checkout plus the run's folder (the patches); without a checkout, only the folder.
-    extra = ("--effort", "high", "--add-dir", run, *READ_ONLY)
-    call = lambda feature, text, schema, budget, meta: llm.claude(feature, text, context=ctx, model=model, schema=schema, system=SYSTEM.format(lang=lang),  # noqa: E731
+    extra = ("--effort", "high", "--add-dir", run, *permissions(wt if tools else None, "Read", "Grep", "Glob"))
+    call = lambda feature, text, schema, budget, meta: llm.claude(feature, git_hint(wt if tools else None) + text, context=ctx, model=model, schema=schema, system=SYSTEM.format(lang=lang),  # noqa: E731
                                                               budget=budget, timeout=TIMEOUT, cwd=wt if tools else run, tools="Read,Grep,Glob,Bash", meta=meta, extra=extra)
     cohorts = None if prev else cohorts_of(hunks, INLINE[llm.tier(model)])
     metas = []

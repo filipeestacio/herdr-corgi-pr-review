@@ -664,6 +664,8 @@ console.log("ok");
   assert.deepEqual(v.arch.edges.map((e) => Boolean(e.crosses)), [false, false, false, false, true, true, false, false]);
   assert.deepEqual([v.access.map((r) => r.id), v.threats.map((t) => t.id), v.securityTrigger.run], [["acc1", "acc2"], ["t1"], true]);
   assert.deepEqual(v.securityFrom, { source: "security", head, at: security.at, older: false, why: null });
+  const s2 = withSecurity(ai, { ...security, gates: [{ where: { access: "acc1" }, check: "token", source: "code" }], effective_zones: [{ node: "handler", drawn: "authenticated", effective: "public" }] }, ctx, head);
+  assert.deepEqual([s2.gates.length, s2.effectiveZones[0].effective, v.gates, v.effectiveZones], [1, "public", [], []], "gates and effective zones of the security run; an older block has none");
   assert.equal(ai.arch.zones, undefined, "the analysis itself is not changed");
   assert.deepEqual(withSecurity(v, security, ctx, head), v, "again on its own result: the same");
   assert.deepEqual([withSecurity(ai, security, ctx, "other").securityFrom.why, withSecurity({ ...ai, generated: "later" }, security, ctx, head).securityFrom.why], ["head", "analysis"], "an older run says so");
@@ -756,24 +758,6 @@ console.log("ok");
   assert.deepEqual(securityStart(), { start: false, offer: false, reasons: [] });
   console.log("ok security start");
 }
-
-// ---- the recommended model for a run
-{
-  const { recommendModel, tierSteps } = await import("./pr.js");
-  assert.deepEqual(recommendModel("security", { lines: 200, files: 9, rules: ["route", "auth"] }), { tier: "sonnet", why: "its checks are narrow and the diff is of ordinary size" }, "the security review is a Sonnet");
-  assert.equal(recommendModel("security", { lines: 4000, files: 9, rules: ["auth"] }).tier, "opus", "unless the diff is large");
-  assert.deepEqual(recommendModel("analysis", { lines: 200, files: 9, rules: ["route", "auth"] }), { tier: "opus", why: "the diff touches auth, where a missed weakness costs most" });
-  assert.equal(recommendModel("analysis", { lines: 200, files: 9 }).tier, "sonnet");
-  assert.equal(recommendModel("analysis", { lines: 3000, files: 9 }).tier, "opus");
-  assert.equal(recommendModel("analysis", { lines: 100, files: 3, risk: "high", rules: ["route"] }).tier, "opus");
-  assert.equal(recommendModel("fix", { lines: 3000, files: 80 }).tier, "sonnet", "a fix is small however big the PR");
-  assert.equal(recommendModel("fix", { security: true }).tier, "opus"); assert.equal(recommendModel("verify", { security: true }).tier, "opus");
-  assert.equal(recommendModel("ask", { lines: 9000, rules: ["auth"] }).tier, "sonnet");
-  for (const k of ["analysis", "security", "verify", "ask", "fix"]) assert.notEqual(recommendModel(k, {}).tier, "haiku", "never Haiku for code");
-  assert.match(recommendModel("analysis", {}).why, /^the diff is of ordinary size$/);
-  assert.deepEqual([tierSteps("sonnet"), tierSteps("opus")], [{ up: "opus", down: null }, { up: null, down: "sonnet" }]);
-}
-
 // Verify with an agent: its result on the finding and in the step bar.
 {
   const { withProof, proofFacts, findingSteps } = await import("./pr.js");
@@ -811,4 +795,46 @@ console.log("ok");
   assert.deepEqual(mergeBlockers({ findings: m }).map((b) => b.finding).sort(), ["a2", "s1"], "a flaw that was there before is no blocker; not said stays one");
   assert.deepEqual(alreadyThere(m).map((b) => [b.finding, b.why]), [["a1", "library/api.py:4 · high finding, already there before this PR"]]);
   console.log("ok round 4 fields");
+}
+
+
+// One path rule for every jump: the same path first, else the one path that ends in it.
+{
+  const { diffPath } = await import("./pr.js");
+  const paths = ["library/handler.py", "handler.py", "a/b/consumer.py", "c/consumer.py"];
+  assert.deepEqual([diffPath(paths, "handler.py"), diffPath(paths, "b/consumer.py"), diffPath(paths, "consumer.py"), diffPath(paths, "x.py"), diffPath(paths, ""), diffPath(new Set(paths), "library/handler.py")],
+    ["handler.py", "a/b/consumer.py", null, null, null, "library/handler.py"]);
+  console.log("ok diff path");
+}
+
+// ⛨ only for real security, by the effect (PR #2): the token gap is security; the store, the SQS publisher and the
+// double mail are not, not even when the security reviewer reports one (about availability or correctness).
+{
+  const { mergeFindings, isSecurity } = await import("./pr.js");
+  const F = (id, reviewer, line, category, impact, title) => ({ id, reviewer, file: "f.py", line, end: line, severity: "high", category, impact, title, detail: "" });
+  const m = mergeFindings([F("tok", "security", 8, "security", "unauthorized_access", "Front desk auth falls back to an empty token"),
+    F("store", "claude", 20, "bug", "dead_path", "Consumer reads from an in-memory store"), F("sqs", "claude", 40, "requirement", "dead_path", "No SQS publisher"),
+    F("mail", "analysis", 60, "requirement", "breaks_requirement", "Reminder is mailed inline and again"), F("remind", "security", 80, "security", "edge_case", "/remind skips the state machine")]).findings;
+  assert.deepEqual(Object.fromEntries(m.map((f) => [f.id, f.security])), { tok: true, store: false, sqs: false, mail: false, remind: false });
+  assert.deepEqual([isSecurity({ impact: "data_exposure" }), isSecurity({ impact: "data_loss", category: "availability" }), isSecurity({ impact: "data_loss", category: "security" }),
+    isSecurity({ reviewer: "security" }), isSecurity({ reviewer: "ai", category: "security" }), isSecurity({ reviewer: "claude", category: "bug" })], [true, false, true, true, true, false]);
+  console.log("ok security mark");
+}
+
+
+// ---- the recommended model for a run
+{
+  const { recommendModel, tierSteps } = await import("./pr.js");
+  assert.deepEqual(recommendModel("security", { lines: 200, files: 9, rules: ["route", "auth"] }), { tier: "sonnet", why: "its checks are narrow and the diff is of ordinary size" }, "the security review is a Sonnet");
+  assert.equal(recommendModel("security", { lines: 4000, files: 9, rules: ["auth"] }).tier, "opus", "unless the diff is large");
+  assert.deepEqual(recommendModel("analysis", { lines: 200, files: 9, rules: ["route", "auth"] }), { tier: "opus", why: "the diff touches auth, where a missed weakness costs most" });
+  assert.equal(recommendModel("analysis", { lines: 200, files: 9 }).tier, "sonnet");
+  assert.equal(recommendModel("analysis", { lines: 3000, files: 9 }).tier, "opus");
+  assert.equal(recommendModel("analysis", { lines: 100, files: 3, risk: "high", rules: ["route"] }).tier, "opus");
+  assert.equal(recommendModel("fix", { lines: 3000, files: 80 }).tier, "sonnet", "a fix is small however big the PR");
+  assert.equal(recommendModel("fix", { security: true }).tier, "opus"); assert.equal(recommendModel("verify", { security: true }).tier, "opus");
+  assert.equal(recommendModel("ask", { lines: 9000, rules: ["auth"] }).tier, "sonnet");
+  for (const k of ["analysis", "security", "verify", "ask", "fix"]) assert.notEqual(recommendModel(k, {}).tier, "haiku", "never Haiku for code");
+  assert.match(recommendModel("analysis", {}).why, /^the diff is of ordinary size$/);
+  assert.deepEqual([tierSteps("sonnet"), tierSteps("opus")], [{ up: "opus", down: null }, { up: null, down: "sonnet" }]);
 }

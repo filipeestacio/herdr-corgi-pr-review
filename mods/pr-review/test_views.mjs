@@ -185,6 +185,10 @@ assert.deepEqual(riskSignal({ analysis: layers, findings: reviewers }), { top: "
 assert.deepEqual(riskSignal({ analysis: layers, findings: reviewers, status: { r1: { s: "fixed" }, a2: { s: "progress" } } }), { top: "high", open: 4, security: true });
 assert.deepEqual(riskSignal({ analysis: layers, findings: reviewers, status: { r1: { s: "dismissed" }, a2: { s: "fixed" } } }), { top: "medium", open: 3, security: false });
 assert.deepEqual(riskSignal({ analysis: { steps: [] }, findings: [] }), { top: null, open: 0, security: false });
+// ⛨ as in the review (pr.js isSecurity): by the finding's effect when it has one, not by who found it.
+assert.equal(riskSignal({ findings: [{ id: "s", reviewer: "security", severity: "high", impact: "edge_case", category: "bug" }] }).security, false, "the security reviewer's bug is no security finding");
+assert.equal(riskSignal({ findings: [{ id: "c", reviewer: "claude", severity: "high", impact: "unauthorized_access", category: "bug" }] }).security, true, "access without permission is, whoever found it");
+assert.equal(riskSignal({ findings: [{ id: "d", reviewer: "claude", severity: "high", impact: "data_loss", category: "data" }] }).security, false, "data loss only with the category security");
 // An analysis cached before layers had findings still loads.
 assert.deepEqual(riskSignal({ analysis: {} }), { top: null, open: 0, security: false });
 
@@ -238,6 +242,21 @@ assert.equal(pendingText([{ file: "a.py" }, { file: "a.py" }, { file: "b.py" }])
   assert.deepEqual(analysisAge({ head: "abcdef123", exact: false, now: "9876543ff", age: "1 d ago" }), { stale: true, text: "Analysis of abcdef1, 1 d ago · the PR is at 9876543 now" });
   assert.deepEqual(analysisAge({ exact: true, age: "5 min ago" }), { stale: false, text: "Analysis of this diff, 5 min ago" }, "an analysis from before it saved its head");
   assert.equal(analysisAge({ exact: false, now: "9876543" }).text, "Analysis of an older diff");
+  // The state hints at the top of the Analysis tab: checkout, an analysis waiting for it, reviewer runs.
+  const { stateHints } = await import("./views.js");
+  assert.deepEqual(stateHints({ checkout: { busy: true }, pendingRun: true, runs: { security: { busy: true }, claude: { at: "x" } }, names: { security: "Security review" } }).map((h) => [h.key, h.text, Boolean(h.spin)]),
+    [["checkout", "Checking out the PR head: the analysis starts once it is there…", true], ["run-security", "Security review is running…", true]]);
+  assert.deepEqual(stateHints({ checkout: { error: "no such ref" }, pendingRun: true }).map((h) => [h.text, Boolean(h.error)]), [["Could not check out the PR head: no such ref", true]]);
+  assert.deepEqual(stateHints({ pendingRun: true }).map((h) => h.key), ["wait"]);
+  assert.deepEqual(stateHints({}), []);
+  // A note about an action: an error stays (no ttl), anything else goes after NOTE_TTL.
+  const { noteRule, NOTE_TTL } = await import("./views.js");
+  for (const e of ["Could not verify: no checkout", "Not posted: GitHub takes line comments only on lines of the PR diff.", "Nothing to send: add a comment first",
+    "Select a line first (click its number; shift-click: a range)", "No loan_id on a.py:3", "Line 4 of a.py is not in the shown diff", "Opened it, but Could not save"])
+    assert.deepEqual(noteRule(e), { error: true, ttl: null }, e);
+  for (const ok of ["Posted to GitHub: https://x", "Dismissed \"x\" (Analysis). It stays in the Findings tab under Dismissed", "Dry run: nothing posted, the payload is in ~/x",
+    "No fix to verify yet: no fix agent has reported a commit", "Marked done: it leaves the open reviews"])
+    assert.deepEqual(noteRule(ok), { error: false, ttl: NOTE_TTL }, ok);
 }
 // ---- a finding's facts, its card's line, the rows' heights, the sequence diagram (the diff and a layer's head)
 import { factRows, findingAnchor, wrapCount, seqLayout, IMPACT, SEVERITY_SCALE, SEQ } from "./views.js";
@@ -446,6 +465,28 @@ assert.equal(oneSided(rowsOf("-+")), false, "a line changed");
   }
 }
 
+// ---- the PR list: at most three marks, security first
+import { rowMarks } from "./views.js";
+assert.deepEqual(rowMarks({ top: "high", security: true }, { priority: 1, type: "Feature", chips: ["High security risk", "Feature", "Low effort"] }).map((m) => m.text), ["⛨ high", "P1", "Feature"]);
+assert.deepEqual(rowMarks({ top: "medium", security: false }, null).map((m) => [m.text, m.security]), [["medium", false]]);
+assert.deepEqual(rowMarks(null, { priority: 3, type: "Docs" }).map((m) => m.text), ["P3", "Docs"]);
+assert.equal(rowMarks({ top: "low" }, { priority: 2, type: "Fix" }).length, 3);
+
+// ---- the stack in the review's bar
+import { stackOf } from "./views.js";
+assert.deepEqual(stackOf({ stacked_on: { number: 1, url: "u1" } }, 2).map((p) => [p.number, Boolean(p.self)]), [[1, false], [2, true]], "PR #2 on top of #1");
+assert.deepEqual(stackOf({ stacked_above: [{ number: 2, url: "u2" }] }, 1).map((p) => [p.number, Boolean(p.self)]), [[1, true], [2, false]], "PR #1 under #2");
+assert.equal(stackOf({ stacked_on: null, stacked_above: [] }, 3), null);
+assert.equal(stackOf(null, 3), null, "no context yet");
+
+// ---- a layer's "Depends on" chips: clicks placed by x from the right end
+import { chipAt, textW } from "./views.js";
+assert.equal(chipAt(950, 1000, [80, 100]), 1, "the last chip ends at the right end");
+assert.equal(chipAt(850, 1000, [80, 100]), 0, "the one before it, a gap to the left");
+assert.equal(chipAt(897, 1000, [80, 100]), -1, "the gap between them");
+assert.equal(chipAt(700, 1000, [80, 100]), -1);
+assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
+
 // ---- the findings behind an area's "Finding" in "What each run checked"
 {
   const { areaFindings } = await import("./views.js");
@@ -495,28 +536,6 @@ assert.equal(oneSided(rowsOf("-+")), false, "a line changed");
   assert.equal(scopeConflicts(tab, []).size, 1, "without findings only the runs' own contradiction");
   assert.equal(scopeConflicts(null).size, 0);
 }
-// ---- the PR list: at most three marks, security first
-import { rowMarks } from "./views.js";
-assert.deepEqual(rowMarks({ top: "high", security: true }, { priority: 1, type: "Feature", chips: ["High security risk", "Feature", "Low effort"] }).map((m) => m.text), ["⛨ high", "P1", "Feature"]);
-assert.deepEqual(rowMarks({ top: "medium", security: false }, null).map((m) => [m.text, m.security]), [["medium", false]]);
-assert.deepEqual(rowMarks(null, { priority: 3, type: "Docs" }).map((m) => m.text), ["P3", "Docs"]);
-assert.equal(rowMarks({ top: "low" }, { priority: 2, type: "Fix" }).length, 3);
-
-// ---- the stack in the review's bar
-import { stackOf } from "./views.js";
-assert.deepEqual(stackOf({ stacked_on: { number: 1, url: "u1" } }, 2).map((p) => [p.number, Boolean(p.self)]), [[1, false], [2, true]], "PR #2 on top of #1");
-assert.deepEqual(stackOf({ stacked_above: [{ number: 2, url: "u2" }] }, 1).map((p) => [p.number, Boolean(p.self)]), [[1, true], [2, false]], "PR #1 under #2");
-assert.equal(stackOf({ stacked_on: null, stacked_above: [] }, 3), null);
-assert.equal(stackOf(null, 3), null, "no context yet");
-
-// ---- a layer's "Depends on" chips: clicks placed by x from the right end
-import { chipAt, textW } from "./views.js";
-assert.equal(chipAt(950, 1000, [80, 100]), 1, "the last chip ends at the right end");
-assert.equal(chipAt(850, 1000, [80, 100]), 0, "the one before it, a gap to the left");
-assert.equal(chipAt(897, 1000, [80, 100]), -1, "the gap between them");
-assert.equal(chipAt(700, 1000, [80, 100]), -1);
-assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
-
 // ---- the zone a card is really reachable from
 {
   const { effectiveZones } = await import("./views.js");

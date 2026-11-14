@@ -16,7 +16,7 @@ import { parseReports, findingStatus, mergeFindings, findingCounts, countLine, r
 import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig } from "./setup-view.js";
 import { taskList, taskHead, verdictParts, reviewState, certaintyLine, severityTip, componentLine, doesList, checkGroups, costLine, alreadyThere, criteriaGroups, beforeMerge, verdictAction, notChecked, surfaceLine, realRules } from "./pr.js"; // the Overview page
-import { findingSteps, funnel, funnelLine, ownerOf, quickFirst, hasEffort, publicFiles, funnelShort } from "./pr.js"; // the Findings tab
+import { findingSteps, funnel, funnelLine, ownerOf, quickFirst, hasEffort, publicFiles, funnelShort, diffPath } from "./pr.js"; // the Findings tab
 import { withProof, PROOF_WORDS } from "./pr.js"; // Verify with an agent
 import { overviewMd, findingMd, findingsMd, layerMd, architectureMd, securityMd, verifyContextMd } from "./markdown.js"; // Copy this page as Markdown
 import { highlightJob, highlightStep, highlightLines, langOf, colors, renderLine, refAt } from "./syntax.js";
@@ -26,7 +26,7 @@ import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf,
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState, codeOf, isStale } from "./pr.js";
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible, pastTop } from "./views.js";
-import { worst, byUrgency, byFocus, attentionCounts, layerAccess, analysisAge } from "./views.js";
+import { worst, byUrgency, byFocus, attentionCounts, layerAccess, analysisAge, stateHints, noteRule } from "./views.js";
 import { archView, archLegend, visualsCard, visualCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
 import { visualPlan } from "./stack.js";
 import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCALE } from "./views.js";
@@ -381,6 +381,7 @@ export const ReviewMode = {
 
   command(c, cx) {
     const [name, ...rest] = c.split(":"), arg = rest.join(":");
+    this.note = null; // the next action ends a note that stays (an error); its own note follows
     if (name === "steps" || name === "files" || name === "findings" || name === "comments") this.tab = name;
     else if (name === "analysis") this.tab = "steps"; // the tab's name; "steps" stays valid
     else if (name === "def") this.defineAt(arg, cx);
@@ -606,17 +607,17 @@ export const ReviewMode = {
     }
     // A PR you didn't open may use the active space's checkout of its repo (cwd); your own PRs keep the dedicated clones.
     const local = this.prSel.source && this.root ? ["--local", this.root] : [];
-    this.cloning = clone;
+    this.cloning = clone; this.checkout = { busy: true }; // shown at the top of the Analysis tab (stateHints)
     cx.spawn(async (cx) => {
       const roots = C.cloneRoots(ctxDoc(), this.ctxId(), this.cfg?.cloneRoot ?? "~/code").flatMap((d) => ["--root", d.replace(/^~(?=\/|$)/, home())]);
       const env = this.ctxEnv(this.ctxId()), argv = [...env, "python3", `${appHome()}/mods/pr-review/worktree.py`, url, ...roots, ...local, ...(clone ? ["--clone"] : [])];
       const r = await exec(argv[0], argv.slice(1), { timeout: 600000 })
         .catch((e) => ({ code: 1, stderr: String(e) }));
-      this.cloning = false;
+      this.cloning = false; this.checkout = null;
       if (this.prSel?.url !== url) return;
       if (r.code === 3) { this.needClone = JSON.parse(r.stdout).need_clone; this.loadContext(cx); cx.notify(); return; }
       this.needClone = null;
-      if (r.code !== 0) { this.note = `Could not check out the PR head: ${r.stderr.trim().slice(0, 200)}`; cx.notify(); return; }
+      if (r.code !== 0) { this.checkout = { error: r.stderr.trim().slice(0, 200) }; cx.notify(); return; }
       const w = JSON.parse(r.stdout);
       this.head ??= w.head;
       this.worktree = { url, head: w.head, path: w.path };
@@ -753,7 +754,7 @@ export const ReviewMode = {
     if (mode === "run") {
       if (this.aiBusy) return;
       if (!job.req.hunks.length) { this.aiError = "No diff"; return cx.notify(); }
-      if (!this.worktree && !this.prSel.space) { this.pendingRun = true; this.note = "Analysis starts once the PR head is checked out…"; return cx.notify(); }
+      if (!this.worktree && !this.prSel.space) { this.pendingRun = true; return cx.notify(); } // the Analysis tab says it waits (stateHints)
       // Every hunk goes along: review.py inlines what fits and lets the model read the rest (no "too large" cut).
       const all = (hs) => hs.map(({ alias, id, path, lines }) => ({ alias, id, path, lines }));
       let req = { ...job.req, hunks: all(job.hunks), cut: [] };
@@ -1239,8 +1240,9 @@ export const ReviewMode = {
   // Jump to a definition: in the diff, its line; else the file at that line in a read-only view (Back or Esc returns).
   // Files beyond 6000 lines (system headers) show 6000 lines around it.
   goDef(def, cx) {
-    const inDiff = def.inRoot && this.fileHunks?.has(def.path) && this.rowsFor(def.path).some((r) => atLine(r, def.line, false));
-    if (inDiff) { this.defAt = null; return this.jumpTo(`${def.path}:${def.line}`, cx, true); } // true: no way back here
+    const at = def.inRoot ? diffPath(this.fileHunks?.keys() ?? [], def.path) : null;
+    const inDiff = at && this.rowsFor(at).some((r) => atLine(r, def.line, false));
+    if (inDiff) { this.defAt = null; return this.jumpTo(`${at}:${def.line}`, cx, { fromDef: true }); } // fromDef: never back here
     const root = this.lspRoot();
     cx.spawn(async (cx) => {
       const text = def.inRoot ? await readTextFile(`${root}/${def.path}`).catch(() => null) : await contents(root, def.uri).catch(() => null);
@@ -1327,14 +1329,14 @@ export const ReviewMode = {
   // A flow's "path:line" to the hunk that holds it (in the AI list, else the Files view). A line outside the diff (a
   // finding on unchanged code) opens its file read-only at that line, as a definition outside the diff does; what a
   // jump could not do is said until the next jump.
-  jumpTo(at, cx, fromDef = false) { // fromDef: called by goDef, so a miss never goes back to it (no loop)
+  jumpTo(at, cx, { fromDef = false } = {}) {
     if (this.note && this.note === this.jumpNote) this.note = null;
     if (this.exMode) return this.openExploreFile(pathOf(at), lineOf(at) ?? 1, cx); // no diff: the file itself
     const [, path, line] = /^(.*?):(\d+)/.exec(at ?? "") ?? [];
-    const file = (this.hunks ?? []).find((x) => path && (x.path === path || x.path.endsWith(`/${path}`)));
+    const fp = diffPath(new Set((this.hunks ?? []).map((x) => x.path)), path), file = fp ? this.hunks.find((x) => x.path === fp) : null;
     const h = (this.hunks ?? []).find((x) => file && x.path === file.path && x.rows.some((r) => r.n === Number(line)))
       ?? (file && (!line || this.rowsFor(file.path, true).some((r) => atLine(r, Number(line), false))) ? file : null); // or context opened around a hunk
-    if (!h && line && !fromDef && this.lspRoot()) return this.goDef({ path: file?.path ?? path, line: Number(line), inRoot: true }, cx);
+    if (!h && line && this.lspRoot() && !fromDef) return this.goDef({ path: fp ?? path, line: Number(line), inRoot: true }, cx);
     if (!h) { this.note = this.jumpNote = `Could not find ${at} in the diff`; return cx.notify(); }
     this.visit(h.id, cx); this.page = null; this.defFile = null; // from a Layers page or a file outside the diff: show the diff
     const view = this.tab === "steps" && this.itemsOf("steps").at[h.id] !== undefined ? "steps" : "files";
@@ -2872,10 +2874,15 @@ export const ReviewMode = {
           .child(div().text_size(13.5).line_height(1.5).child(`No ${modelLabel(m)} analysis for this diff yet. One thorough run reads the code around the changes and groups them into layers by intent, with explanations, check questions, suspicious lines, merge risk, review effort, repo rule checks, pictures and example values. It can take several minutes.`))
           .child(h_flex().gap(10).items_center().child(run(`Analyze with ${modelLabel(m)}`))
             .child(div().text_size(12).text_color(t.muted).child(this.estimate(m))))))
-        .when(Boolean(this.aiBusy), (e) => e.child(h_flex().gap(8).items_center().text_size(13).text_color(t.muted).child(div().child(SPIN[0]).frames(SPIN, 90))
+        .when(Boolean(this.aiBusy), (e) => e.child(h_flex().gap(8).items_center().text_size(13).text_color(t.foreground).child(div().child(SPIN[0]).frames(SPIN, 90))
           .child(div().flex_1().child(`${modelLabel(this.aiBusy.model)} is reading ${this.aiBusy.incremental ? "the new changes" : "the code"}${this.aiBusy.passes ? ` · Pass ${this.aiBusy.pass} of ${this.aiBusy.passes}` : ""} · ${clock(Date.now() - this.aiBusy.started)} · cap $${CAP[tierOf(this.aiBusy.model)]}`))
           .child(pill("rv-cancel", t, "Cancel", (_e, cx) => this.cancelAi(cx), false, t.ansi1).tooltip("Stop the running analysis"))))
         .when(Boolean(this.aiError), (e) => e.child(div().text_size(12.5).text_color(t.ansi1).whitespace_normal().child(this.aiError)))
+        // What is going on (checkout, an analysis waiting for it, reviewer runs), in the text color with a spinner while
+        // it runs: here, not as a grey line under the page.
+        .children(stateHints({ checkout: this.checkout, pendingRun: this.pendingRun, runs: this.find.runs, names: Object.fromEntries(Object.entries(REVIEWERS).map(([k, v]) => [k, v[0]])) })
+          .map((h) => h_flex().id(`rv-hint-${h.key}`).gap(8).items_center().text_size(12.5).text_color(h.error ? t.ansi1 : t.foreground)
+            .when(Boolean(h.spin), (x) => x.child(div().flex_none().child(SPIN[0]).frames(SPIN, 90))).child(div().flex_1().min_w(0).whitespace_normal().child(h.text))))
         // Which head the analysis read and how old it is, in sight (the run's model and cost stay in Re-analyze's tooltip);
         // amber once the PR moved on, with what to do about it.
         .when(Boolean(ai), (e) => { const a = analysisAge({ head: ai.head, exact: ai.exact, now: this.worktree?.head ?? this.head, age: ago(ai.generated) });
@@ -2953,11 +2960,14 @@ export const ReviewMode = {
       verify: [(_e, cx) => { this.tab = "findings"; cx.notify(); }, "Fixes sent before the last push, not verified on the new head: click for the Findings tab"] };
     const part = (p) => div().id(`rv-vd-${p.key}`).tooltip(go[p.key][1]).text_color(p.tone === "security" ? t.ansi1 : t.foreground)
       .when(Boolean(go[p.key][0]), (e) => e.cursor_pointer().hover((s) => s.underline()).on_click(go[p.key][0])).child(p.key === "security" ? `⛨ ${p.text}` : p.text);
-    const action = verdictAction(rows), state = [`PR ${pr.state ?? "open"}`, ctx?.stacked_on && `stacked on #${ctx.stacked_on.number}`].filter(Boolean).join(" · ");
+    // The stack: the base this PR builds on, and the PRs that build on this one (related.py stacked_above).
+    const action = verdictAction(rows), above = ctx?.stacked_above ?? [];
+    const state = [`PR ${pr.state ?? "open"}`, ctx?.stacked_on && `stacked on #${ctx.stacked_on.number}`, above.length > 0 && `${above.map((p) => `#${p.number}`).join(", ")} ${above.length === 1 ? "builds" : "build"} on this PR`].filter(Boolean).join(" · ");
     // The title with the PR's state; the verdict: the suggested action, then the numbers it rests on (only ⛨ red).
     const head = v_flex().flex_none().gap(6).max_w(1100)
       .child(h_flex().flex_wrap().gap(12).items_baseline().child(div().min_w(0).text_size(22).font_semibold().line_height(1.3).whitespace_normal().child(pr.title ?? `#${pr.number}`))
-        .child(div().id("rv-ov-state").flex_none().text_size(12.5).text_color(t.muted).tooltip(ctx?.stacked_on ? `This PR's base is the branch of #${ctx.stacked_on.number} ${ctx.stacked_on.title ?? ""}, so it merges after it. Click to open it in its own review.` : "The PR's state on GitHub")
+        .child(div().id("rv-ov-state").flex_none().text_size(12.5).text_color(t.muted).tooltip([ctx?.stacked_on ? `This PR's base is the branch of #${ctx.stacked_on.number} ${ctx.stacked_on.title ?? ""}, so it merges after it. Click to open it in its own review.` : "The PR's state on GitHub",
+            ...above.map((p) => `#${p.number} ${p.title ?? ""} builds on this PR: it merges after this one.`)].join("\n"))
           .when(Boolean(ctx?.stacked_on), (e) => e.cursor_pointer().hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => this.openRelated(ctx.stacked_on, cx))).child(state)))
       .when(verdict.length > 0 || Boolean(ai), (e) => e.child(h_flex().id("rv-verdict").flex_wrap().gap(8).items_center().text_size(15).font_semibold().line_height(1.35)
         .child(div().id("rv-vd-action").tooltip("The action this review suggests; Finish your review leaves the choice to you").text_color(action === "Approve" ? t.ansi2 : t.foreground).child(`${action}${verdict.length ? ":" : ""}`))
@@ -3034,7 +3044,7 @@ export const ReviewMode = {
       ...(this.ai?.visuals?.length > 0 ? [["views", v_flex().gap(12).child(div().pt(6).text_size(13).font_semibold().text_color(t.muted).child("More views")).child(div().max_w(760).child(more()))]] : [])]);
   },
 
-  // The picture: wider than the view and Wrap on (archWrapOn), in bands stacked top to bottom (arch.js
+  // The picture: wider than the view and Wrap on (archWrapOn, off by default), in bands stacked top to bottom (arch.js
   // archBands); else one row in the sideways scroller (40 px of room after the last column). A line that goes on in the
   // next band ends at the band's right edge in a turn with its number, and starts again at the left edge of the next
   // one with the same number, at the same height: no line goes on unnamed.
@@ -3486,7 +3496,7 @@ export const ReviewMode = {
           .child(div().id("rv-probe").absolute().top(-100).font_family(settings().font_family ?? "JetBrains Mono").text_size(13).whitespace_nowrap()
             .on_size_change((size, cx) => { const w = size.width / PROBE.length; if (w > 0 && Math.abs((this.charW ?? 0) - w) > 0.01) { this.charW = w; cx.notify(); } }).child(PROBE))
           .child(page)
-          .when(Boolean(this.note), (e) => e.child(div().flex_none().px(14).py(8).border_t(1).border_color(t.border).text_size(12.5).text_color(t.muted).child(this.note)))
+          .when(Boolean(this.note), (e) => e.child(noteBar(this, t, cx)))
           .when(this.drawerState() === "open", (e) => e.child(div().absolute().top(0).right(0).bottom(0).child(this.askDrawer(t))))
           .when(this.drawerState() === "collapsed", (e) => e.child(div().absolute().top(0).right(0).bottom(0).child(this.drawerStrip(t))))));
   },
@@ -4741,7 +4751,7 @@ export const ReviewMode = {
             .when(hcode.maxX > 0, (e) => e.child(div().id("rv-code-hbar").tooltip("Scroll bar for long lines: drag, or shift+wheel over the code").absolute().left(0).right(0).bottom(0).h(10).bg(t.raised)
               .child(div().absolute().top(1).left(Math.round((hcode.x / hcode.contentW) * hcode.visW)).w(Math.max(30, Math.round((hcode.view / hcode.contentW) * hcode.visW))).h(8).rounded(4).bg(t.muted).cursor_pointer()
                 .on_mouse_down("left", (ev, cx) => { this.hsDrag = { id: "rv-code", x0: ev.position.x, from: hcode.x, thumb: true }; cx.stop_propagation(); }))))))
-          .when(Boolean(this.note), (e) => e.child(div().flex_none().px(14).py(8).border_t(1).border_color(t.border).text_size(12.5).text_color(/Could not|Not sent|Not posted|Select a line/.test(this.note ?? "") ? t.ansi1 : t.muted).child(this.note)))
+          .when(Boolean(this.note), (e) => e.child(noteBar(this, t, cx)))
           .when(Boolean(this.saveErr), (e) => e.child(this.saveErrBar(t)))
           .when(Boolean(this.replyTo), (e) => e.child(this.replyBar(t)))
           .when(this.selected().length > 0, (e) => e.child(this.selectionBar(t)))
@@ -4818,7 +4828,8 @@ export const ReviewMode = {
     const MARK = { true: ["✓", "ansi2", "Passed"], false: ["✗", "foreground", "Failed"], null: ["…", "ansi3", "Not decided yet"], "n/a": ["n/a", "muted", "Does not apply to this PR"] }; // red is the security part's
     const failed = all.some((r) => r.ok === false), open = this.rulesOpen ?? failed, passed = rules.filter((c) => c.ok === true).length, ci = checkGroups(checks).ci;
     const ruleText = `${passed} of ${rules.length} passed${ci.length ? ` · CI ${ci.filter((c) => c.ok === true).length} of ${ci.length}` : ""} ${open ? "▾" : "▸"}`;
-    const related = [...(ctx?.open ?? []).filter((p) => !p.stacked).map((p) => ({ ...p, state: "open" })), ...(ctx?.merged ?? []).map((p) => ({ ...p, state: "merged" }))];
+    // The base is in the title's state; a PR that builds on this one stays here as "on top".
+    const related = [...(ctx?.open ?? []).filter((p) => !p.stacked || p.above).map((p) => ({ ...p, state: p.above ? "on top" : "open" })), ...(ctx?.merged ?? []).map((p) => ({ ...p, state: "merged" }))];
     // A flow picture only when a path in it is broken or doubled: an unresolved finding breaks one of its calls.
     const flow = (ai?.visuals ?? []).find((v) => v.kind === "flow" && this.openFindings().some((f) => f.breaks));
     const surface = ai ? surfaceLine(ai.access, [...(ai.scope?.checked ?? []), ...(this.find.runs?.security?.scope?.checked ?? [])]) : null;
@@ -4844,14 +4855,14 @@ export const ReviewMode = {
         .child(div().w(22).flex_none().font_semibold().text_color(t[MARK[r.ok][1]]).child(MARK[r.ok][0]))
         .child(div().flex_1().min_w(0).truncate().child(r.name))))
         .when(!ctx, (x) => x.child(div().pl(100).text_size(12).text_color(t.muted).child("CI checks and mergeability load in the background…"))))
-      .when(related.length > 0, (e) => e.child(line("rv-ov-related", "Related PRs", div().child(`${related.length} touch the same files ${this.relOpen ? "▾" : "▸"}`), "Other PRs that change the same files: click to show them",
+      .when(related.length > 0, (e) => e.child(line("rv-ov-related", "Related PRs", div().child(`${[related.some((p) => p.above) && `${related.filter((p) => p.above).length} on top of this PR`, related.some((p) => !p.above) && `${related.filter((p) => !p.above).length} touch the same files`].filter(Boolean).join(" · ")} ${this.relOpen ? "▾" : "▸"}`), "Other PRs that change the same files, and the ones that build on this PR: click to show them",
         (_e, cx) => { this.relOpen = !this.relOpen; cx.notify(); }))
         .when(Boolean(this.relOpen), (x) => x.children(related.map((p) => h_flex().id(`rv-rel-${p.number}`).tooltip("Open this related PR in its own review").gap(8).items_center().pl(100).pr(6).py(2).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
           .on_click((_e, cx) => this.openRelated(p, cx))
-          .child(div().flex_none().text_size(12).text_color(p.state === "open" ? t.ansi2 : t.ansi5).child(p.state))
+          .child(div().flex_none().text_size(12).text_color(p.state === "open" ? t.ansi2 : p.above ? t.accent : t.ansi5).child(p.state))
           .child(div().flex_none().text_size(12.5).text_color(t.muted).child(`#${p.number}`))
           .child(div().flex_1().min_w(0).truncate().text_size(12.5).child(p.title))
-          .child(div().id(`rv-relf-${p.number}`).flex_none().text_size(12).text_color(t.muted).tooltip((p.files ?? []).join("\n") || "-").child(`${p.overlap} ${p.overlap === 1 ? "file" : "files"} overlap`))))));
+          .child(div().id(`rv-relf-${p.number}`).flex_none().text_size(12).text_color(t.muted).tooltip((p.files ?? []).join("\n") || "-").child(p.above ? "it builds on this PR" : `${p.overlap} ${p.overlap === 1 ? "file" : "files"} overlap`))))));
   },
 
   // The bar's "Repo rules 2/2": the rules this PR is checked against (the title's form and the analysis' repo rules)
@@ -5037,3 +5048,15 @@ function certaintyWord(t, f, id) {
 }
 // A finding's state as a word only when it is not the usual one: unresolved goes without saying.
 const stateWord = (st) => (st === "open" ? null : st === "recheck" ? "line changed" : FSTATUS[st]?.[0] ?? st);
+
+// The note about an action just taken, under the right pane (views.js noteRule): in the text color and gone after a
+// few seconds, or, when the action did not happen, in red with a mark and a ✕, kept until closed or the next action.
+function noteBar(v, t, cx) {
+  const note = v.note, rule = noteRule(note);
+  if (rule.ttl && v.noteTimed !== note) { v.noteTimed = note; cx.timer.after(rule.ttl, (cx) => { if (v.note === note) { v.note = null; cx.notify(); } }); }
+  return h_flex().flex_none().px(14).py(8).gap(8).items_center().border_t(1).border_color(t.border).text_size(12.5).text_color(rule.error ? t.ansi1 : t.foreground)
+    .when(rule.error, (e) => e.child(div().flex_none().child("⚠")))
+    .child(div().flex_1().min_w(0).whitespace_normal().child(note))
+    .when(rule.error, (e) => e.child(div().id("rv-note-x").tooltip("Close this message").flex_none().px(4).cursor_pointer().text_color(t.muted).hover((s) => s.text_color(t.foreground))
+      .on_click((_e, cx) => { v.note = null; cx.notify(); }).child("✕")));
+}

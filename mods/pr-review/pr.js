@@ -462,12 +462,18 @@ export function sameClaim(a, b) {
   const x = words(a), y = words(b), both = [...x].filter((w) => y.has(w)).length;
   return both > 0 && both / (x.size + y.size - both) >= 0.35;
 }
+// ⛨ only for real security: a source whose effect is access without permission or exposed data (or lost data, when
+// its category says security). A security reviewer's finding about availability or correctness is a finding with its
+// source, without ⛨. A source without an impact (an older cache, an AI suggestion) keeps the rule from before: the
+// security reviewer found it or its category says security.
+const SEC_IMPACT = new Set(["unauthorized_access", "data_exposure"]);
+export const isSecurity = (x) => (x.impact ? SEC_IMPACT.has(x.impact) || (x.impact === "data_loss" && x.category === "security") : x.reviewer === "security" || x.category === "security");
 const NEAR = 3; // lines between two findings of one defect at most (PR #2: 19/20, 21/23, 33/35)
 
 // Findings (the reviewers' and the analysis') in one file, at most NEAR lines apart (the same line too) and with
 // titles that make the same claim (sameClaim), are one finding: the highest severity leads (its title and text show),
-// every source stays in `sources` with its own severity, and `security` is true when any source says so (the security
-// reviewer, or a category). Being on the same line or in the same function is not enough: on PR #2 consumer.py 20
+// every source stays in `sources` with its own severity, and `security` (⛨) is true when a source is about security
+// (isSecurity: its effect is access, data or rights, not who found it). Being on the same line or in the same function is not enough: on PR #2 consumer.py 20
 // and 23, in one function, say different things. An AI suggestion joins a finding on its own line (it is worded as a
 // fix, so no word measure tells its claim: on PR #2 the same and the different ones both score 0 to 0.38). A
 // suggestion without one is a note (not a finding, not counted), unless it is high, about security or availability,
@@ -504,7 +510,7 @@ export function mergeFindings(findings, suspects = [], status = {}, publicFiles 
     return { ...lead, line, id: (held ?? lead).id, ids: g.map((x) => x.id), end: Math.max(line, ...lines, ...g.map((x) => whole(x.end))), step: g.find((x) => x.step)?.step ?? null,
       suggestion: lead.suggestion || g.find((x) => x.suggestion)?.suggestion || "", ...(coded ? { head: coded.head, code: coded.code } : {}),
       ...Object.fromEntries(Object.keys(all[0]).map((k) => [k, fact(k)])), criteria: [...new Set(all.flatMap((x) => x.criteria))],
-      security: g.some((x) => x.reviewer === "security" || x.category === "security"),
+      security: g.some(isSecurity),
       sources: g.map((x) => ({ id: x.id, reviewer: x.reviewer, severity: x.severity, title: x.title, detail: x.detail ?? "", suggestion: x.suggestion ?? "" })) };
   });
   return { findings: out.sort((a, b) => rank(a) - rank(b) || a.file.localeCompare(b.file) || a.line - b.line), notes };
@@ -1072,7 +1078,7 @@ export function withSecurity(ai, security = null, ctx = null, head = null) {
   const own = ai.own ?? { arch: ai.arch ?? null, access: ai.access ?? [] }, trigger = ctx?.security_trigger ?? null;
   if (!security || !["zones", "access", "threats"].some((k) => Array.isArray(security[k]))) {
     const had = Boolean(own.arch?.zones?.length || own.access?.length);
-    return { ...ai, own, arch: own.arch, access: own.access, threats: [], securityTrigger: trigger, securityFrom: had ? { source: "analysis", head: null, at: null, older: false, why: null } : null };
+    return { ...ai, own, arch: own.arch, access: own.access, threats: [], gates: [], effectiveZones: [], securityTrigger: trigger, securityFrom: had ? { source: "analysis", head: null, at: null, older: false, why: null } : null };
   }
   const zones = (security.zones ?? []).filter((z) => z?.id), zoneOf = new Map(zones.flatMap((z) => (z.nodes ?? []).map((n) => [n, z.id])));
   // A crossing call by its ends: the security run may have looked at an older picture, where e<k> is another edge.
@@ -1082,7 +1088,10 @@ export function withSecurity(ai, security = null, ctx = null, head = null) {
     // A crossing's gate (where and how the call is checked, when the run names it) goes with the call.
     edges: (own.arch.edges ?? []).map(({ crosses: _, ...e }) => { const c = crosses.get(`${e.from}\u0000${e.to}`); return c ? { ...e, crosses: true, ...(c.gate ? { gate: c.gate } : {}) } : e; }) };
   const why = security.head && head && security.head !== head ? "head" : security.picture && ai.generated && security.picture !== ai.generated ? "analysis" : null;
-  return { ...ai, own, arch, access: security.access ?? [], threats: security.threats ?? [], securityTrigger: trigger,
+  // gates: the check at each crossing ({where, principal, check, at, source, holds_if, carries}); effectiveZones: cards
+  // that stand in a more exposed zone than drawn ({node, drawn, effective, where}), both from the security run.
+  return { ...ai, own, arch, access: security.access ?? [], threats: security.threats ?? [], gates: security.gates ?? [], effectiveZones: security.effective_zones ?? [],
+    securityTrigger: trigger,
     securityFrom: { source: "security", head: security.head ?? null, at: security.at ?? null, older: Boolean(why), why } };
 }
 
@@ -1098,28 +1107,6 @@ export function securityStart({ trigger = null, trusted = false, head = null, ct
   const due = Boolean(trigger?.run) && known && Boolean(head) && ctxHead === head && run?.head !== head && run?.state !== "running";
   return { start: due && trusted && ready, offer: due && !trusted, reasons };
 }
-
-// ---- which model a run should use
-// The recommended model class for a run and why, in one sentence. kind: analysis | security | verify | ask | fix.
-// data {lines: changed lines in the diff, files: changed files, rules: the security trigger's rules (related.py:
-// auth, secrets, permissions, access, route, entry, dependencies, infrastructure), risk: the analysis' merge risk,
-// security: the run is about a security finding (verify, fix)}. Sonnet is the rule, also for the security review (its
-// checks are narrow; the owner's call); Opus for a large diff, an analysis of a security-critical one, or a check or
-// fix of a security finding; never Haiku, which is too weak to reason about code. Returns {tier: "sonnet" | "opus", why}.
-export const BIG_DIFF = { lines: 1500, files: 40 };
-const CRITICAL = ["auth", "secrets", "permissions", "access"];
-export function recommendModel(kind, data = {}) {
-  const lines = Number(data.lines ?? 0), files = Number(data.files ?? 0), rules = [...new Set(data.rules ?? [])];
-  const big = lines >= BIG_DIFF.lines || files >= BIG_DIFF.files, critical = rules.filter((r) => CRITICAL.includes(r));
-  if (kind === "ask") return { tier: "sonnet", why: "one question about the code needs no larger model" };
-  if ((kind === "verify" || kind === "fix") && data.security) return { tier: "opus", why: "it is about a security finding" };
-  if (big && kind !== "fix") return { tier: "opus", why: `the diff is large (${lines} lines in ${files} ${files === 1 ? "file" : "files"})` };
-  if (kind === "analysis" && critical.length) return { tier: "opus", why: `the diff touches ${critical.join(", ")}, where a missed weakness costs most` };
-  if (kind === "analysis" && data.risk === "high" && rules.length) return { tier: "opus", why: "the merge risk is high and the diff touches security-relevant code" };
-  return { tier: "sonnet", why: big ? "a fix changes a few lines, however large the PR" : kind === "security" ? "its checks are narrow and the diff is of ordinary size" : `the diff is of ordinary size${rules.length ? " and touches nothing security-critical" : ""}` };
-}
-// One class up or down from `tier` for code, never to Haiku: {up, down} (null at the end).
-export const tierSteps = (tier) => ({ up: tier === "sonnet" ? "opus" : null, down: tier === "opus" ? "sonnet" : null });
 
 // ---- Verify with an agent (review.js verifyAgent): an agent's check of a finding, kept in the status map as
 // status[id].proof: {state: "running", job, path, branch, base, terminal, head, at} while it works, then {state: "done",
@@ -1162,3 +1149,36 @@ export function funnelShort(x) {
 
 // A blocker's severity for a finding: critical counts as high; a security finding below high keeps its own.
 const x2 = (s) => (s === "critical" ? "high" : s);
+
+// The diff's path for a path a model or a link names: the same path first, else the one path that ends in it
+// ("handler.py" for "library/handler.py"); null when none or several do. One rule for every jump (review.js jumpTo,
+// goDef), so the two never disagree about whether a line is in the diff.
+export function diffPath(paths, path) {
+  if (!path) return null;
+  const all = [...paths];
+  if (all.includes(path)) return path;
+  const ends = all.filter((p) => p.endsWith(`/${path}`));
+  return ends.length === 1 ? ends[0] : null;
+}
+
+// ---- which model a run should use
+// The recommended model class for a run and why, in one sentence. kind: analysis | security | verify | ask | fix.
+// data {lines: changed lines in the diff, files: changed files, rules: the security trigger's rules (related.py:
+// auth, secrets, permissions, access, route, entry, dependencies, infrastructure), risk: the analysis' merge risk,
+// security: the run is about a security finding (verify, fix)}. Sonnet is the rule, also for the security review (its
+// checks are narrow; the owner's call); Opus for a large diff, an analysis of a security-critical one, or a check or
+// fix of a security finding; never Haiku, which is too weak to reason about code. Returns {tier: "sonnet" | "opus", why}.
+export const BIG_DIFF = { lines: 1500, files: 40 };
+const CRITICAL = ["auth", "secrets", "permissions", "access"];
+export function recommendModel(kind, data = {}) {
+  const lines = Number(data.lines ?? 0), files = Number(data.files ?? 0), rules = [...new Set(data.rules ?? [])];
+  const big = lines >= BIG_DIFF.lines || files >= BIG_DIFF.files, critical = rules.filter((r) => CRITICAL.includes(r));
+  if (kind === "ask") return { tier: "sonnet", why: "one question about the code needs no larger model" };
+  if ((kind === "verify" || kind === "fix") && data.security) return { tier: "opus", why: "it is about a security finding" };
+  if (big && kind !== "fix") return { tier: "opus", why: `the diff is large (${lines} lines in ${files} ${files === 1 ? "file" : "files"})` };
+  if (kind === "analysis" && critical.length) return { tier: "opus", why: `the diff touches ${critical.join(", ")}, where a missed weakness costs most` };
+  if (kind === "analysis" && data.risk === "high" && rules.length) return { tier: "opus", why: "the merge risk is high and the diff touches security-relevant code" };
+  return { tier: "sonnet", why: big ? "a fix changes a few lines, however large the PR" : kind === "security" ? "its checks are narrow and the diff is of ordinary size" : `the diff is of ordinary size${rules.length ? " and touches nothing security-critical" : ""}` };
+}
+// One class up or down from `tier` for code, never to Haiku: {up, down} (null at the end).
+export const tierSteps = (tier) => ({ up: tier === "sonnet" ? "opus" : null, down: tier === "opus" ? "sonnet" : null });

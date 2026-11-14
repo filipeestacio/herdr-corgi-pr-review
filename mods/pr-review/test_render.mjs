@@ -155,6 +155,9 @@ for (const n of [0, 3, 310]) {
       v.jumpTo("library/loans.py:41", cx); v.jumpTo("src/f0.ts:1", cx); v.worktree = null; v.prSel = { ...v.prSel, space: false }; v.jumpTo("nowhere.py:3", cx);
       assert.deepEqual([calls, v.note], [[["library/loans.py", 41]], "Could not find nowhere.py:3 in the diff"]);
       v.jumpTo("src/f0.ts:1", cx); assert.equal(v.note, null, "the next jump clears it");
+      // A jump from goDef never goes back to goDef, whatever the two make of the path (no loop).
+      v.jumpTo("library/loans.py:41", cx, { fromDef: true }); assert.equal(calls.length, 1); assert.match(v.note, /^Could not find library\/loans.py:41/);
+      v.jumpTo("src/f0.ts:1", cx);
       v.defFile = { path: "library/loans.py", line: 41, from: 0, lines: [], spans: [] }; v.command("file:src/f0.ts", cx); assert.equal(v.defFile, null, "a jump to a file shows the diff again");
       v.defFile = { path: "x", line: 1, from: 0, lines: [], spans: [] }; v.command("page:overview", cx); assert.equal(v.defFile, null); v.page = null; v.tab = "findings";
       v.goDef = go; v.worktree = wt; v.prSel = ps; }

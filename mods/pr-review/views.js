@@ -1,6 +1,7 @@
 // Pure helpers for the panel's state (main.js) and a layer's flow picture (stack.js visualCard). No gpui imports, so
 // node tests them (test_views.mjs).
 import { transitionText } from "./arch.js";
+import { isSecurity } from "./pr.js";
 
 // The panel is either picking a PR (none chosen yet, or PRs ▾ open) or showing the chosen one (its diff or walkthrough).
 // chosen: a PR, or the current branch picked from the list.
@@ -36,7 +37,7 @@ export function riskSignal({ analysis = null, findings = null, status = null } =
   if (!analysis && !findings) return null;
   const open = [...(findings ?? []), ...(analysis?.steps ?? []).flatMap((s) => s.findings ?? [])].filter((f) => !["fixed", "dismissed"].includes(status?.[f.id]?.s));
   return { top: SEVERITIES.find((s) => open.some((f) => f.severity === s)) ?? null, open: open.length,
-    security: open.some((f) => f.reviewer === "security" || f.category === "security") };
+    security: open.some(isSecurity) }; // as the review's ⛨ (pr.js isSecurity): what it does, not who found it
 }
 
 // "0/6 layers · 2/9 files · 1 comment · 11 open findings" for a review in progress (open-reviews.json `progress`,
@@ -463,56 +464,6 @@ export function solidOver(base, over) {
   return "#" + [0, 1, 2].map((k) => hex(o[k] * a + b[k] * (1 - a))).join("");
 }
 
-// ---- "What each run checked": the findings behind an area's "Finding"
-// ponytail: an area is matched by its words in a finding's title, effect and detail (findings name no area); a run
-// that reports areas per finding would make this exact.
-const AREA_WORDS = { authentication: /authenticat|\btoken|bearer|login|credential|session/i, authorization: /authori[sz]|access control|\brole|allowed to|any (?:caller|member|loan)/i,
-  input_validation: /input|validat|inject|saniti[sz]|unvalidated|request body/i, secrets: /secret|\btoken|api key|password|credential/i, permissions: /\biam\b|policy|permission|grant|least privilege/i,
-  personal_data: /personal|\bpii\b|e-?mail address|\bmembers?\b|\bnames?\b|\bcustomers?\b|\busers?'? (?:data|names?|e-?mails?)/i, dependencies: /dependenc|package|library version|requirements|lockfile/i,
-  error_handling: /error|exception|raises?\b|retr(?:y|ies)|fails?\b|failure/i, concurrency: /concurren|race|idempoten|redeliver|at[- ]least[- ]once|twice|duplicate|dedup/i,
-  state: /\bstate\b|status|transition/i, contracts: /contract|interface|schema|signature|requirement|acceptance/i };
-const AREA_CATEGORY = { correctness: ["bug"], tests: ["test"], contracts: ["requirement"] };
-// The findings of run `k` ("analysis" or a reviewer) that fall under `area`: by category where one fits, else by words.
-export function areaFindings(area, k, findings) {
-  const mine = (findings ?? []).filter((f) => (f.sources ?? [{ reviewer: f.reviewer }]).some((s) => s.reviewer === k));
-  const words = AREA_WORDS[area], cats = AREA_CATEGORY[area] ?? [];
-  return mine.filter((f) => cats.includes(f.category) || (words && words.test([f.title, f.effect, f.detail].filter(Boolean).join(" "))));
-}
-
-// ---- a state diagram's transitions and the findings at them
-// The unresolved findings at each transition of a state visual: one whose file and line fall on the transition's place
-// (`evidence` or `at`: "file:line" or "file:line-end"; a finding's own range counts). Returns Map(index in edges then
-// transitions -> {findings, severity: the highest}); a transition without a place has none.
-const RANK = { critical: 0, high: 1, medium: 2, low: 3 };
-export function transitionMarks(v, findings) {
-  const out = new Map(), place = (s) => /^(.+?):(\d+)(?:-(\d+))?/.exec(String(s ?? ""));
-  [...(v?.edges ?? []), ...(v?.transitions ?? [])].forEach((e, i) => {
-    const m = place(e.evidence) ?? place(e.at);
-    if (!m) return;
-    const [path, a, b] = [m[1], Number(m[2]), Number(m[3] ?? m[2])];
-    const hit = (findings ?? []).filter((f) => f.file && (f.file === path || f.file.endsWith(`/${path}`) || path.endsWith(`/${f.file}`)) && (f.line ?? 0) <= b && (f.end ?? f.line ?? 0) >= a);
-    if (hit.length) out.set(i, { findings: hit, severity: hit.map((f) => f.severity).sort((x, y) => (RANK[x] ?? 9) - (RANK[y] ?? 9))[0] });
-  });
-  return out;
-}
-
-// Where the runs' self-reports in "What each run checked" contradict each other or the findings: an area one run calls
-// clean and another finds something in ("cross"), or one a run calls clean while an unresolved security finding names
-// it in its effect, by the area's words ("effect": "personal data clean" and "they can read members' names"). tab: scopeTable;
-// open: the unresolved findings. Returns Map(area -> {kind, text, findings}).
-export function scopeConflicts(tab, open = []) {
-  const out = new Map();
-  for (const r of tab?.rows ?? []) {
-    const cells = Object.entries(r.cells).filter(([, c]) => c), clean = cells.filter(([, c]) => c.result === "clean").map(([k]) => k), found = cells.filter(([, c]) => c.result === "finding").map(([k]) => k);
-    if (!clean.length) continue;
-    if (found.length) { out.set(r.area, { kind: "cross", text: `${clean.join(", ")} ${clean.length === 1 ? "calls" : "call"} it clean, ${found.join(", ")} ${found.length === 1 ? "finds" : "find"} something here.`, findings: [] }); continue; }
-    // Only a finding about security says something an area of the security run should have seen.
-    const words = AREA_WORDS[r.area], hit = words ? open.filter((f) => (f.security || ["unauthorized_access", "data_exposure"].includes(f.impact)) && words.test(String(f.effect ?? ""))) : [];
-    if (hit.length) out.set(r.area, { kind: "effect", text: `Called clean, but ${hit.length === 1 ? "an unresolved finding names" : `${hit.length} unresolved findings name`} it in ${hit.length === 1 ? "its" : "their"} effect: ${hit.slice(0, 2).map((f) => f.title).join("; ")}.`, findings: hit });
-  }
-  return out;
-}
-
 // A PR row's marks in the PR list (main.js), at most three by weight: the highest open severity, with ⛨ when an open
 // finding is about security (one mark, the only red one), then the priority, then the type. Effort is left out: the
 // review itself has no "Review effort" either.
@@ -580,6 +531,73 @@ export function analysisAge({ head = null, exact = true, now = null, age = "" })
   return { stale: moved, text: `Analysis of ${head ? at(head) : exact ? "this diff" : "an older diff"}${age ? `, ${age}` : ""}${moved && now && head ? ` · the PR is at ${at(now)} now` : ""}` };
 }
 
+// ---- "What each run checked": the findings behind an area's "Finding"
+// ponytail: an area is matched by its words in a finding's title, effect and detail (findings name no area); a run
+// that reports areas per finding would make this exact.
+const AREA_WORDS = { authentication: /authenticat|\btoken|bearer|login|credential|session/i, authorization: /authori[sz]|access control|\brole|allowed to|any (?:caller|member|loan)/i,
+  input_validation: /input|validat|inject|saniti[sz]|unvalidated|request body/i, secrets: /secret|\btoken|api key|password|credential/i, permissions: /\biam\b|policy|permission|grant|least privilege/i,
+  personal_data: /personal|\bpii\b|e-?mail address|\bmembers?\b|\bnames?\b|\bcustomers?\b|\busers?'? (?:data|names?|e-?mails?)/i, dependencies: /dependenc|package|library version|requirements|lockfile/i,
+  error_handling: /error|exception|raises?\b|retr(?:y|ies)|fails?\b|failure/i, concurrency: /concurren|race|idempoten|redeliver|at[- ]least[- ]once|twice|duplicate|dedup/i,
+  state: /\bstate\b|status|transition/i, contracts: /contract|interface|schema|signature|requirement|acceptance/i };
+const AREA_CATEGORY = { correctness: ["bug"], tests: ["test"], contracts: ["requirement"] };
+// The findings of run `k` ("analysis" or a reviewer) that fall under `area`: by category where one fits, else by words.
+export function areaFindings(area, k, findings) {
+  const mine = (findings ?? []).filter((f) => (f.sources ?? [{ reviewer: f.reviewer }]).some((s) => s.reviewer === k));
+  const words = AREA_WORDS[area], cats = AREA_CATEGORY[area] ?? [];
+  return mine.filter((f) => cats.includes(f.category) || (words && words.test([f.title, f.effect, f.detail].filter(Boolean).join(" "))));
+}
+
+// ---- a state diagram's transitions and the findings at them
+// The unresolved findings at each transition of a state visual: one whose file and line fall on the transition's place
+// (`evidence` or `at`: "file:line" or "file:line-end"; a finding's own range counts). Returns Map(index in edges then
+// transitions -> {findings, severity: the highest}); a transition without a place has none.
+const RANK = { critical: 0, high: 1, medium: 2, low: 3 };
+export function transitionMarks(v, findings) {
+  const out = new Map(), place = (s) => /^(.+?):(\d+)(?:-(\d+))?/.exec(String(s ?? ""));
+  [...(v?.edges ?? []), ...(v?.transitions ?? [])].forEach((e, i) => {
+    const m = place(e.evidence) ?? place(e.at);
+    if (!m) return;
+    const [path, a, b] = [m[1], Number(m[2]), Number(m[3] ?? m[2])];
+    const hit = (findings ?? []).filter((f) => f.file && (f.file === path || f.file.endsWith(`/${path}`) || path.endsWith(`/${f.file}`)) && (f.line ?? 0) <= b && (f.end ?? f.line ?? 0) >= a);
+    if (hit.length) out.set(i, { findings: hit, severity: hit.map((f) => f.severity).sort((x, y) => (RANK[x] ?? 9) - (RANK[y] ?? 9))[0] });
+  });
+  return out;
+}
+
+// Where the runs' self-reports in "What each run checked" contradict each other or the findings: an area one run calls
+// clean and another finds something in ("cross"), or one a run calls clean while an unresolved security finding names
+// it in its effect, by the area's words ("effect": "personal data clean" and "they can read members' names"). tab: scopeTable;
+// open: the unresolved findings. Returns Map(area -> {kind, text, findings}).
+export function scopeConflicts(tab, open = []) {
+  const out = new Map();
+  for (const r of tab?.rows ?? []) {
+    const cells = Object.entries(r.cells).filter(([, c]) => c), clean = cells.filter(([, c]) => c.result === "clean").map(([k]) => k), found = cells.filter(([, c]) => c.result === "finding").map(([k]) => k);
+    if (!clean.length) continue;
+    if (found.length) { out.set(r.area, { kind: "cross", text: `${clean.join(", ")} ${clean.length === 1 ? "calls" : "call"} it clean, ${found.join(", ")} ${found.length === 1 ? "finds" : "find"} something here.`, findings: [] }); continue; }
+    // Only a finding about security says something an area of the security run should have seen.
+    const words = AREA_WORDS[r.area], hit = words ? open.filter((f) => (f.security || ["unauthorized_access", "data_exposure"].includes(f.impact)) && words.test(String(f.effect ?? ""))) : [];
+    if (hit.length) out.set(r.area, { kind: "effect", text: `Called clean, but ${hit.length === 1 ? "an unresolved finding names" : `${hit.length} unresolved findings name`} it in ${hit.length === 1 ? "its" : "their"} effect: ${hit.slice(0, 2).map((f) => f.title).join("; ")}.`, findings: hit });
+  }
+  return out;
+}
+
+// The state hints at the top of the Analysis tab, where they are seen instead of a grey line under the page: the PR
+// head's checkout, an analysis waiting for it, reviewer runs. checkout: {busy} | {error} | null; runs: the findings
+// file's runs (busy while one runs); names: kind -> label. -> [{key, text, spin, error}]
+export function stateHints({ checkout = null, pendingRun = false, runs = {}, names = {} }) {
+  return [
+    checkout?.busy && { key: "checkout", spin: true, text: `Checking out the PR head${pendingRun ? ": the analysis starts once it is there" : ""}…` },
+    checkout?.error && { key: "checkout", error: true, text: `Could not check out the PR head: ${checkout.error}` },
+    pendingRun && !checkout && { key: "wait", text: "The analysis starts once the PR head is checked out." },
+    ...Object.entries(runs ?? {}).filter(([, r]) => r?.busy).map(([k]) => ({ key: `run-${k}`, spin: true, text: `${names[k] ?? k} is running…` })),
+  ].filter(Boolean);
+}
+
+// How the line under the right pane shows a note about an action just taken: an error (it did not happen) in red with
+// a mark, kept until it is closed or the next action; anything else in the text color, gone by itself after ttl ms.
+export const NOTE_TTL = 8000;
+const NOTE_ERROR = /^(Could not|Not |Nothing to |Select a line|Line \d+ of .* is not in)|^No \S+ on |Could not/;
+export const noteRule = (text) => (NOTE_ERROR.test(String(text ?? "")) ? { error: true, ttl: null } : { error: false, ttl: NOTE_TTL });
 // ---- the zone a card is really reachable from (derived, not the model's word)
 // A card behind a public way in whose check sits in the card's own code (auth_kind "code") or that nothing checks is
 // reachable from the public side, whatever zone the analysis draws it in. Returns Map(node id -> {trust: "public",
