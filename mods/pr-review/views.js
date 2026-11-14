@@ -931,7 +931,8 @@ export function resStartOf(arch, access = []) {
   return { text, nodes: [...new Set([...queues.map((n) => n.id), ...routes.map((x) => x.node).filter(Boolean), ...nodes.filter((n) => fns.some((g) => g.id === n.group) && (n.type === "function" || /handler|consumer/i.test(n.label ?? ""))).map((n) => n.id)])] };
 }
 // The paths in the order of the page: blockers first, then findings, not assessed, limited ones; the order otherwise kept.
-const RES_RANK = (p) => (p.blocker ? 0 : p.result === "finding" ? 1 : p.result === "not_assessed" ? 2 : 3);
+// Blockers, then the paths that block once wired (wave C2 D3: wired {why, at, today}), then findings, the rest.
+const RES_RANK = (p) => (p.blocker ? 0 : p.wired ? 1 : p.result === "finding" ? 2 : p.result === "not_assessed" ? 3 : 4);
 export const resOrder = (paths) => [...(paths ?? [])].sort((a, b) => RES_RANK(a) - RES_RANK(b));
 // The one picture of an opened path, by what it has: a ladder (retries), a budget (a timeout), a race's timeline, or
 // the writers of a shared state (two writers or more); null: none.
@@ -955,7 +956,7 @@ export function resPathView(p, res = {}) {
   const writers = p.writers ?? (st ? [...st.writers.map((w) => ({ ...w, kind: "W", guard: w.guard ?? "none" })), ...(st.readers ?? []).map((r) => ({ ...r, kind: "R", guard: "" }))] : undefined);
   const budget = p.budget ? { ...p.budget, note: p.budget.note ?? p.budget.text } : null;
   return { ...p, ladder: lad, product: p.product ?? (Array.isArray(p.ladder) ? null : p.ladder?.text) ?? null, budget, race, writers, state: p.state ?? st?.what ?? st?.id,
-    invariant: p.invariant ?? st?.invariant ?? null, blocker: p.blocker ? { reason: p.blocker.reason ?? p.blocker.why ?? "", unclear: Boolean(p.blocker.unclear) } : null };
+    invariant: p.invariant ?? st?.invariant ?? null, wired: p.wired ? { ...p.wired, reason: p.wired.reason ?? p.wired.why ?? "" } : null, blocker: p.blocker ? { reason: p.blocker.reason ?? p.blocker.why ?? "", unclear: Boolean(p.blocker.unclear) } : null };
 }
 // A path's step as a card of the map: a card id, or a place ("file:line") on the card of that file (the last card
 // that starts at or above the line, else the file's first); an edge id or an unknown place: null.
@@ -1141,11 +1142,13 @@ export const resMarkRows = () => (RES_MARK_ROW.h + RES_MARK_ROW.below + 3) / 18;
 // The page's verdict in two parts (wave C2 V2): a short sentence ("5 of 11 paths block the merge.") and the count by
 // reason, most first ("a visible effect is lost: 2 · load grows without a limit: 1"); null without a blocker.
 export function resVerdictParts(paths) {
-  const b = (paths ?? []).filter((p) => p.blocker), by = new Map();
-  if (!b.length) return null;
-  for (const p of b) { const w = p.blocker.reason ?? p.blocker.why ?? ""; by.set(w, (by.get(w) ?? 0) + 1); }
-  return { head: `${b.length} of ${paths.length} ${paths.length === 1 ? "path" : "paths"} ${b.length === 1 ? "blocks" : "block"} the merge.`,
-    counts: [...by].sort((x, y) => y[1] - x[1]).map(([w, n]) => `${w}: ${n}`) };
+  const b = (paths ?? []).filter((p) => p.blocker), w = (paths ?? []).filter((p) => p.wired).length, by = new Map();
+  if (!b.length && !w) return null;
+  for (const p of b) { const r = p.blocker.reason ?? p.blocker.why ?? ""; by.set(r, (by.get(r) ?? 0) + 1); }
+  // The paths that cannot happen today wait (wave C2 D3): said after the blockers, not counted with them.
+  const wait = w ? `${b.length ? " " : ""}${w} ${w === 1 ? "path blocks" : "paths block"} once ${w === 1 ? "it is" : "they are"} wired.` : "";
+  return { head: `${b.length ? `${b.length} of ${paths.length} ${paths.length === 1 ? "path" : "paths"} ${b.length === 1 ? "blocks" : "block"} the merge.` : ""}${wait}`,
+    counts: [...by].sort((x, y) => y[1] - x[1]).map(([r, n]) => `${r}: ${n}`) };
 }
 // Where a chosen path starts on the map: the card of its first step (a call e<k> by the card it leaves), else null.
 export function resStartCard(p, arch) {
