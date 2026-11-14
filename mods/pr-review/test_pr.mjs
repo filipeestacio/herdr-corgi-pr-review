@@ -406,12 +406,13 @@ console.log("ok");
   assert.deepEqual([old.unlinked, old.components, old.componentCounts, old.access, old.steps[0].questionFiles], [[], [], null, [], [""]]);
   const of = old.steps[0].findings[0];
   assert.match(of.id, /^a[0-9a-f]+$/);
-  assert.deepEqual(findingFacts(of), { impact: null, effect: "", preconditions: [], certainty: null, criteria: [], breaks: null });
+  assert.deepEqual(findingFacts(of), { impact: null, effect: "", preconditions: [], certainty: null, criteria: [], breaks: null, reachable_from: [], reachability: null });
   const now = mapReview({ unlinked: ["c2"], components: [{ name: "Queue", status: "new" }], component_counts: { new: 1, changed: 0, no_owner: 1, codeowners: false }, access: [{ resource: "Api", public: true }],
     steps: [{ title: "s", hunks: ["h1"], check_questions: ["", "q1?", "q2?"], question_files: ["x.py", "a.py", ""],
       suggestions: [{ hunk: "h1", line: 2, side: "new", severity: "low", category: "availability", text: "No retry. Add one." }],
       findings: [{ id: "a5587afa0", file: "a.py", line: 9, title: "No id", severity: "high", category: "test", impact: "breaks_requirement", effect: "Repeated mails.", preconditions: ["redelivery"],
-        certainty: "derived", criteria: ["c1"], breaks: { from: "n1", to: "n2", edge: "e5" } }, { file: "a.py", line: 9, title: "x", category: "availability", certainty: "guessed" }] }],
+        certainty: "derived", criteria: ["c1"], breaks: { from: "n1", to: "n2", edge: "e5" }, reachable_from: ["acc1"], reachability: "public" },
+        { file: "a.py", line: 9, title: "x", category: "availability", certainty: "guessed", reachability: "from the moon" }] }],
     asks: [{ id: "c1", text: "one", state: "broken", why: "because", acceptance: true, findings: ["a5587afa0"], coverage: "absent" }, { id: "x1", text: "extra", state: "extra", acceptance: false, coverage: "extra" }] }, hs);
   assert.deepEqual(now.asks.map((a) => [a.id, a.state, a.why, a.acceptance, a.findings, a.coverage]), [["c1", "broken", "because", true, ["a5587afa0"], "absent"], ["x1", "extra", "", false, [], "extra"]]);
   assert.deepEqual([now.unlinked, now.components[0].name, now.componentCounts.codeowners, now.access[0].public], [["c2"], "Queue", false, true]);
@@ -419,6 +420,7 @@ console.log("ok");
   const [nf, nf2] = now.steps[0].findings;
   assert.deepEqual([nf.id, nf.category, nf.impact, nf.effect, nf.preconditions, nf.certainty, nf.criteria, nf.breaks], ["a5587afa0", "test", "breaks_requirement", "Repeated mails.", ["redelivery"], "derived", ["c1"], { from: "n1", to: "n2", edge: "e5" }]);
   assert.deepEqual([nf2.category, nf2.certainty], ["availability", null]);
+  assert.deepEqual([nf.reachable_from, nf.reachability, nf2.reachable_from, nf2.reachability], [["acc1"], "public", [], null], "where a finding can be reached from; an unknown word is dropped");
   assert.equal(now.suspects[0].category, "availability");
   // Merged: a low suggestion about availability is a finding of its own; the facts come from the leading source,
   // and what that one lacks (a reviewer has no criteria and no breaks) from the first source that has it.
@@ -426,9 +428,10 @@ console.log("ok");
   const m = mergeFindings([sec, { ...nf, severity: "medium" }], now.suspects);
   assert.deepEqual(m.findings.map((f) => [f.file, f.line, f.severity, f.reviewer, f.category]), [["a.py", 9, "high", "security", undefined], ["a.py", 2, "low", "ai", "availability"]]);
   assert.deepEqual(m.notes, []);
-  assert.deepEqual(findingFacts(m.findings[0]), { impact: "unauthorized_access", effect: "Anyone reads it.", preconditions: ["redelivery"], certainty: "confirmed", criteria: ["c1"], breaks: { from: "n1", to: "n2", edge: "e5" } });
+  assert.deepEqual(findingFacts(m.findings[0]), { impact: "unauthorized_access", effect: "Anyone reads it.", preconditions: ["redelivery"], certainty: "confirmed", criteria: ["c1"], breaks: { from: "n1", to: "n2", edge: "e5" },
+    reachable_from: ["acc1"], reachability: "public" }, "a reviewer names no reachability: the merged finding has the analysis's");
   assert.ok(m.findings[0].ids.includes(now.asks[0].findings[0]), "an ask finds its finding through ids");
-  assert.deepEqual(findingFacts(m.findings[1]), { impact: null, effect: "", preconditions: [], certainty: null, criteria: [], breaks: null });
+  assert.deepEqual(findingFacts(m.findings[1]), { impact: null, effect: "", preconditions: [], certainty: null, criteria: [], breaks: null, reachable_from: [], reachability: null });
   // Reviewer runs: the state as written, or derived for an entry from before it was.
   const runs = runsOf({ a: { busy: true, started: "t" }, b: { at: "t", count: 0 }, c: { error: "boom", at: "t" }, d: { state: "failed", error: "x" }, e: { state: "done", scope: { read: ["a.py"], checked: [], skipped: [] }, at: "t" }, f: {} });
   assert.deepEqual(Object.values(runs).map((r) => r.state), ["running", "done", "failed", "failed", "done", null]);
