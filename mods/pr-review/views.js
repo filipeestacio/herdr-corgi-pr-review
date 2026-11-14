@@ -592,3 +592,9 @@ export function stateHints({ checkout = null, pendingRun = false, runs = {}, nam
     ...Object.entries(runs ?? {}).filter(([, r]) => r?.busy).map(([k]) => ({ key: `run-${k}`, spin: true, text: `${names[k] ?? k} is running…` })),
   ].filter(Boolean);
 }
+
+// How the line under the right pane shows a note about an action just taken: an error (it did not happen) in red with
+// a mark, kept until it is closed or the next action; anything else in the text color, gone by itself after ttl ms.
+export const NOTE_TTL = 8000;
+const NOTE_ERROR = /^(Could not|Not |Nothing to |Select a line|Line \d+ of .* is not in)|^No \S+ on |Could not/;
+export const noteRule = (text) => (NOTE_ERROR.test(String(text ?? "")) ? { error: true, ttl: null } : { error: false, ttl: NOTE_TTL });
