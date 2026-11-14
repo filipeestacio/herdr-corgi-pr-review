@@ -128,7 +128,8 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
   // A frame: a group, or a trust zone (arch.js zoneArch: the colour of its trust level, a light tint, the level's word
   // in the header). A bare group (cards outside every zone) has no frame.
   const groups = L.groups.flatMap((g, i) => (g.bare ? [] : [div().id(`${id}-g${i}`).absolute().left(g.x).top(g.y).w(g.w).h(g.h).rounded(12).border_1().border_dashed()
-    .border_color(g.trust ? trustColor(t, g.trust) : t.border).when(Boolean(g.trust), (e) => e.bg(trustColor(t, g.trust) + "0f")).child(h_flex().px(PAD_IN).h(26).items_center().gap(6).text_size(11.5)
+    // Opaque: the grid stays in the space between systems, never behind a frame's cards and call labels.
+    .border_color(g.trust ? trustColor(t, g.trust) : t.border).bg(g.trust ? solidOver(t.background, trustColor(t, g.trust) + "0f") : t.background).child(h_flex().px(PAD_IN).h(26).items_center().gap(6).text_size(11.5)
       .child(div().flex_1().min_w(0).truncate().font_semibold().text_color(t.foreground).child(g.label ?? ""))
       .child(div().flex_none().text_color(g.trust ? trustColor(t, g.trust) : t.muted).child(g.kind ?? "")))]));
   // A call over a trust boundary: two bars across its line, before the arrow; the tooltip names both zones (opts.zones).
