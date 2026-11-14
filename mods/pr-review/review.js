@@ -4174,7 +4174,10 @@ export const ReviewMode = {
     if (kind === "ladder") return box(v_flex().gap(4)
       .children(p.ladder.map((r, k) => h_flex().gap(12).items_center().child(div().w(240).flex_none().text_color(t.muted).child(r.name)).child(div().w(90).flex_none().font_semibold().text_color(/no limit|∞/.test(r.factor) ? t.ansi1 : t.foreground).child(r.factor))
         .child(at(r.at, `rv-res-l-${p.id}-${k}`)).when(Boolean(r.note), (e) => e.child(div().min_w(0).truncate().text_color(t.muted).child(r.note)))))
-      .when(Boolean(p.product), (e) => e.child(div().pt(4).font_semibold().whitespace_normal().child(`= ${p.product}`))));
+      .when(Boolean(p.product), (e) => e.child(div().pt(4).font_semibold().whitespace_normal().child(`= ${p.product}`)))
+      // A redelivered batch that also outlasts its timeout comes back by that too: its budget under the ladder (R2 V1).
+      .when(p.budget?.over_s > 0, (e) => e.child(v_flex().pt(10).gap(6).child(bulletChart(t, `rv-res-b-${p.id}`, budgetBar(p.budget), `worst case ${p.budget.value_s} s`, `the ${p.budget.limit_s} s timeout`))
+        .child(h_flex().gap(8).text_color(t.muted).child(div().min_w(0).whitespace_normal().child(p.budget.note ?? "")).child(at(p.budget.at, `rv-res-b-at-${p.id}`))))));
     if (kind === "budget") return box(v_flex().gap(6).child(bulletChart(t, `rv-res-b-${p.id}`, budgetBar(p.budget), `worst case ${p.budget.value_s} s`, `the ${p.budget.limit_s} s timeout`))
       .child(h_flex().gap(8).text_color(t.muted).child(div().min_w(0).whitespace_normal().child(p.budget.note ?? "")).child(at(p.budget.at, `rv-res-b-at-${p.id}`))));
     if (kind === "race") {
