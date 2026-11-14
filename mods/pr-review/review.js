@@ -2756,6 +2756,14 @@ export const ReviewMode = {
       }));
   },
 
+  // The Analysis tab's label: its layers, and "⛨ n" while security findings are unresolved (the one security signal
+  // that shows from every tab, since the pages are inside this tab).
+  analysisLabel(t) {
+    const sec = this.prSel ? this.openFindings().filter((f) => f.security).length : 0;
+    return h_flex().gap(6).items_center().child(`Analysis${this.ai ? ` · ${this.ai.steps.filter((s) => !s.pseudo).length}` : ""}`)
+      .when(sec > 0, (e) => e.child(div().text_color(t.ansi1).child(`⛨ ${sec}`)));
+  },
+
   // The attention box starts folded while a layer is open, and on a page when, open under the pages, the block would
   // take about half the column. A click on its heading (attFold) decides until another page or layer.
   attFolded(list) {
@@ -4405,7 +4413,7 @@ export const ReviewMode = {
       .child(h_flex().flex_1().min_h(0)
         .child(v_flex().w(this.leftW()).flex_none().h_full().bg(t.chrome)
           .child(h_flex().flex_none().flex_wrap().p(8).gap(6).border_b(1).border_color(t.border)
-            .child(tabBtn("files", `Files · ${this.shown().patch.length}`)).child(tabBtn("steps", `Analysis${this.ai ? ` · ${this.ai.steps.filter((s) => !s.pseudo).length}` : ""}`))
+            .child(tabBtn("files", `Files · ${this.shown().patch.length}`)).child(tabBtn("steps", this.analysisLabel(t)))
             .child(tabBtn("comments", `Comments${this.commentRowsNow().length ? ` · ${this.commentRowsNow().length}` : ""}`))
             .child(tabBtn("findings", `Findings${this.findings().length ? ` · ${this.counts().unresolved}` : ""}`)))
           .child(this.tab === "steps" ? this.stepsPane(t, cx) : this.tab === "findings" ? this.findingsPane(t) : this.tab === "comments" ? this.commentsPane(t) : this.filesPane(t)))
