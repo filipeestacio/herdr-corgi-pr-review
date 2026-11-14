@@ -4086,7 +4086,9 @@ export const ReviewMode = {
     // A part as a short list, a line each: what it is, what it solves (and how likely that is), each cost, the simpler way.
     // R2: purpose (what it is for) first, next (what to do, a sentence with a verb) last.
     const lines = (x) => [x.purpose && `For: ${x.purpose}`, x.solves && `Solves: ${String(x.solves).replace(/\.$/, "")}${x.likelihood ? ` (${resWord(x.likelihood)})` : ""}.`,
-      ...Object.entries(x.cost ?? {}).filter(([, v]) => v).map(([k, v]) => `Costs ${resWord(k)}: ${v}.`), x.simpler && `Simpler: ${x.simpler}`, x.next && `Next: ${x.next}`].filter(Boolean).map((l) => l.replace(/\.(\)?)\.$/, ".$1").replace(/\.\.$/, "."));
+      ...Object.entries(x.cost ?? {}).filter(([, v]) => v).map(([k, v]) => `Costs ${resWord(k)}: ${v}.`), x.simpler && `Simpler: ${x.simpler}`,
+      // works_today (R2 D6): whether the part does its job today at all, apart from how it is rated.
+      x.works_today === false && `Works today: no, ${String(x.broken_by || "the run says it does not").replace(/^./, (c) => c.toLowerCase())}`, x.works_today === true && "Works today: yes.", x.next && `Next: ${x.next}`].filter(Boolean).map((l) => l.replace(/\.(\)?)\.$/, ".$1").replace(/\.\.$/, "."));
     return v_flex().id("rv-res-add").gap(4).pt(2)
       .child(h_flex().id("rv-res-add-h").gap(6).cursor_pointer().text_size(13).hover((x) => x.text_color(t.foreground)).tooltip(open ? "Fold the parts" : "For each part: what it solves here, what it costs, and the simpler way")
         .on_click((_e, cx) => { this.resAddOpen = !open; cx.notify(); }).child(line).child(div().text_color(t.muted).child(open ? "▾" : "▸")))
@@ -4157,7 +4159,7 @@ export const ReviewMode = {
           .child(div().flex_none().text_size(12.5).text_color(ev[2]).child(`${ev[0]} ${ev[1]}`))
           .child(div().flex_none().text_color(t.muted).child(open ? "▾" : "▸")))
         .child(h_flex().pl(28).gap(8).flex_wrap().text_size(12).text_color(t.muted).child(div().min_w(0).whitespace_normal().child(line2))
-          .child(div().id(`rv-res-seen-${p.id}`).flex_none().text_color(silent ? t.ansi1 : t.muted).tooltip(silent ? "Nothing shows this failure: no alarm, no log line, no metric names it." : `What on-call sees: ${seenAs || "the run says it is visible, without saying how"}`).child(silent ? "✕ silent" : "seen"))
+          .child(div().id(`rv-res-seen-${p.id}`).flex_none().text_color(silent ? t.ansi1 : t.muted).tooltip(silent ? "Nothing shows this failure: no alarm, no log line, no metric names it." : `What on-call sees: ${seenAs || "the run says it is visible, without saying how"}${p.signal_said ? `\nThe run said ${resWord(p.signal_said)}; the path raises, so at least the platform's error metric shows it.` : ""}`).child(silent ? "✕ silent" : "seen"))
           .when(Boolean(p.also_security), (e) => e.child(div().id(`rv-res-sec-${p.id}`).text_color(t.accent).cursor_pointer().on_click((_e, cx) => { this.page = "blast"; cx.stop_propagation(); cx.notify(); }).child("also in Security ↗")))))
       .when(open, (e) => e.child(v_flex().pl(28).gap(8)
         .children([this.resPicture(t, p)].filter(Boolean))
