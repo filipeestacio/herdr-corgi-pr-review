@@ -2954,7 +2954,6 @@ export const ReviewMode = {
           .text_color(this.archWrapOn() ? t.foreground : t.muted).tooltip("On: a picture wider than the view goes on in a second row. Off: one row to scroll sideways")
           .on_click((_e, cx) => { this.archWrap = !this.archWrapOn(); this.hsOf("rv-arch-canvas").x = 0; cx.notify(); }).child("Wrap"))],
       ["map", this.archCanvas(t, L, opts)],
-      ["map", this.archCanvas(t, L, opts)],
       ...(this.archFocus && a.nodes.some((x) => x.id === this.archFocus) ? [["card", this.archCard(t, a, marks)]] : []),
       ...(this.archFocus && this.drillAt(`arch:${this.archFocus}`) ? [["inside", this.drillPanel(t, `arch:${this.archFocus}`)]] : []),
       // Only the calls whose text is not on their line in the picture (a fan's, a stub's, a text cut short).
