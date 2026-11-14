@@ -22,6 +22,7 @@ import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf,
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState, codeOf, isStale } from "./pr.js";
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible, pastTop } from "./views.js";
+import { orderDiffers, worst, byUrgency } from "./views.js";
 import { archView, archModel, archLegend, visualsCard, visualCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
 import { hasSources, archLayout, archBands } from "./arch.js";
 import * as TH from "./threads.js";
@@ -392,6 +393,7 @@ export const ReviewMode = {
         this.showDetails({ id: n.id, label: n.label ?? n.id, group: (this.ai.arch.groups ?? []).find((g) => g.id === n.group)?.label, at: n.at ?? n.evidence, kind: "node", description: n.description }, `arch:${n.id}`, cx, false, true); }
     }
     else if (name === "order") { if (arg === "reading" || arg === "risk") { this.order = arg; this.cur = 0; } }
+    else if (name === "viewed") { if (this.patch?.some((f) => f.path === arg)) this.toggleSeen(arg, cx); } // viewed:<path>: a click on that file's "Viewed" box
     else if (name === "minimize") minimize();
     // The same as their clicks: "Run review" (the reviewers popup), the composer's "Start a review / Add review
     // comment" (add), and a finding's "Fix…" (fix-finding:<finding id>: the preview opens).
@@ -792,9 +794,10 @@ export const ReviewMode = {
     return this.order === "reading" ? [...all].sort((a, b) => a.order - b.order) : all;
   },
   present(s) { return s.hunks.filter((id) => this.byId?.has(id)); },
+  // A layer is done once you ticked every file in it as "Viewed": never by opening it, and there is no tick of its own.
   done(s) {
-    const k = stepKey(s);
-    return k in this.prog.checked ? this.prog.checked[k] : this.present(s).length > 0 && this.present(s).every((id) => this.prog.visited.has(id));
+    const files = this.filesOf(s);
+    return files.length > 0 && files.every((p) => this.prog.seen.has(p));
   },
   // The AI suggestions that stay margin notes (not merged into a finding, not handled yet); path: of that file.
   openSugs(path) { return this.merged().notes.filter((s) => !path || s.path === path); },
@@ -2278,17 +2281,26 @@ export const ReviewMode = {
   // ---- render: the left column
 
   stepRow(s, i, t) {
-    const on = i === this.cur && !this.page, done = this.done(s), touched = this.filesOf(s).length;
+    const on = i === this.cur && !this.page, done = this.done(s), files = this.filesOf(s), seen = files.filter((p) => this.prog.seen.has(p)).length;
+    const list = on && !s.pseudo, w = worst(this.layerFindings(s).filter((f) => OPEN_ST.includes(this.fstatus(f)))), n = (k) => `${k} unresolved ${k === 1 ? "finding" : "findings"}`;
     return v_flex().id(`rv-step-${i}`).tooltip("Open this layer: its explanation, flows and changed code").flex_none().px(10).py(8).gap(6).rounded(8).cursor_pointer().when(on, (e) => e.bg(t.selected)).hover((st) => st.bg(t.hover))
       .on_click((_e, cx) => { this.goStep(i, cx); cx.notify(); })
       .child(h_flex().gap(8).items_center()
-        .child(div().id(`rv-chk-${i}`).tooltip("Mark this layer as checked or unchecked").accessibility_label("Mark layer checked").w(18).flex_none().text_size(14).text_color(done ? t.ansi2 : t.dim).cursor_pointer()
-          .on_click((_e, cx) => { this.prog.checked[stepKey(s)] = !done; this.saveProgress(cx); cx.stop_propagation(); cx.notify(); }).child(done ? "✓" : String(i + 1)))
+        .child(div().id(`rv-chk-${i}`).tooltip(done ? "You ticked every file in this layer as viewed" : "The layer gets its tick once you ticked every file in it as viewed").w(18).flex_none().text_size(14).text_color(done ? t.ansi2 : t.dim).child(done ? "✓" : String(i + 1)))
         .child(div().flex_1().min_w(0).text_size(14.5).font_semibold().text_color(s.stale ? t.dim : t.foreground).when(!on, (e) => e.truncate()).child(plain(s.title)))
         .when(Boolean(s.isNew), (e) => e.child(badge(t, "new", t.accent).id(`rv-new-${i}`).tooltip("New since the previous analysis")))
         .when(Boolean(s.stale), (e) => e.child(badge(t, "outdated", t.ansi3).id(`rv-old-${i}`).tooltip("These hunks are no longer in the diff: the code changed since the analysis")))
-        .when(!s.pseudo, (e) => e.child(riskBadge(t, s).id(`rv-risk-${i}`).tooltip(focusTip(s)))))
-      .child(div().pl(26).text_size(12).text_color(t.muted).child(`${touched} ${touched === 1 ? "file" : "files"} touched`))
+        // Its unresolved findings, whoever found them: the highest severity with its count, security with its own mark.
+        .when(Boolean(w?.security), (e) => e.child(div().id(`rv-sec-${i}`).tooltip(`${w.security} of them ${w.security === 1 ? "is a security finding" : "are security findings"}`).flex_none().text_size(13).text_color(t.ansi1).child("⛨")))
+        .when(Boolean(w), (e) => e.child(badge(t, w.label, t[SEV[w.severity]] ?? t.ansi1).id(`rv-risk-${i}`).tooltip(`${n(w.total)} in this layer: ${w.words}`))))
+      .when(!list, (e) => e.child(div().pl(26).text_size(12).text_color(t.muted).child(`${seen} of ${files.length} ${files.length === 1 ? "file" : "files"} viewed`)))
+      // The open layer: its files, each with the same "Viewed" tick as in the Files tab (a long list: its first ones).
+      .when(list, (e) => e.child(v_flex().pl(22).children(files.slice(0, LAYER_FILES).map((p, k) => h_flex().id(`rv-lfile-${i}-${k}`).tooltip("Tick this file as viewed; the layer is ticked once all its files are").accessibility_label("Viewed")
+        .h(26).px(4).gap(8).items_center().rounded(5).cursor_pointer().hover((st) => st.bg(t.hover))
+        .on_click((_e, cx) => { this.toggleSeen(p, cx); cx.stop_propagation(); cx.notify(); })
+        .child(viewedBox(t, this.prog.seen.has(p)))
+        .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(this.prog.seen.has(p) ? t.muted : t.foreground).child(p))))
+        .when(files.length > LAYER_FILES, (x) => x.child(div().h(22).px(4).text_size(12).text_color(t.muted).child(`${seen} of ${files.length} files viewed: the other ${files.length - LAYER_FILES} are in the Files tab`)))))
       .child(div().pl(26).text_size(13.5).line_height(1.5).text_color(on ? t.foreground : t.muted)
         .child(on ? TextView.markdown(`rv-why-${stepKey(s)}`, s.why) : div().truncate().child(plain(s.why))))
       .when(on, (e) => e.children(this.layerParts(s, t, "rv", i, i, s.visuals?.length > 0 && this.diagramsBar(t, `rv-dia-${i}`, "Refresh this view")).map((x) => div().pl(26).child(x))))
@@ -2351,7 +2363,7 @@ export const ReviewMode = {
     return out;
   },
 
-  // ---- the Layers tab: the left nav (pages, what needs attention, the layers) and the pages it opens
+  // ---- the left column: the pages row above the tabs, the Layers tab (what needs attention, the layers), the pages
 
   checksNow() { return preMergeChecks({ title: this.pr?.title ?? this.prSel?.title, rules: this.ai?.rules ?? [], ctx: this.ctx }); },
   openFindings() { return this.findings().filter((f) => OPEN_ST.includes(this.fstatus(f))); },
@@ -2366,43 +2378,74 @@ export const ReviewMode = {
   // "file.ts — question": a check question with the file it is about.
   asked(s, q) { const f = this.filesOf(s)[0]; return f ? `${f.split("/").pop()} — ${q}` : q; },
 
-  // What to look at first: high-risk layers not checked yet, failed repo rules, fixes to verify, high merge blockers.
+  // What stands in the way of a merge, most urgent first: the merge blockers (pr.js mergeBlockers, the Overview's
+  // list) by severity, security first among equals. No layers: those are the list below.
   attention() {
-    const out = [];
-    this.steps().forEach((s, i) => { if (s.risk === "high" && !s.pseudo && !this.done(s)) out.push({ label: plain(s.title), why: "Layer to read closely", go: (cx) => this.goStep(i, cx) }); });
-    for (const r of this.ai?.rules ?? []) if (r.status === "fail") out.push({ label: r.rule, why: `Repo rule failed · ${r.source}`, go: (cx) => (r.where ? this.jumpTo(r.where, cx) : (this.page = "overview")) });
-    const n = this.verifyList().length;
-    if (n) out.push({ label: `${n} ${n === 1 ? "fix" : "fixes"} to verify`, why: "Sent to Fix before the last push", go: () => { this.tab = "findings"; } });
-    for (const b of this.blockersNow().filter((x) => x.severity === "high" && !x.finding)) out.push({ label: b.title, why: b.why, go: () => { this.page = "overview"; } });
-    return out;
+    const of = (b) => (b.finding ? this.findingById(b.finding) : null);
+    return byUrgency(this.blockersNow(), (b) => Boolean(of(b)?.security)).map((b) => {
+      const f = of(b);
+      return { severity: b.severity, label: b.title, why: b.why ?? "", security: Boolean(f?.security), finding: Boolean(f), sent: Boolean(f) && this.fstatus(f) === "progress", at: f ? `${f.file.split("/").pop()}:${f.line}` : "",
+        go: (cx) => { if (f) this.openFinding(f); else if (b.where) this.jumpTo(b.where, cx); else this.page = "overview"; } };
+    });
+  },
+
+  // The box above the layers: the first few blockers, one line each. Folded to its heading while a layer is open
+  // (attFold: your own click on the heading, until another page or layer view opens).
+  attentionBox(t, list, folded) {
+    const SHOWN = 5, rest = list.slice(SHOWN);
+    return v_flex().flex_none().p(10).gap(4).rounded(8).border_1().border_l(3).border_color(t.ansi3).bg(t.ansi3 + "10")
+      .child(h_flex().id("rv-att-head").tooltip(folded ? "Show what stands in the way of a merge" : "Fold this list").gap(6).items_center().cursor_pointer().text_size(11.5)
+        .on_click((_e, cx) => { this.attFold = !folded; cx.notify(); })
+        .child(div().flex_none().w(10).text_color(t.ansi3).child(folded ? "▸" : "▾"))
+        .child(div().flex_1().font_semibold().text_color(t.ansi3).child("NEEDS YOUR ATTENTION"))
+        .child(div().flex_none().text_color(t.muted).child(worst(list).words)))
+      .when(!folded, (e) => e.children(list.slice(0, SHOWN).map((a, k) => h_flex().id(`rv-att-${k}`).tooltip(a.why || "Go to this item").h(26).px(4).gap(8).items_center().rounded(5).cursor_pointer().hover((s) => s.bg(t.hover))
+        .on_click((_e, cx) => { a.go(cx); cx.notify(); })
+        .child(badge(t, a.severity, t[SEV[a.severity]] ?? t.ansi1))
+        .when(a.security, (x) => x.child(div().flex_none().text_size(13).text_color(t.ansi1).child("⛨")))
+        .child(div().flex_1().min_w(0).truncate().text_size(13).child(a.label))
+        .when(a.sent, (x) => x.child(div().flex_none().text_size(11.5).text_color(t[FSTATUS.progress[1]]).child(FSTATUS.progress[0])))
+        .when(Boolean(a.at), (x) => x.child(div().flex_none().text_size(11.5).text_color(t.muted).child(a.at)))))
+        .when(rest.length > 0, (x) => x.child(div().id("rv-att-more").tooltip(rest.some((a) => a.finding) ? "Open the Findings tab" : "Open the Overview page").h(22).px(4).flex().items_center().rounded(5).cursor_pointer()
+          .text_size(12).text_color(t.muted).hover((s) => s.text_color(t.foreground))
+          .on_click((_e, cx) => { if (rest.some((a) => a.finding)) this.tab = "findings"; else this.page = "overview"; cx.notify(); })
+          .child(`${rest.length} more: ${worst(rest).words} →`))));
+  },
+
+  // The PR's pages (Overview, Architecture, Security) above the tabs: reachable from every tab, and not layers.
+  pagesRow(t) {
+    const sec = this.prSel ? this.counts().security : 0, changed = (this.ai?.arch?.nodes ?? []).some((n) => n.status && n.status !== "unchanged");
+    const mark = { blast: sec > 0 && badge(t, `⛨ ${sec}`, t.ansi1).id("rv-nav-sec").tooltip(`${sec} unresolved security ${sec === 1 ? "finding" : "findings"}`),
+      arch: changed && badge(t, "Changed", t.accent).id("rv-nav-arch").tooltip("The architecture picture differs before and after this PR") };
+    return h_flex().flex_none().px(8).pt(8).gap(4)
+      .children(["overview", "arch", "blast"].map((k) => {
+        const label = PAGES.find(([p]) => p === k)[1], on = this.tab === "steps" && this.page === k;
+        return h_flex().id(`rv-nav-${k}`).tooltip(`Open the ${label} page`).min_w(0).h(28).px(10).gap(6).items_center().rounded(7).cursor_pointer()
+          .when(on, (e) => e.bg(t.selected).font_semibold()).hover((st) => st.bg(t.hover)).on_click((_e, cx) => { this.tab = "steps"; this.page = k; cx.notify(); })
+          .child(div().min_w(0).truncate().text_size(13).text_color(on ? t.foreground : t.muted).child(label))
+          .children([mark[k]].filter(Boolean));
+      }));
   },
 
   stepsPane(t, cx) {
-    const steps = this.steps(), ai = this.ai, checked = steps.filter((s) => this.done(s)).length, m = model();
+    const steps = this.steps(), ai = this.ai, m = model(), all = this.patch ?? [], viewed = all.filter((f) => this.prog.seen.has(f.path)).length;
     const run = (label) => div().id("rv-run").tooltip("Starts the AI analysis: one model call, it can take several minutes").px(12).h(30).flex().items_center().rounded(8).text_size(13).bg(t.solid).text_color(t.solid_foreground)
       .cursor_pointer().on_click((_e, cx) => this.loadAi(cx, "run")).child(label);
-    const nav = (k, label, right) => h_flex().id(`rv-nav-${k}`).tooltip(`Open the ${label} page`).flex_none().h(30).px(10).gap(8).items_center().rounded(7).cursor_pointer()
-      .when(this.page === k, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.page = k; cx.notify(); })
-      .child(div().flex_1().min_w(0).truncate().text_size(13.5).font_semibold().text_color(this.page === k ? t.foreground : t.muted).child(label))
-      .children(right.filter(Boolean));
-    const sec = this.counts().security;
-    const changed = (ai?.arch?.nodes ?? []).some((n) => n.status && n.status !== "unchanged");
-    const attention = ai ? this.attention() : [];
+    const attention = this.prSel ? this.attention() : [];
+    // The run's cost, time and age are not for the first line of this column: they are in Re-analyze's tooltip.
+    const last = ai ? ` The shown run: ${modelLabel(ai.model) ?? ai.model}${ai.cost != null ? `, $${Number(ai.cost).toFixed(3)}` : ""}${ai.budget ? ` of $${ai.budget} cap` : ""}${ai.ms ? `, ${clock(ai.ms)}` : ""}, ${ago(ai.generated)}${ai.incremental ? ", with the changes since your last review merged in" : ""}.` : "";
     // goStep: the open layer to the top of this column too. A plain scroll area only reveals a child at its near edge
     // (one below the view lands at its bottom), so the last child first, then, a frame later, the layer: it is above
-    // the view then and lands at the top. The layers come after the three pages, the attention box and the heading.
-    if (this.page !== this.leftPage) { this.leftPage = this.page; if (this.page) this.leftScroll.scroll_to_item(0); } // a page opened: its row, at the top, is in view again
+    // the view then and lands at the top. The layers come after the heading.
+    if (this.page !== this.leftPage) { this.leftPage = this.page; this.attFold = null; if (this.page) this.leftScroll.scroll_to_item(0); } // a page opened: the list from its top, the attention box open again
     if (this.leftTop && steps.length) {
-      const first = 3 + (attention.length ? 1 : 0) + 1;
+      const first = 1;
       if (this.leftTop === 1) { this.leftTop = 2; this.leftScroll.scroll_to_item(first + steps.length - 1); cx.timer.after(0, (cx) => cx.notify()); }
       else { this.leftTop = 0; this.leftScroll.scroll_to_item(first + this.cur); }
     }
     const canInc = Boolean(ai && this.aiFile && this.since?.files.length && !this.aiBusy);
     return v_flex().flex_1().min_h(0)
       .child(v_flex().flex_none().px(14).py(10).gap(8).border_b(1).border_color(t.border)
-        .when(Boolean(ai), (e) => e.child(div().text_size(12).text_color(t.muted)
-          .child(`${modelLabel(ai.model) ?? ai.model}${ai.cost != null ? ` · $${ai.cost.toFixed(3)}` : ""}${ai.budget ? ` of $${ai.budget} cap` : ""}${ai.ms ? ` · ${clock(ai.ms)}` : ""} · ${ago(ai.generated)}${ai.exact ? "" : " · older diff"}${ai.incremental ? " · incl. changes since last review" : ""}`)))
-        .when(Boolean(ai?.mergeRisk || ai?.effort), (e) => e.child(this.riskBadges(t, ai, "rv-lb")))
         .when(!ai && !this.aiBusy, (e) => e.child(v_flex().gap(8).py(4)
           .child(div().text_size(13.5).line_height(1.5).child(`No ${modelLabel(m)} analysis for this diff yet. One thorough run reads the code around the changes and groups them into layers by intent, with explanations, check questions, suspicious lines, merge risk, review effort, repo rule checks, pictures and example values. It can take several minutes.`))
           .child(h_flex().gap(10).items_center().child(run(`Analyze with ${modelLabel(m)}`))
@@ -2412,29 +2455,23 @@ export const ReviewMode = {
           .child(pill("rv-cancel", t, "Cancel", (_e, cx) => this.cancelAi(cx), false, t.ansi1).tooltip("Stop the running analysis"))))
         .when(Boolean(this.aiError), (e) => e.child(div().text_size(12.5).text_color(t.ansi1).whitespace_normal().child(this.aiError)))
         .when(Boolean(ai && !ai.exact), (e) => e.child(div().text_size(12.5).text_color(t.ansi3).whitespace_normal().child(canInc ? "Analysis of an older diff: re-analyze, or analyze only the new changes." : "Analysis of an older diff: re-analyze for the current state.")))
-        .when(Boolean(ai?.scope), (e) => e.child(div().text_size(12.5).text_color(t.muted).whitespace_normal().child(scopeLine(ai.scope))))
+        .when(Boolean(ai?.scope?.skimmed), (e) => e.child(div().text_size(12.5).text_color(t.muted).whitespace_normal().child(scopeLine(ai.scope)))) // only when something was not read in detail
         .when(Boolean(ai?.cut.length) && !ai?.scope, (e) => e.child(div().text_size(12.5).text_color(t.ansi3).whitespace_normal().child(`${ai.cut.length} hunks were too large for ${modelLabel(ai.model) ?? ai.model} and are not analyzed (an older analysis: re-analyze to read them).`)))
         .child(h_flex().flex_wrap().gap(6).items_center().text_size(12.5)
-          .child(h_flex().gap(2).p(2).rounded(7).border_1().border_color(t.border).children([["reading", "Layers"], ["risk", "By focus"]].map(([k, label]) =>
+          .when(orderDiffers(ai?.steps ?? []), (e) => e.child(h_flex().gap(2).p(2).rounded(7).border_1().border_color(t.border).children([["reading", "Layers"], ["risk", "By focus"]].map(([k, label]) =>
             div().id(`rv-order-${k}`).tooltip((k === "risk" ? "List the layers that need the closest reading first" : "List the layers in the order to read them")).px(8).h(22).flex().items_center().rounded(5).cursor_pointer().bg(this.order === k ? t.selected : t.chrome)
-              .text_color(this.order === k ? t.foreground : t.muted).on_click((_e, cx) => { this.order = k; this.cur = 0; cx.notify(); }).child(label))))
+              .text_color(this.order === k ? t.foreground : t.muted).on_click((_e, cx) => { this.order = k; this.cur = 0; cx.notify(); }).child(label)))))
           .child(pill("rv-prev", t, "‹ Prev", (_e, cx) => { this.goStep(this.cur - 1, cx); cx.notify(); }).tooltip("Previous layer (k)"))
           .child(pill("rv-next", t, "Next ›", (_e, cx) => { this.goStep(this.cur + 1, cx); cx.notify(); }).tooltip("Next layer (j)"))
-          .when(Boolean(ai || this.aiError), (e) => e.child(pill("rv-rerun", t, this.aiBusy ? "Running…" : "Re-analyze", (_e, cx) => this.loadAi(cx, "run")).tooltip("Run the AI analysis again: one model call")))
+          .when(Boolean(ai || this.aiError), (e) => e.child(pill("rv-rerun", t, this.aiBusy ? "Running…" : "Re-analyze", (_e, cx) => this.loadAi(cx, "run")).tooltip(`Run the AI analysis again: one model call.${last}`)))
           .when(canInc, (e) => e.child(pill("rv-reinc", t, "Only new changes", (_e, cx) => this.loadAi(cx, "run", true), false, t.accent)
-            .tooltip(`Analyze only the ${this.since.files.length} files changed since your last review and merge the new layers in`)))))
+            .tooltip(`Analyze only the ${this.since.files.length} files changed since your last review and merge the new layers in`))))
+        // Above the list, not in it: folded to one line while a layer is open, it still says what is left to decide.
+        .when(attention.length > 0, (e) => e.child(this.attentionBox(t, attention, this.attFold ?? !this.page))))
       .child(div().flex_1().min_h(0).relative()
         .child(v_flex().id("rv-steps-left").absolute().inset_0().overflow_y_scroll().track_scroll(this.leftScroll).p(8).gap(4)
-          .child(nav("overview", "Overview", []))
-          .child(nav("blast", "Security blast radius", [sec > 0 && badge(t, String(sec), t.ansi1).id("rv-nav-sec").tooltip(`${sec} unresolved security findings`)]))
-          .child(nav("arch", "Architecture impact", [changed && badge(t, "Changed", t.accent).id("rv-nav-arch").tooltip("The architecture picture differs before and after this PR")]))
-          .when(attention.length > 0, (e) => e.child(v_flex().flex_none().mt(8).p(10).gap(6).rounded(8).border_1().border_l(3).border_color(t.ansi3).bg(t.ansi3 + "10")
-            .child(div().text_size(11.5).font_semibold().text_color(t.ansi3).child("NEEDS YOUR ATTENTION"))
-            .children(attention.slice(0, 6).map((a, k) => v_flex().id(`rv-att-${k}`).tooltip("Go to this item").cursor_pointer().hover((s) => s.bg(t.hover)).rounded(5).px(4).py(2)
-              .on_click((_e, cx) => { a.go(cx); cx.notify(); })
-              .child(div().text_size(13).font_semibold().truncate().child(a.label)).child(div().text_size(12).text_color(t.muted).truncate().child(a.why))))))
-          .child(h_flex().flex_none().mt(10).px(10).gap(8).items_center().text_size(11.5).font_semibold().text_color(t.muted)
-            .child(div().flex_1().child(this.order === "reading" ? "LAYERS" : "LAYERS BY RISK")).child(div().child(`${checked} of ${steps.length} checked`)))
+          .child(h_flex().flex_none().mt(2).px(10).gap(8).items_center().text_size(11.5).font_semibold().text_color(t.muted)
+            .child(div().flex_1().child("LAYERS")).child(div().id("rv-lv-seen").tooltip("Files you ticked as viewed; a layer is ticked once all its files are").child(`${viewed} of ${all.length} files viewed`)))
           .children(steps.map((s, i) => this.stepRow(s, i, t))))
         .child(Scrollbar.vertical("rv-steps-left").absolute().inset_0()));
   },
@@ -3421,8 +3458,9 @@ export const ReviewMode = {
       .child(div().flex_1().min_h(0).relative()
         .child(v_flex().id("rv-tree").absolute().inset_0().overflow_y_scroll().p(6)
           .children(fileTree(files.map((f) => f.path), this.closedDirs).map((n) => {
-            const f = byPath.get(n.path), cm = f ? this.comments.filter((c) => c.file === f.path).length : 0, sg = f ? open.filter((x) => x.file === f.path).length : 0;
-            return h_flex().id(`rv-t-${n.dir ? "d" : "f"}-${n.path}`).tooltip((n.dir ? "Fold or unfold this folder" : "Show this file's diff")).h(28).flex_none().pl(8 + 14 * n.depth).pr(8).gap(8).items_center().rounded(6).text_size(13).cursor_pointer()
+            // A file's unresolved findings in words, in the colour of the highest severity; security with its own mark.
+            const f = byPath.get(n.path), cm = f ? this.comments.filter((c) => c.file === f.path).length : 0, w = f ? worst(open.filter((x) => x.file === f.path)) : null;
+            return h_flex().id(`rv-t-${n.dir ? "d" : "f"}-${n.path}`).tooltip((n.dir ? "Fold or unfold this folder" : "Show this file's diff")).h(28).flex_none().pl(8 + 14 * n.depth).pr(n.dir ? 8 : 0).gap(8).items_center().rounded(6).text_size(13).cursor_pointer()
               .when(!n.dir && this.fileFocus === n.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover))
               .on_click((_e, cx) => {
                 if (n.dir) { if (this.closedDirs.has(n.path)) this.closedDirs.delete(n.path); else this.closedDirs.add(n.path); }
@@ -3432,12 +3470,14 @@ export const ReviewMode = {
               .child(div().w(12).flex_none().text_color(t.muted).child(n.dir ? (this.closedDirs.has(n.path) ? "▸" : "▾") : ""))
               .when(!n.dir, (e) => e.child(div().id(`rv-tst-${n.path}`).tooltip(`File ${f.status}`).w(14).flex_none().text_size(11.5).font_semibold().text_color(t[STATUS[f.status][1]]).child(STATUS[f.status][0])))
               .child(div().flex_1().min_w(0).truncate().text_color(n.dir ? t.muted : this.prog.seen.has(n.path) ? t.muted : t.foreground).child(n.dir ? `${n.name}/` : n.name))
-              .when(sg > 0, (e) => e.child(div().id(`rv-tsg-${n.path}`).tooltip(`${sg} unresolved ${sg === 1 ? "finding" : "findings"} in this file`).text_size(11.5).text_color(t.ansi3).child(`⚑ ${sg}`)))
-              .when(cm > 0, (e) => e.child(div().id(`rv-tcm-${n.path}`).tooltip(`${cm} pending comments in this file`).text_size(11.5).text_color(t.accent).child(`● ${cm}`)))
+              .when(Boolean(w?.security), (e) => e.child(div().id(`rv-tsec-${n.path}`).tooltip(`${w.security} of them ${w.security === 1 ? "is a security finding" : "are security findings"}`).flex_none().text_color(t.ansi1).child("⛨")))
+              .when(Boolean(w), (e) => e.child(div().id(`rv-tsg-${n.path}`).tooltip(`${w.total} unresolved ${w.total === 1 ? "finding" : "findings"} in this file: ${w.words}`).flex_none().text_size(11.5).font_semibold().text_color(t[SEV[w.severity]] ?? t.ansi1).child(w.label)))
+              .when(cm > 0, (e) => e.child(div().id(`rv-tcm-${n.path}`).tooltip(`${cm} pending ${cm === 1 ? "comment" : "comments"} of yours in this file`).flex_none().text_size(11.5).text_color(t.accent).child(`${cm} ${cm === 1 ? "comment" : "comments"}`)))
               .when(!n.dir && f.add > 0, (e) => e.child(div().id(`rv-tad-${n.path}`).tooltip(`${f.add} lines added`).text_size(11.5).text_color(t.ansi2).child(`+${f.add}`)))
               .when(!n.dir && f.del > 0, (e) => e.child(div().id(`rv-tdl-${n.path}`).tooltip(`${f.del} lines removed`).text_size(11.5).text_color(t.ansi1).child(`−${f.del}`)))
-              .when(!n.dir, (e) => e.child(div().id(`rv-seen-${n.path}`).tooltip("Mark this file as viewed; it collapses in the diff").accessibility_label("Viewed").w(16).flex_none().text_color(this.prog.seen.has(n.path) ? t.ansi2 : t.muted)
-                .on_click((_e, cx) => { this.toggleSeen(n.path, cx); cx.stop_propagation(); cx.notify(); }).child(this.prog.seen.has(n.path) ? "☑" : "☐")));
+              // The tick: a 16 px box, and the whole right end of the row takes the click.
+              .when(!n.dir, (e) => e.child(div().id(`rv-seen-${n.path}`).tooltip("Mark this file as viewed; it collapses in the diff").accessibility_label("Viewed").w(36).h(28).flex_none().flex().items_center().justify_center()
+                .on_click((_e, cx) => { this.toggleSeen(n.path, cx); cx.stop_propagation(); cx.notify(); }).child(viewedBox(t, this.prog.seen.has(n.path)))));
           })))
         .child(Scrollbar.vertical("rv-tree").absolute().inset_0()));
   },
@@ -3723,6 +3763,7 @@ export const ReviewMode = {
       .child(this.metaRow(t))
       .child(h_flex().flex_1().min_h(0)
         .child(v_flex().w(this.leftW()).flex_none().h_full().bg(t.chrome)
+          .child(this.pagesRow(t))
           .child(h_flex().flex_none().p(8).gap(6).border_b(1).border_color(t.border)
             .child(tabBtn("files", `Files · ${this.shown().patch.length}`)).child(tabBtn("steps", `Layers${this.ai ? ` · ${this.ai.steps.filter((s) => !s.pseudo).length}` : ""}`))
             .child(tabBtn("comments", `Comments${this.commentRowsNow().length ? ` · ${this.commentRowsNow().length}` : ""}`))
@@ -3806,3 +3847,10 @@ export const ReviewMode = {
       .child(pill("rv-save-again", t, "Save again", (_e, cx) => this.saveProgress(cx), false, t.foreground).tooltip("Write your progress to disk again"));
   },
 };
+
+const LAYER_FILES = 12; // an open layer lists this many of its files in the left column
+// The "Viewed" tick of a file in the left column: a 16 px box, its row is the click target.
+function viewedBox(t, seen) {
+  return div().w(16).h(16).flex_none().flex().items_center().justify_center().rounded(4).border_1().border_color(seen ? t.ansi2 : t.muted)
+    .text_size(11.5).font_semibold().text_color(t.ansi2).child(seen ? "✓" : "");
+}

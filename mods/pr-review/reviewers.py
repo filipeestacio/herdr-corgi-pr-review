@@ -28,6 +28,7 @@ import subprocess
 import sys
 import time
 
+sys.dont_write_bytecode = True  # a .pyc written into the mod's folder reloads the mod: the view waiting for this run is gone
 import llm  # noqa: E402  (this folder)
 import review  # noqa: E402  (the severity scale and the areas of a run's self-report)
 
@@ -37,7 +38,7 @@ TIMEOUT = 1500
 READ_ONLY = ["Read", "Grep", "Glob", "Agent",
              "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git status:*)", "Bash(git blame:*)",
              "Bash(git merge-base:*)", "Bash(git rev-parse:*)", "Bash(git ls-files:*)", "Bash(gh pr diff:*)", "Bash(gh pr view:*)"]
-PLACE = {"file": review.S, "line": {"type": "integer"}, "end": {"type": "integer"}, "title": review.S, "detail": review.S, "suggestion": review.S}
+PLACE = {"file": review.S, "line": {"type": "integer"}, "end": {"type": "integer"}, **review.PROSE}
 # A review turned from text: what its words give, nothing judged on top.
 PLAIN_FINDINGS = {"type": "object", "required": ["findings"], "properties": {"findings": {"type": "array", "items": {
     "type": "object", "required": ["file", "line", "severity", "title", "detail"], "properties": {
@@ -48,8 +49,8 @@ ASK_PLAIN = ("\n\nAnswer with the findings in the requested JSON: file (path in 
 AREAS = {"claude": review.AREAS_CODE, "security": review.AREAS_SECURITY}
 ASK = ("When you are done, answer with the requested JSON. findings: file (path in the repo), line (line number on the new "
        "side, as in the PR head), end (last line, optional), category (structure, security, data, scope, requirement, bug, "
-       "test, availability), " + review.JUDGED_TEXT + ", title (one line), detail (why it is a problem; claim only what the "
-       "certainty covers), suggestion (the fix, optional). Only real problems; an empty list is fine. scope: your own report "
+       "test, availability), " + review.JUDGED_TEXT + ", title (one line, plain text), detail (why it is a problem; claim only what the "
+       "certainty covers), suggestion (the fix, optional). " + review.TEXTS + " Only real problems; an empty list is fine. scope: your own report "
        "of the work: read (the files you read), checked (one row per area, each with " + review.CHECKED_TEXT + "), skipped "
        "(what you left out and why, short phrases).")
 ASK_JSON = "\n\n" + ASK

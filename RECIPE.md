@@ -58,12 +58,19 @@ title bar (traffic lights at 12, 16):
   `Values: On`, the model picker (Haiku / Sonnet / Opus) and the shown analysis' model and cost (it truncates first
   when the window is narrow), and at the right GitHub's green (`#238636`) `Review changes ▾`, which reads
   `Finish your review (n) ▾` while n comments are pending.
-- The body (`{part: "review"}`): a 420 px left column with tabs `Files · n`, `Layers · n`, `Findings · n`.
-  Layers: model, cost and age; merge risk and effort; `Layers / By risk`, `‹ Prev`, `Next ›`, `Re-analyze`;
-  pages Overview, Security blast radius, Architecture impact; a yellow "Needs your attention" box; the
-  layers (✓ when checked, title, risk badge `high` `ansi1` / `medium` `ansi3` / `low` `ansi4` / `skim` `muted`,
-  "n files touched", why it matters; the current one expanded with explanation, check questions and flow cards
-  with example inputs and outputs).
+- The body (`{part: "review"}`): a 420 px left column. On top the PR's pages as one row (Overview, Architecture
+  impact, Security blast radius with `⛨ n` in `ansi1`), reachable from every tab; below it the tabs `Files · n`,
+  `Layers · n`, `Comments · n`, `Findings · n`.
+  Layers: `‹ Prev`, `Next ›`, `Re-analyze` (its tooltip has the run's model, cost, time and age), and
+  `Layers / By focus` only when the two orders differ; a yellow "Needs your attention" box with the merge blockers
+  by severity, security first, one line each (five, then "n more"), folded to its heading while a layer is open;
+  the layers (number, title, the highest unresolved severity with its count such as `2 high`, `⛨` when one of them
+  is a security finding, "n of m files viewed", why it matters; the current one expanded with its files, each with a
+  "Viewed" tick, the explanation, check questions and flow cards). A layer shows ✓ once every file in it is ticked
+  as viewed; nothing else ticks it.
+  Files: "n of m files viewed", then the tree; a file row has its status letter, name, `⛨`, the highest unresolved
+  severity with its count in that severity's colour, "n comments", `+n −n` and a 16 px tick whose click target is
+  the row's right end.
 - On the right one virtual list of 22 px rows: the step header, then each hunk with old/new line numbers,
   `+` rows tinted `#2ea043`, `−` rows `#f85149`, and inline: AI notes (one muted line, a click opens the text;
   `a` adds it as a comment, `x` hides it) and findings, one per file and line (severity badge, its sources with
