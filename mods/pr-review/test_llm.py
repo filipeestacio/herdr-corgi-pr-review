@@ -90,6 +90,9 @@ try:
     assert kw["input"] == "/code-review medium origin/feat/below...HEAD", "the PR's own range, and nothing after it: the command would review that text"
     assert "stream-json" in args and "--verbose" in args and "--disable-slash-commands" not in args
     assert "certainty" in json.loads(args[args.index("--json-schema") + 1])["properties"]["answer"]["description"], "the fork learns the fields from the schema"
+    assert "`inline code`" in reviewers.ASK and "title stays one line of plain text" in reviewers.ASK, "reviewers write their texts as the analysis does"
+    item = json.loads(args[args.index("--json-schema") + 1])["properties"]["answer"]["properties"]["findings"]["items"]["properties"]
+    assert "no markdown" in item["title"]["description"] and "paragraphs" in item["detail"]["description"] and "fenced code" in item["suggestion"]["description"]
     found = reviewers.normalize(answer["findings"], "claude", d)
     assert len(found) == 1 and found[0]["severity"] == "high" and found[0]["impact"] == "dead_path" and found[0]["certainty"] == "derived"
     assert found[0]["file"] == ".github/a.py", "a leading ./ goes, a dot folder stays"
