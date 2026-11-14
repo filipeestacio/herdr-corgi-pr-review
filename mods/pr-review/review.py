@@ -23,6 +23,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -42,21 +43,38 @@ LEVELS = ["high", "medium", "low"]
 # What a model run that reads a PR may do (this analysis, and the reviewers in reviewers.py): it reads someone else's
 # code and text, which may carry instructions to it. --restricted confines the file tools to the checkout (and
 # --add-dir) and ignores the checkout's own .claude settings; dontAsk refuses whatever no rule allows. Allowed: the
-# file tools and the git commands that read history; no network, no writes. Denied: options that write a file
-# (--output), run a program (--ext-diff, --textconv) or read a file outside the checkout (--no-index, blame --contents,
-# -S, --ignore-revs-file), each by its shortest unambiguous prefix, since git takes abbreviated long options in some
-# commands (blame --con is --contents). llm.py also sets GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS for the run.
-GIT_READ = ("diff", "log", "show", "status", "blame", "merge-base", "rev-parse", "ls-files")
-GIT_DENIED = ("--ou", "--ext", "--textc", "--no-in", "--con", "--ignore-revs")
+# file tools and read-only git through safegit.py, fixed to this checkout (git diff with a path outside the repository
+# silently turns into --no-index and reads any file; safegit refuses such paths and the options that write a file,
+# run a program or read one, also abbreviated). git itself is denied; no network, no writes.
+SAFEGIT = pathlib.Path(__file__).with_name("safegit.py")
 
 
-def permissions(*tools):
-    """The CLI flags for a run with these tools plus read-only git."""
-    denied = ["Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch", *(f"Bash(git *{o}*)" for o in GIT_DENIED), "Bash(git blame*-S*)"]
-    return ("--restricted", "--permission-mode", "dontAsk", "--allowedTools", *tools, *(f"Bash(git {c} *)" for c in GIT_READ), "--disallowedTools", *denied)
+def git_call(root):
+    """The one way a run may call git: `python3 <safegit.py> <checkout>`, as the allow rule and the prompt say it."""
+    return f"python3 {shlex.quote(str(SAFEGIT))} {shlex.quote(str(root))}"
 
 
-READ_ONLY = permissions("Read", "Grep", "Glob")
+def git_hint(root):
+    """The prompt's line on how to call git (empty without a checkout)."""
+    return (f"Call git only as `{git_call(root)} <command> <args>`, with diff, log, show, status, blame, merge-base, rev-parse "
+            "or ls-files and paths relative to the checkout; plain git is refused.\n\n") if root else ""
+
+
+# The fixed git commands that the slash commands' own templates run before the model starts (/security-review,
+# /code-review: `!git status` and the like). Allowed word for word, without wildcards: no argument of the model's can
+# ride along. Any other git call is refused (dontAsk), so a run reaches git only through safegit.py.
+# A second line for the git calls Claude Code itself lets through as read-only (git log, git show in the checkout):
+# no argument that is a path outside (/…, ~…, ../…, also after = or :) and none of safegit's refused options.
+GIT_DENIED = ("* /*", "* ~*", "*../*", "*=/*", "*=~*", "*:/*", "*:~*", "*--ou*", "*--ext*", "*--textc*", "*--no-in*", "*--con*", "*--ignore-revs*", "*-O*", "blame*-S*")
+TEMPLATE_GIT = ("git status", "git diff HEAD", "git branch --show-current", "git log --oneline -10", "git diff --name-only origin/HEAD...",
+                "git log --no-decorate origin/HEAD...", "git diff origin/HEAD...")
+
+
+def permissions(root, *tools):
+    """The CLI flags for a run with these tools plus read-only git in root (None: no git)."""
+    denied = ["Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch", *(f"Bash(git {p})" for p in GIT_DENIED)]
+    return ("--restricted", "--permission-mode", "dontAsk", "--allowedTools", *tools, *([f"Bash({git_call(root)} *)", *(f"Bash({c})" for c in TEMPLATE_GIT)] if root else []),
+            "--disallowedTools", *denied)
 SYSTEM = ("You are a thorough, experienced code reviewer and guide a person through the review of a pull request in {lang}: "
           "ordered by risk, with concrete check points and only real suspicious spots verified in the code, no style "
           "criticism. Take your time: read callers, types and surrounding code before you claim anything. "
@@ -727,11 +745,14 @@ def changed_lines(hunks):
     return out
 
 
-def introduced(f, changed):
+def introduced(f, changed, breaks_requirement=False):
     """introduced_here from the diff where it can tell (changed: {path: added line numbers}, None when unknown): a
-    finding whose lines the PR adds is the PR's. Otherwise the model's word, and without one true (a blocker stays one)."""
+    finding whose lines the PR adds is the PR's, and so is one that breaks a requirement of this PR, also in old lines
+    (an old status write that the PR's new rule forbids). Otherwise the model's word, and without one true (a blocker
+    stays one)."""
     path, line = str(f.get("file") or "").strip().removeprefix("./"), int(f.get("line") or 0)
-    if changed is not None and line and set(range(line, max(line, int(f.get("end") or line)) + 1)) & set(changed.get(path, ())):
+    end = max(line, int(f.get("end") or line))  # the model's end: compared with, never enumerated
+    if breaks_requirement or changed is not None and line and any(line <= n <= end for n in changed.get(path, ())):
         f["introduced_here"] = True
     elif not isinstance(f.get("introduced_here"), bool):
         f["introduced_here"] = True
@@ -772,8 +793,9 @@ def finish(answer, root=None, path_of=None, changed=None):
             st["depends_on"] = [x for x in dict.fromkeys(st["depends_on"] or []) if x in titles and x != st.get("title")]
         for f in st.get("findings") or []:
             f["criteria"] = [c for c in dict.fromkeys(f.get("criteria") or []) if c in by_id]
-            judge(f, any(by_id[c]["state"] != "extra" for c in f["criteria"]))
-            introduced(f, changed)
+            mine = any(by_id[c]["state"] != "extra" for c in f["criteria"])
+            judge(f, mine)
+            introduced(f, changed, mine)
             f["id"] = "a" + fnv(f"{f.get('category') or 'structure'}|{str(f.get('file') or '').strip().removeprefix('./')}|{str(f.get('title') or '').strip()}")
             for c in f["criteria"]:
                 if f["id"] not in by_id[c]["findings"]:
@@ -915,9 +937,9 @@ def main_diagrams(req):
     prev = json.loads(pathlib.Path(req["diagrams"]).read_text())
     t = task(req.get("pr"), (ctx or {}).get("tickets", True))
     tools = bool(wt and pathlib.Path(wt).is_dir())
-    extra = READ_ONLY if tools else ()
+    extra = permissions(wt, "Read", "Grep", "Glob") if tools else ()
     meta = {}
-    answer = llm.claude(FEATURE_DIAGRAMS, diagrams_prompt(req["hunks"], prev, t and t["text"], tools, lang), context=ctx, model=model,
+    answer = llm.claude(FEATURE_DIAGRAMS, git_hint(wt if tools else None) + diagrams_prompt(req["hunks"], prev, t and t["text"], tools, lang), context=ctx, model=model,
                         schema=DIAGRAMS_SCHEMA, system=SYSTEM.format(lang=lang), budget=BUDGET_DIAGRAMS[llm.tier(model)], timeout=TIMEOUT,
                         cwd=wt if tools else pathlib.Path.home(), tools="Read,Grep,Glob,Bash" if tools else "", meta=meta, extra=extra)
     if not answer:
@@ -1045,8 +1067,8 @@ def main(req):
     index = write_run(run, hunks)
     cap, aliases = BUDGET[llm.tier(model)], [h["alias"] for h in hunks]
     # Read-only tools in the checkout plus the run's folder (the patches); without a checkout, only the folder.
-    extra = ("--effort", "high", "--add-dir", run, *READ_ONLY)
-    call = lambda feature, text, schema, budget, meta: llm.claude(feature, text, context=ctx, model=model, schema=schema, system=SYSTEM.format(lang=lang),  # noqa: E731
+    extra = ("--effort", "high", "--add-dir", run, *permissions(wt if tools else None, "Read", "Grep", "Glob"))
+    call = lambda feature, text, schema, budget, meta: llm.claude(feature, git_hint(wt if tools else None) + text, context=ctx, model=model, schema=schema, system=SYSTEM.format(lang=lang),  # noqa: E731
                                                               budget=budget, timeout=TIMEOUT, cwd=wt if tools else run, tools="Read,Grep,Glob,Bash", meta=meta, extra=extra)
     cohorts = None if prev else cohorts_of(hunks, INLINE[llm.tier(model)])
     metas = []

@@ -295,13 +295,16 @@ ch = review.changed_lines([{"path": "a.py", "lines": ["@@ -1,2 +5,3 @@", " x", "
 assert ch == {"a.py": {6, 7}}
 intro = lambda **kw: review.introduced({"file": "a.py", "line": 1, **kw}, ch)["introduced_here"]  # noqa: E731
 assert [intro(line=6), intro(line=4, end=6, introduced_here=False), intro(line=1, introduced_here=False), intro(line=1), intro(file="b.py", introduced_here=False)] == [True, True, False, True, False]
+assert intro(line=2, end=10**9, introduced_here=False) is True and intro(line=8, end=10**9, introduced_here=False) is False, "a huge end is compared, not enumerated"
 assert review.introduced({"file": "a.py", "line": 9, "introduced_here": False}, None)["introduced_here"] is False, "a follow-up analysis without the whole diff keeps the model's word"
 j = review.judge({"impact": "unauthorized_access", "certainty": "derived", "path_certainty": "assumed", "path_why": "gateway", "introduced_here": "yes"})
 assert (j["certainty"], j["path_certainty"], j["path_why"], "introduced_here" in j) == ("derived", "assumed", "gateway", False)
 assert "path_why" not in review.judge({"path_certainty": "maybe", "path_why": "x"})
 sh = review.finish({"asks": [{"id": "c1", "text": "t", "short": "one  reminder mail per loan and never ever twice", "state": "met", "hunks": []}], "steps": [
-    {"title": "x", "hunks": [], "findings": [fin(title="new", file="a.py", line=6, introduced_here=False), fin(title="old", file="a.py", line=1, introduced_here=False)]}]}, None, {}, ch)
-assert sh["asks"][0]["short"] == "one reminder mail per loan and never ever" and [f["introduced_here"] for f in sh["steps"][0]["findings"]] == [True, False]
+    {"title": "x", "hunks": [], "findings": [fin(title="new", file="a.py", line=6, introduced_here=False), fin(title="old", file="a.py", line=1, introduced_here=False),
+     fin(title="old line, breaks c1", file="a.py", line=1, introduced_here=False, criteria=["c1"])]}]}, None, {}, ch)
+assert sh["asks"][0]["short"] == "one reminder mail per loan and never ever" and [f["introduced_here"] for f in sh["steps"][0]["findings"]] == [True, False, True], \
+    "breaking a requirement of this PR is the PR's, also in old lines"
 p4 = review.prompt([], [], "PR: x", True)
 for part in ("what_changed: the change as three short lists", "read: the paths of the files outside the diff", "short (its name in at most eight words",
              "introduced_here (true when", "path_certainty (confirmed, derived or assumed", "certainty stays about the code alone"):

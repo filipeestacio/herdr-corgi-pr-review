@@ -1078,7 +1078,7 @@ export function withSecurity(ai, security = null, ctx = null, head = null) {
   const own = ai.own ?? { arch: ai.arch ?? null, access: ai.access ?? [] }, trigger = ctx?.security_trigger ?? null;
   if (!security || !["zones", "access", "threats"].some((k) => Array.isArray(security[k]))) {
     const had = Boolean(own.arch?.zones?.length || own.access?.length);
-    return { ...ai, own, arch: own.arch, access: own.access, threats: [], securityTrigger: trigger, securityFrom: had ? { source: "analysis", head: null, at: null, older: false, why: null } : null };
+    return { ...ai, own, arch: own.arch, access: own.access, threats: [], gates: [], effectiveZones: [], securityTrigger: trigger, securityFrom: had ? { source: "analysis", head: null, at: null, older: false, why: null } : null };
   }
   const zones = (security.zones ?? []).filter((z) => z?.id), zoneOf = new Map(zones.flatMap((z) => (z.nodes ?? []).map((n) => [n, z.id])));
   // A crossing call by its ends: the security run may have looked at an older picture, where e<k> is another edge.
@@ -1087,7 +1087,10 @@ export function withSecurity(ai, security = null, ctx = null, head = null) {
     nodes: (own.arch.nodes ?? []).map(({ zone, ...n }) => (zoneOf.has(n.id) ? { ...n, zone: zoneOf.get(n.id) } : n)),
     edges: (own.arch.edges ?? []).map(({ crosses: _, ...e }) => (crosses.has(`${e.from}\u0000${e.to}`) ? { ...e, crosses: true } : e)) };
   const why = security.head && head && security.head !== head ? "head" : security.picture && ai.generated && security.picture !== ai.generated ? "analysis" : null;
-  return { ...ai, own, arch, access: security.access ?? [], threats: security.threats ?? [], securityTrigger: trigger,
+  // gates: the check at each crossing ({where, principal, check, at, source, holds_if, carries}); effectiveZones: cards
+  // that stand in a more exposed zone than drawn ({node, drawn, effective, where}), both from the security run.
+  return { ...ai, own, arch, access: security.access ?? [], threats: security.threats ?? [], gates: security.gates ?? [], effectiveZones: security.effective_zones ?? [],
+    securityTrigger: trigger,
     securityFrom: { source: "security", head: security.head ?? null, at: security.at ?? null, older: Boolean(why), why } };
 }
 
