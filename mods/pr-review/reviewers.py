@@ -12,8 +12,9 @@ review.py: the severity follows from the impact by the fixed scale)} and merges 
 answered in prose) goes through a cheap Haiku pass in the PR's context. Every call goes to the optional
 ledger (llm.py). The slash-command reviewers need those commands in the Claude setup: when one is missing, the same
 review runs as a plain prompt. Codex is optional (`codex` on PATH).
-runs[kind] in `file` says how the run went: {state: "running", busy, started, pid}, then {state: "done", count, cost, ms,
-model, at, head, scope, note?} or {state: "failed", error, at}; no entry: never run. scope is the reviewer's own report
+runs[kind] in `file` says how the run went: {state: "running", busy, started, pid, head}, then {state: "done", count, cost,
+ms, model, at, head, scope, note?} or {state: "failed", error, at, head}; each also auto (why it started by itself) when
+the request had it; no entry: never run. scope is the reviewer's own report
 {read: [files], checked: [{area, result: finding|clean|not_checked, note}], skipped: [what it left out]}, or None when
 it gave none. A run without an answer fails; it is never "0 findings". Prints the run; exit 1 with the reason on stderr.
 The security run also draws the PR's security view over the newest analysis' architecture picture (picture()) and
@@ -402,7 +403,7 @@ def main(arg):
     notes += ["The reviewer answered in text: a Haiku pass turned it into findings"] if meta.get("converted") else []
     run = {"state": "done", "cost": meta.get("cost"), "ms": int((time.monotonic() - started) * 1000), "model": meta.get("model_id"),
            "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "count": len(findings), "head": req["head"], "scope": scope(answer.get("scope"), req["kind"]),
-           **({"note": ". ".join(notes)} if notes else {})}
+           **({"note": ". ".join(notes)} if notes else {}), **({"auto": req["auto"]} if req.get("auto") else {})}
     merge(pathlib.Path(req["file"]), req["kind"], req["head"], findings, run, security)
     print(json.dumps(run))
 
@@ -410,10 +411,11 @@ def main(arg):
 if __name__ == "__main__":
     # The panel starts this detached and follows the file: runs[kind] says busy, done or the error.
     req = json.loads(sys.argv[1])
-    merge(pathlib.Path(req["file"]), req["kind"], req["head"], None, {"state": "running", "busy": True, "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "pid": os.getpid()})
+    auto = {"auto": req["auto"]} if req.get("auto") else {}  # why it started by itself (the panel's security trigger)
+    merge(pathlib.Path(req["file"]), req["kind"], req["head"], None, {"state": "running", "busy": True, "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "pid": os.getpid(), "head": req["head"], **auto})
     try:
         main(sys.argv[1])
     except Exception as e:  # noqa: BLE001 - the panel shows the reason
-        merge(pathlib.Path(req["file"]), req["kind"], req["head"], None, {"state": "failed", "error": str(e)[:400], "at": time.strftime("%Y-%m-%dT%H:%M:%S%z")})
+        merge(pathlib.Path(req["file"]), req["kind"], req["head"], None, {"state": "failed", "error": str(e)[:400], "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "head": req["head"], **auto})
         print(str(e), file=sys.stderr)
         sys.exit(1)

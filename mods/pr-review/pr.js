@@ -258,7 +258,7 @@ export function mapReview(answer, hunks) {
     const asked = (s.check_questions ?? s.questions ?? []).map((q, k) => [q, String(s.question_files?.[k] ?? "")]).filter(([q]) => q).slice(0, 3);
     return { title: s.title ?? "", why: s.why_it_matters ?? s.why ?? "", text: s.explanation ?? s.text ?? "", risk, skim: risk === "skim", isNew: Boolean(s.new), visuals: visualsOf(s),
       weight: risk === "high" ? "key" : risk === "skim" ? "skim" : "normal", order: Number(s.reading_order) || n + 1,
-      questions: asked.map(([q]) => q), questionFiles: asked.map(([, f]) => f), hunks: ids(s.hunks), n,
+      questions: asked.map(([q]) => q), questionFiles: asked.map(([, f]) => f), hunks: ids(s.hunks), n, dependsOn: (s.depends_on ?? []).map(String), // titles of the layers it builds on
       flows: (s.flows ?? []).slice(0, 3).map((f) => ({ function: f.function ?? "", at: f.at ?? "", inputs: f.inputs ?? [], output: f.output ?? null,
         side_effects: f.side_effects ?? [], calls: f.calls ?? [], trace: (f.trace ?? []).slice(0, 12) })) };
   }).map((st) => ({ ...st, findings: layerFindings(answer.steps[st.n].findings, stepKey(st)) })).sort((a, b) => RISKS.indexOf(a.risk) - RISKS.indexOf(b.risk) || a.order - b.order || a.n - b.n);
@@ -316,12 +316,14 @@ function layerFindings(list, step) {
 // What a newer analysis or reviewer says about a finding beyond its text, in one shape whoever found it (an older one
 // has none of it): impact (what the severity follows from), effect (one sentence), preconditions ([]: it always
 // happens), certainty (confirmed | derived | assumed), criteria (ids of the asks it breaks) and breaks ({node} or
-// {from, to, edge} in the architecture picture, else null), and effort (how much work the fix is: quick | moderate |
-// heavy, null when the analysis does not say).
+// {from, to, edge} in the architecture picture, else null), effort (how much work the fix is: quick | moderate |
+// heavy, null when the analysis does not say), and from where it can be reached: reachable_from (ids of access rows)
+// and reachability (public | authenticated | internal_only | unknown, null when not said; the security run's).
 export const EFFORTS = ["quick", "moderate", "heavy"];
 export const findingFacts = (f) => ({ impact: f.impact ?? null, effect: String(f.effect ?? ""), preconditions: (f.preconditions ?? []).map(String),
   certainty: ["confirmed", "derived", "assumed"].includes(f.certainty) ? f.certainty : null, criteria: (f.criteria ?? []).map(String), breaks: f.breaks ?? null,
-  effort: EFFORTS.includes(f.effort) ? f.effort : null });
+  effort: EFFORTS.includes(f.effort) ? f.effort : null, reachable_from: (f.reachable_from ?? []).map(String),
+  reachability: ["public", "authenticated", "internal_only", "unknown"].includes(f.reachability) ? f.reachability : null });
 
 // A suspicious line taken over as a pending review comment (rows: its hunk's or file's rows); null when not shown there.
 export function suspectComment(s, rows, id) {
@@ -915,3 +917,30 @@ export const ownerOf = (f, components = []) => (components ?? []).find((c) => c?
 // "Quick wins first": by effort, the ones without one last; within one effort the order stays (severity, file, line).
 export const hasEffort = (list) => list.some((f) => EFFORTS.includes(f.effort));
 export const quickFirst = (list) => { const r = (f) => (EFFORTS.indexOf(f.effort) + EFFORTS.length + 1) % (EFFORTS.length + 1); return [...list].sort((a, b) => r(a) - r(b)); };
+
+// The security view on the mapped analysis (mapReview, ai). The security run writes it to the findings file
+// (`security` {head, at, picture, zones [{id, name, trust, evidence, nodes}], access, crossing [{from, to, edge}],
+// threats}); an older analysis had it in its own answer (architecture.zones, nodes[].zone, edges[].crosses, access).
+// Returns ai with the view in the analysis' old places, so a view reads one shape either way: arch.zones,
+// arch.nodes[].zone, arch.edges[].crosses, access; and threats ([]: none), securityTrigger (the context file's
+// security_trigger {run, reasons, why_not}, or null) and securityFrom {source: "security" | "analysis", head, at,
+// older, why} (null: no zones and no access anywhere). older: the security run looked at another head than `head` (why
+// "head") or at another analysis than this one (why "analysis"): say "from an older run". The security block wins over
+// the analysis' own. Pure; called again with the same ai it starts from the analysis' own picture (ai.own).
+export function withSecurity(ai, security = null, ctx = null, head = null) {
+  if (!ai) return ai;
+  const own = ai.own ?? { arch: ai.arch ?? null, access: ai.access ?? [] }, trigger = ctx?.security_trigger ?? null;
+  if (!security || !["zones", "access", "threats"].some((k) => Array.isArray(security[k]))) {
+    const had = Boolean(own.arch?.zones?.length || own.access?.length);
+    return { ...ai, own, arch: own.arch, access: own.access, threats: [], securityTrigger: trigger, securityFrom: had ? { source: "analysis", head: null, at: null, older: false, why: null } : null };
+  }
+  const zones = (security.zones ?? []).filter((z) => z?.id), zoneOf = new Map(zones.flatMap((z) => (z.nodes ?? []).map((n) => [n, z.id])));
+  // A crossing call by its ends: the security run may have looked at an older picture, where e<k> is another edge.
+  const crosses = new Set((security.crossing ?? []).map((c) => `${c.from}\u0000${c.to}`));
+  const arch = own.arch && { ...own.arch, zones: zones.map(({ id, name, trust, evidence }) => ({ id, name: name ?? id, trust, evidence: evidence ?? "" })),
+    nodes: (own.arch.nodes ?? []).map(({ zone, ...n }) => (zoneOf.has(n.id) ? { ...n, zone: zoneOf.get(n.id) } : n)),
+    edges: (own.arch.edges ?? []).map(({ crosses: _, ...e }) => (crosses.has(`${e.from}\u0000${e.to}`) ? { ...e, crosses: true } : e)) };
+  const why = security.head && head && security.head !== head ? "head" : security.picture && ai.generated && security.picture !== ai.generated ? "analysis" : null;
+  return { ...ai, own, arch, access: security.access ?? [], threats: security.threats ?? [], securityTrigger: trigger,
+    securityFrom: { source: "security", head: security.head ?? null, at: security.at ?? null, older: Boolean(why), why } };
+}

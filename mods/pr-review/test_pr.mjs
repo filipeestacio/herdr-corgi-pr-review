@@ -411,7 +411,7 @@ console.log("ok");
   assert.deepEqual([old.unlinked, old.components, old.componentCounts, old.access, old.steps[0].questionFiles], [[], [], null, [], [""]]);
   const of = old.steps[0].findings[0];
   assert.match(of.id, /^a[0-9a-f]+$/);
-  assert.deepEqual(findingFacts(of), { impact: null, effect: "", preconditions: [], certainty: null, criteria: [], breaks: null, effort: null });
+  assert.deepEqual(findingFacts(of), { impact: null, effect: "", preconditions: [], certainty: null, criteria: [], breaks: null, effort: null, reachable_from: [], reachability: null });
   const now = mapReview({ unlinked: ["c2"], components: [{ name: "Queue", status: "new" }], component_counts: { new: 1, changed: 0, no_owner: 1, codeowners: false }, access: [{ resource: "Api", public: true }],
     steps: [{ title: "s", hunks: ["h1"], check_questions: ["", "q1?", "q2?"], question_files: ["x.py", "a.py", ""],
       suggestions: [{ hunk: "h1", line: 2, side: "new", severity: "low", category: "availability", text: "No retry. Add one." }],
@@ -431,9 +431,9 @@ console.log("ok");
   const m = mergeFindings([sec, { ...nf, severity: "medium" }], now.suspects);
   assert.deepEqual(m.findings.map((f) => [f.file, f.line, f.severity, f.reviewer, f.category]), [["a.py", 9, "high", "security", undefined], ["a.py", 2, "low", "ai", "availability"]]);
   assert.deepEqual(m.notes, []);
-  assert.deepEqual(findingFacts(m.findings[0]), { impact: "unauthorized_access", effect: "Anyone reads it.", preconditions: ["redelivery"], certainty: "confirmed", criteria: ["c1"], breaks: { from: "n1", to: "n2", edge: "e5" }, effort: null });
+  assert.deepEqual(findingFacts(m.findings[0]), { impact: "unauthorized_access", effect: "Anyone reads it.", preconditions: ["redelivery"], certainty: "confirmed", criteria: ["c1"], breaks: { from: "n1", to: "n2", edge: "e5" }, effort: null, reachable_from: [], reachability: null });
   assert.ok(m.findings[0].ids.includes(now.asks[0].findings[0]), "an ask finds its finding through ids");
-  assert.deepEqual(findingFacts(m.findings[1]), { impact: null, effect: "", preconditions: [], certainty: null, criteria: [], breaks: null, effort: null });
+  assert.deepEqual(findingFacts(m.findings[1]), { impact: null, effect: "", preconditions: [], certainty: null, criteria: [], breaks: null, effort: null, reachable_from: [], reachability: null });
   // Reviewer runs: the state as written, or derived for an entry from before it was.
   const runs = runsOf({ a: { busy: true, started: "t" }, b: { at: "t", count: 0 }, c: { error: "boom", at: "t" }, d: { state: "failed", error: "x" }, e: { state: "done", scope: { read: ["a.py"], checked: [], skipped: [] }, at: "t" }, f: {} });
   assert.deepEqual(Object.values(runs).map((r) => r.state), ["running", "done", "failed", "failed", "done", null]);
@@ -566,4 +566,50 @@ console.log("ok");
   assert.deepEqual(quickFirst(m.findings).map((f) => f.line), [11, 9, 3, 7]);
   assert.deepEqual([hasEffort(m.findings), hasEffort(m.findings.slice(0, 2))], [true, false]);
   console.log("ok findings tab");
+}
+
+// The security view: the security run's block (findings file) in the analysis' old places, else the analysis' own
+// (an older cache). Data cut from the demo PR's fixtures: analysis-split / findings-split and analysis-zones.
+{
+  const { withSecurity, mapReview, mergeFindings } = await import("./pr.js");
+  const node = (id) => ({ id, label: id }), edge = ([from, to]) => ({ from, to, label: "" });
+  const split = { title: "T", architecture: { groups: [], nodes: ["handler", "consumer", "reminders", "status", "events", "store", "mailer", "sqs"].map(node),
+    edges: [["handler", "consumer"], ["reminders", "mailer"], ["reminders", "status"], ["status", "events"], ["events", "sqs"], ["sqs", "consumer"], ["consumer", "mailer"], ["consumer", "store"]].map(edge) },
+    steps: [{ title: "Events", hunks: [], findings: [] }, { title: "Front desk handler", depends_on: ["Events"], hunks: [], findings: [] }] };
+  const head = "ccddf9524aec9c46d338d296bacce38d994af5fb", generated = "2026-11-14T12:57:55.771992+01:00";
+  const security = { head, at: "2026-11-14T13:03:00+0100", picture: generated,
+    zones: [{ id: "z1", name: "Internet", trust: "public", evidence: "template.yaml:24", nodes: [] }, { id: "z2", name: "Front desk function", trust: "authenticated", evidence: "", nodes: ["handler", "consumer", "reminders", "status", "events", "mailer", "store"] },
+            { id: "z3", name: "Loan events queue", trust: "data", evidence: "", nodes: ["sqs"] }],
+    crossing: [{ from: "events", to: "sqs", edge: "e4" }, { from: "sqs", to: "consumer", edge: "e5" }],
+    access: [{ id: "acc1", resource: "FrontDesk Api (HttpApi)", node: "handler", public: true, opened_by_pr: true }, { id: "acc2", resource: "FrontDesk SQSSendMessagePolicy", node: "sqs", public: false, opened_by_pr: true }],
+    threats: [{ id: "t1", where: { access: "acc1" }, boundary: "Internet → Front desk function", threat: "An empty token passes.", findings: ["e3cec57be283"], result: "finding", note: "" }] };
+  const ctx = { head, security_trigger: { run: true, reasons: [{ file: "template.yaml", line: 21, rule: "permissions", text: "template.yaml changes IAM policies or permissions" }], why_not: null } };
+  const ai = { ...mapReview(split, []), generated };
+  assert.deepEqual(ai.steps.map((s) => s.dependsOn), [[], ["Events"]], "depends_on per layer");
+  const v = withSecurity(ai, security, ctx, head);
+  assert.deepEqual(v.arch.zones.map((z) => [z.id, z.trust]), [["z1", "public"], ["z2", "authenticated"], ["z3", "data"]]);
+  assert.deepEqual(v.arch.nodes.map((n) => n.zone ?? null), ["z2", "z2", "z2", "z2", "z2", "z2", "z2", "z3"]);
+  assert.deepEqual(v.arch.edges.map((e) => Boolean(e.crosses)), [false, false, false, false, true, true, false, false]);
+  assert.deepEqual([v.access.map((r) => r.id), v.threats.map((t) => t.id), v.securityTrigger.run], [["acc1", "acc2"], ["t1"], true]);
+  assert.deepEqual(v.securityFrom, { source: "security", head, at: security.at, older: false, why: null });
+  assert.equal(ai.arch.zones, undefined, "the analysis itself is not changed");
+  assert.deepEqual(withSecurity(v, security, ctx, head), v, "again on its own result: the same");
+  assert.deepEqual([withSecurity(ai, security, ctx, "other").securityFrom.why, withSecurity({ ...ai, generated: "later" }, security, ctx, head).securityFrom.why], ["head", "analysis"], "an older run says so");
+  const moved = withSecurity({ ...ai, arch: { ...ai.arch, edges: [edge(["sqs", "consumer"])] } }, security, null, head);
+  assert.deepEqual([moved.arch.edges[0].crosses, moved.securityTrigger], [true, null], "a crossing call found by its ends, not by e<k>");
+  // An older cache: zones, nodes' zone, crossing edges and access in the analysis' own answer stay, no threats.
+  const zonesAnswer = { architecture: { groups: [], zones: [{ id: "z_net", name: "Internet", trust: "public" }, { id: "z_fd", name: "Front desk", trust: "authenticated" }],
+    nodes: [{ id: "caller", zone: "z_net" }, { id: "handler", zone: "z_fd" }, { id: "store" }], edges: [{ from: "caller", to: "handler", crosses: true }, { from: "handler", to: "store" }] },
+    access: [{ id: "acc1", resource: "FrontDesk HttpApi event", node: "handler" }], steps: [] };
+  const old = withSecurity(mapReview(zonesAnswer, []), null, null, head);
+  assert.deepEqual([old.arch.zones.length, old.arch.nodes[0].zone, old.arch.edges[0].crosses, old.access[0].id, old.threats, old.securityFrom.source], [2, "z_net", true, "acc1", [], "analysis"]);
+  assert.equal(withSecurity(mapReview({ steps: [] }, []), null, null).securityFrom, null, "nothing about security anywhere");
+  // The security block wins: the old zones go, a node outside every zone has none.
+  const both = withSecurity(mapReview(zonesAnswer, []), { head, zones: [{ id: "a", trust: "public", nodes: ["store"] }], crossing: [], access: [], threats: [] }, null, head);
+  assert.deepEqual([both.arch.zones.map((z) => z.id), both.arch.nodes.map((n) => n.zone ?? null), both.arch.edges[0].crosses, both.access], [["a"], [null, null, "a"], undefined, []]);
+  // reachable_from, reachability and effort come through on the merged finding from the security run's source.
+  const m = mergeFindings([{ id: "aX", reviewer: "analysis", file: "library/handler.py", line: 9, severity: "high", title: "t", effort: "moderate" },
+    { id: "e3cec57be283", reviewer: "security", file: "library/handler.py", line: 9, severity: "high", title: "Empty token", reachable_from: ["acc1"], reachability: "public", effort: "quick" }]).findings[0];
+  assert.deepEqual([m.reachable_from, m.reachability, m.effort], [["acc1"], "public", "moderate"]);
+  console.log("ok security view");
 }
