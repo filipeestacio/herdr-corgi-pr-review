@@ -13,7 +13,7 @@ import reviewers  # noqa: E402
 sec, code = reviewers.findings_schema("security"), reviewers.findings_schema("claude")
 assert {"zones", "access", "threats"} <= set(sec["required"]) and not {"zones", "access", "threats"} & set(code["properties"])
 assert "ref" in sec["properties"]["findings"]["items"]["required"] and "reachability" not in code["properties"]["findings"]["items"]["properties"]
-for part in ("zones: the trust zones", "auth_kind (none:", "threats: a threat model", "none to fill a list", "without an authorizer"):
+for part in ("zones: the trust zones", "auth_kind (none:", "threats: a threat model", "at least one entry for each of them", "gates: the check", "principal_kind (internet", "without an authorizer"):
     assert part in sec["description"] and part not in code["description"], part
 
 # A reviewer reads someone else's code: only the checkout, read-only git, no network, and nothing that is not allowed.
@@ -70,7 +70,14 @@ answer = {
                 {"where": {"from": "cron", "to": "worker"}, "boundary": "x", "threat": "Unchanged call.", "findings": [], "result": "not_checked"},
                 {"where": {"access": "acc3"}, "boundary": "Internet → Docs", "threat": "", "findings": [], "result": "not_checked"},
                 {"where": {"from": "client", "to": "api"}, "boundary": "Internet → API", "threat": "Says finding, names none.", "findings": ["f7"], "result": "finding"},
-                {"where": {}, "boundary": "", "threat": "Nowhere.", "findings": [], "result": "not_checked"}]}
+                {"where": {}, "boundary": "", "threat": "Nowhere.", "findings": [], "result": "not_checked"},
+                {"where": {"from": "queue", "to": "worker"}, "boundary": "Queue → Worker", "threat": "A forged message.", "stride": "T", "findings": [], "result": "mitigated",
+                 "evidence": "worker.py:3", "goal": "Mail any member."}],
+    "gates": [{"where": {"access": "acc1"}, "principal": "anyone", "check": "token", "at": "lib/handler.py:9", "source": "code", "holds_if": "FRONT_DESK_TOKEN is set", "carries": ["Authorization header"]},
+              {"where": {"from": "handler", "to": "queue"}, "principal": "FrontDesk role", "check": "iam", "at": "template.yaml:30", "source": "config", "holds_if": "", "carries": ["body.id"]},
+              {"where": {"from": "api", "to": "handler"}, "principal": "anyone", "check": "none", "at": "template.yaml:24", "source": "config", "holds_if": "", "carries": ["body"]},
+              {"where": {"from": "client", "to": "api"}, "principal": "x", "check": "none", "at": "", "source": "config", "holds_if": "", "carries": []},
+              {"where": {"access": "acc2"}, "principal": "x", "check": "magic", "at": "", "source": "code", "holds_if": "", "carries": []}]}
 f = lambda **kw: {"file": "lib/handler.py", "line": 9, "impact": "edge_case", **kw}  # noqa: E731
 findings = [f(id="s1", ref="f1", title="token check fails open", impact="unauthorized_access"),
             f(id="s2", ref="f2", title="by its node, above its line", line=30),
@@ -92,15 +99,28 @@ assert got["unused grant"] == (["acc2"], "internal_only"), "an access row in the
 assert got["by the component above it"] == (["acc1"], "authenticated")
 assert not any("ref" in x for x in findings), "the refs are the model's, the ids stay"
 t = v["threats"]
-assert [(x["id"], x["where"]) for x in t] == [("t1", {"access": "acc1"}), ("t2", {"from": "handler", "to": "queue", "edge": "e3"})], \
-    "an unchanged grant, a call within one trust level, an unchanged call, an empty threat, a call that crosses nothing and no place: all go"
-assert (t[0]["findings"], t[0]["result"]) == (["s1"], "finding"), "findings by ref; a threat with a finding is one"
-assert (t[1]["findings"], t[1]["result"], t[1]["note"]) == ([], "checked_clean", "id checked")
+assert [(x["id"], x["where"], x["result"], x.get("derived", False)) for x in t] == [
+    ("t1", {"access": "acc1"}, "finding", False), ("t2", {"from": "handler", "to": "queue", "edge": "e3"}, "not_assessed", False),
+    ("t3", {"from": "queue", "to": "worker", "edge": "e4"}, "mitigated", False),
+    ("t4", {"access": "acc4"}, "not_assessed", True), ("t5", {"from": "api", "to": "handler", "edge": "e1"}, "not_assessed", True)], \
+    "an unchanged grant, a call within one trust level, an unchanged call, an empty threat and no place go; every new crossing has an entry"
+assert (t[0]["findings"], t[0]["stride"]) == (["s1"], "") and (t[2]["stride"], t[2]["goal"], t[2]["evidence"]) == ("T", "Mail any member.", "worker.py:3"), \
+    "findings by ref; mitigated keeps its evidence; mitigated without evidence (t2, an older checked_clean) is not assessed"
+assert t[4]["boundary"] == "Internet → Front desk" and t[3]["threat"] == "No threat was named for this crossing."
+assert [(g["where"], g["check"], g["source"]) for g in v["gates"]] == [({"access": "acc1"}, "token", "code"), ({"from": "handler", "to": "queue", "edge": "e3"}, "iam", "config"),
+                                                                      ({"from": "api", "to": "handler", "edge": "e1"}, "none", "config")], "a gate at no crossing or with an unknown check goes"
+assert v["effective_zones"] == [{"node": "handler", "drawn": "authenticated", "effective": "public", "where": {"from": "api", "to": "handler", "edge": "e1"}}], \
+    "nothing checks the call into handler: it stands in its caller's zone; acc1's check in code leaves api public, as drawn"
+code_gate = reviewers.security_view({**answer, "gates": [{**answer["gates"][0], "where": {"from": "api", "to": "handler"}, "check": "token", "source": "code"}]}, [], pic, changed)
+assert [z["effective"] for z in code_gate["effective_zones"]] == ["public"], "a check in the card's own code: the card is as exposed as its caller"
 assert reviewers.security_view({"threats": [answer["threats"][6]]}, [], {"architecture": {"nodes": pic["architecture"]["nodes"], "edges": pic["architecture"]["edges"]}}, None)["threats"] == [], \
     "no zones: no call crosses a boundary"
-lone = reviewers.security_view({"access": [{"resource": "Api", "at": "t.yaml:3"}], "threats": [{"where": {"access": "acc1"}, "threat": "x", "result": "finding", "findings": []}]}, [], {}, None)
-assert "opened_by_pr" not in lone["access"][0] and lone["threats"][0]["result"] == "not_checked", "no diff: the row stays; a finding result needs a finding"
-assert reviewers.security_view({}, [], {}, {}) == {"zones": [], "access": [], "crossing": [], "threats": []}
+lone = reviewers.security_view({"access": [{"resource": "Api", "at": "t.yaml:3", "principal": "anyone", "principal_kind": "robot", "change": "added"}],
+                                "threats": [{"where": {"access": "acc1"}, "threat": "x", "result": "finding", "findings": []}]}, [], {}, None)
+assert "opened_by_pr" not in lone["access"][0] and "principal_kind" not in lone["access"][0] and lone["access"][0]["change"] == "added"
+assert [x["result"] for x in lone["threats"]] == ["not_assessed"], "no diff: the row stays; a finding result needs a finding"
+assert reviewers.security_view({"access": [{"resource": "Old", "at": "t.yaml:3", "change": "unchanged"}]}, [], {}, {"t.yaml": {3}})["threats"] == [], "an unchanged grant needs no entry"
+assert reviewers.security_view({}, [], {}, {}) == {"zones": [], "access": [], "crossing": [], "gates": [], "threats": [], "effective_zones": []}
 
 # The view lands in the findings file next to the runs; a run without one leaves it.
 file = home / "findings" / "123.json"

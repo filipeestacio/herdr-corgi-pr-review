@@ -600,6 +600,8 @@ console.log("ok");
   assert.deepEqual(v.arch.edges.map((e) => Boolean(e.crosses)), [false, false, false, false, true, true, false, false]);
   assert.deepEqual([v.access.map((r) => r.id), v.threats.map((t) => t.id), v.securityTrigger.run], [["acc1", "acc2"], ["t1"], true]);
   assert.deepEqual(v.securityFrom, { source: "security", head, at: security.at, older: false, why: null });
+  const s2 = withSecurity(ai, { ...security, gates: [{ where: { access: "acc1" }, check: "token", source: "code" }], effective_zones: [{ node: "handler", drawn: "authenticated", effective: "public" }] }, ctx, head);
+  assert.deepEqual([s2.gates.length, s2.effectiveZones[0].effective, v.gates, v.effectiveZones], [1, "public", [], []], "gates and effective zones of the security run; an older block has none");
   assert.equal(ai.arch.zones, undefined, "the analysis itself is not changed");
   assert.deepEqual(withSecurity(v, security, ctx, head), v, "again on its own result: the same");
   assert.deepEqual([withSecurity(ai, security, ctx, "other").securityFrom.why, withSecurity({ ...ai, generated: "later" }, security, ctx, head).securityFrom.why], ["head", "analysis"], "an older run says so");
