@@ -418,3 +418,10 @@ assert.equal(oneSided(rowsOf("-+")), false, "a line changed");
     assert.equal(solidOver("rgb(0,0,0)", "#ffffff80"), "#ffffff80", "an unknown base: unchanged");
   }
 }
+
+// ---- the PR list: at most three marks, security first
+import { rowMarks } from "./views.js";
+assert.deepEqual(rowMarks({ top: "high", security: true }, { priority: 1, type: "Feature", chips: ["High security risk", "Feature", "Low effort"] }).map((m) => m.text), ["⛨ high", "P1", "Feature"]);
+assert.deepEqual(rowMarks({ top: "medium", security: false }, null).map((m) => [m.text, m.security]), [["medium", false]]);
+assert.deepEqual(rowMarks(null, { priority: 3, type: "Docs" }).map((m) => m.text), ["P3", "Docs"]);
+assert.equal(rowMarks({ top: "low" }, { priority: 2, type: "Fix" }).length, 3);

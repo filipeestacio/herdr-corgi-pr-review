@@ -459,3 +459,11 @@ export function solidOver(base, over) {
   const a = o[3] / 255, hex = (v) => Math.round(v).toString(16).padStart(2, "0");
   return "#" + [0, 1, 2].map((k) => hex(o[k] * a + b[k] * (1 - a))).join("");
 }
+
+// A PR row's marks in the PR list (main.js), at most three by weight: the highest open severity, with ⛨ when an open
+// finding is about security (one mark, the only red one), then the priority, then the type. Effort is left out: the
+// review itself has no "Review effort" either.
+export function rowMarks(risk, tri) {
+  return [risk?.top && { text: `${risk.security ? "⛨ " : ""}${risk.top}`, security: Boolean(risk.security), kind: "risk" },
+    tri && { text: `P${tri.priority}`, kind: "priority" }, tri?.type && { text: tri.type, kind: "type" }].filter(Boolean).slice(0, 3);
+}
