@@ -11,8 +11,9 @@ For the head (and the base, when given) the runner:
 - copies the script there and runs it as `python3 -I <script> <export>` from that folder, with `env -i` (PATH, a
   temporary HOME and TMPDIR, nothing else: no AWS_*, GH_TOKEN, context variables);
 - on macOS under `sandbox-exec`: no network, writes only in its own temporary folder, nothing read from the user's home,
-  no new processes; on Linux under bubblewrap (`bwrap`: no network, the whole file system read-only, the user's home an
-  empty tmpfs, only its own temporary folder writable, its own PID namespace that dies with the runner); without
+  no new processes; on Linux under bubblewrap (`bwrap`: no namespace shared, no capability, only the system folders and
+  the interpreter's own folders read-only, empty tmpfs over /tmp and /run, only its own temporary folder writable,
+  socket(AF_UNIX) refused by seccomp, dead with the runner); without
   either it still runs and says so
   (`network_barrier: false`: the review then asks before every probe);
 - stops it after 30 s, keeps at most 4 KB of its output and blacks out e-mail addresses and token patterns.
@@ -27,11 +28,14 @@ import datetime as dt
 import io
 import json
 import os
+import platform
 import pwd
 import re
 import shutil
+import struct
 import subprocess
 import sys
+import sysconfig
 import tarfile
 import tempfile
 import threading
@@ -96,37 +100,91 @@ def user_home():
     return os.path.realpath(pwd.getpwuid(os.getuid()).pw_dir)  # from the account, not from $HOME
 
 
+def interp_dirs():
+    """The interpreter's own folders a probe needs (sysconfig: the standard library, its compiled modules, the
+    executable's folder, the folder of libpython), never its whole prefix."""
+    p = sysconfig.get_paths()
+    dirs = [p.get("stdlib"), p.get("platstdlib"), os.path.dirname(os.path.realpath(sys.executable)), sysconfig.get_config_var("LIBDIR")]
+    return [os.path.realpath(d) for d in dict.fromkeys(dirs) if d]
+
+
+def above(dirs, hidden):
+    """The dirs that are a hidden folder or one above it: making them readable again would show the hidden one."""
+    n = os.path.realpath  # also for a path that does not exist: "/x/", "/x/." and links in its existing part resolve alike
+    return [d for d in dirs if any(n(h) == n(d) or n(h).startswith(n(d).rstrip(os.sep) + os.sep) for h in hidden)]
+
+
 def barrier():
     """How the script is fenced in here: sandbox-exec (macOS), bwrap (Linux, when it is installed and may make its
     namespaces) or none. A network namespace alone (unshare -rn) is not enough: it leaves the files readable and
-    writable, so it counts as none and the review asks before every probe."""
+    writable, so it counts as none and the review asks before every probe. Also none when the interpreter's folders
+    are the user's home or above it: they could not be shown without showing the home."""
+    if above(interp_dirs(), [user_home()]):
+        return "none"
     if sys.platform == "darwin" and shutil.which("sandbox-exec"):
         return "sandbox-exec"
-    if sys.platform.startswith("linux") and shutil.which("bwrap") and subprocess.run(["bwrap", "--unshare-all", "--die-with-parent", "--ro-bind", "/", "/", "true"], capture_output=True).returncode == 0:
-        return "bwrap"
+    if sys.platform.startswith("linux") and shutil.which("bwrap"):
+        root = tempfile.mkdtemp(prefix="pr-review-probe-check-")
+        try:
+            trial = subprocess.run([*bwrap_args(root), os.path.realpath(sys.executable), "-I", "-c", "pass"], capture_output=True, timeout=30)
+            return "bwrap" if trial.returncode == 0 else "none"
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            return "none"
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
     return "none"
 
 
-def bwrap_args(root, extra_deny=()):
-    """Linux: no namespace shared (network, PID, IPC, UTS, user), the file system read-only, the user's home (and the
-    extra folders) hidden behind an empty tmpfs, only root writable, the interpreter's own files readable again when
-    they sit in the home; the script dies with the runner and gets its own session (no terminal to inject into)."""
+# Linux: what a probe sees of the machine, read-only (each only if it exists): the system's programs and libraries and
+# the few files of /etc the loader and the clock need. Not /: that would show /run, /tmp and their sockets
+# (docker.sock, the session bus) and every user's files.
+SYSTEM_RO = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/lib32", "/etc/ld.so.cache", "/etc/ld.so.conf", "/etc/ld.so.conf.d", "/etc/localtime", "/etc/alternatives"]
+EMPTY = ["/tmp", "/var/tmp", "/run", "/var/run", "/dev/shm"]  # empty tmpfs: no socket of the machine in them
+
+
+def bwrap_args(root, extra_deny=(), dirs=None):
+    """Linux: no namespace shared (network, PID, IPC, UTS, user, cgroup), no capability, a new session (no terminal to
+    type into), dead with the runner; only the system folders above and the interpreter's own folders, read-only;
+    empty tmpfs where sockets live; root (the probe's own folder) the one writable place. The user's home and the extra
+    folders are simply not there. Refuses (ValueError) an interpreter folder that is a hidden one or above it."""
     hidden = [user_home(), *[os.path.realpath(d) for d in extra_deny]]
-    py = [os.path.realpath(x) for x in (sys.base_prefix, sys.prefix)]
-    again = [x for x in dict.fromkeys(py) if any(x == h or x.startswith(h + os.sep) for h in hidden)]
-    return ["bwrap", "--unshare-all", "--die-with-parent", "--new-session", "--ro-bind", "/", "/", *[a for h in hidden for a in ("--tmpfs", h)],
-            *[a for x in again for a in ("--ro-bind", x, x)], "--bind", root, root, "--dev", "/dev", "--proc", "/proc"]
+    dirs = interp_dirs() if dirs is None else dirs
+    if above(dirs, hidden):
+        raise ValueError(f"the interpreter's folder {above(dirs, hidden)[0]} would show the home")
+    ro = [a for d in [*SYSTEM_RO, *dirs] for a in ("--ro-bind-try", d, d)]
+    return ["bwrap", "--unshare-all", "--die-with-parent", "--new-session", "--cap-drop", "ALL", *ro,
+            "--dev", "/dev", "--proc", "/proc", *[a for d in EMPTY for a in ("--tmpfs", d)], "--bind", root, root]
+
+
+# seccomp (Linux), on top: socket(AF_UNIX, …) fails with EACCES, so nothing in the probe can talk to a local service
+# even if a socket were visible. Classic BPF over struct seccomp_data {int nr; u32 arch; u64 ip; u64 args[6]}.
+# ponytail: x86_64 and aarch64 only (another CPU: no filter, the folders above still hide the sockets); the x32 ABI is
+# not filtered.
+SECCOMP_ARCH = {"x86_64": (0xC000003E, 41), "amd64": (0xC000003E, 41), "aarch64": (0xC00000B7, 198), "arm64": (0xC00000B7, 198)}
+
+
+def no_unix_sockets(machine=None):
+    arch = SECCOMP_ARCH.get((machine or platform.machine()).lower())
+    if not arch:
+        return None
+    audit, nr = arch
+    LD, JEQ, RET, ALLOW, EACCES = 0x20, 0x15, 0x06, 0x7FFF0000, 0x00050000 | 13
+    prog = [(LD, 0, 0, 4), (JEQ, 0, 5, audit), (LD, 0, 0, 0), (JEQ, 0, 3, nr), (LD, 0, 0, 16), (JEQ, 0, 1, 1), (RET, 0, 0, EACCES), (RET, 0, 0, ALLOW)]
+    return b"".join(struct.pack("=HBBI", *x) for x in prog)
 
 
 def profile(root, extra_deny=()):
-    """macOS: everything as usual, except: no network, no new process, writes only under root, and nothing read from
-    the user's home (nor from the extra folders) but root and the interpreter's own files."""
+    """macOS: everything as usual, except: no network (unix sockets too), no new process, writes only under root, and
+    nothing read from the user's home (nor from the extra folders) but root and the interpreter's own folders, never one
+    that is a hidden folder or above it."""
     q = lambda p: json.dumps(os.path.realpath(p))  # noqa: E731  (a quoted SBPL string)
-    deny = [user_home(), *extra_deny]
-    allow = [root, sys.base_prefix, sys.prefix, os.path.dirname(os.path.realpath(sys.executable))]
+    deny = [user_home(), *[os.path.realpath(d) for d in extra_deny]]
+    dirs = interp_dirs()
+    if above(dirs, deny):
+        raise ValueError(f"the interpreter's folder {above(dirs, deny)[0]} would show the home")
     return "\n".join(["(version 1)", "(allow default)", "(deny network*)", "(deny process-fork)", "(deny file-write*)",
                       f"(allow file-write* (subpath {q(root)}) (literal \"/dev/null\") (literal \"/dev/dtracehelper\"))",
-                      *[f"(deny file-read* (subpath {q(d)}))" for d in deny], *[f"(allow file-read* (subpath {q(a)}))" for a in allow]])
+                      *[f"(deny file-read* (subpath {q(d)}))" for d in deny], *[f"(allow file-read* (subpath {q(a)}))" for a in [root, *dirs]]])
 
 
 def run_one(script, export_dir, root, how, limit):
@@ -138,10 +196,18 @@ def run_one(script, export_dir, root, how, limit):
     extra = [p for p in os.environ.get("PROBE_EXTRA_DENY", "").split(os.pathsep) if p]  # tests: more folders it may not read
     if how == "sandbox-exec":
         cmd = ["sandbox-exec", "-p", profile(root, extra), *cmd]
-    elif how == "bwrap":
-        cmd = [*bwrap_args(root, extra), *cmd]
+    fds = ()
+    if how == "bwrap":
+        prog = no_unix_sockets()
+        if prog:  # the filter goes in through a pipe, which bwrap reads before the script starts
+            r_fd, w_fd = os.pipe()
+            os.write(w_fd, prog), os.close(w_fd)
+            fds = (r_fd,)
+        cmd = [*bwrap_args(root, extra), *(["--seccomp", str(fds[0])] if fds else []), *cmd]
     started, chunks, size = time.monotonic(), [], [0]
-    p = subprocess.Popen(cmd, cwd=export_dir, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+    p = subprocess.Popen(cmd, cwd=export_dir, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True, pass_fds=fds)
+    for fd in fds:
+        os.close(fd)
 
     def read():  # keep the first READ_CAP bytes, stop the script once it writes more
         while True:

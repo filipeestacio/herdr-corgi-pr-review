@@ -68,6 +68,9 @@ if probe.barrier() == "sandbox-exec":
     # One hostile probe tries everything at once and names what got through: the network (a listener on this machine,
     # a name lookup and a connection out), writes outside its own folder (next to the checkout, in another folder),
     # reads from a denied folder and from the user's home, new processes (a fork bomb, a spawned command).
+    usock = tempfile.mkdtemp(dir="/tmp") + "/s"  # a short path: unix socket paths are short
+    usrv = socket.socket(socket.AF_UNIX)
+    usrv.bind(usock), usrv.listen(1)
     srv = socket.socket()
     srv.bind(("127.0.0.1", 0)), srv.listen(5)
     threading.Thread(target=lambda: [srv.accept() for _ in range(5)], daemon=True).start()
@@ -91,6 +94,11 @@ def bomb():
             os._exit(0)
 tries("fork", bomb)
 tries("spawn", lambda: subprocess.run(["/bin/echo", "hi"]))
+def unix():
+    u = socket.socket(socket.AF_UNIX)
+    u.settimeout(3)
+    u.connect({usock!r})
+tries("unix socket", unix)
 open("inside.txt", "w").write("fine")
 print("reproduced got through: " + ", ".join(got) if got else "not_reproduced all blocked")
 """
@@ -142,7 +150,7 @@ assert subprocess.run([sys.executable, ME, "--barrier"], capture_output=True, te
 import types  # noqa: E402
 def fence(platform, tools, works=True):
     saved = (probe.sys, probe.shutil.which, probe.subprocess.run)
-    probe.sys = types.SimpleNamespace(platform=platform)
+    probe.sys = types.SimpleNamespace(platform=platform, executable=sys.executable, prefix=sys.prefix, base_prefix=sys.base_prefix)
     probe.shutil.which = lambda name: f"/usr/bin/{name}" if name in tools else None
     calls = []
     probe.subprocess.run = lambda args, **k: calls.append(args) or types.SimpleNamespace(returncode=0 if works else 1)
@@ -157,13 +165,66 @@ assert how == "bwrap" and calls[0][:3] == ["bwrap", "--unshare-all", "--die-with
 assert fence("linux", {"bwrap"}, works=False)[0] == "none", "bwrap that may not make namespaces"
 assert fence("linux", {"unshare"})[0] == "none", "a network namespace alone is no fence"
 assert fence("win32", {"bwrap"})[0] == "none"
-# The bwrap call: nothing shared, read-only system, the home hidden (the interpreter bound again if it lives there),
-# only the probe's own folder writable, a new session, death with the runner.
-args = probe.bwrap_args("/tmp/pr-review-probe-x", ["/srv/secret"])
+# The bwrap call: nothing shared, no capability, a new session, death with the runner; not / but only the system folders
+# and the interpreter's own ones, read-only; empty tmpfs over the places of sockets; the probe's folder writable last.
 home = probe.user_home()
-for i, x in enumerate(["bwrap", "--unshare-all", "--die-with-parent", "--new-session", "--ro-bind", "/", "/"]):
-    assert args[i] == x, (i, args)
-assert ["--tmpfs", home] == args[args.index(home) - 1:args.index(home) + 1] and ["--tmpfs", "/srv/secret"] == args[args.index("/srv/secret") - 1:args.index("/srv/secret") + 1]
-assert args[-7:] == ["--bind", "/tmp/pr-review-probe-x", "/tmp/pr-review-probe-x", "--dev", "/dev", "--proc", "/proc"] and "--share-net" not in args
-assert args.index("--bind") > max(i for i, x in enumerate(args) if x == "--tmpfs"), "the writable folder is mounted after the hidden ones"
+py = ["/opt/py/lib/python3.12", "/opt/py/bin"]
+args = probe.bwrap_args("/tmp/pr-review-probe-x", ["/srv/secret"], dirs=py)
+pairs = list(zip(args, args[1:], args[2:]))
+assert args[:6] == ["bwrap", "--unshare-all", "--die-with-parent", "--new-session", "--cap-drop", "ALL"], args
+assert ("--ro-bind", "/", "/") not in pairs and ("--ro-bind-try", "/", "/") not in pairs and "--share-net" not in args, "/ is never bound"
+assert home not in args and "/srv/secret" not in args, "the home and the extra folders are simply not there"
+for d in ["/usr", "/lib", "/etc/ld.so.cache", *py]:
+    assert ("--ro-bind-try", d, d) in pairs, d
+for d in probe.EMPTY:
+    assert args[args.index(d) - 1] == "--tmpfs" and args.index(d) > args.index("--dev"), d
+assert args[-3:] == ["--bind", "/tmp/pr-review-probe-x", "/tmp/pr-review-probe-x"]
+# An interpreter folder that is the home or above it would show the home again: refused, and the machine counts as none.
+for bad in ([home], [os.path.dirname(home)], ["/"], [*py, home + "/"]):
+    try:
+        probe.bwrap_args("/tmp/x", dirs=bad)
+        raise AssertionError(bad)
+    except ValueError:
+        pass
+assert probe.bwrap_args("/tmp/x", dirs=[home + "/.pyenv/versions/3.12/lib/python3.12"]), "a folder inside the home is fine: only it shows"
+assert probe.above(["/", "/home", "/home/ann", "/home/ann/.pyenv/lib", "/opt/py"], ["/home/ann"]) == ["/", "/home", "/home/ann"]
+saved = probe.interp_dirs
+for platform, tools in (("darwin", {"sandbox-exec"}), ("linux", {"bwrap"})):
+    probe.interp_dirs = lambda: ["/opt/py/bin", os.path.dirname(home)]
+    try:
+        assert fence(platform, tools)[0] == "none", platform
+    finally:
+        probe.interp_dirs = saved
+probe.interp_dirs = lambda: ["/"]
+try:
+    probe.profile("/tmp/x")
+    raise AssertionError("profile with / readable")
+except ValueError:
+    pass
+finally:
+    probe.interp_dirs = saved
+assert "(subpath \"/\")" not in probe.profile("/tmp/x") and "base_prefix" not in probe.profile("/tmp/x")
+# seccomp: socket(AF_UNIX, …) fails with EACCES on x86_64 and aarch64, everything else passes; another CPU: no filter.
+def bpf(prog, arch, nr, arg0):
+    """A small classic-BPF interpreter for the three instructions the filter uses."""
+    import struct
+    ins = [struct.unpack("=HBBI", prog[i:i + 8]) for i in range(0, len(prog), 8)]
+    data = struct.pack("=iIQ6Q", nr, arch, 0, arg0, 0, 0, 0, 0, 0)
+    acc, pc = 0, 0
+    while True:
+        code, jt, jf, k = ins[pc]
+        if code == 0x20:
+            acc = struct.unpack_from("=I", data, k)[0]
+            pc += 1
+        elif code == 0x15:
+            pc += 1 + (jt if acc == k else jf)
+        elif code == 0x06:
+            return k
+for machine, (audit, nr) in (("x86_64", (0xC000003E, 41)), ("aarch64", (0xC00000B7, 198))):
+    prog = probe.no_unix_sockets(machine)
+    assert bpf(prog, audit, nr, 1) == 0x0005000D, machine          # socket(AF_UNIX): EACCES
+    assert bpf(prog, audit, nr, 2) == 0x7FFF0000, machine          # socket(AF_INET): allowed (the namespace has no network)
+    assert bpf(prog, audit, nr + 1, 1) == 0x7FFF0000, machine      # another call with 1 as its first argument
+    assert bpf(prog, 0x40000003, nr, 1) == 0x7FFF0000, machine     # another ABI: not this filter's business
+assert probe.no_unix_sockets("riscv64") is None
 print("ok")
