@@ -161,3 +161,26 @@ export function pastTop(sizes, i, viewH) {
   for (let j = i; j < sizes.length; j++) { if (y + sizes[j] / 2 > want) return j; y += sizes[j]; }
   return sizes.length - 1; // less than a view below it: the list's end, which is as high as it gets
 }
+
+// ---- the review's left column
+
+// The layers in the analysis' order (closest reading first) and in reading order: do the two lists differ? Only then
+// is a switch between them worth showing.
+export const orderDiffers = (steps) => [...steps].sort((a, b) => a.order - b.order).some((s, i) => s !== steps[i]);
+
+// What a layer row or a file row says about its unresolved findings: the highest severity with its count ("2 high"),
+// every severity in words for the tooltip, and how many are security findings. null without findings.
+export function worst(findings) {
+  if (!findings.length) return null;
+  const n = {};
+  for (const f of findings) n[f.severity] = (n[f.severity] ?? 0) + 1;
+  const order = [...SEVERITIES, ...Object.keys(n).filter((k) => !SEVERITIES.includes(k))].filter((k) => n[k]);
+  return { severity: order[0], count: n[order[0]], total: findings.length, label: `${n[order[0]]} ${order[0]}`,
+    words: order.map((k) => `${n[k]} ${k}`).join(", "), security: findings.filter((f) => f.security).length };
+}
+
+// Merge blockers for "Needs your attention": by severity, security first within one severity, else in their order.
+export function byUrgency(blockers, security = () => false) {
+  const rank = (b) => { const i = SEVERITIES.indexOf(b.severity); return i < 0 ? SEVERITIES.length : i; };
+  return blockers.map((b, i) => ({ b, i, sec: security(b) ? 0 : 1 })).sort((x, y) => rank(x.b) - rank(y.b) || x.sec - y.sec || x.i - y.i).map((x) => x.b);
+}
