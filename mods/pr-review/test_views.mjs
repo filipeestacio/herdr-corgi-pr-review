@@ -244,3 +244,20 @@ import { rangeMarks } from "./views.js";
 const mr = [{ kind: " ", number: 7 }, { kind: "-", number: 8 }, { kind: "+", number: 8 }, { kind: "gap" }, { kind: "+", number: 30 }];
 assert.deepEqual([...rangeMarks(mr, [{ line: 8, end: 1e9, mark: "a" }, { line: 7, end: 7, mark: "b" }])], [[7, "b"], [8, "a"], [30, "a"]]);
 assert.equal(rangeMarks(mr, [{ line: 7.5, end: 9, mark: "x" }, { line: 9, end: 7, mark: "x" }, { line: 7, end: Infinity, mark: "x" }, { line: "7", end: 8, mark: "x" }, { line: 7, end: undefined, mark: "x" }]).size, 0);
+
+// The height of a Markdown text: paragraphs, a list and a fenced code block each count, with a gap between blocks.
+import { mdHeight, MD } from "./views.js";
+assert.equal(mdHeight("", 600), 21);
+assert.equal(mdHeight("One line with `code`.", 600), 21);
+assert.equal(mdHeight("One.\n\nTwo.\n\nThree.", 600), 3 * 21 + 2 * MD.GAP);
+assert.equal(mdHeight("Do this:\n\n- one\n- two\n- three", 600, 20), 20 + MD.GAP + 3 * (20 + MD.ITEM_GAP));
+assert.equal(mdHeight("Fix it.\n\n```python\na = 1\nb = 2\nc = 3\n```", 600), 21 + MD.GAP + MD.CODE_PAD + 3 * MD.CODE_LH);
+assert.equal(mdHeight("```suggestion\nreturn 1\n```", 600), MD.CODE_PAD + MD.CODE_LH); // a GitHub suggestion is a code block
+assert.equal(mdHeight("```\nopen to the end", 600), MD.CODE_PAD + MD.CODE_LH);
+// A code line longer than the block wraps; a list item has less room than a paragraph; a heading is taller.
+assert.ok(mdHeight("```\n" + "x".repeat(120) + "\n```", 300) >= MD.CODE_PAD + 4 * MD.CODE_LH);
+const long = "word ".repeat(30).trim();
+assert.ok(mdHeight(`- ${long}`, 300) >= mdHeight(long, 300));
+assert.ok(mdHeight("# Title", 600) > mdHeight("Title", 600));
+// It never gives less than the plain wrapped text does, so nothing that fit before is cut now.
+for (const w of [200, 420, 900]) assert.ok(mdHeight(long, w) >= 21 * wrapCount(long, w));

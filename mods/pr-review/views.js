@@ -240,3 +240,33 @@ export function seqLayout(v, width) {
     .map((e, k) => ({ ...e, n: k + 1, text: transitionText(e), x1: x.get(e.from), x2: x.get(e.to), y: SEQ.HEAD + SEQ.PAD + k * SEQ.ROW }));
   return { cols: nodes.map((n) => ({ ...n, x: x.get(n.id), w: col - 16 })), calls, width: col * nodes.length, height: SEQ.HEAD + 2 * SEQ.PAD + calls.length * SEQ.ROW };
 }
+
+// ---- the height of a Markdown text (review.js: comment and finding cards are rows of the virtual list)
+
+// What TextView.markdown takes at `width` px, in px: the list needs it before it draws, and a row that is too low
+// cuts its text. Counted by block: a paragraph or a heading by its wrapped lines (each source line on its own, which
+// is never fewer than the joined paragraph), a list by its items (indented, a little apart), a fenced code block by
+// its lines (a long one wraps) plus its frame; MD.GAP between blocks. Inline code counts as ordinary letters without
+// narrow ones. lh: the line height, size: the font size of the place. Measured on screenshots at 13.5 px.
+export const MD = { GAP: 10, CODE_LH: 24, CODE_PAD: 48, CODE_CH: 8.8, CODE_IN: 32, ITEM_IN: 24, ITEM_GAP: 4, HEAD: 1.5 };
+const codeWide = (line) => line.replace(/`([^`]*)`/g, (_m, code) => `aa${code.replace(/\S/g, "a")}`);
+const codeRows = (line, width) => { const n = (line.length * MD.CODE_CH) / Math.max(40, width - MD.CODE_IN); return n <= 1 ? 1 : Math.ceil(n * 1.15); }; // it wraps at words
+export function mdHeight(text, width, lh = 21, size = 13.5) {
+  const lines = String(text ?? "").replace(/\r/g, "").split("\n"), blocks = [];
+  let open = false; // a paragraph or a list goes on
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i], fence = /^\s*(```|~~~)/.exec(l);
+    if (fence) {
+      let n = 0;
+      for (i++; i < lines.length && !lines[i].trimStart().startsWith(fence[1]); i++) n += codeRows(lines[i], width);
+      blocks.push(MD.CODE_PAD + Math.max(1, n) * MD.CODE_LH); open = false;
+    } else if (!l.trim()) open = false;
+    else {
+      const head = /^\s*#{1,6}\s+/.test(l), item = /^\s*(?:[-*+]|\d+[.)])\s+/.test(l), indent = item || (open && /^\s{2,}/.test(l)) ? MD.ITEM_IN : 0;
+      const h = head ? MD.HEAD * lh * wrapCount(l, width, size * MD.HEAD) : lh * wrapCount(codeWide(l), width - indent, size) + (item ? MD.ITEM_GAP : 0);
+      if (open && !head) blocks[blocks.length - 1] += h; else blocks.push(h);
+      open = !head;
+    }
+  }
+  return Math.ceil(blocks.reduce((a, b) => a + b, lh * !blocks.length) + MD.GAP * Math.max(0, blocks.length - 1));
+}

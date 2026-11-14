@@ -427,7 +427,15 @@ export function findingStatus(f, status, reports, head, lineNow) {
 const rank = (x) => RISKS.indexOf(x.severity);
 const RAISE = new Set(["security", "availability"]);
 // A suggestion's text as a finding's title (its first sentence) and detail (the rest).
-const titled = (text) => { const m = /^(.{12,160}?)[.;]\s+(.+)$/s.exec(String(text).trim()); return m ? [m[1], m[2]] : [String(text).trim().replace(/\.$/, ""), ""]; };
+// The texts are Markdown: the cut is never inside inline code, and the title is plain (plainText).
+const titled = (text) => {
+  const s = String(text).trim();
+  for (const m of s.matchAll(/[.;]\s+/g)) {
+    if (m.index > 160) break;
+    if (m.index >= 12 && s.slice(0, m.index).split("`").length % 2 === 1) return [plainText(s.slice(0, m.index)), s.slice(m.index + m[0].length)];
+  }
+  return [plainText(s.replace(/\.$/, "")), ""];
+};
 
 // Findings (the reviewers' and the analysis') and AI suggestions on the same file and new-side line are one finding:
 // the highest severity leads (its title and text show), every source stays in `sources` with its own severity, and
@@ -768,3 +776,14 @@ export function layoutPlan(review, prReview) {
   return { name: "pr-review", write: prReview == null };
 }
 
+// ---- Markdown texts (findings, suggestions, comments) where one plain line is shown
+
+// A Markdown text as one plain line, for a folded card, a list row or a title: its first paragraph only, without code
+// blocks, list markers, a heading's "#" or a quote's ">", and without the marks of code, bold and links. A text that
+// is nothing but a code block (a GitHub suggestion) gives the block's first line.
+export function plainText(text) {
+  const src = String(text ?? ""), noCode = src.replace(/^[ \t]*(```|~~~)[^\n]*\n[\s\S]*?(?:\n[ \t]*\1[^\n]*|$)/gm, "");
+  const para = noCode.split(/\n[ \t]*\n/).find((p) => p.trim()) ?? src.split("\n").find((l) => l.trim() && !/^[ \t]*(```|~~~)/.test(l)) ?? "";
+  return para.split("\n").map((l) => l.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "").replace(/^\s*(?:#{1,6}\s+|>\s?)/, "")).join(" ")
+    .replace(/`([^`]*)`/g, "$1").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/\s+/g, " ").trim();
+}

@@ -23,7 +23,8 @@ import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview,
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible, pastTop } from "./views.js";
 import { archView, archModel, archLegend, visualsCard, visualCard, statCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
 import { visualPlan } from "./stack.js";
-import { factRows, findingAnchor, rangeMarks, wrapCount, SEVERITY_SCALE } from "./views.js";
+import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCALE } from "./views.js";
+import { plainText } from "./pr.js";
 import { hasSources, archLayout, archBands } from "./arch.js";
 import * as TH from "./threads.js";
 import { leftWidth, rowClick, CHIP_W, ASK_W, keyRoute, scopeLine, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf, rangeLabel, pinAnchor, pinAdd, pinDrop, pinsOf, pinsOn, codePins, drillPush, drillTo, crumbs, drillKey, cachePut, mapDrill, exploreId, exploreIndex, exploreAi, pathOf, lineOf, repoOfRemote, exploreTrust, layersForNode } from "./explore.js";
@@ -279,7 +280,7 @@ export function flowCard(f, t, id, onJump) {
 }
 
 // Markdown markers dropped where a line is drawn as plain text (list rows).
-const plain = (s) => String(s ?? "").replace(/`([^`]*)`/g, "$1").replace(/\*\*([^*]+)\*\*/g, "$1");
+const plain = plainText; // one plain line of a Markdown text: its first paragraph, no code blocks, no marks (pr.js)
 const ago = (iso) => { const m = Math.round((Date.now() - Date.parse(iso)) / 60000); return !Number.isFinite(m) ? "" : m < 60 ? `${m} min ago` : m < 2880 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`; };
 
 
@@ -371,6 +372,11 @@ export const ReviewMode = {
     // The same as their clicks: the ▾ beside the composer's main button, and a finding's card in the diff
     // (finding-card:<finding id> opens or folds it).
     else if (name === "compose-more") this.toggleComposeMore();
+    else if (name === "comment-row") { // comment-row:<id>: a click on that row of the Comments tab (its whole text shows, the diff jumps to it)
+      const r = this.commentRowsNow().find((x) => x.id === arg);
+      if (r) { this.tab = "comments"; this.crow = r.id; this.jumpTo(`${r.file}:${r.line}`, cx); }
+    }
+    else if (name === "note") { const n = this.openSugs().find((x) => `${x.path}:${x.line}` === arg); this.sug = n && this.sug !== n.key ? n.key : null; } // note:<path>:<line>: a click on the AI note there
     else if (name === "finding-card") { const f = this.findingById(arg); if (f) (this.fopen ??= new Map()).set(f.id, !this.findOpen(f)); }
     else if (name === "send") this.sendConfirmed(cx);
     else if (name === "route") this.route = arg; // github | agent: where Submit and single comments go
@@ -830,7 +836,8 @@ export const ReviewMode = {
   // on starts open.
   findOpen(f) { return this.fopen?.get(f.id) ?? Boolean(f.security && ["critical", "high"].includes(f.severity)); },
   // An open card's rows under its title: what the finding claims (views.js factRows), its text and its suggestion.
-  findRows(f) { return [...factRows(f), f.detail && ["Detail", plain(f.detail)], f.suggestion && ["Suggestion", plain(f.suggestion)]].filter(Boolean); },
+  // The texts are Markdown (inline code, paragraphs, a code block in a suggestion) and are drawn as such.
+  findRows(f) { return [...factRows(f), f.detail && ["Detail", f.detail], f.suggestion && ["Suggestion", f.suggestion]].filter(Boolean); },
   // The index (in steps()) of the layer an analysis finding belongs to, or -1.
   layerOf(f) { return f.step ? this.steps().findIndex((s) => s.findings?.some((x) => f.ids.includes(x.id))) : -1; },
   // A layer's findings: the ones the analysis filed in it, and every other finding in one of its files (a reviewer's).
@@ -1766,11 +1773,11 @@ export const ReviewMode = {
     }
     const reply = (r, k) => v_flex().id(`rv-crp-${c.key}-${k}`).ml(22).gap(1).pt(4)
       .child(h_flex().h(20).gap(6).items_center().text_size(11.5).child(avatar(r.author, r.src, 16)).child(div().font_semibold().child(r.author)).when(Boolean(r.status), (e) => e.child(pillC(r.status).id(`rv-crps-${c.key}-${k}`).tooltip(`What the reply reported: ${r.status[0]}`))))
-      .child(div().pl(22).max_h(19 * 8).overflow_hidden().text_size(12.5).line_height(1.5).whitespace_normal().text_color(t.foreground).child(plain(r.text)));
+      .child(div().pl(22).text_size(12.5).line_height(1.5).text_color(t.foreground).child(TextView.markdown(`rv-crm-${c.key}-${k}`, String(r.text ?? ""))));
     const last = it.k !== "th";
     return div().w_full().h(this.sizeOf(it)).pl(GUTTER).when(last, (e) => e.pb(CARD_GAP)).child(stripe(frame(v_flex()).h_full().px(12).pt(2).pb(8).overflow_hidden()
       .when(last, (e) => e.border_b(1).rounded_bl(8).rounded_br(8)).text_size(13.5)
-      .child(div().line_height(1.48).whitespace_normal().text_color(t.foreground).child(c.text))
+      .child(div().line_height(1.48).text_color(t.foreground).child(TextView.markdown(`rv-cbm-${c.key}`, String(c.text ?? ""))))
       .children(c.replies.map(reply))));
   },
 
@@ -2184,20 +2191,22 @@ export const ReviewMode = {
         .child(v_flex().id("rv-comments-left").absolute().inset_0().overflow_y_scroll().p(8).gap(2)
           .when(!rows.length, (e) => e.child(div().p(6).text_size(12.5).text_color(t.muted).whitespace_normal().child(all.length ? "The Show switch in the bar hides these comments." : "Comments you write, send or post show here, with their replies.")))
           .children(files.flatMap((file) => [div().pt(8).pb(2).px(6).text_size(11.5).font_semibold().text_color(t.muted).truncate().child(file),
-            ...rows.filter((r) => r.file === file).map((r) => {
+            ...rows.filter((r) => r.file === file).flatMap((r) => {
               const st = STATE[r.state], mine = r.kind === "pending" || r.kind === "thread";
-              return h_flex().id(`rv-cr-${r.id}`).tooltip("Jump to this comment in the diff").gap(8).items_center().px(6).h(30).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
-                .on_click((_e, cx) => { if (r.kind === "thread") this.openThreads.add(r.id); if (r.kind === "note") (this.openNotes ??= new Set()).add(r.id); this.jumpTo(`${r.file}:${r.line}`, cx); })
+              // A row is one line; the one clicked last shows its whole text under it, as Markdown.
+              const whole = this.crow === r.id ? [div().id(`rv-crw-${r.id}`).ml(68).mr(6).mb(6).px(10).py(6).rounded(6).bg(t.surface).text_size(13).line_height(1.5).child(TextView.markdown(`rv-crwm-${r.id}`, String(r.text ?? "")))] : [];
+              return [h_flex().id(`rv-cr-${r.id}`).tooltip("Jump to this comment in the diff").gap(8).items_center().px(6).h(30).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
+                .on_click((_e, cx) => { this.crow = r.id; if (r.kind === "thread") this.openThreads.add(r.id); if (r.kind === "note") (this.openNotes ??= new Set()).add(r.id); this.jumpTo(`${r.file}:${r.line}`, cx); })
                 .child(div().id(`rv-crb-${r.id}`).tooltip((mine ? "Select to fix this comment with an agent" : "Only your own comments can be selected")).accessibility_label("Select comment").w(14).h(14).flex_none().rounded(3).border_1().border_color(sel.has(r.id) ? t.accent : mine ? t.input : "#00000000").bg(sel.has(r.id) ? t.accent : "#00000000")
                   .flex().items_center().justify_center().text_size(10).text_color(t.accent_foreground).child(sel.has(r.id) ? "✓" : "")
                   .when(mine, (e) => e.on_click((_e, cx) => { this.toggleSel(r.id, cx); cx.stop_propagation(); })))
                 .child(div().w(40).flex_none().text_size(11.5).text_color(t.muted).child(`${r.old ? "−" : ""}${r.line}`))
-                .child(div().flex_1().min_w(0).truncate().text_size(13).child(plain(String(r.text).split("\n")[0])))
+                .child(div().flex_1().min_w(0).truncate().text_size(13).child(plain(r.text)))
                 .when(r.replies > 0, (e) => e.child(div().id(`rv-crr-${r.id}`).tooltip(`${r.replies} replies in this thread`).flex_none().text_size(11.5).text_color(t.muted).child(`↩ ${r.replies}`)))
                 .when(Boolean(r.stale), (e) => e.child(badge(t, "STALE", t.ansi3).id(`rv-crst-${r.id}`).tooltip(STALE_TIP)))
                 .when(Boolean(r.outdated), (e) => e.child(badge(t, "Outdated", t.muted).id(`rv-cro-${r.id}`).tooltip("GitHub marks this comment outdated: the code it was on changed since")))
                 .when(Boolean(r.resolved), (e) => e.child(badge(t, "Resolved", t.ansi2).id(`rv-crv-${r.id}`).tooltip("This thread is resolved on GitHub")))
-                .child(div().id(`rv-crs-${r.id}`).tooltip(STATE_TIP[r.state] ?? st[0]).flex_none().px(6).h(18).flex().items_center().rounded(9).border_1().border_color(t[st[1]] ?? t.muted).text_size(11).text_color(t[st[1]] ?? t.muted).child(st[0]));
+                .child(div().id(`rv-crs-${r.id}`).tooltip(STATE_TIP[r.state] ?? st[0]).flex_none().px(6).h(18).flex().items_center().rounded(9).border_1().border_color(t[st[1]] ?? t.muted).text_size(11).text_color(t[st[1]] ?? t.muted).child(st[0])), ...whole];
             })])))
         .child(Scrollbar.vertical("rv-comments-left").absolute().inset_0()));
   },
@@ -3415,24 +3424,26 @@ export const ReviewMode = {
 
   // Lines a wrapped text takes in a card of the diff column (views.js wrapCount); less: what a label column takes.
   lines(text, less = 0) { return wrapCount(text, (this.listW ?? 900) - GUTTER - 45 - less); },
+  // The height of a Markdown text in such a card (views.js mdHeight).
+  md(text, less = 0) { return mdHeight(text, (this.listW ?? 900) - GUTTER - 45 - less); },
 
   sizeOf(it) {
     if (it.t === "row") return it.src[it.ri].kind === "@" ? 30 : ROW;
-    if (it.t === "step") { const w = Math.min(LAYER_TEXT, (this.listW ?? 900) - 32), qs = it.s.questions; return 48 + 21 * wrapCount(plain(it.s.why), w) + (qs.length ? 26 + qs.reduce((n, q, k) => n + 4 + 21 * wrapCount(plain(this.asked(it.s, q, k)), w - 20), 0) : 0); }
+    if (it.t === "step") { const w = Math.min(LAYER_TEXT, (this.listW ?? 900) - 32), qs = it.s.questions; return 48 + mdHeight(it.s.why, w) + (qs.length ? 26 + qs.reduce((n, q, k) => n + 4 + mdHeight(this.asked(it.s, q, k), w - 20), 0) : 0); }
     if (it.t === "vis") return visualPlan(it.v, (this.listW ?? 900) - 32).h + 8;
-    if (it.t === "sug") return this.sug === it.s.key ? 56 + 21 * this.lines(it.s.reason) : 26;
+    if (it.t === "sug") return this.sug === it.s.key ? 56 + this.md(it.s.reason) : 26;
     if (it.t === "pad") return 60;
     if (it.t === "fold") return it.h;
     if (it.t === "hidden") return 24;
     if (it.t === "ch") return this.cardOf(it).folded ? 28 + 2 * CARD_GAP : CARD_HEAD;
-    if (it.t === "cb") { const c = this.cardOf(it), w = this.cardW(c); return 12 + 20 * this.cardLines(c.text, w) + c.replies.reduce((n, r) => n + 26 + 19 * Math.min(8, this.cardLines(r.text, w - 22)), 0) + (it.k === "th" ? 0 : CARD_GAP); }
+    if (it.t === "cb") { const c = this.cardOf(it), w = this.cardW(c) - 26; return 12 + mdHeight(c.text, w, 20) + c.replies.reduce((n, r) => n + 26 + mdHeight(r.text, w - 44, 19, 12.5), 0) + (it.k === "th" ? 0 : CARD_GAP); }
     if (it.t === "cr") return CARD_REPLY + CARD_GAP;
-    if (it.t === "gh") return 44 + 21 * Math.min(6, this.lines(it.g.body));
+    if (it.t === "gh") return 50 + this.md(it.g.body);
     if (it.t === "compose") return COMPOSE;
     if (it.t === "composeact") return ACT + 4;
     if (it.t === "cact" || it.t === "fact") return ACT;
     if (it.t === "def") return 190;
-    if (it.t === "find") return this.findOpen(it.f) ? 48 + (this.fixLine(it.f) ? 21 : 0) + 21 * this.lines(it.f.title) + this.findRows(it.f).reduce((n, [, v]) => n + 4 + 21 * this.lines(v, FIND_LABEL), 0) : FIND_FOLDED;
+    if (it.t === "find") return this.findOpen(it.f) ? 48 + (this.fixLine(it.f) ? 21 : 0) + 21 * this.lines(it.f.title) + this.findRows(it.f).reduce((n, [, v]) => n + 4 + this.md(v, FIND_LABEL), 0) : FIND_FOLDED;
     return { path: 30, file: 44, gap: 30, note: 30 }[it.t];
   },
 
@@ -3482,7 +3493,7 @@ export const ReviewMode = {
         .child(h_flex().h(20).flex_none().gap(8).items_center().text_color(t.muted)
           .child(div().flex_none().child(`${open ? "▾" : "▸"} AI note · ${s.severity}${s.approx ? " · near this line" : ""}`))
           .when(!open, (e) => e.child(div().flex_1().min_w(0).truncate().child(plain(s.reason)))))
-        .when(open, (e) => e.child(div().flex_1().min_h(0).overflow_hidden().text_size(13.5).line_height(1.55).whitespace_normal().text_color(t.foreground).child(plain(s.reason)))
+        .when(open, (e) => e.child(div().flex_1().min_h(0).text_size(13.5).line_height(1.55).text_color(t.foreground).child(TextView.markdown(`rv-sgm-${s.key}`, s.reason)))
           .child(div().h(20).flex_none().text_size(12).text_color(t.muted).child("A note, not a finding. Press a to add it as a comment, x to hide it."))));
     }
     if (it.t === "find" || it.t === "fact") {
@@ -3510,7 +3521,7 @@ export const ReviewMode = {
         .when(Boolean(line), (e) => e.child(div().h(17).flex_none().truncate().text_size(12).text_color(t.muted).child(line)))
         .child(div().flex_none().line_height(1.55).whitespace_normal().font_semibold().child(f.title))
         .children(this.findRows(f).map(([label, text]) => h_flex().flex_none().items_start().line_height(1.55)
-          .child(div().w(FIND_LABEL).flex_none().text_size(12).text_color(t.muted).child(label)).child(div().flex_1().min_w(0).whitespace_normal().child(text)))));
+          .child(div().w(FIND_LABEL).flex_none().text_size(12).text_color(t.muted).child(label)).child(div().flex_1().min_w(0).child(TextView.markdown(`rv-lfm-${f.id}-${label}`, text))))));
     }
     if (it.t === "ch" || it.t === "cb" || it.t === "cr") return this.cardRow(it, t);
     if (it.t === "pad") return div().w_full().h(60);
@@ -3525,7 +3536,7 @@ export const ReviewMode = {
           .when(Boolean(it.loose), (e) => e.child(div().text_color(t.muted).child(g.line ?? g.original_line ? `· line ${g.line ?? g.original_line}, not shown` : "· on the file")))
           .when(Boolean(g.outdated), (e) => e.child(badge(t, "Outdated", t.muted).id(`rv-gho-${g.id}`).tooltip("GitHub marks this comment outdated: the code it was on changed since")))
           .when(Boolean(g.resolved), (e) => e.child(badge(t, "Resolved", t.ansi2).id(`rv-ghr-${g.id}`).tooltip("This thread is resolved on GitHub"))))
-        .child(div().flex_1().min_h(0).overflow_hidden().line_height(1.55).whitespace_normal().text_color(t.foreground).child(plain(g.body))));
+        .child(div().flex_1().min_h(0).line_height(1.55).text_color(t.foreground).child(TextView.markdown(`rv-ghm-${g.id}`, String(g.body ?? "")))));
     }
     if (it.t === "compose") {
       const c = this.editing, a = c ?? this.selAnchor(), out = Boolean(a) && this.routeNow() === "github" && !inDiff(this.diffLines ?? new Map(), { file: this.fsel?.path, ...a });
@@ -3566,13 +3577,12 @@ export const ReviewMode = {
       const s = it.s, on = it.i === this.cur;
       return v_flex().w_full().h(this.sizeOf(it)).px(16).pt(10).gap(4).bg(on ? t.selected : t.raised).border_t(1).border_color(t.border).cursor_pointer()
         .child(h_flex().h(24).flex_none().gap(10).items_center()
-          .child(div().id(`rv-lstep-${it.i}`).tooltip(this.done(s) ? "You checked this layer" : "Layer number").text_size(14).font_semibold().text_color(this.done(s) ? t.ansi2 : t.muted).child(this.done(s) ? "✓" : `${it.i + 1}`))
-          .child(div().flex_1().min_w(0).truncate().text_size(15).font_semibold().child(plain(s.title)))
-          .when(!s.pseudo, (e) => e.child(riskBadge(t, s).id(`rv-lrb-${it.i}`).tooltip(focusTip(s)))))
-        .child(div().flex_none().max_w(LAYER_TEXT).line_height(1.55).whitespace_normal().text_size(13.5).text_color(t.foreground).child(plain(s.why)))
+          .child(div().id(`rv-lstep-${it.i}`).tooltip(this.done(s) ? "This layer is checked off" : "Layer number").text_size(14).font_semibold().text_color(this.done(s) ? t.ansi2 : t.muted).child(this.done(s) ? "✓" : `${it.i + 1}`))
+          .child(div().flex_1().min_w(0).truncate().text_size(15).font_semibold().child(plain(s.title))))
+        .child(div().flex_none().max_w(LAYER_TEXT).line_height(1.55).text_size(13.5).text_color(t.foreground).child(TextView.markdown(`rv-lwhy-${it.i}`, s.why)))
         .when(s.questions.length > 0, (e) => e.child(div().id(`rv-lq-${it.i}`).tooltip("Questions to check while you read this layer's code").h(18).flex_none().mt(4).text_size(11.5).font_semibold().text_color(t.muted).child("CHECK"))
           .children(s.questions.map((q, k) => h_flex().flex_none().max_w(LAYER_TEXT).gap(8).items_start().text_size(13.5).line_height(1.55)
-            .child(div().w(12).flex_none().text_color(t.accent).child("?")).child(div().flex_1().min_w(0).whitespace_normal().child(plain(this.asked(s, q, k)))))));
+            .child(div().w(12).flex_none().text_color(t.accent).child("?")).child(div().flex_1().min_w(0).child(TextView.markdown(`rv-lqm-${it.i}-${k}`, this.asked(s, q, k)))))));
     }
     if (it.t === "vis") return div().w_full().h(this.sizeOf(it)).px(16).pb(8).bg(it.i === this.cur ? t.selected : t.raised).child(visualCard(it.v, t, `rv-lvis-${it.i}-${it.text}`, null, null, (this.listW ?? 900) - 32));
     if (it.t === "def") return this.defItem(it, t);

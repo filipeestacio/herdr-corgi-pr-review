@@ -439,3 +439,20 @@ console.log("ok");
   assert.deepEqual(runsOf(undefined), {});
   console.log("ok analysis fields");
 }
+
+// One plain line of a Markdown text: its first paragraph, no code block, no list markers, no marks.
+{
+  const { plainText, mergeFindings } = await import("./pr.js");
+  assert.equal(plainText("`TOKEN` defaults to `\"\"`. **Bad**.\n\nSecond paragraph."), 'TOKEN defaults to "". Bad.');
+  assert.equal(plainText("Refuse it.\n\n```python\nx = 1\n```"), "Refuse it.", "a code block's language word does not show");
+  assert.equal(plainText("```python\nx = 1\n```\n\nThen the reason."), "Then the reason.");
+  assert.equal(plainText("```suggestion\n  return 1\n```"), "return 1", "nothing but a code block: its first line");
+  assert.equal(plainText("- one\n- two\n1. three"), "one two three");
+  assert.equal(plainText("## Why\nsee [the docs](https://example.com) now"), "Why see the docs now");
+  assert.deepEqual([plainText("#2 feat: loan_id"), plainText("plain title"), plainText(null)], ["#2 feat: loan_id", "plain title", ""]);
+  // A suggestion's title is cut at the first sentence end outside inline code, and is plain.
+  const sug = (line, reason) => ({ key: `e.py:+${line}`, hunk: "h", path: "e.py", line, old: false, severity: "high", reason });
+  assert.deepEqual(mergeFindings([], [sug(1, "`json.loads(x); y` raises `KeyError` on a missing id; both return 500."), sug(2, "Import couples the two. Split it."), sug(3, "No sentence end here")]).findings.map((f) => [f.title, f.detail]),
+    [["json.loads(x); y raises KeyError on a missing id", "both return 500."], ["Import couples the two", "Split it."], ["No sentence end here", ""]]);
+  console.log("ok plain text");
+}
