@@ -260,14 +260,24 @@ export function wrapCount(text, width, size = 13.5) {
 
 // A sequence visual as a sequence diagram: one column per participant with its lifeline at x, one row per call in
 // the given order, from the caller's lifeline (x1) to the callee's (x2; the same for a call to itself). The columns
-// share `width`, each between SEQ.MIN and SEQ.MAX px. Returns {cols, calls, width, height}.
-export const SEQ = { MIN: 130, MAX: 280, HEAD: 30, ROW: 38, PAD: 6 };
+// share `width`, each between SEQ.MIN and SEQ.MAX px: a picture with room spreads over it, one without scrolls. A
+// participant's name that does not fit its column's head goes on a second line (head: the heads' height). Each call
+// carries its numbered caption and where it starts (tx) and how wide it may be (tw): from the arrow's left end, moved
+// left so it ends inside the picture rather than being cut at its edge. Returns {cols, calls, head, width, height}.
+export const SEQ = { MIN: 130, MAX: 420, HEAD: 30, HEAD2: 46, ROW: 38, PAD: 6 };
+// A text's width in px at `size` (the same letter widths as wrapCount).
+export const textWidth = (text, size = 13.5) => Math.ceil([...String(text ?? "")].reduce((w, ch) => w + CH_W(ch), 0) * (size / 13.5) * 1.04);
 export function seqLayout(v, width) {
   const nodes = (v?.nodes ?? []).filter((n) => n?.id), col = Math.max(SEQ.MIN, Math.min(SEQ.MAX, Math.floor(width / Math.max(1, nodes.length))));
-  const x = new Map(nodes.map((n, k) => [n.id, Math.round(col * (k + 0.5))]));
-  const calls = [...(v?.edges ?? []), ...(v?.transitions ?? [])].filter((e) => x.has(e.from) && x.has(e.to))
-    .map((e, k) => ({ ...e, n: k + 1, text: transitionText(e), x1: x.get(e.from), x2: x.get(e.to), y: SEQ.HEAD + SEQ.PAD + k * SEQ.ROW }));
-  return { cols: nodes.map((n) => ({ ...n, x: x.get(n.id), w: col - 16 })), calls, width: col * nodes.length, height: SEQ.HEAD + 2 * SEQ.PAD + calls.length * SEQ.ROW };
+  const x = new Map(nodes.map((n, k) => [n.id, Math.round(col * (k + 0.5))])), W = col * nodes.length;
+  const head = nodes.some((n) => textWidth(n.label ?? n.id, 12) * 1.05 > col - 28) ? SEQ.HEAD2 : SEQ.HEAD; // semibold: a little wider
+  const calls = [...(v?.edges ?? []), ...(v?.transitions ?? [])].filter((e) => x.has(e.from) && x.has(e.to)).map((e, k) => {
+    const text = transitionText(e), caption = /^\d+[.)]/.test(text) ? text : `${k + 1}. ${text}`; // some analyses number the calls themselves
+    const x1 = x.get(e.from), x2 = x.get(e.to), start = Math.min(x1, x2) + (x1 === x2 ? 28 : 8), want = textWidth(caption, 11.5) + 8;
+    const tx = Math.max(4, Math.min(start, W - 4 - want));
+    return { ...e, n: k + 1, text, caption, x1, x2, y: head + SEQ.PAD + k * SEQ.ROW, tx, tw: W - tx - 4 };
+  });
+  return { cols: nodes.map((n) => ({ ...n, x: x.get(n.id), w: col - 16 })), calls, head, width: W, height: head + 2 * SEQ.PAD + calls.length * SEQ.ROW };
 }
 
 // ---- the height of a Markdown text (review.js: comment and finding cards are rows of the virtual list)

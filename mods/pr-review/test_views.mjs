@@ -259,7 +259,7 @@ assert.equal(pendingText([{ file: "a.py" }, { file: "a.py" }, { file: "b.py" }])
     assert.deepEqual(noteRule(ok), { error: false, ttl: NOTE_TTL }, ok);
 }
 // ---- a finding's facts, its card's line, the rows' heights, the sequence diagram (the diff and a layer's head)
-import { factRows, findingAnchor, wrapCount, seqLayout, IMPACT, SEVERITY_SCALE, SEQ } from "./views.js";
+import { factRows, findingAnchor, wrapCount, seqLayout, IMPACT, SEVERITY_SCALE, SEQ, textWidth } from "./views.js";
 
 // An open card says why the finding has its severity, what it does, how sure the claim is and what it depends on.
 assert.deepEqual(factRows({ severity: "high", impact: "unauthorized_access", effect: "Anyone can call /late.", certainty: "assumed", preconditions: ["TOKEN is not set", "no authorizer"] }), [
@@ -299,13 +299,36 @@ assert.ok(wrapCount("some text that wraps", 100, 13.5) >= wrapCount("some text t
 // A sequence diagram: a column per participant, a row per call in order, from the caller's lifeline to the callee's.
 const sq = seqLayout({ nodes: [{ id: "a", label: "Client" }, { id: "b", label: "Handler" }, { id: "c", label: "Store" }],
   edges: [{ from: "a", to: "b", label: "GET /late" }, { from: "b", to: "c", event: "late", action: "reads" }, { from: "b", to: "b", label: "check" }, { from: "c", to: "a", label: "200" }, { from: "a", to: "zz", label: "nowhere" }] }, 900);
-assert.deepEqual(sq.cols.map((c) => c.x), [140, 420, 700]); // 900 px for three: SEQ.MAX each
-assert.equal(sq.width, 3 * SEQ.MAX);
-assert.deepEqual(sq.calls.map((c) => [c.n, c.x1, c.x2, c.text]), [[1, 140, 420, "GET /late"], [2, 420, 700, "late / reads"], [3, 420, 420, "check"], [4, 700, 140, "200"]]);
+assert.deepEqual(sq.cols.map((c) => c.x), [150, 450, 750]); // 900 px for three: the picture spreads over its room
+assert.equal(sq.width, 900);
+assert.deepEqual(sq.calls.map((c) => [c.n, c.x1, c.x2, c.text]), [[1, 150, 450, "GET /late"], [2, 450, 750, "late / reads"], [3, 450, 450, "check"], [4, 750, 150, "200"]]);
+assert.equal(seqLayout({ nodes: [{ id: "a" }, { id: "b" }] }, 5000).width, 2 * SEQ.MAX); // and at most SEQ.MAX a column
 assert.deepEqual(sq.calls.map((c) => c.y), [0, 1, 2, 3].map((k) => SEQ.HEAD + SEQ.PAD + k * SEQ.ROW));
 assert.equal(sq.height, SEQ.HEAD + 2 * SEQ.PAD + 4 * SEQ.ROW);
 assert.equal(seqLayout({ nodes: [{ id: "a" }, { id: "b" }] }, 100).width, 2 * SEQ.MIN); // never narrower than SEQ.MIN a column
 assert.equal(seqLayout(null, 500).calls.length, 0);
+// A synthetic sequence with many participants, a call to itself, calls back to the left and long texts (the
+// owner's broken picture, rebuilt without its content): every call has a row with its number, its text ends inside
+// the picture, a long participant name gets a second line, and the room decides whether it scrolls.
+{
+  const nodes = ["Reader", "Article action bar with a long component name", "Watchlist hook", "Account API", "List page", "Cache"].map((label, k) => ({ id: `p${k}`, label }));
+  const E = (from, to, label) => ({ from: `p${from}`, to: `p${to}`, label });
+  const v = { kind: "sequence", nodes, edges: [E(0, 1, "Click save while signed in"), E(1, 2, "mutate({ articleId, saved: true })"), E(2, 3, "POST /user/me/watchlist (optimistic update first)"),
+    E(0, 4, "GET /list -> server shell"), E(4, 3, "GET /user/me/watchlist"), E(5, 5, "check the session and the consent of the reader"), E(4, 0, "Remove -> undo note"),
+    E(5, 2, "after 5 s: mutate({ saved: false })"), E(2, 3, "DELETE /user/me/watchlist/:id")] };
+  const wide = seqLayout(v, 1500), narrow = seqLayout(v, 600);
+  assert.deepEqual([wide.width, narrow.width], [1500, 6 * SEQ.MIN]); // 1500 px: no scroll; 600: six columns at SEQ.MIN, it scrolls
+  for (const Q of [wide, narrow]) {
+    assert.deepEqual(Q.calls.map((c) => c.n), [1, 2, 3, 4, 5, 6, 7, 8, 9], "no call goes missing");
+    assert.ok(Q.calls.every((c) => c.tx >= 4 && c.tx + Math.min(c.tw, textWidth(c.caption, 11.5) + 8) <= Q.width - 4), "every text ends inside the picture");
+    assert.equal(Q.head, SEQ.HEAD2, "the long name goes on a second line");
+  }
+  const self = wide.calls[5], back = wide.calls[6];
+  assert.deepEqual([self.x1 === self.x2, self.caption.startsWith("6. "), back.x2 < back.x1], [true, true, true]);
+  // The call to itself on the last column: its text moves left to stay inside instead of running off the edge.
+  assert.ok(narrow.calls[5].tx < narrow.calls[5].x1 + 28);
+  assert.equal(seqLayout({ nodes: nodes.slice(0, 2).map((n) => ({ ...n, label: "A" })), edges: [] }, 600).head, SEQ.HEAD);
+}
 
 // The gutter marks of a finding's lines go over the rows that are shown: a range to line 1e9 (a model wrote it) marks
 // three rows and allocates nothing; a range that is no range marks nothing.

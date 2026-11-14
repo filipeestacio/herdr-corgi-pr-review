@@ -3063,7 +3063,7 @@ export const ReviewMode = {
           .child(this.fold.archCalls ? "▾" : "▸").child(`Calls without their whole text in the picture · ${L.paths.filter((p) => !p.text || p.text.cut).length}`))
         .when(Boolean(this.fold.archCalls), (e) => e.child(archLegend(L, t, "rv-arch-edges", "Calls without their whole text in the picture", opts)))]] : []),
       ...((this.ai.components ?? []).length ? [["components", this.componentsTable(t, a)]] : []),
-      ...(this.ai?.visuals?.length > 0 ? [["views", v_flex().gap(12).child(div().pt(6).text_size(13).font_semibold().text_color(t.muted).child("More views")).child(div().max_w(760).child(more()))]] : [])]);
+      ...(this.ai?.visuals?.length > 0 ? [["views", v_flex().gap(12).child(div().pt(6).text_size(13).font_semibold().text_color(t.muted).child("More views")).child(div().w_full().child(more()))]] : [])]);
   },
 
   // The picture: wider than the view and Wrap on (archWrapOn, off by default), in bands stacked top to bottom (arch.js
@@ -3250,7 +3250,11 @@ export const ReviewMode = {
   // gesture, so page and picture never move together; shift+wheel sideways), drag to pan, a thumb bar when wider than
   // the view. Per id in this.hs: {x, viewW, maxX, contentW}; one gesture (this.gesture) and one drag (this.hsDrag).
   hsOf(id) { const m = (this.hs ??= new Map()); if (!m.has(id)) m.set(id, { x: 0, viewW: 0, maxX: 0, contentW: 0 }); return m.get(id); },
-  wrapX() { return (this.wrapXFn ??= (id, w, h, el) => this.hscroll(id, w, h, el)); }, // stack.js visualsCard's wrapX
+  // stack.js visualsCard's wrapX; room(id): the width that scroller shows, in the picture's px (0: not measured yet).
+  wrapX() {
+    if (!this.wrapXFn) { this.wrapXFn = (id, w, h, el) => this.hscroll(id, w, h, el); this.wrapXFn.room = (id) => { const s = this.hs?.get(id); return s?.viewW ? Math.floor(hsVisible(s.viewW / (settings().zoom || 1), this.drawerCover())) : 0; }; }
+    return this.wrapXFn;
+  },
   hscroll(id, contentW, h, content, t = theme()) {
     // viewW: what shows of the picture, the part under the Ask drawer (drawerCover) left out. The view is measured in
     // logical px, the picture is drawn in the person's zoom: its width in the picture's px.
