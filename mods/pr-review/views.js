@@ -658,6 +658,10 @@ export function effectiveZones(arch, access) {
 // conflicts (findings whose own place and their threat's disagree), unmapped (a right whose principal is no card or
 // frame), unused (a right granted but not used), ends: {from, to} (card ids, null outside), access?, edge?}.
 export const TRUST_ORDER = ["public", "authenticated", "internal", "data"];
+// What a card runs in: runs_in as a list (a library in several Lambdas) or one id (older analyses); [] when none.
+export const runsIn = (n) => (Array.isArray(n?.runs_in) ? n.runs_in.filter(Boolean) : n?.runs_in ? [n.runs_in] : []);
+// Of several zones the most exposed one (public before authenticated before internal before data).
+const outermost = (zs) => zs.filter(Boolean).sort((a, b) => TRUST_ORDER.indexOf(a.trust) - TRUST_ORDER.indexOf(b.trust))[0] ?? null;
 // A gate's check in words: its kind and where it sits ("token, in the code"); null without a check.
 const checkText = (g) => (g?.check ? `${g.check}${g.source ? `, in the ${g.source === "code" ? "code" : "config"}` : ""}` : null);
 const CHANGED = ["added", "widened", "narrowed", "changed", "removed"];
@@ -679,8 +683,8 @@ export function crossingsOf({ arch = null, access = [], threats = [], findings =
   const zones = arch?.zones ?? [], nodes = arch?.nodes ?? [], groups = arch?.groups ?? [], edges = arch?.edges ?? [];
   const zone = (id) => zones.find((z) => z.id === id) ?? null, node = (id) => nodes.find((n) => n.id === id);
   // A card's zone: the zone of what it runs in (runs_in), else its own. A frame's zone: the one its cards share.
-  const zoneOfFrame = (gid) => zone(nodes.find((n) => n.group === gid && n.zone)?.zone);
-  const zoneOfNode = (nid, seen = 0) => { const n = node(nid); if (!n) return zoneOfFrame(nid); return n.runs_in && n.runs_in !== nid && seen < 4 ? zoneOfNode(n.runs_in, seen + 1) ?? zone(n.zone) : zone(n.zone); };
+  const zoneOfFrame = (gid) => zone(nodes.find((n) => n.group === gid && n.zone && !runsIn(n).length)?.zone ?? nodes.find((n) => n.group === gid && n.zone)?.zone);
+  const zoneOfNode = (nid, seen = 0) => { const n = node(nid); if (!n) return zoneOfFrame(nid); const r = runsIn(n).filter((x) => x !== nid); return r.length && seen < 4 ? outermost(r.map((x) => zoneOfNode(x, seen + 1))) ?? zone(n.zone) : zone(n.zone); };
   const label = (nid) => node(nid)?.label ?? groups.find((g) => g.id === nid)?.label ?? nid;
   // The card or frame a principal is: principal_node, else the frame or card of that name; null: not mapped.
   const principalNode = (x) => (x.principal_node !== undefined ? x.principal_node
@@ -718,7 +722,7 @@ export function crossingsOf({ arch = null, access = [], threats = [], findings =
   // granted and never used, low).
   const row = (base, match) => ({ ...base, ...judge((threats ?? []).filter(match.threat), (findings ?? []).filter((f) => (f.security || f.category === "security") && match.finding(f))) });
   // The frame a card runs in (runs_in naming a frame, else its group): who calls is that deployment's identity.
-  const frameOf = (nid) => { const n = node(nid); return n ? (groups.some((g) => g.id === n.runs_in) ? n.runs_in : n.group) : groups.some((g) => g.id === nid) ? nid : null; };
+  const frameOf = (nid) => { const n = node(nid); return n ? (runsIn(n).find((x) => groups.some((g) => g.id === x)) ?? n.group) : groups.some((g) => g.id === nid) ? nid : null; };
   const changeOf = (x) => x.change ?? (x.opened_by_pr === true ? "added" : x.opened_by_pr === false ? "unchanged" : null);
   const rows = [];
   for (const x of access ?? []) {
@@ -808,7 +812,9 @@ export function secSentence(rows, openSecurity = 0) {
 // effectiveZones: Map(node id -> {trust, drawn, zone, why}); empty list: none.
 export function effectiveFrom(list, arch) {
   const zones = arch?.zones ?? [], zoneOf = (nid) => zones.find((z) => z.id === (arch?.nodes ?? []).find((n) => n.id === nid)?.zone) ?? null, out = new Map();
-  for (const x of list ?? []) if (x?.node && x.effective && x.effective !== x.drawn) out.set(x.node, { trust: x.effective, drawn: x.drawn, zone: zoneOf(x.node) ?? { name: x.drawn, trust: x.drawn }, why: x.where ? `its first check is at ${x.where}` : "its first check is in its own code" });
+  // where: the place whose check must fail ({access} or {edge}, or a "file:line"); via: the calls in one process it came along.
+  for (const x of list ?? []) if (x?.node && x.effective && x.effective !== x.drawn) out.set(x.node, { trust: x.effective, drawn: x.drawn, zone: zoneOf(x.node) ?? { name: x.drawn, trust: x.drawn }, where: x.where ?? null, via: x.via ?? [],
+    why: x.via?.length ? `it is called in one process without a check (${x.via.join(", ")})` : typeof x.where === "string" ? `its first check is at ${x.where}` : "its first check is in its own code" });
   return out;
 }
 
@@ -823,8 +829,10 @@ export function mapArch(arch, access = [], bypasses = []) {
   if (!arch) return arch;
   const nodes = arch.nodes ?? [], node = (id) => nodes.find((n) => n.id === id), frame = (id) => (arch.groups ?? []).find((g) => g.id === node(id)?.group);
   // runs_in names a card or a frame (a deployment): a frame's zone is the one its own cards carry.
-  const frameZone = (gid) => nodes.find((n) => n.group === gid && n.zone && !n.runs_in)?.zone;
-  const zoneOf = (n, k = 0) => (n?.runs_in && k < 4 ? (node(n.runs_in) ? zoneOf(node(n.runs_in), k + 1) : frameZone(n.runs_in)) ?? n.zone : SHARED.test(frame(n?.id)?.label ?? "") && k === 0 ? undefined : n?.zone);
+  // Several (a library in two Lambdas): the most exposed of them.
+  const frameZone = (gid) => nodes.find((n) => n.group === gid && n.zone && !runsIn(n).length)?.zone;
+  const zid = (id) => (arch.zones ?? []).find((z) => z.id === id), pick = (ids) => outermost(ids.map(zid))?.id ?? ids.find(Boolean);
+  const zoneOf = (n, k = 0) => (runsIn(n).length && k < 4 ? pick(runsIn(n).map((x) => (node(x) ? zoneOf(node(x), k + 1) : frameZone(x)))) ?? n.zone : SHARED.test(frame(n?.id)?.label ?? "") && k === 0 ? undefined : n?.zone);
   const feeds = (e, i) => (arch.edges ?? []).some((x, j) => j !== i && x.to === e.to && node(x.from)?.group !== node(e.to)?.group && !inProcess(x));
   const named = (e, i) => ((bypasses ?? []).length ? bypasses.some((x) => x.edge === `e${i}` || (x.from === e.from && x.to === e.to)) : Boolean(e.crosses || feeds(e, i)));
   const edges = (arch.edges ?? []).map((e, i) => (inProcess(e) ? { ...e, crosses: false, bypass: named(e, i) } : e));
