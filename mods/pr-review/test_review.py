@@ -219,7 +219,6 @@ ans = review.finish({
     "components": [{"name": "LoanEvents", "kind": "queue", "status": "new", "at": "template.yaml:11", "node": "gone", "operate": ["no dead-letter queue"]},
                    {"name": "transition()", "kind": "function", "status": "changed", "at": "library/status.py:43", "node": "status", "operate": []},
                    {"name": "tests", "kind": "module", "status": "new", "at": "library/tests/test_x.py:1", "operate": []}],
-    "access": [{"resource": "LoanEvents", "kind": "queue", "principal": "FrontDesk", "actions": ["sqs:SendMessage"], "public": False, "auth": "IAM", "used": False, "at": "template.yaml:22", "node": "nope"}],
     "steps": [{"check_questions": ["q1", "q2", "q3"], "question_files": ["./library/loans.py", "library/s.py", "made/up.py"], "findings": [
         fin(title="Status set outside transition()", criteria=["c1", "c2", "c1"]),
         fin(title="Mailed twice", criteria=["c2"], impact="breaks_requirement", breaks={"from": "reminders", "to": "mailer"}),
@@ -239,7 +238,7 @@ assert f2["breaks"] == {"from": "reminders", "to": "mailer", "edge": "e1"} and f
 assert ans["steps"][0]["question_files"] == ["library/loans.py", "library/s.py", ""], ans["steps"][0]["question_files"]
 assert [c["owner"] for c in ans["components"]] == ["@ops", "@lib-team @lead", None], [c["owner"] for c in ans["components"]]
 assert ans["component_counts"] == {"new": 2, "changed": 1, "no_owner": 1, "codeowners": True}
-assert "node" not in ans["components"][0] and ans["components"][1]["node"] == "status" and "node" not in ans["access"][0]
+assert "node" not in ans["components"][0] and ans["components"][1]["node"] == "status"
 assert review.code_owners(None) is None and review.owner_of("a/b.py", [("docs/", "@d"), ("*.py", "@py")]) == "@py"
 assert review.checked([{"area": "secrets", "result": "clean", "note": "none in the diff"}, {"area": "tests", "result": "bogus"}], ["secrets", "tests", "state"]) == \
     [{"area": "secrets", "result": "clean", "note": "none in the diff"}, {"area": "tests", "result": "not_checked", "note": ""}, {"area": "state", "result": "not_checked", "note": ""}]
@@ -255,8 +254,15 @@ assert old["steps"][0]["findings"][0]["severity"] == "medium" and old["steps"][0
 p = review.prompt([], [], "PR: x", True)
 for part in ("state (met:", "not_done", "acceptance (true", "criteria (the ids", "is named by at least one finding", "breaks (where it breaks", "question_files", "category (as for findings)",
              "breaks_requirement (breaks an acceptance criterion", "certainty (confirmed", "preconditions (what must hold", "test: changed behavior",
-             "titled \"Tests\"", "one finding per defect", "with impact untested", "components: the inventory", "access: who may do what", "checked: your own report", "without an authorizer"):
+             "titled \"Tests\"", "one finding per defect", "with impact untested", "components: the inventory", "checked: your own report"):
     assert part in p, part
+# The security view is the security reviewer's (reviewers.py): the analysis asks for none of it and reports only the
+# code areas of its scope; its security findings it still reports.
+for part in ("zones", "access:", "auth_kind", "reachability", "without an authorizer", "authentication"):
+    assert part not in p and part not in review.picture_guide("English"), part
+assert "security: exposure, auth, secrets, permissions" in p
+assert "zones" not in review.ARCHITECTURE["properties"] and "access" not in review.SCHEMA["properties"] and "reachability" not in review.FINDING["properties"]
+assert review.SCHEMA["properties"]["checked"]["items"]["properties"]["area"]["enum"] == review.AREAS_CODE
 assert "Texts: detail, suggestion, effect, why" in p and "title (one line, plain text)" in p and "fenced code block" in p and "short bullet list" in p
 assert "Texts:" not in review.picture_guide("English"), "pictures carry no prose rules"
 assert "This one is not optional" in p and "This one is not optional" in review.picture_guide("English")
@@ -279,53 +285,3 @@ assert [v["title"] for v in stays["visuals"]] == ["No evidence"], "nothing to go
 assert "except for the state diagram" in p and "a state diagram goes into the layer" in p
 print("ok finish")
 
-# Trust zones: an edge crosses when its ends lie in zones of different trust; unknown zones go. Reachability of a
-# security finding comes from the access rows at its node, else at the nearest callers; opened_by_pr from the diff.
-sec = lambda **kw: fin(**{"category": "security", "impact": "edge_case", **kw})  # noqa: E731
-z = review.finish({
-    "architecture": {"zones": [{"id": "net", "name": "Internet", "trust": "public"}, {"id": "fd", "name": "Front desk function", "trust": "authenticated"},
-                               {"id": "q", "name": "Queue", "trust": "data"}, {"id": "odd", "name": "?", "trust": "secret"}],
-                     "nodes": [{"id": "client", "zone": "net"}, {"id": "api", "zone": "net", "at": "template.yaml:24"}, {"id": "handler", "zone": "fd", "at": "lib/handler.py:9"},
-                               {"id": "store", "zone": "fd", "at": "lib/store.py:1"}, {"id": "queue", "zone": "q"}, {"id": "worker", "zone": "odd"}, {"id": "lone", "zone": "gone"}],
-                     "edges": [{"from": "client", "to": "api"}, {"from": "api", "to": "handler", "crosses": False}, {"from": "handler", "to": "store"},
-                               {"from": "handler", "to": "queue"}, {"from": "queue", "to": "worker"}]},
-    "components": [{"name": "FrontDesk", "at": "template.yaml:26", "node": "handler"}],
-    "access": [{"resource": "Api", "principal": "anyone on the internet", "public": True, "auth_kind": "code", "at": "template.yaml:24", "node": "api"},
-               {"resource": "Queue", "principal": "handler", "public": False, "auth_kind": "iam", "at": "./template.yaml:30", "node": "queue"},
-               {"resource": "Docs", "principal": "anyone", "public": True, "auth_kind": "none", "at": "template.yaml", "node": "lone"}],
-    "steps": [{"findings": [sec(title="token check fails open", impact="unauthorized_access", breaks={"node": "handler"}),
-                            sec(title="unvalidated id reaches the store", breaks={"from": "handler", "to": "store"}, reachability="public"),
-                            sec(title="queue takes any message", file="other.py", breaks={"node": "queue"}),
-                            sec(title="no place on the picture", file="nowhere.py", reachability="internal_only"),
-                            sec(title="no place, no word", file="nowhere.py"),
-                            sec(title="by its file", file="lib/handler.py", line=30),
-                            sec(title="unused grant", file="template.yaml", line=29, end=31),
-                            sec(title="token not set", file="template.yaml", line=27),
-                            sec(title="open docs", breaks={"node": "lone"}),
-                            fin(title="not security", reachability="public", breaks={"node": "handler"})]}]},
-    None, {"h1": "template.yaml"}, review.changed_lines([{"path": "template.yaml", "lines": ["@@ -20,3 +20,6 @@", " a", "+b", "-c", " d", "+e", "+f", "+g"]}]))
-arch = z["architecture"]
-assert [x["id"] for x in arch["zones"]] == ["net", "fd", "q"] and "zone" not in arch["nodes"][5] and "zone" not in arch["nodes"][6]
-assert [bool(e.get("crosses")) for e in arch["edges"]] == [False, True, False, True, False], "different trust crosses; same trust or an unknown zone does not"
-assert [r["id"] for r in z["access"]] == ["acc1", "acc2", "acc3"]
-got = {f["title"]: (f.get("reachable_from"), f.get("reachability")) for f in z["steps"][0]["findings"]}
-assert got["token check fails open"] == (["acc1"], "public"), "the broken check itself is reached before any check"
-assert got["unvalidated id reaches the store"] == (["acc1"], "authenticated"), "through its callers to the entry; derived beats the model's word"
-assert got["queue takes any message"] == (["acc2"], "internal_only")
-assert got["no place on the picture"] == ([], "internal_only") and got["no place, no word"] == ([], "unknown"), "nothing to derive from: the model's word, else unknown"
-assert got["by its file"] == (["acc1"], "authenticated") and got["open docs"] == (["acc3"], "public")
-assert got["unused grant"] == (["acc2"], "internal_only"), "an access row in the finding's own lines is its place"
-assert got["token not set"] == (["acc1"], "authenticated"), "no breaks: the nearest place above the line (the FrontDesk component), then its callers"
-assert got["not security"] == (None, None), "only security findings"
-assert [r["opened_by_pr"] for r in z["access"]] == [True, False, False], "line 24 is added by the diff; line 30 and a place without a line are not"
-assert review.changed_lines([{"path": "a", "lines": ["@@ -1,2 +5,3 @@", " x", "+y", "-z", "+w"]}]) == {"a": {6, 7}}
-kept = review.finish({"access": [{"resource": "r", "at": "a.py:1", "opened_by_pr": True}], "steps": []})
-assert kept["access"][0]["opened_by_pr"] is True and kept["access"][0]["id"] == "acc1", "a follow-up analysis without the whole diff leaves it"
-redrawn = review.merge_diagrams({"answer": {"access": [{"resource": "Api", "public": True, "auth_kind": "none", "node": "api"}], "steps": [{"findings": [sec(title="t", breaks={"node": "api"})]}]}},
-                                {"architecture": {"groups": [], "zones": [{"id": "a", "name": "A", "trust": "public"}, {"id": "b", "name": "B", "trust": "internal"}],
-                                                  "nodes": [{"id": "api", "zone": "a"}, {"id": "job", "zone": "b"}], "edges": [{"from": "api", "to": "job", "label": "x"}]}}, "h", {})
-assert redrawn["answer"]["architecture"]["edges"][0]["crosses"] is True and redrawn["answer"]["steps"][0]["findings"][0]["reachability"] == "public", "a refreshed picture is derived again"
-for part in ("zones (the trust zones", "auth_kind (none:", "reachability (security findings only"):
-    assert part in p, part
-assert "zones (the trust zones" in review.picture_guide("English") and "crosses" not in p, "zones are drawn again on a refresh; crossing is never asked"
-print("ok zones")
