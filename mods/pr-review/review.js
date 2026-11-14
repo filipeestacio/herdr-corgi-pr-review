@@ -4168,7 +4168,7 @@ export const ReviewMode = {
     const start = (_e, cx) => this.command(`probe:${x.id}`, cx), trusted = this.trustedPr();
     return v_flex().id(`rv-res-probe-${x.id}`).gap(4).p(10).rounded(6).border_1().border_color(t.border).text_size(12.5).when(Boolean(old), (e) => e.opacity(0.5))
       .when(done, (e) => e.child(h_flex().gap(8).flex_wrap().items_center().child(div().font_semibold().text_color(r[2]).child(`Probe ${r[0]} ${r[1]}`))
-        .child(div().text_color(t.muted).child([STRENGTH[x.strength] ?? x.strength, x.ms != null && `${(x.ms / 1000).toFixed(1)} s`, x.head && String(x.head).slice(0, 7), base, x.pre_existing && "breaks the same way on the base", x.network_barrier === false && "no network barrier"].filter(Boolean).join(" · "))))
+        .child(div().text_color(t.muted).child([STRENGTH[x.strength] ?? x.strength, x.ms != null && `${(x.ms / 1000).toFixed(1)} s`, x.head && String(x.head).slice(0, 7), base, x.pre_existing && "breaks the same way on the base", x.network_barrier === false && "no sandbox"].filter(Boolean).join(" · "))))
         .when(Boolean(x.number), (y) => y.child(div().whitespace_normal().child(x.number)))
         .child(h_flex().gap(8).child(div().id(`rv-res-pso-${x.id}`).text_color(t.accent).cursor_pointer().on_click((_e, cx) => { this.resProbeOpen = open ? null : x.id; cx.notify(); }).child(open ? "script and output ▾" : "script and output ▸")))
         .when(open, (y) => y.child(div().p(8).rounded(4).bg(t.surface).font_family(settings().font_family ?? "JetBrains Mono").text_size(12).whitespace_normal().child(`${x.script ?? ""}\n— output —\n${x.output ?? ""}`))))
