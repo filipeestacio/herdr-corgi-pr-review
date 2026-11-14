@@ -71,7 +71,7 @@ async function tour(v, name) {
   // Resilience: every path opened (its picture and probe), all paths, the clean checks, a probe's script, and none open.
   v.command("page:res", cx);
   for (const p of v.resNow()?.paths ?? []) act(v, `res-path:${p.id}`, at(`Resilience, path ${p.id}`));
-  for (const c of ["res-more", "res-clean", "res-probe-open:pr1", "res-path:"]) act(v, c, at(`Resilience, ${c}`));
+  for (const c of ["res-more", "res-clean", "res-add", "res-probe-open:pr1", "res-path:"]) act(v, c, at(`Resilience, ${c}`));
   v.command("page:overview", cx); v.rulesOpen = true; draw(v, at("Overview, rules open"));
   for (const a of [...(v.ai?.asks ?? []).map((x) => x.id), "other"]) act(v, `criterion:${a}`, at(`Overview, criterion ${a}`));
   v.command("page:blast", cx);

@@ -482,6 +482,7 @@ export const ReviewMode = {
     else if (name === "arch-wrap") this.setArchWrap(!this.archWrapOn());
     else if (name === "sec-card") { this.page = "blast"; this.tab = "steps"; this.secCard(arg || null, cx); } // a click on a card of the Security page's picture ("": unlight)
     else if (name === "res-path") { this.page = "res"; this.tab = "steps"; this.resOpen = this.resOpen === arg ? null : arg || null; } // a click on a path of the Resilience page (its id; "" folds)
+    else if (name === "res-add") { this.page = "res"; this.resAddOpen = !this.resAddOpen; } // the parts this PR adds, folded or open
     else if (name === "res-more") { this.page = "res"; this.resAll = !this.resAll; }
     else if (name === "res-clean") { this.page = "res"; this.resClean = !this.resClean; }
     else if (name === "res-probe-open") { this.page = "res"; this.resProbeOpen = this.resProbeOpen === arg ? null : arg; } // a probe's script and output
@@ -1041,7 +1042,7 @@ export const ReviewMode = {
     if (this.exMode || !this.ai) return;
     this.ai = withSecurity(this.ai, mine ? this.find.security : null, this.ctx, head);
     // The Resilience run's block with its derived parts (pr.js withResilience), and where it would start (resilienceStart).
-    this.ai = { ...withResilience(this.ai, mine ? this.find.resilience : null, head, this.find.list ?? []), resilienceStart: resilienceStart(this.patch ?? []) };
+    this.ai = { ...withResilience(this.ai, mine ? this.find.resilience : null, head, this.ai ? this.findings() : this.find.list ?? []), resilienceStart: resilienceStart(this.patch ?? []) };
     if (this.secStart.start) this.runReviewer("security", cx, this.secStart.reasons.slice(0, 3).join("; "));
   },
   // Why the security review would run, for someone else's PR where it does not start by itself; null otherwise.
@@ -4045,13 +4046,14 @@ export const ReviewMode = {
         ...(a ? [["map", this.resMap(t, a, null, start.nodes ?? [])]] : [])];
     }
     const paths = resOrder((res.paths ?? []).map((p) => resPathView(p, res))), blockers = paths.filter((p) => p.blocker), cur = this.resPathOf(paths), now = this.worktree?.head ?? this.head;
-    const stale = Boolean(res.head && now && res.head !== now), short = (h) => String(h ?? "").slice(0, 7);
+    const stale = Boolean(res.older) || Boolean(res.head && now && res.head !== now), short = (h) => String(h ?? "").slice(0, 7);
     const clean = (res.checks ?? []).filter((c) => c.result === "clean").length, nc = (res.checks ?? []).filter((c) => c.result === "not_checkable").length + (res.not_checked ?? []).length;
     const verdict = res.summary || (blockers.length ? `${blockers.length} ${blockers.length === 1 ? "path stands" : "paths stand"} before the merge.` : "No path grows without limit or doubles an effect.");
-    const context = [`${paths.length} ${paths.length === 1 ? "path" : "paths"}`, `${clean} ${clean === 1 ? "check" : "checks"} clean`, `${nc} not checkable`, `analysis of ${short(res.head)}${res.at ? `, ${ago(res.at)}` : ""}`, res.cost != null && `$${Number(res.cost).toFixed(2)}`].filter(Boolean).join(" · ");
+    const context = [`${paths.length} ${paths.length === 1 ? "path" : "paths"}`, `${clean} ${clean === 1 ? "check" : "checks"} clean`, `${nc} not checkable`, `analysis of ${short(res.head)}${res.at ? `, ${ago(res.at)}` : ""}`, (res.cost ?? this.find.runs?.resilience?.cost) != null && `$${Number(res.cost ?? this.find.runs.resilience.cost).toFixed(2)}`].filter(Boolean).join(" · ");
     const top = v_flex().id("rv-res-top").gap(4).when(stale, (e) => e.opacity(0.55))
       .child(div().text_size(15).font_semibold().line_height(1.4).whitespace_normal().child(`${blockers.length ? "" : "✓ "}${verdict}`))
-      .child(div().text_size(12.5).text_color(t.muted).child(context));
+      .child(div().text_size(12.5).text_color(t.muted).child(context))
+      .when((res.additions ?? []).length > 0, (e) => e.child(this.resAdditions(t, res)));
     // Another head: the whole page grey, the line that says so and Re-run not.
     head.when(stale, (e) => e.child(h_flex().gap(8).items_center().text_size(12.5).child(div().text_color(t.ansi3).child(`Analysis of ${short(res.head)}; the PR is at ${short(now)}.`))
       .child(pill("rv-res-rerun", t, "Re-run", (_e, cx) => this.runReviewer("resilience", cx, null, this.runTier("resilience").chosen ?? this.runTier("resilience").tier)))));
@@ -4063,6 +4065,21 @@ export const ReviewMode = {
         .when(shown.length < paths.length, (e) => e.child(div().id("rv-res-more").text_size(12.5).text_color(t.muted).cursor_pointer().hover((x) => x.text_color(t.foreground))
           .on_click((_e, cx) => { this.resAll = true; cx.notify(); }).child(`${paths.length - shown.length} more ▸`)))],
       ["rest", this.resRest(t, res)]];
+  },
+  // Complexity against use (CONCEPT-RESILIENCE.md): the parts this PR adds, how many are justified, questionable or
+  // solve nothing here, in one line; unfolded a sentence each: what it solves (or not), what it costs, the simpler way.
+  resAdditions(t, res) {
+    const adds = res.additions ?? [], open = Boolean(this.resAddOpen), WORD = { justified: ["✓ justified", t.ansi2], questionable: ["? questionable", t.ansi3], unjustified: ["✗ solves nothing here", t.foreground] };
+    const line = res.additionsLine || `This PR adds ${adds.length} ${adds.length === 1 ? "part" : "parts"}.`;
+    const cost = (c) => (c ? Object.entries(c).filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join(", ") : "");
+    return v_flex().id("rv-res-add").gap(4).pt(2)
+      .child(h_flex().id("rv-res-add-h").gap(6).cursor_pointer().text_size(13).hover((x) => x.text_color(t.foreground)).tooltip(open ? "Fold the parts" : "For each part: what it solves here, what it costs, and the simpler way")
+        .on_click((_e, cx) => { this.resAddOpen = !open; cx.notify(); }).child(line).child(div().text_color(t.muted).child(open ? "▾" : "▸")))
+      .when(open, (e) => e.children(adds.map((x, k) => h_flex().id(`rv-res-add-${k}`).gap(10).items_start().pl(12).text_size(12.5)
+        .child(div().w(170).flex_none().font_semibold().text_color(WORD[x.result]?.[1] ?? t.muted).child(WORD[x.result]?.[0] ?? x.result ?? ""))
+        .child(div().flex_1().min_w(0).whitespace_normal().line_height(1.45).child([`${x.what}${x.kind ? ` (${x.kind})` : ""}`, x.solves && `solves: ${x.solves}${x.likelihood ? ` (${x.likelihood})` : ""}`,
+          cost(x.cost) && `costs ${cost(x.cost)}`, x.simpler && `simpler: ${x.simpler}`].filter(Boolean).join(" · ")))
+        .when(Boolean(x.at), (y) => y.child(div().id(`rv-res-add-at-${k}`).flex_none().text_color(t.accent).cursor_pointer().on_click((_e, cx) => this.jumpTo(x.at, cx)).child(`${String(x.at).split("/").pop()} ↗`))))));
   },
   // The chosen path: the person's (resOpen), else the first blocker, else the first path.
   resPathOf(paths) { return paths.find((p) => p.id === this.resOpen) ?? (this.resOpen === null ? null : paths.find((p) => p.blocker) ?? paths[0] ?? null); },
@@ -4086,7 +4103,7 @@ export const ReviewMode = {
   // second colour the way, the failing checks, what is seen, the findings, "also in Security". Opened: its picture,
   // the action, the probe.
   resPath(t, res, p, k, open) {
-    const probe = (res.probes ?? []).find((x) => x.id === p.probe || x.of === p.id) ?? null;
+    const probe = (typeof this.probesNow === "function" ? this.probesNow() : res.probes ?? []).find((x) => x.id === p.probe || x.of === p.id) ?? null;
     const ev = probe?.status === "done" ? { reproduced: ["✓", "reproduced", t.foreground], not_reproduced: ["✗", "not reproduced", t.muted], script_failed: ["!", "script failed", t.ansi3] }[probe.result] ?? ["·", probe.result, t.muted]
       : p.budget ? ["=", "computed", t.muted] : ["·", probe ? "probe proposed" : "no probe", t.muted];
     const word = p.blocker ? `Blocker: ${p.blocker.reason}` : p.result === "mitigated" ? `✓ limited${p.limited_by ? ` at ${p.limited_by}` : ""}` : p.result === "not_assessed" ? "not assessed" : "finding";
@@ -4144,20 +4161,24 @@ export const ReviewMode = {
   // what it does first); after it the result as symbol and word, strength, the one number, the base, head and time,
   // script and output folded. A probe on an older head is grey.
   resProbe(t, x) {
-    const done = x.status === "done", now = this.worktree?.head ?? this.head, old = done && x.head && now && x.head !== now, open = this.resProbeOpen === x.id;
+    const done = x.status === "done", now = this.worktree?.head ?? this.head, old = x.older || x.pre_existing || (done && x.head && now && x.head !== now), open = this.resProbeOpen === x.id;
+    const base = typeof x.base === "object" && x.base ? `on base: ${String(x.base.status ?? "").replace(/_/g, " ")}${x.base.line ? `, ${x.base.line}` : ""}` : x.base && `on base: ${x.base}`;
     const RES = { reproduced: ["✓", "reproduced", t.foreground], not_reproduced: ["✗", "not reproduced", t.muted], script_failed: ["!", "script failed", t.ansi3] }, r = RES[x.result] ?? ["·", x.result ?? "", t.muted];
     const STRENGTH = { runs_pr_code: "runs PR code", forced_schedule: "forced schedule", models_env: "models the environment" };
     const start = (_e, cx) => this.command(`probe:${x.id}`, cx), trusted = this.trustedPr();
     return v_flex().id(`rv-res-probe-${x.id}`).gap(4).p(10).rounded(6).border_1().border_color(t.border).text_size(12.5).when(Boolean(old), (e) => e.opacity(0.5))
       .when(done, (e) => e.child(h_flex().gap(8).flex_wrap().items_center().child(div().font_semibold().text_color(r[2]).child(`Probe ${r[0]} ${r[1]}`))
-        .child(div().text_color(t.muted).child([STRENGTH[x.strength] ?? x.strength, x.ms != null && `${(x.ms / 1000).toFixed(1)} s`, x.head && String(x.head).slice(0, 7), x.base && `on base: ${x.base}`].filter(Boolean).join(" · "))))
+        .child(div().text_color(t.muted).child([STRENGTH[x.strength] ?? x.strength, x.ms != null && `${(x.ms / 1000).toFixed(1)} s`, x.head && String(x.head).slice(0, 7), base, x.pre_existing && "breaks the same way on the base", x.network_barrier === false && "no network barrier"].filter(Boolean).join(" · "))))
         .when(Boolean(x.number), (y) => y.child(div().whitespace_normal().child(x.number)))
         .child(h_flex().gap(8).child(div().id(`rv-res-pso-${x.id}`).text_color(t.accent).cursor_pointer().on_click((_e, cx) => { this.resProbeOpen = open ? null : x.id; cx.notify(); }).child(open ? "script and output ▾" : "script and output ▸")))
         .when(open, (y) => y.child(div().p(8).rounded(4).bg(t.surface).font_family(settings().font_family ?? "JetBrains Mono").text_size(12).whitespace_normal().child(`${x.script ?? ""}\n— output —\n${x.output ?? ""}`))))
       .when(!done, (e) => e.child(div().whitespace_normal().child(`Probe: ${x.claim ?? x.kind ?? "a script"} (${STRENGTH[x.strength] ?? x.strength ?? ""})`))
-        .when(!trusted, (y) => y.child(div().text_color(t.ansi3).whitespace_normal().child("Runs code from this PR on your machine, without network, for at most 30 s.")))
+        // Someone else's PR, or no network barrier: R-P asks first (status confirm, its sentence in needs), no popup.
+        .when(x.status === "confirm" || (!trusted && !x.status), (y) => y.child(div().text_color(t.ansi3).whitespace_normal().child(x.needs || "Runs code from this PR on your machine, without network, for at most 30 s.")))
         .when(x.status === "running", (y) => y.child(div().text_color(t.muted).child("Running…")))
-        .when(x.status !== "running", (y) => y.child(h_flex().child(pill(`rv-res-run-${x.id}`, t, "Run probe", start).tooltip("One script against the PR head and the base, in an empty export of the code, without network")))));
+        .when(x.status === "confirm", (y) => y.child(h_flex().gap(6).child(pill(`rv-res-yes-${x.id}`, t, "Run probe", (_e, cx) => this.command(`probe:${x.id}:yes`, cx), false, t.foreground))
+          .child(pill(`rv-res-no-${x.id}`, t, "Cancel", (_e, cx) => this.command(`probe:${x.id}:no`, cx)))))
+        .when(x.status !== "running" && x.status !== "confirm", (y) => y.child(h_flex().child(pill(`rv-res-run-${x.id}`, t, "Run probe", start).tooltip("One script against the PR head and the base, in an empty export of the code, without network")))));
   },
   // Under the paths: Other checks (one word each, the clean ones folded), Not checkable with why, After merge, watch.
   resRest(t, res) {
