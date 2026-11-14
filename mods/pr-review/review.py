@@ -38,8 +38,24 @@ TIMEOUT = 15 * 60
 KEY = re.compile(r"(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9]{1,9})-(\d{1,6})(?![A-Za-z0-9])")
 NOT_JIRA = {"PR", "ADR", "PEP", "CWE", "UTF", "SHA", "ISO", "RFC", "CVE", "GH", "HTTP", "TLS", "X86", "ARM", "MD5", "BASE64"}
 LEVELS = ["high", "medium", "low"]
-READ_ONLY = ["Read", "Grep", "Glob", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git blame:*)",
-             "Bash(git grep:*)", "Bash(git ls-files:*)"]
+# What a model run that reads a PR may do (this analysis, and the reviewers in reviewers.py): it reads someone else's
+# code and text, which may carry instructions to it. --restricted confines the file tools to the checkout (and
+# --add-dir) and ignores the checkout's own .claude settings; dontAsk refuses whatever no rule allows. Allowed: the
+# file tools and the git commands that read history; no network, no writes. Denied: options that write a file
+# (--output), run a program (--ext-diff, --textconv) or read a file outside the checkout (--no-index, blame --contents,
+# -S, --ignore-revs-file), each by its shortest unambiguous prefix, since git takes abbreviated long options in some
+# commands (blame --con is --contents). llm.py also sets GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS for the run.
+GIT_READ = ("diff", "log", "show", "status", "blame", "merge-base", "rev-parse", "ls-files")
+GIT_DENIED = ("--ou", "--ext", "--textc", "--no-in", "--con", "--ignore-revs")
+
+
+def permissions(*tools):
+    """The CLI flags for a run with these tools plus read-only git."""
+    denied = ["Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch", *(f"Bash(git *{o}*)" for o in GIT_DENIED), "Bash(git blame*-S*)"]
+    return ("--restricted", "--permission-mode", "dontAsk", "--allowedTools", *tools, *(f"Bash(git {c} *)" for c in GIT_READ), "--disallowedTools", *denied)
+
+
+READ_ONLY = permissions("Read", "Grep", "Glob")
 SYSTEM = ("You are a thorough, experienced code reviewer and guide a person through the review of a pull request in {lang}: "
           "ordered by risk, with concrete check points and only real suspicious spots verified in the code, no style "
           "criticism. Take your time: read callers, types and surrounding code before you claim anything. "
@@ -345,7 +361,7 @@ INVENTORY_TEXT = (
 
 def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None, lang="English", index=None, patches=None):
     text = ("Analyze the diff below thoroughly." + (" You are in a checkout of the PR head and may read (Read, Grep, Glob, "
-            "git log/show/blame/diff/grep): check callers, types and surrounding code before you name a suspicious spot, and "
+            "git log/show/blame/diff): check callers, types and surrounding code before you name a suspicious spot, and "
             "name only what you confirmed in the code." if tools else "") +
             f" Write every text field in {lang}." +
             "\n\nsteps: Put all hunks into steps (each hunk in exactly one, related ones together, rather few). Per step: "
@@ -844,7 +860,7 @@ def main_diagrams(req):
     prev = json.loads(pathlib.Path(req["diagrams"]).read_text())
     t = task(req.get("pr"), (ctx or {}).get("tickets", True))
     tools = bool(wt and pathlib.Path(wt).is_dir())
-    extra = ("--allowedTools", *READ_ONLY, "--disallowedTools", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch") if tools else ()
+    extra = READ_ONLY if tools else ()
     meta = {}
     answer = llm.claude(FEATURE_DIAGRAMS, diagrams_prompt(req["hunks"], prev, t and t["text"], tools, lang), context=ctx, model=model,
                         schema=DIAGRAMS_SCHEMA, system=SYSTEM.format(lang=lang), budget=BUDGET_DIAGRAMS[llm.tier(model)], timeout=TIMEOUT,
@@ -899,8 +915,8 @@ def read_tools(root):
     """Read-only tools in root (the PR head checkout or the explored repo), or none."""
     if not (root and pathlib.Path(root).is_dir()):
         return {"tools": "", "cwd": pathlib.Path.home(), "extra": ()}
-    return {"tools": "Read,Grep,Glob", "cwd": root, "extra": ("--allowedTools", "Read", "Grep", "Glob", "--disallowedTools", "Edit", "Write",
-                                                              "NotebookEdit", "WebFetch", "WebSearch", "Bash")}
+    return {"tools": "Read,Grep,Glob", "cwd": root, "extra": ("--restricted", "--permission-mode", "dontAsk", "--allowedTools", "Read", "Grep", "Glob",
+                                                              "--disallowedTools", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Bash")}
 
 
 def main_ask(req):
@@ -974,7 +990,7 @@ def main(req):
     index = write_run(run, hunks)
     cap, aliases = BUDGET[llm.tier(model)], [h["alias"] for h in hunks]
     # Read-only tools in the checkout plus the run's folder (the patches); without a checkout, only the folder.
-    extra = ("--effort", "high", "--add-dir", run, "--allowedTools", *READ_ONLY, "--disallowedTools", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch")
+    extra = ("--effort", "high", "--add-dir", run, *READ_ONLY)
     call = lambda feature, text, schema, budget, meta: llm.claude(feature, text, context=ctx, model=model, schema=schema, system=SYSTEM.format(lang=lang),  # noqa: E731
                                                               budget=budget, timeout=TIMEOUT, cwd=wt if tools else run, tools="Read,Grep,Glob,Bash", meta=meta, extra=extra)
     cohorts = None if prev else cohorts_of(hunks, INLINE[llm.tier(model)])

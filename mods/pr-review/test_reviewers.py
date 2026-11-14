@@ -21,8 +21,19 @@ p = reviewers.PERMISSIONS
 assert p[:3] == ("--restricted", "--permission-mode", "dontAsk"), "file tools confined to the checkout, its .claude settings ignored, the rest refused"
 allowed, denied = p[p.index("--allowedTools") + 1:p.index("--disallowedTools")], p[p.index("--disallowedTools") + 1:]
 assert all(a in ("Read", "Grep", "Glob", "Agent") or a.startswith("Bash(git ") for a in allowed) and not any("gh " in a or "Web" in a for a in allowed)
-for opt in ("--output", "--ext-diff", "--textconv", "--no-index", "--contents"):
+for opt in ("--ou", "--ext", "--textc", "--no-in", "--con", "--ignore-revs"):
     assert f"Bash(git *{opt}*)" in denied, opt
+assert "Bash(git blame*-S*)" in denied
+import fnmatch  # noqa: E402
+needed = ["git log -1 --oneline", "git diff --stat origin/main...HEAD", "git show --name-only HEAD", "git blame -L 1,5 a.py", "git diff --exit-code",
+          "git log --format=%H --follow a.py", "git diff --name-status --no-renames HEAD~1"]
+blocked = ["git diff --out=x", "git blame --con /etc/hosts a.py", "git diff --ext HEAD", "git diff --no-index /etc/hosts a.py", "git blame --ignore-revs-f x a.py",
+           "git blame -S /etc/hosts a.py", "git diff --textconv HEAD"]
+match = lambda c: [d for d in denied if d.startswith("Bash(") and fnmatch.fnmatchcase(c, d[5:-1])]  # noqa: E731
+assert not [c for c in needed if match(c)] and all(match(c) for c in blocked), "the denied prefixes block what they must and no option a reviewer needs"
+assert reviewers.review.READ_ONLY[:3] == p[:3] and "Bash(git grep *)" not in reviewers.review.READ_ONLY, "the analysis runs under the same rules"
+import llm  # noqa: E402
+assert llm.env_for(None)["GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS"] == "1"
 assert {"Edit", "Write", "WebFetch", "WebSearch"} <= set(denied)
 
 # The picture comes from the newest analysis of the same PR that has one; a request file next to it is no analysis.
