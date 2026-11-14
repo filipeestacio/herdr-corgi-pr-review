@@ -179,7 +179,11 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
 {
   const ctx = { ...JSON.parse(fx("ctx.json")), security_trigger: { run: true, reasons: [{ text: "New route /remind" }, { text: "Token check changed" }] } };
   const doc = JSON.parse(fx("findings.json")); delete doc.runs.security;
-  await tour(await open({ ...PR2, ctx: JSON.stringify(ctx), analysis: fx("analysis-split.json"), findings: JSON.stringify(doc), trusted: false }), "someone else's PR, security offered");
+  const v = await open({ ...PR2, ctx: JSON.stringify(ctx), analysis: fx("analysis-split.json"), findings: JSON.stringify(doc), trusted: false });
+  await tour(v, "someone else's PR, security offered");
+  // Its checkout made: the trust question with everything trusting turns on.
+  v.worktree = { url: v.prSel.url, head: v.head, path: "/h/w" }; v.repoVis = { [v.prSel.repo]: "PUBLIC" };
+  for (const tab of ["files", "steps", "findings"]) act(v, tab, `someone else's PR, the trust question on ${tab}`);
 }
 await settle();
 assert.deepEqual(late, [], "a spawned task threw");

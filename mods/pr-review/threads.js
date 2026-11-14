@@ -218,15 +218,26 @@ export function fixCommentsPrompt({ pr, comments, file, lang, branch = null, pat
 // kind: "fix" or "verify" (the label); deny: the rules refused in any mode (a verify agent: NO_NET).
 export function subAgentArgs({ parent, cwd, name, env = [], task, job, auto = false, model = "sonnet", kind = "fix", deny = NO_PUSH }) {
   return ["run", "--bg", "--json", "--no-notify", "--name", name, "--cwd", cwd, ...(parent ? ["--parent", parent] : ["--no-parent"]),
-    "--label", `pr-review.${kind}=${job}`, "--", ...env, "claude", "--model", model, ...NO_MCP, "--disallowedTools", ...deny, ...permissionArgs(auto), task];
+    "--label", `pr-review.${kind}=${job}`, "--", ...NO_PUSH_ENV, ...env, "claude", "--model", model, ...NO_MCP, "--disallowedTools", ...deny, ...permissionArgs(auto), task];
 }
+// A new Claude tab that gets PR text: "Ask an agent…" (a question about a finding) and "Send review" (the comments
+// to a new session). No MCP servers, as for every agent that reads PR text. ask: Ask's permission mode by trust (a
+// trusted PR: manual with the checkout's settings; someone else's: manual with the user's own only).
+export const tabArgs = ({ env = [], model, ask = false, trusted = false }) =>
+  [...env, "claude", "--model", model, ...NO_MCP, ...(!ask ? [] : trusted ? ["--permission-mode", "manual"] : permissionArgs(false))];
 // No MCP server for an agent working on PR code: the task quotes PR text that may carry injected instructions, and the
 // context's servers (mail, calendar, docs) would let them reach outside. The same rule as the model runs (llm.py).
 export const NO_MCP = ["--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}'];
 // A fix agent never pushes, never opens a PR and never hands its fix to another session (hc send): the task says so,
-// and these deny rules refuse the commands in any permission mode. The list takes any number of rules, so an option with one value has to follow it (permissionArgs).
-// ponytail: a guard for the plain commands, not a sandbox (a push wrapped in a script gets past it).
-export const NO_PUSH = ["Bash(git push)", "Bash(git push *)", "Bash(gh pr create *)", "Bash(gh pr merge *)", "Bash(hc send *)"];
+// and these deny rules refuse the commands in any permission mode, also in the usual wrappers (git -C, git -c, env,
+// sh -c). The list takes any number of rules, so an option with one value has to follow it (permissionArgs).
+export const NO_PUSH = ["Bash(git push)", "Bash(git push *)", "Bash(git -C * push*)", "Bash(git -c * push*)", "Bash(env * git push*)",
+  "Bash(sh -c *git push*)", "Bash(bash -c *git push*)", "Bash(zsh -c *git push*)", "Bash(gh pr create *)", "Bash(gh pr merge *)", "Bash(hc send *)"];
+// Under the rules, git itself: every push URL of the agent's git (an empty pushInsteadOf matches every URL) becomes
+// one no git can open, however the push is called (a script, sh -c, git -C). Fetch is untouched.
+// ponytail: an environment, not a sandbox: a program that clears it, or a push through the API (gh api, curl), still
+// gets out; the preview says so (sendFacts "Push").
+export const NO_PUSH_ENV = ["env", "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=url.pushing-is-off-in-this-review://.pushInsteadOf", "GIT_CONFIG_VALUE_0="];
 // A trusted PR: auto (the classifier approves the harmless commands, reads, edits, commit, tests, and asks about risky
 // ones). An untrusted one: the task quotes its text and findings, which may carry injected instructions, and its
 // checkout's .claude/settings.json could allow anything or run hooks, so: manual, said outright (not left to the
@@ -334,8 +345,7 @@ export function sendFacts({ kind, account, trusted = false, branch = null, name 
     ["Runs as", own ? `${account}${model ? ` · ${model}` : ""}` : `${name ?? "The PR's session"}, on its own account and with its own permissions.`],
     ["Gets", own ? "The text below and every file it opens in its checkout. All of it goes to the provider." : "The text below. The session reads what it needs in its own checkout."],
     ["May", may],
-    ["Push", kind === "verify" ? "Never. git push, gh pr create, web tools and the plain network commands (curl, wget, git fetch, installs) are denied, and the task forbids them."
-      : kind === "sub" ? "Never: git push and gh pr create are denied, and the task forbids them." : kind === "new" ? "Only if you approve the command." : "Possible. Nothing here prevents it."],
+    ["Push", own && kind !== "new" ? `Not through git: the agent's git cannot push anywhere, however it is called, and git push and gh pr create are denied${kind === "verify" ? ", as are web tools and the plain network commands (curl, wget, git fetch, installs)" : ""}. The task forbids it too. Not covered: a program that clears its environment, or a push through the GitHub API (gh api, curl)${kind === "sub" && trusted ? ", which auto mode may run without asking" : ""}.` : kind === "new" ? "Only if you approve the command." : "Possible. Nothing here prevents it."],
     ["Result", result],
     ["Cost", own ? `Not capped and not estimated; billed to that account.${kind === "sub" || kind === "verify" ? " One finding usually takes a few minutes." : ""}` : "Billed to that session's account."],
   ].filter(Boolean);
@@ -531,3 +541,15 @@ export function probeOutcome(id, { result = null, answer = null, script = "", at
     base, pre_existing: Boolean(r?.pre_existing), network_barrier: Boolean(r?.network_barrier), sandbox: r?.sandbox ?? null, head: r?.head ?? null, ms: Number(r?.ms) || 0,
     output: short(r?.output, 4200), reason: said, script: short(script, 4000), at };
 }
+
+// ---- Trust (review.js trustPrompt): what trusting a PR turns on, each as it stands in the code. Restricted Mode is
+// the opposite of each line: agents ask before every command and read only your settings, probes ask, the security
+// review is offered, language servers stay safe.
+export const TRUST_TURNS_ON = [
+  "Fix and Verify agents work without asking (auto mode): they edit the code and run it, tests and commands included, in their own checkout. Only commands the classifier finds risky still ask you.",
+  "The PR's own agent session is offered to fix it, with its own permissions, and a new agent from Ask reads the checkout's own Claude settings.",
+  "Probes start without asking you, in their sandbox (no network, nothing from your home).",
+  "The security review starts by itself when the diff gives reasons for one.",
+  "Language servers for go-to-definition run code from the repository: build scripts, proc macros, its own TypeScript, downloads.",
+];
+

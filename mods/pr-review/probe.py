@@ -10,8 +10,9 @@ For the head (and the base, when given) the runner:
 - exports the commit with `git archive` into a new, empty folder (only what git tracks: no .env, no build output);
 - copies the script there and runs it as `python3 -I <script> <export>` from that folder, with `env -i` (PATH, a
   temporary HOME and TMPDIR, nothing else: no AWS_*, GH_TOKEN, context variables);
-- on macOS under `sandbox-exec`: no network, writes only in its own temporary folder, nothing read from the user's home,
-  no new processes; on Linux under bubblewrap (`bwrap`: no namespace shared, no capability, only the system folders and
+- on macOS under `sandbox-exec`: no network, writes only in its own temporary folder, reads only from an allowlist (its own
+  folder, the interpreter's, the system's libraries and shared data: not /tmp, not the user's temporary folder, not the
+  home), no new processes; on Linux under bubblewrap (`bwrap`: no namespace shared, no capability, only the system folders and
   the interpreter's own folders read-only, empty tmpfs over /tmp and /run, only its own temporary folder writable,
   socket(AF_UNIX) refused by seccomp, dead with the runner); without
   either it still runs and says so
@@ -54,7 +55,7 @@ STRENGTHS = ("runs_pr_code", "forced_schedule", "models_env")
 VERDICT = re.compile(r"^\s*(reproduced|not_reproduced|refuted)\b[\s:]*(.*)$")
 # What is blacked out of an output before anyone sees it: e-mail addresses and the usual token shapes.
 SECRETS = [re.compile(p) for p in (
-    r"[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63})+", r"\bgh[pousr]_[A-Za-z0-9]{20,}", r"\bgithub_pat_[A-Za-z0-9_]{20,}", r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b",
+    r"[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63})*\.[A-Za-z]{2,24}\b", r"\bgh[pousr]_[A-Za-z0-9]{20,}", r"\bgithub_pat_[A-Za-z0-9_]{20,}", r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b",
     r"\bsk-[A-Za-z0-9_-]{20,}", r"\bxox[abposr]-[A-Za-z0-9-]{10,}", r"(?i)\bbearer\s+[A-Za-z0-9._~+/-]{10,}=*",
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)",
     r"(?i)\b(?:secret|token|password|passwd|api[_-]?key)\b(\s*[=:]\s*)\S+")]
@@ -178,18 +179,48 @@ def no_unix_sockets(machine=None):
     return b"".join(struct.pack("=HBBI", *x) for x in prog)
 
 
+# macOS: what a probe may read, besides its own folder and the interpreter's: the system's libraries and programs, the
+# shared data (zoneinfo, locale) and the clock's files. Not /private/tmp, not the user's temporary folder, not other
+# programs' output there, not /Volumes, not the home: an allowlist, as under Linux.
+MAC_READ = ["/usr/lib", "/usr/bin", "/usr/share", "/System", "/dev", "/private/var/db/timezone"]
+MAC_READ_FILES = ["/", "/private/etc/localtime"]  # these entries themselves, nothing under them (no /tmp: it is /private/tmp)
+MAC_LINKS = ["/etc", "/var", "/tmp"]  # the root's links, metadata only: a path through them resolves, nothing is listed
+
+
+def mac_reads():
+    """The folders a probe reads on macOS: MAC_READ, the interpreter's own (interp_dirs, its prefix) and, for a
+    Homebrew interpreter, Homebrew's Cellar and opt (the libraries it links against), never Homebrew's var (databases)."""
+    exe = os.path.realpath(sys.executable)
+    brew = re.match(r"(.*)/Cellar/", exe)
+    return [*MAC_READ, *interp_dirs(), os.path.realpath(sys.base_prefix), *([f"{brew[1]}/Cellar", f"{brew[1]}/opt"] if brew else [])]
+
+
 def profile(root, extra_deny=()):
-    """macOS: everything as usual, except: no network (unix sockets too), no new process, writes only under root, and
-    nothing read from the user's home (nor from the extra folders) but root and the interpreter's own folders, never one
-    that is a hidden folder or above it."""
-    q = lambda p: json.dumps(os.path.realpath(p))  # noqa: E731  (a quoted SBPL string)
-    deny = [user_home(), *[os.path.realpath(d) for d in extra_deny]]
-    dirs = interp_dirs()
-    if above(dirs, deny):
-        raise ValueError(f"the interpreter's folder {above(dirs, deny)[0]} would show the home")
+    """macOS: no network (unix sockets too), no new process, writes only under root; reads only root, the folders of
+    mac_reads and the entries of MAC_READ_FILES (an allowlist), plus the metadata of their parent folders (a path is
+    resolved through them: their names and dates, no contents, no listing). Refuses (ValueError) an interpreter folder
+    that is the user's home, an extra folder or above one."""
+    q = lambda p: json.dumps(p)  # noqa: E731  (a quoted SBPL string)
+    hidden = [user_home(), *[os.path.realpath(d) for d in extra_deny]]
+    reads = mac_reads()
+    if above(reads[len(MAC_READ):], hidden):
+        raise ValueError(f"the interpreter's folder {above(reads[len(MAC_READ):], hidden)[0]} would show the home")
+    allow = list(dict.fromkeys([os.path.realpath(root), *reads]))
+    parents = sorted({a for d in allow for a in ancestors(d)})
     return "\n".join(["(version 1)", "(allow default)", "(deny network*)", "(deny process-fork)", "(deny file-write*)",
-                      f"(allow file-write* (subpath {q(root)}) (literal \"/dev/null\") (literal \"/dev/dtracehelper\"))",
-                      *[f"(deny file-read* (subpath {q(d)}))" for d in deny], *[f"(allow file-read* (subpath {q(a)}))" for a in [root, *dirs]]])
+                      f"(allow file-write* (subpath {q(os.path.realpath(root))}) (literal \"/dev/null\") (literal \"/dev/dtracehelper\"))",
+                      "(deny file-read*)",
+                      "(allow file-read* " + " ".join([*[f"(literal {q(f)})" for f in MAC_READ_FILES], *[f"(subpath {q(a)})" for a in allow]]) + ")",
+                      "(allow file-read-metadata " + " ".join(f"(literal {q(a)})" for a in [*parents, *MAC_LINKS]) + ")",
+                      *[f"(deny file-read* (subpath {q(h)}))" for h in hidden[1:]]])  # the test's extra folders, even inside an allowed one
+
+
+def ancestors(path):
+    out, p = [], path
+    while p not in ("/", ""):
+        p = os.path.dirname(p)
+        out.append(p)
+    return out
 
 
 def run_one(script, export_dir, root, how, limit):
