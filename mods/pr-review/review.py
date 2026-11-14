@@ -726,11 +726,13 @@ def changed_lines(hunks):
     return out
 
 
-def introduced(f, changed):
+def introduced(f, changed, breaks_requirement=False):
     """introduced_here from the diff where it can tell (changed: {path: added line numbers}, None when unknown): a
-    finding whose lines the PR adds is the PR's. Otherwise the model's word, and without one true (a blocker stays one)."""
+    finding whose lines the PR adds is the PR's, and so is one that breaks a requirement of this PR, also in old lines
+    (an old status write that the PR's new rule forbids). Otherwise the model's word, and without one true (a blocker
+    stays one)."""
     path, line = str(f.get("file") or "").strip().removeprefix("./"), int(f.get("line") or 0)
-    if changed is not None and line and set(range(line, max(line, int(f.get("end") or line)) + 1)) & set(changed.get(path, ())):
+    if breaks_requirement or changed is not None and line and set(range(line, max(line, int(f.get("end") or line)) + 1)) & set(changed.get(path, ())):
         f["introduced_here"] = True
     elif not isinstance(f.get("introduced_here"), bool):
         f["introduced_here"] = True
@@ -771,8 +773,9 @@ def finish(answer, root=None, path_of=None, changed=None):
             st["depends_on"] = [x for x in dict.fromkeys(st["depends_on"] or []) if x in titles and x != st.get("title")]
         for f in st.get("findings") or []:
             f["criteria"] = [c for c in dict.fromkeys(f.get("criteria") or []) if c in by_id]
-            judge(f, any(by_id[c]["state"] != "extra" for c in f["criteria"]))
-            introduced(f, changed)
+            mine = any(by_id[c]["state"] != "extra" for c in f["criteria"])
+            judge(f, mine)
+            introduced(f, changed, mine)
             f["id"] = "a" + fnv(f"{f.get('category') or 'structure'}|{str(f.get('file') or '').strip().removeprefix('./')}|{str(f.get('title') or '').strip()}")
             for c in f["criteria"]:
                 if f["id"] not in by_id[c]["findings"]:
