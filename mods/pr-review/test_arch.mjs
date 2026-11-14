@@ -276,6 +276,11 @@ const sync = {
   for (const e of lines) for (const sg of e.segments) for (const n of L.nodes.filter((x) => x.kind === "state")) assert.ok(!inside(sg, n), `${e.key} runs through ${n.id}`);
   assert.ok(at("\0start").y < at("open").y && at("open").y < at("rem").y && at("rem").y < at("over").y && at("over").y < at("ret").y && at("ret").y < at("\0end").y);
   for (const e of L.edges) for (const sg of e.segments) assert.ok(sg.y2 >= sg.y1, `${e.key} goes up`); // forward transitions only run down
+  // A transition that skips a row (open to returned) is one unbroken line, also beside the rows it passes.
+  for (const e of L.edges) e.segments.slice(1).forEach((sg, k) => assert.deepEqual([sg.x1, sg.y1], [e.segments[k].x2, e.segments[k].y2], `${e.key} has a gap after segment ${k}`));
+  // The picture is as wide as its lines and their labels, not only as its cards.
+  for (const e of L.edges) for (const sg of e.segments) assert.ok(Math.max(sg.x1, sg.x2) <= L.width, `${e.key} runs past the picture`);
+  for (const e of L.edges.filter((x) => x.text && !x.labelAt.left)) assert.ok(e.labelAt.x + Math.min(e.labelAt.w, e.text.length * 6 + 4) <= L.width, `the label of ${e.key} runs past the picture`);
   assert.deepEqual(L.backs.map((b) => [b.from, b.to, b.text, b.changed]), [["over", "open", "extend", true]]);
   assert.ok(L.backs[0].laneX < Math.min(...L.nodes.map((n) => n.x)), "the return lane is left of every card");
   assert.deepEqual(L.loops.map((l) => [l.id, l.text, l.changed]), [["rem", "remind again", true]]);

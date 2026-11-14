@@ -677,8 +677,9 @@ export function stateLayout(v, width = SM.W) {
     for (const h of hops.filter((x) => x.e === e)) {
       const s = at.get(h.a), t = at.get(h.b), sx = exitX.get(h), tx = entryX.get(h);
       const mid = rows[s.layer].bottom + 10 + Math.min(4, forkIdx.get(h.a) ?? 0) * 5;
-      if (sx === tx) segs.push({ x1: sx, y1: s.y + s.h, x2: sx, y2: t.y });
-      else segs.push({ x1: sx, y1: s.y + s.h, x2: sx, y2: mid }, { x1: sx, y1: mid, x2: tx, y2: mid }, { x1: tx, y1: mid, x2: tx, y2: t.y });
+      const sy = h.a.startsWith("\0d") ? s.y : s.y + s.h; // a spacer is no card: the line goes on from its top, through its row
+      if (sx === tx) segs.push({ x1: sx, y1: sy, x2: sx, y2: t.y });
+      else segs.push({ x1: sx, y1: sy, x2: sx, y2: mid }, { x1: sx, y1: mid, x2: tx, y2: mid }, { x1: tx, y1: mid, x2: tx, y2: t.y });
       if (h.k === 0) {
         // The label: beside the first hop's last stretch, as wide as the room up to the next entry into that card.
         const next = [...entryX].filter(([o, x]) => o.b === h.b && x > tx).map(([, x]) => x);
@@ -729,6 +730,8 @@ export function stateLayout(v, width = SM.W) {
   const kids = (id) => (box.get(id)?.br ?? []).flatMap((b, j) => b.map((cid, k) => ({ ...byId.get(cid), x: at.get(id).x + 8 + j * (SM.CHILD_W + 8), y: at.get(id).y + 26 + k * (SM.CHILD_H + 10), w: SM.CHILD_W, h: SM.CHILD_H, branch: j, step: k })));
   const out = [...at.values()].filter((n) => !n.id.startsWith("\0d")).map((n) => (n.id.startsWith("\0") ? { ...n, kind: n.id === "\0start" ? "start" : "end" }
     : { ...byId.get(n.id), ...n, kind: box.get(n.id).br ? "block" : "state", children: kids(n.id), changed: Boolean(byId.get(n.id).changed) }));
-  const right = Math.max(width, ...out.map((n) => n.x + n.w), ...stubs.map((s) => s.chip.x + s.chip.w), ...loops.map((l) => l.x + 17 + l.w));
+  // As wide as everything drawn: the cards, the side rows, and the lines and their labels right of the cards.
+  const right = Math.max(width, ...out.map((n) => n.x + n.w), ...stubs.map((s) => s.chip.x + s.chip.w), ...loops.map((l) => l.x + 17 + l.w),
+    ...edges.flatMap((e) => [...e.segments.map((g) => Math.max(g.x1, g.x2)), ...(e.text && e.labelAt && !e.labelAt.left ? [e.labelAt.x + Math.min(e.labelAt.w, e.text.length * 6 + 4)] : [])]));
   return { nodes: out, edges, backs, loops, stubs, width: Math.ceil(right + 2), height: Math.max(0, y - SM.GAP_Y) };
 }
