@@ -661,6 +661,8 @@ export const TRUST_ORDER = ["public", "authenticated", "internal", "data"];
 // A gate's check in words: its kind and where it sits ("token, in the code"); null without a check.
 const checkText = (g) => (g?.check ? `${g.check}${g.source ? `, in the ${g.source === "code" ? "code" : "config"}` : ""}` : null);
 const CHANGED = ["added", "widened", "narrowed", "changed", "removed"];
+// A threat that only names a defect ("Not an attacker goal") is no assessment of a boundary.
+export const isDefect = (t) => /not an attacker('s)? goal|no attacker|not exploitable|no abuse path|no abuse/i.test(`${t?.goal ?? ""} ${t?.note ?? ""}`);
 // A name without spaces, case or a generic last word, so "FrontDesk function" is the frame "Front desk Lambda".
 const nameKey = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "").replace(/(function|lambda|role|service|deployment|container|task|job)$/, "");
 // A call in one process (no boundary): the data says so, or its words do. ponytail: the words only until every
@@ -700,24 +702,32 @@ export function crossingsOf({ arch = null, access = [], threats = [], findings =
     else if (clash) conflicts.set(f.id, { finding: own, threat: byThreat, conflict: null });
   }
   const RESULT = { finding: "finding", mitigated: "mitigated", checked_clean: "mitigated", not_assessed: "not_assessed", not_checked: "not_assessed" };
-  const row = (base, match) => {
-    const ts = (threats ?? []).filter(match.threat), ns = ts.filter((t) => !t.derived), cited = new Set(ns.flatMap((t) => t.findings ?? []));
-    const fs = (findings ?? []).filter((f) => (f.ids ?? [f.id]).some((i) => cited.has(i)) || (f.security && match.finding(f)));
-    const results = ns.map((t) => RESULT[t.result]).filter(Boolean);
+  // The verdict of a crossing from its threats (placeholders and defects aside: a defect, "not an attacker goal", says
+  // nothing about the boundary) and the findings they cite or that name exactly this crossing (own).
+  const judge = (ts, own) => {
+    const ns = ts.filter((t) => !t.derived), real = ns.filter((t) => !isDefect(t)), cited = new Set(real.flatMap((t) => t.findings ?? []));
+    const fs = [...new Set([...own, ...(findings ?? []).filter((f) => (f.ids ?? [f.id]).some((i) => cited.has(i)))])];
+    const results = real.map((t) => RESULT[t.result]).filter(Boolean);
     const result = fs.length || results.includes("finding") ? "finding" : results.includes("mitigated") ? "mitigated" : "not_assessed";
-    const reason = result !== "not_assessed" ? null : (ts.find((t) => t.derived)?.threat || "No threat names this crossing.");
-    return { ...base, result, reason, findings: fs, threats: ns, stride: [...new Set(ns.map((t) => t.stride).filter(Boolean))].join(""), goal: ns.map((t) => t.goal).find(Boolean) ?? null,
+    const reason = result !== "not_assessed" ? null : ns.some(isDefect) ? "Only a defect is named here, not what an attacker could do across this boundary." : (ts.find((t) => t.derived)?.threat || "No threat names this crossing.");
+    return { result, reason, findings: fs, threats: ns, stride: [...new Set(real.map((t) => t.stride).filter(Boolean))].join(""), goal: real.map((t) => t.goal).find(Boolean) ?? null,
       path: ns.map((t) => t.path).find((p) => Array.isArray(p) && p.length > 1) ?? null, evidence: ns.map((t) => t.evidence).find(Boolean) ?? null,
-      conflicts: fs.filter((f) => conflicts.has(f.id)).map((f) => ({ f, ...conflicts.get(f.id) })) };
+      conflicts: fs.filter((f) => conflicts.has(f.id)).map((f) => ({ f, ...conflicts.get(f.id) })), _ts: ts, _own: own };
   };
+  // A finding about security that names exactly this crossing: ⛨ (isSecurity), or of the category security (a right
+  // granted and never used, low).
+  const row = (base, match) => ({ ...base, ...judge((threats ?? []).filter(match.threat), (findings ?? []).filter((f) => (f.security || f.category === "security") && match.finding(f))) });
+  // The frame a card runs in (runs_in naming a frame, else its group): who calls is that deployment's identity.
+  const frameOf = (nid) => { const n = node(nid); return n ? (groups.some((g) => g.id === n.runs_in) ? n.runs_in : n.group) : groups.some((g) => g.id === nid) ? nid : null; };
   const changeOf = (x) => x.change ?? (x.opened_by_pr === true ? "added" : x.opened_by_pr === false ? "unchanged" : null);
   const rows = [];
   for (const x of access ?? []) {
     const to = zoneOfNode(x.node), gate = (gates ?? []).find((g) => g.where?.access === x.id) ?? x.gate ?? {}, op = ["operator", "ci"].includes(x.principal_kind);
     // A way in starts outside, with whoever arrives (the principal); a right starts at its principal's frame or card.
     const pn = x.public ? null : principalNode(x), from = x.public ? null : pn ? zoneOfNode(pn) : null;
-    if (!x.public && !op && from && to && from.trust === to.trust && from.name === to.name) continue; // a right inside one zone crosses nothing
-    rows.push(row({ key: `a:${x.id ?? x.resource}`, kind: op ? "operator" : x.public ? "entry" : "right", from: x.public ? { name: x.principal || "Internet", trust: "public" } : pn ? z(from) : { name: x.principal ?? "unnamed", trust: null },
+    // A right inside one zone crosses nothing by itself; it still folds into the call that uses it (below).
+    const inner = !x.public && !op && from && to && from.trust === to.trust && from.name === to.name;
+    rows.push(row({ inner, key: `a:${x.id ?? x.resource}`, kind: op ? "operator" : x.public ? "entry" : "right", from: x.public ? { name: x.principal || "Internet", trust: "public" } : pn ? z(from) : { name: x.principal ?? "unnamed", trust: null },
       to: z(to), identity: x.principal ?? null, expects: gate.principal ?? null, check: checkText(gate) ?? x.auth ?? null, at: gate.at ?? x.at ?? null, holds_if: gate.holds_if ?? null,
       carries: gate.carries ?? null, change: changeOf(x), ends: { from: pn ? cardOf(pn) : null, to: x.node ?? null }, access: x, what: x.resource ?? "", actions: x.actions ?? [],
       unmapped: !x.public && !op && !pn, unused: x.used === false, ...(op ? { valueFrom: x.value_from ?? null, derived: Boolean(x.derived) } : {}) },
@@ -727,7 +737,7 @@ export function crossingsOf({ arch = null, access = [], threats = [], findings =
     const a = zoneOfNode(e.from), b = zoneOfNode(e.to), gate = (gates ?? []).find((g) => g.where?.edge === `e${i}` || (g.where?.from === e.from && g.where?.to === e.to)) ?? e.gate ?? {};
     const st = e.status === "new" ? "added" : e.status === "changed" || e.changed ? "changed" : e.status === "unchanged" ? "unchanged" : null;
     const match = { threat: (t) => t.where?.edge === `e${i}` || (t.where?.from === e.from && t.where?.to === e.to), finding: (f) => f.breaks?.edge === `e${i}` || (f.breaks?.from === e.from && f.breaks?.to === e.to) };
-    const base = { key: `e:${i}`, from: z(a), to: z(b), identity: label(e.from), expects: gate.principal ?? null, check: checkText(gate), at: gate.at ?? null, holds_if: gate.holds_if ?? null,
+    const base = { key: `e:${i}`, from: z(a), to: z(b), identity: frameOf(e.from) && !node(frameOf(e.from)) ? label(frameOf(e.from)) : label(e.from), expects: gate.principal ?? null, check: checkText(gate), at: gate.at ?? null, holds_if: gate.holds_if ?? null,
       carries: gate.carries ?? null, change: st, ends: { from: e.from, to: e.to }, edge: i, what: e.label ?? "" };
     // In one process: no crossing. It bypasses a boundary when the code it reaches also gets calls from another frame
     // (a consumer written for a queue, here called directly), or the data marks it as a crossing.
@@ -741,6 +751,25 @@ export function crossingsOf({ arch = null, access = [], threats = [], findings =
     if (node(e.from)?.type === "external" && (access ?? []).some((x) => x.public && x.node === e.to)) return; // the way in's row says it
     rows.push(row({ ...base, kind: "call" }, match));
   });
+  // A right and a call on the same boundary (the principal's frame, the same target) are one crossing: the call's
+  // check and what crosses, the right's identity, actions and use, the threats of both (nothing drops out unseen).
+  for (const r of rows.filter((x) => x.kind === "right")) {
+    const c = rows.find((x) => x.kind === "call" && x.ends.to === r.ends.to && (r.inner || (r.ends.from && frameOf(x.ends.from) === frameOf(r.ends.from))));
+    if (!c) continue;
+    const merged = { ...c, ...judge([...new Set([...c._ts, ...r._ts])], [...new Set([...c._own, ...r._own])]), kind: "right", aliases: [r.key], identity: r.identity, access: r.access, actions: r.actions,
+      unused: r.unused, unmapped: r.unmapped, what: `${r.what}${r.actions?.length ? ` (${r.actions.join(", ")})` : ""}; call: ${c.what}`, check: c.check ?? r.check, at: c.at ?? r.at, change: r.change ?? c.change,
+      from: r.inner ? c.from : r.from, ends: { from: c.ends.from, to: c.ends.to } };
+    rows.splice(rows.indexOf(c), 1, merged); rows.splice(rows.indexOf(r), 1);
+  }
+  for (const r of rows.filter((x) => x.inner)) rows.splice(rows.indexOf(r), 1);
+  // An operator's way that sets what a check holds on: new with that check, and the findings that say the check fails.
+  for (const o of rows.filter((x) => x.kind === "operator")) {
+    const vars = String(`${o.what} ${(o.actions ?? []).join(" ")} ${o.access?.resource ?? ""}`).match(/\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b/g) ?? [];
+    const door = rows.find((x) => x !== o && x.holds_if && vars.some((v) => x.holds_if.includes(v)));
+    if (!door) continue;
+    const broken = door.findings.filter((f) => f.security || f.impact === "unauthorized_access");
+    Object.assign(o, { change: o.change && o.change !== "unchanged" ? o.change : door.change, breaks: door.key, findings: [...new Set([...(o.findings ?? []), ...broken])], result: broken.length ? "finding" : o.result, reason: broken.length ? null : o.reason });
+  }
   // No operator way in the data, but a gate's condition names configuration or a secret: whoever deploys sets it.
   if (!rows.some((r) => r.kind === "operator")) for (const r of [...rows]) {
     const v = CONFIG.exec(String(r.holds_if ?? ""));
@@ -771,7 +800,7 @@ export function secSentence(rows, openSecurity = 0) {
   const first = doors.length ? doors.join(" ") : "This PR opens no way in from the public side that the data names.";
   const rest = more.length ? ` It also adds or changes ${more.length > 1 ? `${more.slice(0, -1).join(", ")} and ${more.at(-1)}` : more[0]}.` : "";
   const na = now.filter((r) => r.result === "not_assessed").length;
-  const tally = now.length ? ` ${now.length - na} of ${many(now.length, "crossing", "crossings")} ${now.length - na === 1 ? "is" : "are"} assessed, ${na} not assessed.` : "";
+  const tally = !now.length ? "" : !na ? ` ${now.length === 1 ? "The crossing is" : `All ${now.length} crossings are`} assessed.` : ` ${now.length - na} of ${many(now.length, "crossing", "crossings")} ${now.length - na === 1 ? "is" : "are"} assessed, ${na} not assessed.`;
   return `${first}${rest}${tally} ${openSecurity ? `${many(openSecurity, "security finding is", "security findings are")} unresolved.` : "No security finding is unresolved."}`;
 }
 
@@ -937,6 +966,52 @@ export function resMarksOn(marks, arch) {
   for (const m of marks ?? []) {
     const e = /^e(\d+)$/.exec(String(m.at ?? "")), id = m.node ?? (e ? arch?.edges?.[Number(e[1])]?.to : resCardOf(m.at, arch)), text = m.text ?? m.mark;
     if (id && text) out.set(id, out.has(id) ? `${out.get(id)} · ${text}` : text);
+  }
+  return out;
+}
+
+// ---- the way of a crossing as a chain, beginning with whoever arrives and passing each gate on it (panel round 3)
+// [{kind: "node", text, strong} | {kind: "gate", text, own, row}]: a first step from outside (the internet or an external
+// card) becomes the principal of the way in it reaches, with that way in's gate before its door; the row's own gate
+// stands before its target; the steps before a way in's door drop out (that is who arrives). Pure.
+export function wayOf(r, rows, arch) {
+  const nodes = arch?.nodes ?? [], node = (id) => nodes.find((n) => n.id === id);
+  const name = (id) => node(id)?.label ?? (arch?.groups ?? []).find((g) => g.id === id)?.label ?? (id === "internet" ? "Internet" : id);
+  const gate = (x, own) => ({ kind: "gate", own, row: x, text: x.kind === "bypass" ? "no check: one process" : `‖ ${x.check ?? "no check named"}${x.expects ? ` · expects ${x.expects}` : ""}` });
+  const ext = (id) => id === "internet" || node(id)?.type === "external", entryAt = (id) => (rows ?? []).find((x) => x.kind === "entry" && x.ends.to === id);
+  let steps = [...new Set((r.path ?? [r.ends.from, r.ends.to]).filter(Boolean))];
+  if (r.ends.to && !steps.includes(r.ends.to)) steps.push(r.ends.to);
+  const out = [];
+  if (r.kind === "entry" || r.kind === "operator" || !r.ends.from) {
+    out.push({ kind: "node", text: r.identity ?? r.from?.name ?? "outside", strong: true });
+    const door = steps.indexOf(r.ends.to); steps = door >= 0 ? steps.slice(door) : steps;
+  } else if (steps.length > 1 && ext(steps[0]) && entryAt(steps[1])) {
+    const e = entryAt(steps[1]); out.push({ kind: "node", text: e.identity ?? "outside", strong: false }, gate(e, false)); steps = steps.slice(1);
+  }
+  steps.forEach((id, k) => {
+    if (id === r.ends.to && (k > 0 || out.length)) out.push(gate(r, true));
+    out.push({ kind: "node", text: name(id), strong: id === r.ends.from || id === r.ends.to });
+  });
+  return out;
+}
+export const wayText = (items) => items.map((x) => x.text).join(" → ");
+
+// ---- the zone a card is really reachable from, passed on over calls in one process without a check (C2)
+// eff: Map(node -> {trust, drawn, zone, why}); a card a reachable card calls in one process takes its trust, with the
+// condition of the way in it hangs on (cond(node): e.g. "if crossing 1 fails open"). Pure; eff stays as it is.
+export function passZones(eff, arch, cond = () => null) {
+  const out = new Map(eff), nodes = arch?.nodes ?? [], label = (id) => nodes.find((n) => n.id === id)?.label ?? id;
+  const zoneOf = (id) => (arch?.zones ?? []).find((z) => z.id === nodes.find((n) => n.id === id)?.zone) ?? null;
+  const todo = [...eff.keys()];
+  while (todo.length) {
+    const from = todo.shift(), src = out.get(from);
+    for (const e of arch?.edges ?? []) {
+      if (e.from !== from || !inProcess(e) || e.gate) continue;
+      const z = zoneOf(e.to), had = out.get(e.to), rank = (x) => TRUST_ORDER.indexOf(x);
+      if (had ? rank(had.trust) <= rank(src.trust) : z && rank(z.trust) <= rank(src.trust)) continue; // as exposed already
+      out.set(e.to, { trust: src.trust, drawn: z?.trust ?? null, zone: z ?? { name: "no zone", trust: null }, why: `${label(from)} calls it in one process, without a check`, cond: src.cond ?? cond(from) });
+      todo.push(e.to);
+    }
   }
   return out;
 }

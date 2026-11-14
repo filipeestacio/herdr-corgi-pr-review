@@ -592,8 +592,8 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.deepEqual(rows.map((r) => [r.kind, r.from.name, r.to.name, r.identity, r.result]), [
     ["entry", "anyone on the internet", "Internet / API", "anyone on the internet", "finding"],
     ["right", "Internet / API", "Lambdas", "FrontDesk function", "not_assessed"],
-    ["bypass", "Internet / API", "Lambdas", "handler", "not_assessed"],
-    ["call", "Lambdas", "Store", "consumer", "not_assessed"],
+    ["bypass", "Internet / API", "Lambdas", "Front desk Lambda", "not_assessed"],
+    ["call", "Lambdas", "Store", "Consumer Lambda", "not_assessed"],
     ["operator", "Operator (deploy)", "Internet / API", "whoever deploys", "not_assessed"]],
     "who arrives is the access row's principal; a bug on a call is no assessment; an in-process call bypasses the consumer's boundary; a secret in a condition is an operator's way");
   assert.deepEqual([rows[0].expects, rows[0].findings.map((f) => f.id), rows[0].path, rows[0].goal], ["bearer token holder", ["tok"], ["fd", "c", "m"], "mail any member"]);
@@ -694,4 +694,35 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   const arch = { nodes: [{ id: "q", at: "template.yaml:11" }, { id: "c", at: "library/consumer.py:11" }], edges: [{ from: "q", to: "c" }] };
   const m = resMarksOn([{ at: "e0", mark: "no DLQ" }, { at: "e0", mark: "⏱ 10 s" }, { at: "library/consumer.py:19", mark: "✕ silent" }, { at: "x.py:1", mark: "×3" }, { node: "q", text: "batch 10" }], arch);
   assert.deepEqual([...m], [["c", "no DLQ · ⏱ 10 s · ✕ silent"], ["q", "batch 10"]]);
+}
+
+// ---- panel round 3: right and call folded, defects, operator, ways, zones passed on
+{
+  const { crossingsOf, wayOf, wayText, passZones, isDefect, secSentence } = await import("./views.js");
+  const arch = { zones: [{ id: "z1", name: "Internet", trust: "public" }, { id: "z2", name: "Front desk", trust: "authenticated" }, { id: "z3", name: "Lambdas", trust: "internal" }, { id: "z4", name: "Queue", trust: "data" }],
+    groups: [{ id: "g_ext", label: "Callers" }, { id: "g_fd", label: "Front desk Lambda" }, { id: "g_rc", label: "Consumer Lambda" }, { id: "g_aws", label: "AWS" }],
+    nodes: [{ id: "client", type: "external", group: "g_ext", zone: "z1", label: "Front desk client" }, { id: "handler", group: "g_fd", zone: "z2", label: "handler" }, { id: "events", group: "g_fd", runs_in: "g_fd", zone: "z2", label: "events.py" },
+      { id: "queue", group: "g_aws", zone: "z4", label: "LoanEvents" }, { id: "consumer", group: "g_rc", zone: "z3", label: "consumer" }, { id: "mailer", group: "g_rc", zone: "z3", label: "Mailer" }],
+    edges: [{ from: "client", to: "handler", crosses: true }, { from: "handler", to: "consumer", in_process: true }, { from: "events", to: "queue", crosses: true }, { from: "queue", to: "consumer", crosses: true }, { from: "consumer", to: "mailer", in_process: true }] };
+  const access = [{ id: "acc1", public: true, principal: "anyone on the internet", node: "handler", change: "added", resource: "Api" },
+    { id: "acc2", principal: "FrontDesk function", principal_node: "g_fd", node: "queue", actions: ["sqs:SendMessage"], used: false, change: "added", resource: "Send policy" },
+    { id: "acc3", principal: "Consumer", principal_node: "g_rc", node: "consumer", actions: ["sqs:ReceiveMessage"], change: "added", resource: "Trigger" },
+    { id: "acc4", principal: "operator", principal_kind: "operator", derived: true, change: "unchanged", node: "handler", resource: "FRONT_DESK_TOKEN", actions: ["set FRONT_DESK_TOKEN"] }];
+  const gates = [{ where: { access: "acc1" }, check: "token", source: "code", holds_if: "FRONT_DESK_TOKEN is set", carries: ["body.id"] }, { where: { edge: "e2" }, check: "iam", carries: ["LoanEvent"] }];
+  const threats = [{ id: "t1", where: { access: "acc1" }, result: "finding", findings: ["tok"], path: ["client", "handler", "consumer", "mailer"] }, { id: "t4", where: { edge: "e2" }, result: "finding", goal: "Not an attacker goal" },
+    { id: "t5", where: { access: "acc2" }, result: "not_assessed", derived: true }, { id: "t6", where: { access: "acc3" }, result: "finding", findings: [] }, { id: "t2", where: { edge: "e1" }, result: "finding", path: ["client", "handler", "consumer"] }];
+  const findings = [{ id: "tok", ids: ["tok"], security: true, impact: "unauthorized_access", severity: "high", title: "Token never set", reachable_from: ["acc1"] },
+    { id: "pol", ids: ["pol"], security: false, category: "security", severity: "low", title: "Policy unused", reachable_from: ["acc2"] }];
+  const rows = crossingsOf({ arch, access, gates, threats, findings, bypasses: [{ edge: "e1" }] });
+  assert.deepEqual(rows.map((r) => [r.kind, r.key, r.identity, r.result]), [["entry", "a:acc1", "anyone on the internet", "finding"], ["operator", "a:acc4", "operator", "finding"], ["bypass", "e:1", "Front desk Lambda", "finding"],
+    ["right", "e:2", "FrontDesk function", "finding"], ["right", "e:3", "Consumer", "finding"]], "right and call on one boundary are one row; acc3 folds into the queue's call; the low security finding counts");
+  assert.deepEqual([rows[1].change, rows[1].findings.map((f) => f.id)], ["added", ["tok"]], "the operator's way is new with its gate and names the finding it breaks");
+  assert.deepEqual([rows[3].aliases, rows[3].carries, rows[3].threats.map((t) => t.id), rows[4].threats.map((t) => t.id)], [["a:acc2"], ["LoanEvent"], ["t4"], ["t6"]], "what crosses is this edge's own; t6 stays");
+  assert.ok(isDefect(threats[1]) && !isDefect(threats[0]));
+  assert.equal(crossingsOf({ arch, access: access.slice(1, 2), gates, threats: threats.slice(1, 3) })[0].result, "not_assessed", "a defect alone assesses nothing");
+  assert.equal(wayText(wayOf(rows[2], rows, arch)), "anyone on the internet → ‖ token, in the code → handler → no check: one process → consumer", "way 4 passes gate 1 and starts with the principal");
+  assert.equal(wayText(wayOf(rows[0], rows, arch)), "anyone on the internet → ‖ token, in the code → handler → consumer → Mailer");
+  assert.match(secSentence(rows, 2), /All 5 crossings are assessed\. 2 security findings are unresolved\./);
+  const eff = passZones(new Map([["handler", { trust: "public", drawn: "authenticated" }]]), arch, () => "if crossing 1 fails open");
+  assert.deepEqual([...eff].map(([k, v]) => [k, v.trust, v.cond ?? null]), [["handler", "public", null], ["consumer", "public", "if crossing 1 fails open"], ["mailer", "public", "if crossing 1 fails open"]]);
 }
