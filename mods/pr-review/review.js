@@ -826,6 +826,11 @@ export const ReviewMode = {
   },
   // The Findings tab with f open.
   openFinding(f) { this.tab = "findings"; this.ffocus = f.id; },
+  // A finding's card in the diff is one line until a click opens it (fopen: id -> bool); a security finding from high
+  // on starts open.
+  findOpen(f) { return this.fopen?.get(f.id) ?? Boolean(f.security && ["critical", "high"].includes(f.severity)); },
+  // An open card's rows under its title: what the finding claims (views.js factRows), its text and its suggestion.
+  findRows(f) { return [...factRows(f), f.detail && ["Detail", plain(f.detail)], f.suggestion && ["Suggestion", plain(f.suggestion)]].filter(Boolean); },
   // The index (in steps()) of the layer an analysis finding belongs to, or -1.
   layerOf(f) { return f.step ? this.steps().findIndex((s) => s.findings?.some((x) => f.ids.includes(x.id))) : -1; },
   // A layer's findings: the ones the analysis filed in it, and every other finding in one of its files (a reviewer's).
@@ -1179,6 +1184,9 @@ export const ReviewMode = {
     if (items.length + rows.length > cap) { items.push({ t: "note", text: `${rows.length} lines not shown: the view holds about ${cap} lines at once. Collapse other files (click their header) to open this one.` }); return []; }
     const sugs = this.openSugs(path), cms = this.comments.filter((c) => c.file === path), used = new Set();
     const finds = this.findings().filter((f) => f.file === path && OPEN_ST.includes(this.fstatus(f))); // a fix sent stays here until it is verified
+    // A card sits under the first code line of its finding's range; an open one marks the range in the gutter.
+    const under = new Map(finds.map((f) => [f, findingAnchor(rows, f.line, f.end)]));
+    (this.fmarks ??= new Map()).set(path, new Map(finds.filter((f) => this.findOpen(f)).flatMap((f) => Array.from({ length: Math.max(f.end ?? f.line, under.get(f)) - f.line + 1 }, (_x, k) => [f.line + k, SEV[f.severity]]))));
     const own = this.ghOwn(), gh = this.ghNow().list.filter((g) => g.path === path && !own(g)), ghUsed = new Set(), f = this.fsel, range = this.composing && f?.path === path && rangeOf(rows, f.a, f.b);
     const ths = this.threads().filter((x) => x.file === path), notes = codePins(this.pins(), path);
     const show = this.show();
@@ -1205,7 +1213,7 @@ export const ReviewMode = {
       }
       for (const th of ths) if (atLine(r, th.end, th.old)) { if (show.mine) items.push(...this.cardItems("th", th)); else hide("Yours"); }
       for (const pin of notes) if (atLine(r, pin.anchor.end, pin.anchor.old)) { if (show.notes) items.push(...this.cardItems("pin", pin)); else hide("Notes"); }
-      if (r.kind !== "-") for (const f of finds) if (f.line === r.number) { if (show.ai) items.push({ t: "find", f }, { t: "fact", f }); else hide("Findings"); }
+      if (r.kind !== "-") for (const f of finds) if (under.get(f) === r.number) { if (show.ai) items.push({ t: "find", f }, ...(this.findOpen(f) ? [{ t: "fact", f }] : [])); else hide("Findings"); }
       const n = Object.values(hidden).reduce((a, b) => a + b, 0);
       if (n) items.push({ t: "hidden", text: `${n} hidden · ${Object.keys(hidden).join(", ")}`, key: `${path}:${lineKey(r)}` });
     });
@@ -1329,7 +1337,10 @@ export const ReviewMode = {
       else if (inside && which === 1) this.discuss(it.f, cx);
       else if (inside && which === 2) { const job = this.fixOf(it.f.id); if (job?.terminal) this.goFix(job); else this.fix([it.f], cx); }
       else if (inside && which === 3) this.dismiss(it.f, cx);
-    } else if (it.t === "find") this.openFinding(it.f);
+    } else if (it.t === "find") {
+      if (this.findOpen(it.f) && x >= this.press.w - 16 - FIND_LINK) this.openFinding(it.f);
+      else (this.fopen ??= new Map()).set(it.f.id, !this.findOpen(it.f));
+    }
     else if (it.t === "cact") {
       const b = x - GUTTER - 12, which = b >= 0 && b < BTN ? 0 : b >= BTN + BTN_GAP && b < 2 * BTN + BTN_GAP ? 1 : -1;
       if (it.t === "cact" && which === 0) this.openComposer(cx, it.c);
@@ -1660,6 +1671,7 @@ export const ReviewMode = {
   cardMax() { return Math.max(320, Math.min(CARD_W, (this.listW ?? 900) - GUTTER - 16)); },
   // A card is as wide as its text needs, 420 to 720 px (narrower only when the diff is).
   cardW(c) {
+    if (c && c.src !== "notes") return Math.max(320, (this.listW ?? 900) - GUTTER - 16); // your own words: as wide as a finding's card
     const longest = c ? Math.max(String(c.text).split("\n").reduce((n, l) => Math.max(n, l.length), 0) * 7.4 + 28, ...c.replies.map((r) => r.text.length * 7 + 60), 300 + c.status[0].length * 6.5) : CARD_W;
     return Math.min(this.cardMax(), Math.max(CARD_MIN, Math.round(longest)));
   },
@@ -1723,7 +1735,7 @@ export const ReviewMode = {
     if (it.k === "pin") { this.openNotes ??= new Set(); if (this.openNotes.has(c.id)) this.openNotes.delete(c.id); else this.openNotes.add(c.id); }
   },
   cardRow(it, t) {
-    const c = this.cardOf(it), W = this.cardW(c), col = t[SOURCE[c.src]] ?? t.accent, selMode = this.selected().length > 0, sel = this.selected().includes(c.id);
+    const c = this.cardOf(it), W = this.cardW(c), col = c.src === "notes" ? t[SOURCE.notes] : t.foreground, selMode = this.selected().length > 0, sel = this.selected().includes(c.id);
     const avatar = (name, src, size = 18) => div().w(size).h(size).flex_none().rounded_full().flex().items_center().justify_center().bg((t[SOURCE[src]] ?? t.accent) + "33")
       .text_size(size * 0.58).font_semibold().text_color(t.foreground).child(String(name).replace(/^Note.*/, "N")[0]?.toUpperCase() ?? "?");
     const pillC = ([label, k]) => div().flex_none().px(6).h(18).flex().items_center().rounded(9).border_1().border_color(t[k] ?? t.muted).text_size(11).text_color(t[k] ?? t.muted).child(label);
@@ -3420,7 +3432,7 @@ export const ReviewMode = {
     if (it.t === "composeact") return ACT + 4;
     if (it.t === "cact" || it.t === "fact") return ACT;
     if (it.t === "def") return 190;
-    if (it.t === "find") return 44 + 21 * Math.min(3, this.lines(`${it.f.title} ${it.f.detail}`)) + (this.fixLine(it.f) ? 21 : 0);
+    if (it.t === "find") return this.findOpen(it.f) ? 48 + (this.fixLine(it.f) ? 21 : 0) + 21 * this.lines(it.f.title) + this.findRows(it.f).reduce((n, [, v]) => n + 4 + 21 * this.lines(v, FIND_LABEL), 0) : FIND_FOLDED;
     return { path: 30, file: 44, gap: 30, note: 30 }[it.t];
   },
 
@@ -3439,7 +3451,8 @@ export const ReviewMode = {
       return mono(h_flex()).h(ROW).w_full().text_size(13).cursor_pointer()
         .when(Boolean(tone), (e) => e.bg(tint(r.kind) + "1a")).when(on, (e) => e.bg(t.selection))
         .child(div().w(4).h_full().flex_none().when(on, (e) => e.bg(t.accent)).when(!on && Boolean(focus), (e) => e.bg(t.accent + "55"))
-          .when(!on && !focus && Boolean(this.pinMarks?.has(`${it.path}:${r.n}`)), (e) => e.bg(t.ansi5)))
+          .when(!on && !focus && Boolean(this.pinMarks?.has(`${it.path}:${r.n}`)), (e) => e.bg(t.ansi5))
+          .when(!on && r.kind !== "-" && Boolean(this.fmarks?.get(it.path)?.get(r.n)), (e) => e.bg(t[this.fmarks.get(it.path).get(r.n)]))) // the lines of an open finding
         .child(h_flex().h_full().flex_none().relative().when(Boolean(tone), (e) => e.bg(tint(r.kind) + "40")).child(num(r.o)).child(num(r.n))
           // GitHub's "+" on hover: the line numbers are the comment button (onItem: x inside the gutter).
           .child(h_flex().absolute().inset_0().justify_end().items_center().text_color("#00000000").hover((s) => s.text_color(t.accent_foreground).bg(t.accent + "26"))
@@ -3465,7 +3478,7 @@ export const ReviewMode = {
     // click opens its whole text (this.sug); a and x still take it as a comment or hide it.
     if (it.t === "sug") {
       const s = it.s, open = this.sug === s.key;
-      return div().w_full().h(this.sizeOf(it)).pl(GUTTER).pr(16).py(2).cursor_pointer().child(v_flex().size_full().px(12).justify_center().gap(4).border_l(2).border_color(open ? t.accent : t.border).text_size(12.5)
+      return div().w_full().h(this.sizeOf(it)).pl(GUTTER).pr(16).py(2).cursor_pointer().child(v_flex().size_full().px(12).justify_center().gap(4).border_l(2).border_color(t[SEV[s.severity]] ?? t.border).text_size(12.5)
         .child(h_flex().h(20).flex_none().gap(8).items_center().text_color(t.muted)
           .child(div().flex_none().child(`${open ? "▾" : "▸"} AI note · ${s.severity}${s.approx ? " · near this line" : ""}`))
           .when(!open, (e) => e.child(div().flex_1().min_w(0).truncate().child(plain(s.reason)))))
@@ -3482,13 +3495,22 @@ export const ReviewMode = {
           .child(button(t, live ? "Go to fix" : "Fix", c, t.foreground).id(`rv-fa-f-${f.id}`).tooltip(live ? "Show the fix agent's terminal" : "Fix this with an agent: a preview first; a sub-agent never pushes"))
           .child(button(t, "Dismiss finding", t.border, t.muted).id(`rv-fa-x-${f.id}`).tooltip(`Dismiss this finding${f.sources.length > 1 ? ` with all ${f.sources.length} of its sources` : ""}; it stays in the Findings tab under Dismissed`)));
       }
-      return div().w_full().h(this.sizeOf(it)).pl(GUTTER).pr(16).pt(6).child(card(v_flex()).size_full().px(12).pt(8).gap(4).border_t(1).text_size(13.5)
-        .child(h_flex().h(18).gap(8).items_center().child(badge(t, f.severity, c).id(`rv-lfs-${f.id}`).tooltip(`${f.severity} severity: the highest of its sources`))
-          .when(Boolean(f.security), (e) => e.child(badge(t, "Security", t.ansi1).id(`rv-lfsec-${f.id}`).tooltip("A security finding: the security review found it, or its content is about security")))
-          .child(div().id(`rv-lfr-${f.id}`).tooltip("Where this finding comes from, each source with its own severity").min_w(0).truncate().text_size(12).font_semibold().text_color(t.muted).child(this.sourcesOf(f)))
-          .child(div().id(`rv-lfst-${f.id}`).tooltip("Where this finding stands: unresolved, fix sent, fixed (verified) or dismissed").flex_none().text_size(12).font_semibold().text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(FSTATUS[st]?.[0] ?? st)))
+      // One line folded (severity, title, sources, state); open: the head, the fix line, the title and findRows.
+      const open = this.findOpen(f), state = div().id(`rv-lfst-${f.id}`).tooltip("Where this finding stands: unresolved, fix sent, fixed (verified) or dismissed").flex_none().text_size(12).font_semibold().text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(FSTATUS[st]?.[0] ?? st);
+      const head = (e) => e.child(div().w(10).flex_none().text_size(12).text_color(t.muted).child(open ? "▾" : "▸"))
+        .child(badge(t, f.severity, c).id(`rv-lfs-${f.id}`).tooltip(`${f.severity} is the highest severity among this finding's sources. The scale:\n${SEVERITY_SCALE}`))
+        .when(Boolean(f.security), (x) => x.child(badge(t, "⛨ Security", t.ansi1).bg(t.ansi1 + "26").id(`rv-lfsec-${f.id}`).tooltip("A security finding: the security review found it, or its content is about security")));
+      const sources = div().id(`rv-lfr-${f.id}`).tooltip("Where this finding comes from, each source with its own severity").min_w(0).truncate().text_size(12).font_semibold().text_color(t.muted).child(this.sourcesOf(f));
+      if (!open) return div().id(`rv-lf-${f.id}`).tooltip("Open this finding: what it claims, its text, its suggestion and its actions").w_full().h(FIND_FOLDED).pl(GUTTER).pr(16).pt(6).pb(2).cursor_pointer()
+        .child(head(card(h_flex())).size_full().px(12).gap(8).items_center().border_t(1).border_b(1).text_size(13.5)
+          .child(div().flex_1().min_w(0).truncate().child(f.title)).child(div().flex_none().max_w(300).child(sources)).child(state));
+      return div().w_full().h(this.sizeOf(it)).pl(GUTTER).pr(16).pt(6).cursor_pointer().child(card(v_flex()).size_full().px(12).pt(8).gap(4).border_t(1).text_size(13.5).overflow_hidden()
+        .child(head(h_flex().h(18).flex_none().gap(8).items_center()).child(sources).child(state).child(div().flex_1())
+          .child(div().id(`rv-lfo-${f.id}`).tooltip("Open this finding in the Findings tab").w(FIND_LINK - 12).flex_none().text_right().text_size(12).text_color(t.accent).child("Open in Findings ↗")))
         .when(Boolean(line), (e) => e.child(div().h(17).flex_none().truncate().text_size(12).text_color(t.muted).child(line)))
-        .child(div().flex_1().min_h(0).overflow_hidden().line_height(1.55).whitespace_normal().child(`${f.title}. ${plain(f.detail)}`)));
+        .child(div().flex_none().line_height(1.55).whitespace_normal().font_semibold().child(f.title))
+        .children(this.findRows(f).map(([label, text]) => h_flex().flex_none().items_start().line_height(1.55)
+          .child(div().w(FIND_LABEL).flex_none().text_size(12).text_color(t.muted).child(label)).child(div().flex_1().min_w(0).whitespace_normal().child(text)))));
     }
     if (it.t === "ch" || it.t === "cb" || it.t === "cr") return this.cardRow(it, t);
     if (it.t === "pad") return div().w_full().h(60);
