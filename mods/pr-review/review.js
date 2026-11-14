@@ -3986,6 +3986,9 @@ export const ReviewMode = {
           // An analysis finding is part of its layer: name it, a click opens it.
           .when(li >= 0, (e) => e.child(div().id(`rv-fly-${x.id}`).tooltip("Open the layer this finding belongs to").truncate().text_size(12).text_color(t.accent).cursor_pointer()
             .on_click((_e, cx) => { this.goStep(li, cx); cx.notify(); }).child(`${x.category} · layer: ${plain(this.steps()[li]?.title)} →`)))
+          // What it claims, how sure that is and what it needs, as on its card in the diff (views.js factRows).
+          .when(factRows(x).length > 0, (e) => e.child(v_flex().gap(3).children(factRows(x).map(([label, text]) => h_flex().gap(8).items_start().text_size(12.5).line_height(1.5)
+            .child(div().w(96).flex_none().text_color(t.muted).child(label)).child(div().flex_1().min_w(0).whitespace_normal().child(plain(text)))))))
           .child(div().line_height(1.5).child(TextView.markdown(`rv-fd-${x.id}`, x.detail + (x.suggestion ? `\n\n**Suggested:** ${x.suggestion}` : ""))))
           // What the other sources say about the same line, in their own words and with their own severity.
           .children(others.map((y, k) => div().id(`rv-fsrc-${x.id}-${k}`).text_size(12.5).text_color(t.muted).line_height(1.5).whitespace_normal().child(`${name(y.reviewer)} (${y.severity}): ${plain(y.title)}${y.detail ? `. ${plain(y.detail)}` : ""}`)))
