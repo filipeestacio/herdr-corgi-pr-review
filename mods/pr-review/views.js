@@ -699,6 +699,7 @@ export function crossingsOf({ arch = null, access = [], threats = [], findings =
       return;
     }
     if (!e.crosses && !(a && b && a.id !== b.id)) return;
+    if (node(e.from)?.type === "external" && (access ?? []).some((x) => x.public && x.node === e.to)) return; // the way in's row says it
     rows.push(row({ ...base, kind: "call" }, match));
   });
   // No operator way in the data, but a gate's condition names configuration or a secret: whoever deploys sets it.
@@ -752,10 +753,13 @@ const SHARED = /librar|shared|common|module|package|util/i;
 export function mapArch(arch, access = []) {
   if (!arch) return arch;
   const nodes = arch.nodes ?? [], node = (id) => nodes.find((n) => n.id === id), frame = (id) => (arch.groups ?? []).find((g) => g.id === node(id)?.group);
-  const zoneOf = (n, k = 0) => (n?.runs_in && k < 4 ? zoneOf(node(n.runs_in), k + 1) ?? n.zone : SHARED.test(frame(n?.id)?.label ?? "") && k === 0 ? undefined : n?.zone);
+  // runs_in names a card or a frame (a deployment): a frame's zone is the one its own cards carry.
+  const frameZone = (gid) => nodes.find((n) => n.group === gid && n.zone && !n.runs_in)?.zone;
+  const zoneOf = (n, k = 0) => (n?.runs_in && k < 4 ? (node(n.runs_in) ? zoneOf(node(n.runs_in), k + 1) : frameZone(n.runs_in)) ?? n.zone : SHARED.test(frame(n?.id)?.label ?? "") && k === 0 ? undefined : n?.zone);
   const feeds = (e, i) => (arch.edges ?? []).some((x, j) => j !== i && x.to === e.to && node(x.from)?.group !== node(e.to)?.group && !inProcess(x));
   const edges = (arch.edges ?? []).map((e, i) => (inProcess(e) ? { ...e, crosses: false, bypass: Boolean(e.crosses || feeds(e, i)) } : e));
-  const doors = (access ?? []).filter((x) => x.public && node(x.node));
+  // A way in the analysis already draws a caller from outside for (an external card that calls it) needs no other.
+  const doors = (access ?? []).filter((x) => x.public && node(x.node) && !(arch.edges ?? []).some((e) => e.to === x.node && node(e.from)?.type === "external"));
   const out = { ...arch, nodes: nodes.map((n) => ({ ...n, zone: zoneOf(n) })), edges };
   if (!doors.length) return out;
   const who = doors.map((x) => x.principal).filter(Boolean);

@@ -583,6 +583,9 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.equal(secSentence(rows, 1), "The way in is Api, open to anyone on the internet; its check (token, in the code) holds only if FRONT_DESK_TOKEN is set, and an unresolved high finding says it does not: Token never set. Behind it: mail any member. It also adds or changes 1 right into another zone, 1 call over a trust boundary, 1 call that bypasses a boundary and 1 operator way. 1 of 5 crossings is assessed, 4 not assessed. 1 security finding is unresolved.");
   assert.equal(secSentence([], 0), "This PR opens no way in from the public side that the data names. No security finding is unresolved.");
   assert.deepEqual(crossingsOf({}), []);
+  // A caller from outside drawn as a card: its call to the way in is that way in's row, not a second one.
+  const ext = { ...arch, nodes: [...arch.nodes, { id: "cl", type: "external", zone: "z0" }], zones: [...arch.zones, { id: "z0", name: "Clients", trust: "public" }], edges: [...arch.edges, { from: "cl", to: "fd", crosses: true }] };
+  assert.equal(crossingsOf({ arch: ext, access, threats, gates, findings }).filter((r) => r.ends.from === "cl").length, 0);
 }
 
 // ---- the security run's gates and effective zones
@@ -610,4 +613,8 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.deepEqual(m.edges.map((e) => [e.from, e.to, Boolean(e.crosses), Boolean(e.bypass)]), [["fd", "c", false, true], ["q", "c", false, false], ["c", "m", false, false], ["\0in", "fd", true, false]]);
   assert.equal(m.nodes[0].description, "anyone on the internet"); assert.equal(m.groups[0].id, "\0outside"); assert.equal(m.edges[3].status, "new");
   assert.equal(mapArch(arch, []).nodes.length, arch.nodes.length, "no public way in: no Internet card"); assert.equal(mapArch(null), null);
+  // runs_in may name a frame (a deployment); an analysis that draws its own caller from outside gets no second one.
+  const own = { ...arch, nodes: [...arch.nodes.map((n) => (n.id === "m" ? { ...n, runs_in: "g_fd" } : n)), { id: "cl", type: "external", group: "g_x" }], edges: [...arch.edges, { from: "cl", to: "fd" }] };
+  const m2 = mapArch(own, [{ public: true, node: "fd" }]);
+  assert.deepEqual([m2.nodes.find((n) => n.id === "m").zone, m2.nodes.some((n) => n.id === "\0in")], ["z1", false]);
 }
