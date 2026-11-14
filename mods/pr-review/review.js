@@ -12,7 +12,7 @@
 import { div } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, TextView, v_virtual_list, VirtualListScrollHandle, Textarea, TextareaState, Input, InputState } from "gpui-base";
 import { exec, hc, run, spaces, agents, terminals, focused, pickFolder, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, nextCommand, watchFolder, openOverlay, closeOverlay, props, home } from "herdr";
-import { parseReports, findingStatus, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
+import { parseReports, findingStatus, mergeFindings, findingCounts, countLine, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
 import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig } from "./setup-view.js";
 import { highlightJob, highlightStep, highlightLines, langOf, colors, renderLine, refAt } from "./syntax.js";
@@ -83,20 +83,22 @@ const ctxDoc = () => shared(C.CONTEXTS_KEY);
 const prCtx = (pr) => C.prContext(ctxDoc(), pr, home());
 const ALL_REVIEWERS = { claude: ["Claude code review", "ansi5"], security: ["Security review", "ansi1"], codex: ["Codex review", "ansi6"] };
 // Codex is optional: offered only when `codex` is on PATH (Setup's last check). Labels stay for findings already there.
-// The analysis files its own findings inside its layers: a label and colour here, never a run of its own.
-const REVIEWERS = { ...ALL_REVIEWERS, analysis: ["Architecture review", "ansi4"] };
+// The analysis files its own findings inside its layers, and an AI suggestion can be one source of a finding (pr.js
+// mergeFindings): a label and colour here, never a run of their own.
+const REVIEWERS = { ...ALL_REVIEWERS, analysis: ["Analysis", "ansi4"], ai: ["AI suggestion", "ansi3"] };
 const reviewersNow = () => Object.entries(ALL_REVIEWERS).filter(([k]) => k !== "codex" || hasTool("codex"));
-const FSTATUS = { open: ["Open", "muted"], progress: ["In progress", "ansi3"], fixed: ["Fixed ✓", "ansi2"], dismissed: ["Dismissed", "dim"], recheck: ["Recheck (code changed)", "ansi3"] };
+// A finding's state words (pr.js findingStatus): "Fixed" only after a passed verification.
+const FSTATUS = { open: ["Unresolved", "muted"], progress: ["Fix sent", "ansi3"], fixed: ["Fixed", "ansi2"], dismissed: ["Dismissed", "dim"], recheck: ["Unresolved, line changed", "ansi3"] };
 const SEV = { high: "ansi1", medium: "ansi3", low: "ansi4" };
 // Where a card comes from: its stripe, and the Show switch's colours.
 const SOURCE = { mine: "accent", ai: "ansi3", agents: "ansi6", github: "ansi4", notes: "ansi5" };
 // Hover texts for the Show chips, the Comments tab's filters and its state chips.
-const SHOW_TIP = { mine: "Comments you wrote: drafts (local until you finish the review), sent to agents, or posted", ai: "AI suggestions and reviewer findings", agents: "Replies from agent sessions", github: "Comments other people left on GitHub", notes: "Your pinned notes, private to you" };
-const FILTER_TIP = { all: "Every comment of this PR", pending: "Written by you, not sent yet", waiting: "Sent to an agent, no reply yet", replied: "The agent or a GitHub user answered", fixed: "The agent reported the comment as fixed" };
-const TAB_TIP = { files: "The changed files; tick the ones you have viewed", steps: "The AI's layers of this change, with explanations and pictures", findings: "Problems the AI reviewers found, with Fix and Verify", comments: "All comments on this PR: yours, the agents' and GitHub's" };
+const SHOW_TIP = { mine: "Comments you wrote: drafts (local until you finish the review), sent to agents, or posted", ai: "Findings and AI notes under their lines", agents: "Replies from agent sessions", github: "Comments other people left on GitHub", notes: "Your pinned notes, private to you" };
+
+const TAB_TIP = { files: "The changed files; tick the ones you have viewed", steps: "The AI's layers of this change, with explanations and pictures", findings: "Every finding once, with its sources and its state; fixes sent to an agent and their verification", comments: "All comments on this PR: yours, the agents' and GitHub's" };
 const COVER_TIP = { seen: "The diff does what this asks", partly: "The diff does only part of what this asks", absent: "Nothing in the diff does this", extra: "The diff does this, but it was not asked for" };
 const COMPOSE_TIP = { insertSuggestion: "Insert the selected lines as a GitHub suggestion block", closeComposer: "Close the composer without saving (Esc)", addDraft: "Add to your pending review; nothing is posted yet (⌘↩)", singleComment: "Post this one comment at once, or preview it first when it goes to an agent" };
-const STATE_TIP = { pending: "Pending: written by you, not sent yet", waiting: "Waiting on agent: sent, no reply yet", replied: "Agent replied, or someone answered on GitHub", fixed: "Fixed: the agent reports it done", declined: "Declined: the agent chose not to change it", github: "A comment from GitHub", note: "A pinned note, private to you" };
+const STATE_TIP = { pending: "Pending: written by you, not sent yet", waiting: "Sent to agent: no reply yet", replied: "Agent replied, or someone answered on GitHub", fixed: "Reported fixed: the agent says it is done; nothing has checked it", declined: "Declined: the agent chose not to change it", github: "A comment from GitHub", note: "A pinned note, private to you" };
 const STALE_TIP = "The code here changed since this comment was written";
 const CARD_W = 720, CARD_MIN = 420, CARD_HEAD = 32, CARD_REPLY = 34, CARD_GAP = 6;
 const THREAD_COLOR = { fixed: "ansi2", answered: "accent", wontfix: "muted", question: "ansi3", sent: "ansi4", posted: "ansi4" };
@@ -104,7 +106,7 @@ const PROBE = "0".repeat(40);
 const CTX_MS = 10 * 60000; // related PRs, CI checks, mergeability (related.py): asked again after this while the review is open
 const OPEN_ST = ["open", "progress", "recheck"];
 // The Layers tab's pages (left nav); null: the diff of the current layer.
-const PAGES = [["overview", "Overview"], ["blast", "Security blast radius"], ["arch", "Architecture impact"], ["verify", "Verify"]]; // measures the mono font's character width, for clicks on tokens inside the virtual list
+const PAGES = [["overview", "Overview"], ["blast", "Security blast radius"], ["arch", "Architecture impact"]]; // measures the mono font's character width, for clicks on tokens inside the virtual list
 
 // "Reviews ▾" in the bar opens this popup (props {part: "reviews"}): each reviewer with its last run; Run reaches the
 // review copy through its nextCommand.
@@ -135,7 +137,7 @@ export function renderKeys() {
   return v_flex().id("rv-keys-pop").size_full().p(12).gap(7).bg(t.popover).text_color(t.foreground).text_size(13)
     .child(div().font_semibold().child("Keyboard shortcuts"))
     .child(div().pb(2).text_size(12.5).whitespace_normal().child("Click a line number or press c to comment; shift-click for a range."))
-    .children([["j k", "next / previous file (Layers: step)"], ["n p", "next / previous hunk"], ["c", "comment on the selected line"], ["a x", "accept / dismiss AI suggestion"],
+    .children([["j k", "next / previous file (Layers: step)"], ["n p", "next / previous hunk"], ["c", "comment on the selected line"], ["a x", "add the open AI note as a comment / hide it"],
       ["⌘ click", "go to definition"], ["⌘ ↩", "add the comment (in the composer)"], ["Esc", "close composer or popover, else back"]].map(([k, what]) =>
       h_flex().gap(10).items_center().child(h_flex().w(74).flex_none().gap(3).children(k.split(" ").map((x) => kbd(t, x)))).child(div().text_color(t.muted).child(what))));
 }
@@ -286,7 +288,7 @@ export const ReviewMode = {
     this.order = "reading"; this.flowSel = null;
     this.page = "overview"; this.archMode = "diff"; this.fold = { summary: true, blockers: true, checks: false }; this.blastOpen = false;
     this.ctx = null; this.since = null; this.sinceOn = false; this.lastReviewed = null; this.verifyBusy = false;
-    this.find = { list: [], runs: {}, status: {}, reports: {} }; this.ffilter = { reviewer: "all", severity: "all", status: "open" };
+    this.find = { list: [], runs: {}, status: {}, reports: {} };
     // Reviewer runs and the fixing agent's reports land in pr-data/findings: follow that folder.
     cx.spawn(async (cx) => {
       await exec("mkdir", ["-p", findDir()]).catch(() => null);
@@ -333,7 +335,10 @@ export const ReviewMode = {
     const [name, ...rest] = c.split(":"), arg = rest.join(":");
     if (name === "steps" || name === "files" || name === "findings" || name === "comments") this.tab = name;
     else if (name === "def") this.defineAt(arg, cx);
+    // page:verify is the Findings tab now: fixes sent and their verification sit there, under "Fix sent".
+    else if (name === "page" && arg === "verify") this.tab = "findings";
     else if (name === "page") { this.tab = "steps"; this.page = PAGES.some(([k]) => k === arg) ? arg : "overview"; }
+    else if (name === "finding") { const f = this.findingById(arg); if (f) { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); } } // finding:<id>: a click on its row in the Findings tab
     else if (name === "verify") this.runVerify(cx);
     else if (name === "step") this.goStep(arg === "next" ? this.cur + 1 : arg === "prev" ? this.cur - 1 : Number(arg), cx);
     else if (name === "hunk") this.goHunk(arg === "prev" ? -1 : 1, cx);
@@ -347,7 +352,7 @@ export const ReviewMode = {
     else if (name === "findings") this.tab = "findings";
     else if (name === "back") leave();
     else if (name === "finish") { this.finishOpen = !this.finishOpen; if (this.finishOpen) this.loadGhLogin(cx); }
-    else if (name === "discuss") { const f = this.findings().find((x) => x.id === arg); if (f) this.discuss(f, cx); } // discuss:<finding id> (scripts, keys)
+    else if (name === "discuss") { const f = this.findingById(arg); if (f) this.discuss(f, cx); } // discuss:<finding id> (scripts, keys)
     else if (name === "keys") openOverlay({ mod: "pr-review", props: { part: "keys" }, kind: "popup", ...KEYS_POP });
     else if (name === "comment") { // comment:<path>:<line>[-<end>]: the composer under that new-side line (scripts, tests)
       const m = /^(.*):(\d+)(?:-(\d+))?$/.exec(arg);
@@ -390,7 +395,7 @@ export const ReviewMode = {
       openOverlay({ mod: "pr-review", props: { part: "reviews" }, kind: "popup", width: 460, height: codexChoices().length ? 330 : 250, ...(Number.isFinite(y) ? { at: { x, y } } : {}) });
     }
     else if (name === "add") this.addDraft(cx);
-    else if (name === "fix-finding") { const f = this.findings().find((x) => x.id === arg); if (f) this.fix([f], cx); }
+    else if (name === "fix-finding") { const f = this.findingById(arg); if (f) this.fix([f], cx); }
     else if (name === "trust") this.trust("pr", cx);
     else if (name === "cmenu") { const [k, ...key] = arg.split("|"), card = this.cardByKey(key.join("|")); card?.menu[Number(k)]?.[2]?.(cx); }
     else if (name === "ask") this.setDrawer(arg === "close" ? null : arg === "fold" ? "collapsed" : "open", cx); // the Ask drawer: open | fold | close
@@ -598,7 +603,7 @@ export const ReviewMode = {
     const steps = this.ai?.steps ?? [];
     const th = TH.threadCounts(this.threads(), this.replies, this.gh);
     return { steps: steps.length, stepsChecked: steps.filter((s) => this.done(s)).length, files: this.patch?.length ?? 0, filesViewed: this.prog.seen.size,
-      comments: this.comments.length, threads: th.threads, replies: th.replies, fixedThreads: th.fixed, findingsOpen: this.findings().filter((f) => ["open", "progress", "recheck"].includes(this.fstatus(f))).length };
+      comments: this.comments.length, threads: th.threads, replies: th.replies, fixedThreads: th.fixed, findingsOpen: this.counts().unresolved };
   },
 
   // This PR in pr-data/open-reviews.json (and shared "review.open"), 1.5 s after the last change: opened, worked on,
@@ -785,25 +790,61 @@ export const ReviewMode = {
     const k = stepKey(s);
     return k in this.prog.checked ? this.prog.checked[k] : this.present(s).length > 0 && this.present(s).every((id) => this.prog.visited.has(id));
   },
-  openSugs(path) { return (this.ai?.suspects ?? []).filter((s) => (!path || s.path === path) && !this.prog.handled[s.key]); },
+  // The AI suggestions that stay margin notes (not merged into a finding, not handled yet); path: of that file.
+  openSugs(path) { return this.merged().notes.filter((s) => !path || s.path === path); },
 
-  // ---- reviewer findings (reviewers.py): pr-data/findings/<url hash>.json, the agent's reports in .jsonl
+  // ---- findings: one per defect (pr.js mergeFindings); every view reads findings(), counts() and fstatus()
 
-  // Every finding: the reviewers' (the findings file) and the analysis' own, read live from its layers, so one the
-  // newest analysis no longer has is gone everywhere. Only statuses are stored. Memoized: render calls this often.
-  findings() {
-    const ai = this.ai, list = this.find.list, m = this.findMemo;
-    if (m?.ai === ai && m.list === list) return m.all;
-    this.findMemo = { ai, list, all: [...list, ...(ai?.steps ?? []).flatMap((s) => s.findings ?? [])] };
-    return this.findMemo.all;
+  // The reviewers' findings (reviewers.py: pr-data/findings/<url hash>.json), the analysis' own, read live from its
+  // layers (so one the newest analysis no longer has is gone everywhere), and the AI suggestions on their lines,
+  // merged per file and line. Only statuses are stored. Memoized: render calls this often.
+  merged() {
+    const ai = this.ai, list = this.find.list, st = this.find.status, handled = this.prog.handled, n = Object.keys(handled).length, m = this.findMemo;
+    if (m?.ai === ai && m.list === list && m.st === st && m.handled === handled && m.n === n) return m;
+    return (this.findMemo = { ai, list, st, handled, n,
+      ...mergeFindings([...list, ...(ai?.steps ?? []).flatMap((s) => s.findings ?? [])], (ai?.suspects ?? []).filter((s) => !handled[s.key]), st) });
   },
-  // The Findings tab with f marked; filters that would hide it are cleared.
-  openFinding(f) {
-    if (!this.shownFindings().some((x) => x.id === f.id)) this.ffilter = { reviewer: "all", severity: "all", status: "all" };
-    this.tab = "findings"; this.ffocus = f.id;
+  findings() { return this.merged().findings; },
+  findingById(id) { return this.findings().find((f) => f.ids.includes(id)) ?? null; },
+  // The one count every view shows (pr.js findingCounts): unresolved, of them with a fix sent, by severity, security.
+  counts() { return findingCounts(this.findings(), (f) => this.fstatus(f)); },
+  // "Security review: high · Analysis: medium": a finding's sources with their own severities (one source: its name).
+  sourcesOf(f) {
+    const name = (x) => REVIEWERS[x.reviewer]?.[0] ?? x.reviewer;
+    return f.sources.length === 1 ? name(f.sources[0]) : f.sources.map((x) => `${name(x)}: ${x.severity}`).join(" · ");
   },
+  // The Findings tab with f open.
+  openFinding(f) { this.tab = "findings"; this.ffocus = f.id; },
   // The index (in steps()) of the layer an analysis finding belongs to, or -1.
-  layerOf(f) { return f.step ? this.steps().findIndex((s) => s.findings?.some((x) => x.id === f.id)) : -1; },
+  layerOf(f) { return f.step ? this.steps().findIndex((s) => s.findings?.some((x) => f.ids.includes(x.id))) : -1; },
+  // A layer's findings: the ones the analysis filed in it, and every other finding in one of its files (a reviewer's).
+  layerFindings(s) {
+    const files = new Set(this.filesOf(s)), own = new Set((s.findings ?? []).map((x) => x.id));
+    return this.findings().filter((f) => f.ids.some((id) => own.has(id)) || (!f.step && files.has(f.file)));
+  },
+  // The fix a finding was sent to: its newest job, also once applied or discarded.
+  fixJob(f) { return [...this.fixes()].reverse().find((j) => j.items.some((x) => f.ids.includes(x.id))) ?? null; },
+  // What is known about a finding's fix, as [label, text] pairs: agent, branch, commit, report, check. Empty when it
+  // was never sent.
+  fixFacts(f) {
+    const st = this.find.status[f.id] ?? {}, r = this.find.reports[f.id], fv = this.fixView(this.fixJob(f)), job = fv?.job, v = st.verify;
+    if (!st.fixHead && !r) return [];
+    return [
+      job && ["Agent", `${job.target === "main" ? "the PR's agent" : "a sub-agent"}${job.terminal ? ` (${job.terminal})` : ""}, ${job.state === "running" ? fv.status : job.state}`],
+      job?.branch && ["Branch", job.branch],
+      ["Commit", r?.commit ? String(r.commit).slice(0, 8) : "none reported yet"],
+      r && ["Report", `${r.status === "fixed" ? "The agent reports it fixed" : "The agent declined"}${r.note ? `: ${r.note}` : "."}`],
+      ["Check", v ? `Verified at ${String(v.head).slice(0, 7)}: ${String(v.result).replace("_", " ")}${v.reason ? `, ${v.reason}` : ""}`
+        : "Not verified. Verify reads the PR head, so the fix has to be applied and pushed first."],
+    ].filter(Boolean);
+  },
+  // The same in one line, for a card in the diff: "sub-agent t12 · fix/2-x · commit 22e31c88 · agent reports fixed · not verified".
+  fixLine(f) {
+    const st = this.find.status[f.id] ?? {}, r = this.find.reports[f.id], job = this.fixJob(f), v = st.verify;
+    if (!st.fixHead && !r) return "";
+    return [job && `${job.target === "main" ? "PR agent" : "sub-agent"}${job.terminal ? ` ${job.terminal}` : ""}`, job?.branch, r?.commit && `commit ${String(r.commit).slice(0, 8)}`,
+      r && (r.status === "fixed" ? "agent reports fixed" : "agent declined"), v ? `verified: ${String(v.result).replace("_", " ")}` : "not verified"].filter(Boolean).join(" · ");
+  },
 
   async loadFindings(cx) {
     const url = this.prSel?.url;
@@ -837,17 +878,15 @@ export const ReviewMode = {
     const rows = this.rowsFor(f.file, true), r = rows.find((x) => atLine(x, f.line, false));
     return findingStatus(f, this.find.status, this.find.reports, this.head, r?.text);
   },
-  // The findings the filters let through (status "open" includes recheck and in progress).
-  shownFindings() {
-    const { reviewer, severity, status } = this.ffilter;
-    return this.findings().filter((f) => (reviewer === "all" || f.reviewer === reviewer) && (severity === "all" || f.severity === severity)
-      && (status === "all" || (status === "open" ? ["open", "progress", "recheck"].includes(this.fstatus(f)) : this.fstatus(f) === status)));
-  },
-
   // A status set by hand drops an earlier verification; extra: {fixHead} when it goes to Fix.
   setFinding(f, st, cx, extra = {}) {
     const at = new Date().toISOString();
     this.writeStatus(cx, (status) => ({ ...status, [f.id]: { ...status[f.id], s: st, at, verify: undefined, ...extra } }));
+  },
+  // Dismiss says what goes: the one finding, with every source merged into it.
+  dismiss(f, cx) {
+    this.setFinding(f, "dismissed", cx, { ids: f.ids }); // a source that joins the line later was not dismissed (pr.js findingStatus)
+    this.note = `Dismissed "${f.title}"${f.sources.length > 1 ? `, all ${f.sources.length} sources of it (${this.sourcesOf(f)})` : ` (${this.sourcesOf(f)})`}. It stays in the Findings tab under Dismissed; Reopen brings it back.`;
   },
 
   // The findings' status map changed by fn, here and in the file (compare-and-swap against reviewers.py writing it).
@@ -919,8 +958,7 @@ export const ReviewMode = {
     cx.spawn(async (cx) => {
       if (agent && shared("chatbar.api")) { // the chat bubble drafts it; nothing is sent
         setShared("chatbar.request", { action: "draft", terminal: agent.address, text, from: "pr-review", at: Date.now() });
-        this.setFinding(f, "progress", cx);
-        return cx.notify();
+        return cx.notify(); // a chat changes nothing about the finding: it stays unresolved
       }
       await copyText(text);
       if (!agent) {
@@ -933,7 +971,6 @@ export const ReviewMode = {
         { type: "block", size: { px: 34 }, content: { mod: "pr-review", props: { part: "agentbar", title: agent.tab_name || agent.title || "Agent" } } },
         { type: "block", content: { terminal: agent.address } }] } });
       cx.timer.after(450, () => { run("pane.focus", { terminal: agent.address }); run("terminal.paste"); });
-      this.setFinding(f, "progress", cx);
     });
   },
 
@@ -1120,7 +1157,7 @@ export const ReviewMode = {
     const cap = this.rowCap ?? 9000;
     if (items.length + rows.length > cap) { items.push({ t: "note", text: `${rows.length} lines not shown: the view holds about ${cap} lines at once. Collapse other files (click their header) to open this one.` }); return []; }
     const sugs = this.openSugs(path), cms = this.comments.filter((c) => c.file === path), used = new Set();
-    const finds = this.findings().filter((f) => f.file === path && ["open", "progress", "recheck"].includes(this.fstatus(f)));
+    const finds = this.findings().filter((f) => f.file === path && OPEN_ST.includes(this.fstatus(f))); // a fix sent stays here until it is verified
     const own = this.ghOwn(), gh = this.ghNow().list.filter((g) => g.path === path && !own(g)), ghUsed = new Set(), f = this.fsel, range = this.composing && f?.path === path && rangeOf(rows, f.a, f.b);
     const ths = this.threads().filter((x) => x.file === path), notes = codePins(this.pins(), path);
     const show = this.show();
@@ -1134,12 +1171,12 @@ export const ReviewMode = {
       if (this.defAt && this.defAt.key === `${path}:${lineKey(r)}`) items.push({ t: "def", d: this.defAt });
       // The Show switch: a kind switched off folds away here, never silently ("n hidden").
       const hidden = {}, hide = (k) => { hidden[k] = (hidden[k] ?? 0) + 1; };
-      for (const s of sugs) if (atLine(r, s.line, s.old)) { if (show.ai) items.push({ t: "sug", s }, { t: "sugact", s }); else hide("AI"); }
+      for (const s of sugs) if (atLine(r, s.line, s.old)) { if (show.ai) items.push({ t: "sug", s }); else hide("Findings"); }
       for (const it of lineThreads(r, cms, thread)) {
         if (it.c) used.add(it.c);
         if (it.t === "compose") { if (at.compose !== undefined) continue; at.compose = items.length; } // one composer, even when a hunk shows twice
         if (it.t === "composeact" && at.compose !== items.length - 1) continue;
-        if (it.t === "comment") { const k = it.c.from === "ki" ? "ai" : "mine"; if (show[k]) items.push(...this.cardItems("c", it.c)); else hide(k === "ai" ? "AI" : "Yours"); continue; }
+        if (it.t === "comment") { if (show.mine) items.push(...this.cardItems("c", it.c)); else hide("Yours"); continue; } // also one taken from an AI note: it is yours now
         if (it.t === "cact") continue;
         if (it.t === "gh") ghUsed.add(it.g);
         if (it.t === "gh" && !show.github) { hide("GitHub"); continue; }
@@ -1147,7 +1184,7 @@ export const ReviewMode = {
       }
       for (const th of ths) if (atLine(r, th.end, th.old)) { if (show.mine) items.push(...this.cardItems("th", th)); else hide("Yours"); }
       for (const pin of notes) if (atLine(r, pin.anchor.end, pin.anchor.old)) { if (show.notes) items.push(...this.cardItems("pin", pin)); else hide("Notes"); }
-      if (r.kind !== "-") for (const f of finds) if (f.line === r.number) { if (show.ai) items.push({ t: "find", f }, { t: "fact", f }); else hide("AI"); }
+      if (r.kind !== "-") for (const f of finds) if (f.line === r.number) { if (show.ai) items.push({ t: "find", f }, { t: "fact", f }); else hide("Findings"); }
       const n = Object.values(hidden).reduce((a, b) => a + b, 0);
       if (n) items.push({ t: "hidden", text: `${n} hidden · ${Object.keys(hidden).join(", ")}`, key: `${path}:${lineKey(r)}` });
     });
@@ -1269,14 +1306,12 @@ export const ReviewMode = {
       const b = x - GUTTER - 12, which = Math.floor(b / (BTN + BTN_GAP)), inside = b >= 0 && b % (BTN + BTN_GAP) < BTN;
       if (inside && which === 0) this.findingComment(it.f, cx);
       else if (inside && which === 1) this.discuss(it.f, cx);
-      else if (inside && which === 2) this.fix([it.f], cx);
-      else if (inside && which === 3) this.setFinding(it.f, "dismissed", cx);
-    } else if (it.t === "find") { this.tab = "findings"; this.ffocus = it.f.id; }
-    else if (it.t === "sugact" || it.t === "cact") {
+      else if (inside && which === 2) { const job = this.fixOf(it.f.id); if (job?.terminal) this.goFix(job); else this.fix([it.f], cx); }
+      else if (inside && which === 3) this.dismiss(it.f, cx);
+    } else if (it.t === "find") this.openFinding(it.f);
+    else if (it.t === "cact") {
       const b = x - GUTTER - 12, which = b >= 0 && b < BTN ? 0 : b >= BTN + BTN_GAP && b < 2 * BTN + BTN_GAP ? 1 : -1;
-      if (it.t === "sugact" && which === 0) this.takeSug(it.s, cx);
-      else if (it.t === "sugact" && which === 1) this.dropSug(it.s, cx);
-      else if (it.t === "cact" && which === 0) this.openComposer(cx, it.c);
+      if (it.t === "cact" && which === 0) this.openComposer(cx, it.c);
       else if (it.t === "cact" && which === 1) this.dropComment(it.c, cx);
       else if (it.t === "cact" && which === 2) this.fixComments([TH.commentId(it.c)], cx);
     } else if (it.t === "gap") this.expand(it.path, it.r.gap, x < GUTTER + GAP_SEG ? "down" : x < GUTTER + 2 * GAP_SEG ? "up" : "all", cx);
@@ -1629,14 +1664,14 @@ export const ReviewMode = {
     }
     if (it.k === "th") {
       const v = this.threadOfView(o), fv = this.fixView(this.fixOf(o.id)), agent = o.agent?.split(" · ")[0] || "Agent";
-      const status = fv?.handed ? ["Handed to PR agent", "ansi2"] : fv?.commit ? ["Fix ready", "ansi2"] : fv ? [`Fixing · ${fv.status}`, "ansi3"] : v.status === "fixed" ? [`Fixed${v.fixedIn ? ` in ${v.fixedIn.slice(0, 7)}` : ""}`, "ansi2"]
+      const status = fv?.handed ? ["Handed to PR agent", "ansi2"] : fv?.commit ? ["Fix ready", "ansi2"] : fv ? [`Fixing · ${fv.status}`, "ansi3"] : v.status === "fixed" ? [`Reported fixed${v.fixedIn ? ` in ${v.fixedIn.slice(0, 7)}` : ""}`, "ansi2"]
         : v.status === "wontfix" ? ["Declined", "muted"] : v.status === "answered" || v.status === "question" ? ["Agent replied", "accent"]
         : o.route === "github" ? [o.dry ? "Dry run: not posted" : "Posted", "ansi4"] : ["Sent to agent", "ansi6"];
       const action = fv?.commit && fv.job.target === "sub" && !fv.handed ? ["Apply to PR", (cx) => this.applyFix(fv.job, cx)] : fv ? ["Go to fix", () => this.goFix(fv.job)] : ["Fix", (cx) => this.fixComments([o.id], cx)];
       return { key: `th:${o.id}`, id: o.id, src: "mine", author: "You", time: hm(o.sentAt), sel: true, status, text: o.text, action,
         folded: v.collapsed ? `You: ${plain(o.text)} · ${status[0]}` : null,
         replies: v.entries.filter((e) => this.show().agents || e.who !== "agent").map((e) => ({ author: e.who === "you" ? "You" : e.who === "agent" ? agent : e.who, src: e.who === "you" ? "mine" : e.who === "agent" ? "agents" : "github",
-          text: e.text, status: e.status ? [{ fixed: `Fixed${e.commit ? ` in ${String(e.commit).slice(0, 7)}` : ""}`, wontfix: "Declined", answered: "Answered", question: "Question" }[e.status] ?? e.status, THREAD_COLOR[e.status] ?? "muted"] : null })),
+          text: e.text, status: e.status ? [{ fixed: `Reported fixed${e.commit ? ` in ${String(e.commit).slice(0, 7)}` : ""}`, wontfix: "Declined", answered: "Answered", question: "Question" }[e.status] ?? e.status, THREAD_COLOR[e.status] ?? "muted"] : null })),
         menu: [["Reply", false, (cx) => this.startReply(o.id, cx)], ...(fv?.job.terminal ? [["Go to fix", false, () => this.goFix(fv.job)]] : []), ...(fv?.handed && fv.job.target === "sub" ? [["Apply to PR", false, (cx) => this.applyFix(fv.job, cx)]] : []),
           ...(fv?.job.target === "sub" ? [["Discard fix", true, (cx) => this.discardFix(fv.job, cx)]] : []), ...(v.status === "fixed" || v.status === "wontfix" ? [[this.openThreads.has(o.id) ? "Fold" : "Unfold", false, () => { if (this.openThreads.has(o.id)) this.openThreads.delete(o.id); else this.openThreads.add(o.id); }]] : []),
           ["Select", false, (cx) => this.toggleSel(o.id, cx)], ...(o.url ? [["Open on GitHub", false, () => openUrl(o.url)]] : []), ["Copy position", false, () => copyText(where(o))]] };
@@ -1947,7 +1982,7 @@ export const ReviewMode = {
     else if (k === "n" || k === "p") this.goHunk(k === "n" ? 1 : -1, cx);
     else if (k === "c") this.openComposer(cx, null, true);
     else if (k === "shift-/" || e.key === "?") this.command("keys", cx);
-    else if (k === "a" || k === "x") { const s = this.focusedSug(); if (s) (k === "a" ? this.takeSug(s, cx) : this.dropSug(s, cx)); }
+    else if (k === "a" || k === "x") { const s = this.openSugs().find((x) => x.key === this.sug); if (s) (k === "a" ? this.takeSug(s, cx) : this.dropSug(s, cx)); } // only the note that is open: its line says so
     else if (k === "s" || k === "f") this.tab = k === "s" ? "steps" : "files";
     else if (k === "escape") { if (this.sendP) this.sendP = null; else if (this.replyTo) this.replyTo = null; else if (this.selected().length) this.clearSel(cx); else if (this.finishOpen) this.finishOpen = false; else if (this.composing) this.closeComposer(cx); else if (this.defFile) this.defFile = null; else if (this.defAt) this.defAt = null; else if (this.drawerState() === "open") this.setDrawer(null, cx); else if (this.archFocus || this.blastFocus || this.askHl) this.archFocus = this.blastFocus = this.askHl = null; else leave(); }
     else return;
@@ -1965,7 +2000,7 @@ export const ReviewMode = {
       .child(div().w(16).flex_none().text_color(this.event === k ? t.accent : t.muted).child(this.event === k ? "◉" : "○"))
       .child(v_flex().flex_1().min_w(0).child(div().font_semibold().child(label[k])).child(div().text_size(12).text_color(t.muted).whitespace_normal().child(what)));
     const tick = (id, on, click) => div().id(id).tooltip("Tick to include this in what is posted, untick to leave it out").accessibility_label("Include in review").w(18).flex_none().text_size(14).cursor_pointer().text_color(on ? t.accent : t.muted).on_click((_e, cx) => { click(); cx.notify(); }).child(on ? "☑" : "☐");
-    const origin = (c) => (c.from === "ki" ? "from an AI suggestion" : c.from ? `from a ${REVIEWERS[c.from]?.[0] ?? c.from} finding` : null);
+    const origin = (c) => (c.from === "ki" ? "from an AI suggestion" : c.from ? `from a finding (${REVIEWERS[c.from]?.[0] ?? c.from})` : null);
     // Each item that can go out, ticked or not; GitHub: the summary too, and Edit in place.
     const item = (c) => {
       const on = !gh || !this.off.has(c.id), editing = this.editItem === c.id;
@@ -2080,36 +2115,38 @@ export const ReviewMode = {
   },
   showCountsNow() {
     const agents = Object.values(this.replies ?? {}).reduce((n, r) => n + r.length, 0);
-    return TH.showCounts({ rows: this.commentRowsNow(), ai: this.openSugs().length + this.openFindings().length, agents });
+    return TH.showCounts({ rows: this.commentRowsNow(), findings: this.counts().unresolved, agents });
   },
-  // The switch as chips: what shows in the diff, with counts. Resolved GitHub threads (off by default) get a chip of
-  // their own while there are any; older bot comments a muted line that shows them all.
+  // The one filter for what sits under the diff's lines and in the Comments list, as chips with counts (the bar only).
+  // Findings carries the Findings tab's number, or says whether anything has looked for findings yet; a kind of
+  // comment with nothing in it has no chip. Resolved GitHub threads (off by default) get a chip of their own while
+  // there are any; older bot comments a muted line that shows them all.
   showChips(t, id) {
     const show = this.show(), counts = this.showCountsNow(), g = this.ghNow();
     const sw = (k, on, label, n, tip, click) => div().id(`${id}-${k}`).tooltip(tip).px(10).h(24).flex().items_center().gap(5).rounded(12).border_1().cursor_pointer().text_size(12)
       .border_color(on ? t[SOURCE[k]] ?? t.accent : t.border).text_color(on ? t.foreground : t.dim).hover((s) => s.bg(t.hover))
-      .on_click((_e, cx) => { click(); cx.notify(); }).child(label).child(div().text_color(t.muted).child(String(n ?? 0)));
+      .on_click((_e, cx) => { click(); cx.notify(); }).child(label).when(n !== null, (e) => e.child(div().text_color(t.muted).child(String(n ?? 0))));
+    const looked = Boolean(this.ai) || Object.values(this.find.runs).some((r) => r.at);
+    const label = (k, l) => (k === "ai" && !this.findings().length ? (looked ? "Findings: none" : "Findings: not run") : l);
     return h_flex().flex_none().gap(6).items_center().child(div().text_size(12.5).text_color(t.muted).child("Show"))
-      .children(TH.SHOW_KINDS.map(([k, label]) => sw(k, show[k], label, counts[k], `${SHOW_TIP[k]}: click to hide or show them in the diff`, () => this.toggleShow(k))))
+      .children(TH.SHOW_KINDS.filter(([k]) => k === "ai" || counts[k] > 0).map(([k, l]) => sw(k, show[k], label(k, l), k === "ai" && !this.findings().length ? null : counts[k], `${SHOW_TIP[k]}: click to hide or show them in the diff`, () => this.toggleShow(k))))
       .when(g.resolved > 0, (e) => e.child(sw("resolved", this.showResolved, "Resolved", g.resolved, "GitHub threads marked resolved: hidden by default, click to show or hide them", () => { this.showResolved = !this.showResolved; })))
       .when(g.botsHidden > 0, (e) => e.child(div().id(`${id}-bots`).tooltip(this.allBots ? "Show only each bot's comments on the commit it reviewed last" : "Bots comment again on every push: only each bot's comments on the commit it reviewed last show. Click to show them all")
         .flex_none().text_size(12).text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => { this.allBots = !this.allBots; cx.notify(); })
         .child(this.allBots ? `Hide ${g.botsHidden} older bot comments` : `${g.botsHidden} older bot ${g.botsHidden === 1 ? "comment" : "comments"} hidden`)));
   },
   commentsPane(t) {
-    const all = this.commentRowsNow(), f = this.cfilter ?? "all", rows = TH.filterRows(all, f, this.show()), sel = new Set(this.selected());
-    const STATE = { pending: ["Pending", "ansi3"], waiting: ["Waiting on agent", "ansi6"], replied: ["Agent replied", "accent"], fixed: ["Fixed", "ansi2"], declined: ["Declined", "muted"], github: ["GitHub", "ansi4"], note: ["Note", "ansi5"] };
-    const chip = (k, label) => div().id(`rv-cf-${k}`).tooltip(`${FILTER_TIP[k]}: click to list only these`).px(8).h(24).flex().items_center().rounded(6).cursor_pointer().text_size(12).border_1()
-      .bg(f === k ? t.selected : t.chrome).text_color(f === k ? t.foreground : t.muted).border_color(f === k ? t.accent : t.border).on_click((_e, cx) => { this.cfilter = k; cx.notify(); }).child(label);
+    // No filters here: the bar's Show switch is the one filter, each row carries its state. A comment's states are
+    // its own (the talk with the agent), not a finding's: "Fixed" is a finding's word, after a verification.
+    const all = this.commentRowsNow(), rows = TH.filterRows(all, "all", this.show()), sel = new Set(this.selected());
+    const STATE = { pending: ["Pending", "ansi3"], waiting: ["Sent to agent", "ansi6"], replied: ["Agent replied", "accent"], fixed: ["Reported fixed", "ansi2"], declined: ["Declined", "muted"], github: ["GitHub", "ansi4"], note: ["Note", "ansi5"] };
     const files = [...new Set(rows.map((r) => r.file))];
     return v_flex().flex_1().min_h(0)
       .child(v_flex().flex_none().px(14).py(10).gap(8).border_b(1).border_color(t.border)
-        .child(div().text_size(12.5).text_color(t.muted).whitespace_normal().child(TH.commentSummary(all) || "No comments yet"))
-        .child(h_flex().flex_wrap().gap(4).children([["all", "All"], ["pending", "Pending"], ["waiting", "Waiting"], ["replied", "Replied"], ["fixed", "Fixed"]].map(([k, l]) => chip(k, l))))
-        .child(h_flex().flex_wrap().child(this.showChips(t, "rv-cshow"))))
+        .child(div().text_size(12.5).text_color(t.muted).whitespace_normal().child(TH.commentSummary(all) || "No comments yet")))
       .child(div().flex_1().min_h(0).relative()
         .child(v_flex().id("rv-comments-left").absolute().inset_0().overflow_y_scroll().p(8).gap(2)
-          .when(!rows.length, (e) => e.child(div().p(6).text_size(12.5).text_color(t.muted).child(all.length ? "Nothing matches these filters." : "Comments you write, send or post show here, with their replies.")))
+          .when(!rows.length, (e) => e.child(div().p(6).text_size(12.5).text_color(t.muted).whitespace_normal().child(all.length ? "The Show switch in the bar hides these comments." : "Comments you write, send or post show here, with their replies.")))
           .children(files.flatMap((file) => [div().pt(8).pb(2).px(6).text_size(11.5).font_semibold().text_color(t.muted).truncate().child(file),
             ...rows.filter((r) => r.file === file).map((r) => {
               const st = STATE[r.state], mine = r.kind === "pending" || r.kind === "thread";
@@ -2197,8 +2234,12 @@ export const ReviewMode = {
     const sep = () => div().flex_none().text_color(t.dim).child("·"), cap = (x) => x[0].toUpperCase() + x.slice(1);
     const link = (id, child, click) => h_flex().id(id).flex_none().gap(4).items_center().px(6).h(26).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground)).on_click(click).child(child);
     const menu = (id, items, w = 230) => (_e, cx) => { openOverlay({ mod: "pr-review", props: { part: "cmenu", key: id, items }, kind: "popup", width: w, height: 12 + 30 * items.length }); cx.stop_propagation(); };
+    // Without an analysis the risk still comes from what there is: the reviewers' unresolved findings, said so.
+    const fc = this.prSel ? this.counts() : { unresolved: 0 }, top = ["high", "medium", "low"].find((k) => fc[k]);
     const facts = [
       ai?.mergeRisk && div().id("rv-mr").flex_none().tooltip(ai.mergeRisk.why || "").child(h_flex().gap(4).child("Merge risk:").child(div().text_color(t[SEVERITY_COLOR[ai.mergeRisk.level]] ?? t.muted).child(cap(ai.mergeRisk.level)))),
+      !ai?.mergeRisk && top && link("rv-mr", h_flex().gap(4).child("Risk from findings:").child(div().text_color(t[SEVERITY_COLOR[top]] ?? t.muted).child(cap(top))).child(`(${fc[top]} ${top}, no analysis)`),
+        (_e, cx) => { this.tab = "findings"; cx.notify(); }).tooltip("No analysis has rated the merge risk; this is the highest severity among the unresolved findings. Click for the Findings tab"),
       ai?.effort && div().id("rv-ef").flex_none().tooltip(ai.effort.why || "").child(`Review effort ${ai.effort.score}/5`),
       ok + bad > 0 && link("rv-ck", h_flex().gap(4).child("Pre-merge checks").child(div().text_color(t.ansi2).child(`✓${ok}`)).child(div().text_color(bad ? t.ansi1 : t.muted).child(`✗${bad}`)),
         (_e, cx) => { this.tab = "steps"; this.page = "overview"; cx.notify(); }).tooltip("Pre-merge checks passed and failed; click for the Overview page"),
@@ -2244,7 +2285,7 @@ export const ReviewMode = {
         return div().pl(26).child(div().rounded(9).border_1().border_color(picked ? t.accent : t.chrome).child(flowCard(f, t, `rv-flow-${i}-${k}`,
           (_e, cx) => { this.flowSel = { step: stepKey(s), k }; this.jumpTo(f.at, cx); cx.stop_propagation(); })));
       })))
-      .when(on, (e) => e.children(this.openSugs().filter((x) => s.hunks.includes(x.hunk)).map((x) => this.sugCard(x, t, true))));
+      ;
   },
 
   // A layer's explanation, check questions and pictures, as the Layers view shows them; a card's "In the layer
@@ -2258,14 +2299,17 @@ export const ReviewMode = {
         .children(s.questions.map((q, k) => h_flex().id(`${p}-q-${n}-${k}`).tooltip("A question to check while you read this layer").gap(8).items_start().text_size(13.5).line_height(1.5)
           .child(div().flex_none().text_color(t.accent).child("?"))
           .child(div().flex_1().min_w(0).child(TextView.markdown(`${p}-q-${stepKey(s)}-${k}`, this.asked(s, q)))))),
-      s.findings?.length > 0 && v_flex().pt(2).gap(6)
+      // Every finding in this layer's files, whoever found it: one line each with its source and state.
+      this.layerFindings(s).length > 0 && v_flex().pt(2).gap(6)
         .child(div().text_size(11.5).font_semibold().text_color(t.muted).child("FINDINGS"))
-        .children(s.findings.map((f, k) => {
-          const settled = ["fixed", "dismissed"].includes(this.fstatus(f));
-          return h_flex().id(`${p}-f-${n}-${k}`).tooltip(`${f.category}: open this finding in the Findings tab`).gap(8).items_center().text_size(13.5).cursor_pointer()
+        .children(this.layerFindings(s).map((f, k) => {
+          const st = this.fstatus(f), settled = ["fixed", "dismissed"].includes(st);
+          return h_flex().id(`${p}-f-${n}-${k}`).tooltip(`${this.sourcesOf(f)}: open this finding in the Findings tab`).gap(8).items_center().text_size(13.5).cursor_pointer()
             .on_click((_e, cx) => { this.openFinding(f); cx.stop_propagation(); cx.notify(); })
             .child(badge(t, f.severity, t[SEV[f.severity]]))
-            .child(div().flex_1().min_w(0).truncate().text_color(settled ? t.dim : t.foreground).child(f.title));
+            .child(div().flex_1().min_w(0).truncate().text_color(settled ? t.dim : t.foreground).child(f.title))
+            .child(div().flex_none().text_size(11.5).text_color(t.muted).child(f.sources.length === 1 ? this.sourcesOf(f) : `${f.sources.length} sources`))
+            .when(st !== "open", (e) => e.child(div().flex_none().text_size(11.5).text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(FSTATUS[st]?.[0] ?? st)));
         })),
       bar,
       s.visuals?.length > 0 && visualsCard(s.visuals, t, `${p}-vis-${n}`, (at, cx) => this.jumpTo(at, cx),
@@ -2291,29 +2335,16 @@ export const ReviewMode = {
     return out;
   },
 
-  sugCard(s, t, small) {
-    const c = t[LEVEL[s.severity]];
-    return v_flex().id(`rv-sc-${s.key}`).tooltip("Show where this AI suggestion applies in the diff").flex_none().ml(small ? 26 : 0).mt(4).px(10).py(8).gap(6).rounded(8).border_1().border_l(3)
-      .border_color(this.sug === s.key ? t.accent : c).bg(t.surface).text_size(13.5).cursor_pointer()
-      .on_click((_e, cx) => { this.sug = s.key; this.visit(s.hunk, cx); this.scrollTo(this.tab, s.hunk); cx.stop_propagation(); cx.notify(); })
-      .child(h_flex().gap(8).items_center().child(badge(t, s.severity, c).id(`rv-ssv-${s.key}-${small}`).tooltip(`AI suggestion, ${s.severity} severity`))
-        .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.muted).child(`${s.path.split("/").pop()} · line ${s.line}${s.old ? " (old)" : ""}${s.approx ? " ~" : ""}`)))
-      .child(div().line_height(1.5).child(TextView.markdown(`rv-sr-${s.key}-${small}`, s.reason)))
-      .child(h_flex().gap(8)
-        .child(pill(`rv-take-${s.key}-${small}`, t, "Accept (a)", (_e, cx) => { this.takeSug(s, cx); cx.stop_propagation(); cx.notify(); }, false, t.foreground).tooltip("Add this suggestion to your pending comments (a)"))
-        .child(pill(`rv-drop-${s.key}-${small}`, t, "Dismiss (x)", (_e, cx) => { this.dropSug(s, cx); cx.stop_propagation(); cx.notify(); }).tooltip("Hide this suggestion (x)")));
-  },
-
   // ---- the Layers tab: the left nav (pages, what needs attention, the layers) and the pages it opens
 
   checksNow() { return preMergeChecks({ title: this.pr?.title ?? this.prSel?.title, rules: this.ai?.rules ?? [], ctx: this.ctx }); },
   openFindings() { return this.findings().filter((f) => OPEN_ST.includes(this.fstatus(f))); },
-  blockersNow(checks = this.checksNow()) { return mergeBlockers({ checks, findings: this.openFindings(), unverified: this.verifyList().length, related: this.ctx }); },
+  blockersNow(checks = this.checksNow()) { return mergeBlockers({ checks, findings: this.openFindings(), unverified: this.verifyList().length, related: this.ctx, sent: (f) => this.fstatus(f) === "progress" }); },
   // The triage for this PR (pr.js triageOf, no LLM), for the registry and its consumers.
   triageNow() {
     const lines = (this.patch ?? []).reduce((n, f) => n + f.add + f.del, 0);
     return triageOf({ pr: this.prSel ?? {}, analysis: this.ai, size: { files: this.patch?.length ?? 0, lines },
-      security: this.openFindings().filter((f) => f.reviewer === "security"), related: this.ctx });
+      security: this.openFindings().filter((f) => f.security), related: this.ctx });
   },
   filesOf(s) { return [...new Set(this.present(s).map((id) => this.byId.get(id).path))]; },
   // "file.ts — question": a check question with the file it is about.
@@ -2325,7 +2356,7 @@ export const ReviewMode = {
     this.steps().forEach((s, i) => { if (s.risk === "high" && !s.pseudo && !this.done(s)) out.push({ label: plain(s.title), why: "Layer to read closely", go: (cx) => this.goStep(i, cx) }); });
     for (const r of this.ai?.rules ?? []) if (r.status === "fail") out.push({ label: r.rule, why: `Repo rule failed · ${r.source}`, go: (cx) => (r.where ? this.jumpTo(r.where, cx) : (this.page = "overview")) });
     const n = this.verifyList().length;
-    if (n) out.push({ label: `${n} ${n === 1 ? "fix" : "fixes"} to verify`, why: "Sent to Fix before the last push", go: () => { this.page = "verify"; } });
+    if (n) out.push({ label: `${n} ${n === 1 ? "fix" : "fixes"} to verify`, why: "Sent to Fix before the last push", go: () => { this.tab = "findings"; } });
     for (const b of this.blockersNow().filter((x) => x.severity === "high" && !x.finding)) out.push({ label: b.title, why: b.why, go: () => { this.page = "overview"; } });
     return out;
   },
@@ -2338,8 +2369,8 @@ export const ReviewMode = {
       .when(this.page === k, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.page = k; cx.notify(); })
       .child(div().flex_1().min_w(0).truncate().text_size(13.5).font_semibold().text_color(this.page === k ? t.foreground : t.muted).child(label))
       .children(right.filter(Boolean));
-    const sec = this.find.list.filter((f) => f.reviewer === "security" && OPEN_ST.includes(this.fstatus(f))).length;
-    const changed = (ai?.arch?.nodes ?? []).some((n) => n.status && n.status !== "unchanged"), toVerify = this.verifyList().length;
+    const sec = this.counts().security;
+    const changed = (ai?.arch?.nodes ?? []).some((n) => n.status && n.status !== "unchanged");
     const attention = ai ? this.attention() : [], pr = this.prSel ?? {};
     const canInc = Boolean(ai && this.aiFile && this.since?.files.length && !this.aiBusy);
     return v_flex().flex_1().min_h(0)
@@ -2369,10 +2400,9 @@ export const ReviewMode = {
             .tooltip(`Analyze only the ${this.since.files.length} files changed since your last review and merge the new layers in`)))))
       .child(div().flex_1().min_h(0).relative()
         .child(v_flex().id("rv-steps-left").absolute().inset_0().overflow_y_scroll().p(8).gap(4)
-          .child(nav("overview", "Overview", [pr.state && badge(t, pr.state === "open" ? "Open" : pr.state, t[{ open: "ansi2", draft: "dim", merged: "ansi5", closed: "ansi1" }[pr.state]] ?? t.dim).id("rv-nav-state").tooltip("The PR's state on GitHub")]))
-          .child(nav("blast", "Security blast radius", [sec > 0 && badge(t, String(sec), t.ansi1).id("rv-nav-sec").tooltip(`${sec} open security findings`)]))
+          .child(nav("overview", "Overview", []))
+          .child(nav("blast", "Security blast radius", [sec > 0 && badge(t, String(sec), t.ansi1).id("rv-nav-sec").tooltip(`${sec} unresolved security findings`)]))
           .child(nav("arch", "Architecture impact", [changed && badge(t, "Changed", t.accent).id("rv-nav-arch").tooltip("The architecture picture differs before and after this PR")]))
-          .child(nav("verify", "Verify", [toVerify > 0 && badge(t, String(toVerify), t.ansi3).id("rv-nav-ver").tooltip(`${toVerify} fixes to verify`)]))
           .when(attention.length > 0, (e) => e.child(v_flex().flex_none().mt(8).p(10).gap(6).rounded(8).border_1().border_l(3).border_color(t.ansi3).bg(t.ansi3 + "10")
             .child(div().text_size(11.5).font_semibold().text_color(t.ansi3).child("NEEDS YOUR ATTENTION"))
             .children(attention.slice(0, 6).map((a, k) => v_flex().id(`rv-att-${k}`).tooltip("Go to this item").cursor_pointer().hover((s) => s.bg(t.hover)).rounded(5).px(4).py(2)
@@ -2393,7 +2423,7 @@ export const ReviewMode = {
 
   // The page beside the Layers nav (instead of the diff).
   pageView(t) {
-    const body = { overview: () => this.overviewPage(t), arch: () => this.archPage(t), blast: () => this.blastPage(t), verify: () => this.verifyPage(t) }[this.page];
+    const body = { overview: () => this.overviewPage(t), arch: () => this.archPage(t), blast: () => this.blastPage(t) }[this.page];
     return div().flex_1().min_h(0).relative()
       .child(v_flex().id(`rv-page-${this.page}`).absolute().inset_0().overflow_y_scroll().px(24).py(18).gap(14).child(body ? body() : div()))
       .child(Scrollbar.vertical(`rv-page-${this.page}`).absolute().inset_0());
@@ -2420,11 +2450,11 @@ export const ReviewMode = {
     const pr = this.prSel ?? {}, ai = this.ai, files = this.patch ?? [], task = ai?.task ?? {};
     const add = files.reduce((n, f) => n + f.add, 0), del = files.reduce((n, f) => n + f.del, 0);
     const layers = (ai?.steps ?? []).filter((s) => !s.pseudo), hues = ["accent", "ansi4", "ansi5", "ansi6", "ansi3", "ansi2"];
-    const finds = this.openFindings(), sev = ["high", "medium", "low"].map((k) => [k, finds.filter((f) => f.severity === k).length]);
+    const fc = this.counts(), sev = ["high", "medium", "low"].map((k) => [k, fc[k]]);
     const checks = this.checksNow(), blockers = this.blockersNow(checks), ok = checks.filter((c) => c.ok === true).length, bad = checks.filter((c) => c.ok === false).length;
     const fold = (k) => (_e, cx) => { this.fold[k] = !this.fold[k]; cx.notify(); };
     const section = (title) => div().pt(4).text_size(11.5).font_semibold().text_color(t.muted).child(title);
-    const sevPills = h_flex().flex_wrap().gap(6).children(sev.filter(([, n]) => n).map(([k, n]) => chip(t, `${n} ${k}`, t[SEVERITY_COLOR[k]], true, `rv-sevp-${k}`, `${n} open findings of ${k} severity`)));
+    const sevPills = h_flex().flex_wrap().gap(6).children(sev.filter(([, n]) => n).map(([k, n]) => chip(t, `${n} ${k}`, t[SEVERITY_COLOR[k]], true, `rv-sevp-${k}`, `${n} unresolved findings of ${k} severity`)));
     const ctx = this.ctx, related = [...(ctx?.open ?? []).map((p) => ({ ...p, state: "open" })), ...(ctx?.merged ?? []).map((p) => ({ ...p, state: "merged" }))];
     return v_flex().gap(14).max_w(1100)
       .child(div().text_size(12).text_color(t.muted).child(`Updated ${ago(ai?.generated ?? pr.updatedAt ?? new Date().toISOString())}`))
@@ -2438,8 +2468,8 @@ export const ReviewMode = {
           segBar(t, layers.map((s, k) => ({ weight: 1, color: t[hues[k % hues.length]] }))), layers.map((s) => plain(s.title)).join(" · ") || "Not analyzed yet").tooltip("How many layers the analysis found, one colour each"))
         .child(statCard(t, "rv-st-files", "Files changed", `${files.length} ${files.length === 1 ? "file" : "files"}`,
           segBar(t, [{ weight: add, color: t.ansi2 }, { weight: del, color: t.ansi1 }]), `+${add} −${del}`).tooltip("Files changed, with lines added (green) and removed (red)"))
-        .child(statCard(t, "rv-st-find", "Severity findings", `${finds.length} ${finds.length === 1 ? "finding" : "findings"}`,
-          segBar(t, sev.map(([k, n]) => ({ weight: n, color: t[SEVERITY_COLOR[k]] }))), sev.filter(([, n]) => n).map(([k, n]) => `${n} ${k[0].toUpperCase()}${k.slice(1)}`).join(" ") || "None open").tooltip("Open findings by severity")))
+        .child(statCard(t, "rv-st-find", "Findings", `${fc.unresolved} unresolved`,
+          segBar(t, sev.map(([k, n]) => ({ weight: n, color: t[SEVERITY_COLOR[k]] }))), fc.total ? countLine(fc).replace(/^\d+ unresolved:? ?/, "") || "None unresolved" : "No findings").tooltip("Unresolved findings by severity; a finding with a fix sent stays unresolved until it is verified")))
       .child(foldCard(t, "rv-checks", "Pre-merge checks", [div().text_color(t.ansi2).font_semibold().child(`✓ ${ok}`), div().text_color(bad ? t.ansi1 : t.muted).font_semibold().child(`✗ ${bad}`)],
         this.fold.checks, fold("checks"), () => v_flex().gap(4).children(checks.map((c, k) => h_flex().id(`rv-ck-${k}`).tooltip(`${c.ok === true ? "Passed" : c.ok === false ? "Failed" : "Not decided yet"}${c.where ? ": click to jump to the code" : ""}`).gap(8).items_start().text_size(13)
           .when(Boolean(c.where), (e) => e.cursor_pointer().on_click((_e, cx) => this.jumpTo(c.where, cx)))
@@ -2462,7 +2492,7 @@ export const ReviewMode = {
         blockers.length ? [chip(t, blockers[0].severity, t[SEVERITY_COLOR[blockers[0].severity]], true, "rv-bl-sev", "Severity of the top merge blocker")] : [], this.fold.blockers, fold("blockers"),
         () => v_flex().gap(8).when(!blockers.length, (e) => e.child(div().text_size(13).text_color(t.muted).child("Nothing blocks the merge that this review knows of.")))
           .children(blockers.map((b, k) => v_flex().id(`rv-bl-${k}`).tooltip("Open the related PR, code or finding behind this blocker").gap(2).p(8).rounded(7).border_1().border_l(3).border_color(t[SEVERITY_COLOR[b.severity]]).cursor_pointer().hover((s) => s.bg(t.hover))
-            .on_click((_e, cx) => { if (b.url) this.openRelated(b, cx); else if (b.where) this.jumpTo(b.where, cx); else if (b.finding) { this.tab = "findings"; this.ffocus = b.finding; } cx.notify(); })
+            .on_click((_e, cx) => { if (b.url) this.openRelated(b, cx); else if (b.where) this.jumpTo(b.where, cx); else if (b.finding) { const f = this.findingById(b.finding); if (f) { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); } } cx.notify(); })
             .child(div().text_size(13.5).font_semibold().child(b.title)).child(div().text_size(12.5).text_color(t.muted).whitespace_normal().child(b.why))))))
       .when(Boolean(ai?.rules.length), (e) => e.child(v_flex().gap(6).child(section(`REPO RULES · ${ai.rules.filter((r) => r.status === "fail").length} failed`))
         .children(ai.rules.map((r, k) => h_flex().id(`rv-rule-${k}`).tooltip((r.where ? "A repo rule checked by the analysis: click to jump to the code" : "A repo rule checked by the analysis")).gap(8).items_start().p(6).rounded(6).hover((s) => s.bg(t.hover))
@@ -3129,12 +3159,12 @@ export const ReviewMode = {
   },
 
   blastPage(t) {
-    const sec = this.find.list.filter((f) => f.reviewer === "security"), runs = this.find.runs.security;
+    const sec = this.findings().filter((f) => f.security), runs = this.find.runs.security; // security comes from a finding's content, not only from the security run
     const blast = this.ai?.blast ?? (sec.length ? { units: [...new Set(sec.map((f) => f.file))].map((file, k) => ({ id: `f${k}`, label: file.split("/").pop(), type: "file", status: "changed", files: [file], spots: (this.fileHunks?.get(file) ?? []).length })), context: [] } : null);
     const header = v_flex().p(12).gap(8).rounded(10).border_1().border_color(t.border).bg(t.surface)
       .child(h_flex().gap(10).items_center().child(div().flex_1().text_size(20).font_semibold().child("Security blast radius"))
         .when(Boolean(blast), (e) => e.child(pill("rv-bl-expand", t, this.blastOpen ? "Collapse all" : "Expand all", (_e, cx) => { this.blastOpen = !this.blastOpen; cx.notify(); }).tooltip("Expand or collapse the details of every part")))
-        .child(!sec.length && !runs?.at && !runs?.busy ? div().text_size(12.5).text_color(t.muted).child("No security review yet:") : chip(t, `Security · ${sec.length}`, sec.length ? t.ansi1 : t.muted, false, "rv-bl-secn", "Findings from the security review"))
+        .child(!sec.length && !runs?.at && !runs?.busy ? div().text_size(12.5).text_color(t.muted).child("No security review yet:") : chip(t, `Security · ${this.counts().security}`, this.counts().security ? t.ansi1 : t.muted, false, "rv-bl-secn", "Unresolved security findings, from every source"))
         .child(pill("rv-bl-run", t, runs?.busy ? "Security review running…" : runs?.at ? "Run security review again" : "Run security review", (_e, cx) => this.runReviewer("security", cx)).tooltip("Run the security reviewer on the PR head, read-only; findings show here")))
       .child(div().text_size(13).text_color(t.muted).child("See the risks and the parts of the diff driving them."));
     if (!blast) return v_flex().gap(12).child(header).child(div().text_size(13.5).text_color(t.muted).child(this.ai ? "No blast radius in this analysis and no security findings yet." : "No analysis yet: Analyze in the left column, or run the security review."));
@@ -3160,31 +3190,6 @@ export const ReviewMode = {
         .child(div().w(44).flex_none().pr(6).text_right().text_color(t.muted).child(r.number === undefined ? "" : String(r.number)))
         .child(div().w(14).flex_none().text_color(r.kind === "+" ? t.ansi2 : r.kind === "-" ? t.ansi1 : t.muted).child(r.kind === " " ? "" : r.kind))
         .child(div().flex_1().min_w(0).truncate().child(expandTabs(r.text)))));
-  },
-
-  verifyPage(t) {
-    const list = this.verifyList(), done = this.findings().filter((f) => this.find.status[f.id]?.verify), m = model();
-    const card = (f) => {
-      const v = this.find.status[f.id]?.verify, c = { fixed: "ansi2", not_fixed: "ansi1", unclear: "ansi3" }[v?.result] ?? "muted";
-      return v_flex().id(`rv-vf-${f.id}`).tooltip("Show this finding's line in the diff").gap(4).p(10).rounded(8).border_1().border_l(4).border_color(t[c]).bg(t.surface).cursor_pointer()
-        .on_click((_e, cx) => { this.ffocus = f.id; this.jumpTo(`${f.file}:${f.line}`, cx); })
-        .child(h_flex().gap(8).items_center().child(badge(t, f.severity, t[SEV[f.severity]] ?? t.muted).id(`rv-vfs-${f.id}`).tooltip(`${f.severity} severity`))
-          .child(div().flex_1().min_w(0).truncate().text_size(13.5).font_semibold().child(f.title))
-          .child(div().text_size(12).text_color(t.muted).child(`${f.file.split("/").pop()}:${f.line}`)))
-        .child(div().text_size(12.5).text_color(v ? t[c] : t.muted).whitespace_normal().child(v ? `${{ fixed: "Fixed ✓", not_fixed: "Not fixed: reopened", unclear: "Unclear" }[v.result]} — ${v.reason} (${String(v.head).slice(0, 7)})`
-          : `Sent to Fix at ${String(this.find.status[f.id].fixHead).slice(0, 7)}; the head is ${String(this.headNow()).slice(0, 7)} now`));
-    };
-    return v_flex().gap(12)
-      .child(div().text_size(20).font_semibold().child("Verify"))
-      .child(div().text_size(13.5).text_color(t.muted).whitespace_normal().child(`Findings sent to Fix before the last push. One ${modelLabel(m)} call reads what changed in their files since and says fixed, not fixed or unclear: fixed ones get ✓, not fixed ones open again with the reason.`))
-      .child(h_flex().gap(10).items_center()
-        .child(div().id("rv-verify").tooltip("One model call checks whether the findings sent to Fix are fixed now").px(14).h(32).flex().items_center().rounded(8).text_size(13.5).font_semibold().bg(list.length && !this.verifyBusy ? t.solid : t.raised)
-          .text_color(list.length && !this.verifyBusy ? t.solid_foreground : t.muted).when(list.length > 0, (e) => e.cursor_pointer()).on_click((_e, cx) => this.runVerify(cx))
-          .child(this.verifyBusy ? `Verifying ${this.verifyBusy.n}…` : `Verify fixes (${list.length})`))
-        .when(Boolean(this.verifyBusy), (e) => e.child(div().child(SPIN[0]).frames(SPIN, 90))))
-      .when(!list.length && !done.length, (e) => e.child(div().text_size(13).text_color(t.muted).child("Nothing to verify: no finding was sent to Fix before the PR head moved.")))
-      .children(list.map(card))
-      .when(done.length > 0, (e) => e.child(div().pt(6).text_size(11.5).font_semibold().text_color(t.muted).child(`VERIFIED · ${done.length}`)).children(done.map(card)));
   },
 
   // The CLIs' models for this PR's context (models.py), asked at most once a day per context: Claude lists what that
@@ -3248,68 +3253,93 @@ export const ReviewMode = {
         .when(a.hunks.length > 0, (e) => e.child(div().id(`rv-ask-${i}-n`).tooltip("How many hunks of the diff relate to this").flex_none().text_size(11.5).text_color(t.muted).child(`${a.hunks.length} ↗`)))));
   },
 
-  // Reviewer findings with filters (reviewer, severity, status), counts, the per-finding workflow, and the ones
-  // outside the diff (clicking opens the file whole at that line's hunk, or its header).
+  // The Findings tab: every finding once, one line each, in sections by state (pr.js findingStatus): the unresolved
+  // ones with a fix sent (what is known about each fix, and Verify) and without, Fixed, Dismissed, then the AI notes. A click opens a finding in
+  // place and shows its line in the diff. It has no filters of its own: the bar's Show switch is the one filter.
   findingsPane(t) {
-    const all = this.findings(), shown = this.shownFindings(), f = this.ffilter, runs = this.find.runs;
-    const count = (pred) => all.filter(pred).length;
-    const chip = (key, value, label, n) => div().id(`rv-ff-${key}-${value}`).tooltip(`Filter findings by ${key}: ${label}`).px(8).h(24).flex().items_center().rounded(6).cursor_pointer().text_size(12)
-      .bg(f[key] === value ? t.selected : t.chrome).text_color(f[key] === value ? t.foreground : t.muted).border_1().border_color(f[key] === value ? t.accent : t.border)
-      .on_click((_e, cx) => { this.ffilter = { ...this.ffilter, [key]: value }; cx.notify(); }).child(n === undefined ? label : `${label} ${n}`);
-    const inDiff = shown.filter((x) => this.findRow(x) >= 0), outside = shown.filter((x) => this.findRow(x) < 0);
-    const open = shown.filter((x) => ["open", "recheck"].includes(this.fstatus(x)));
-    const card = (x) => {
-      const st = this.fstatus(x), c = t[REVIEWERS[x.reviewer]?.[1]] ?? t.accent, r = this.find.reports[x.id], li = this.layerOf(x);
-      return v_flex().id(`rv-fc-${x.id}`).flex_none().px(10).py(8).gap(6).rounded(8).border_1().border_l(4).border_color(this.ffocus === x.id ? t.accent : c).bg(t.surface).text_size(13.5)
-        .child(h_flex().gap(8).items_center().child(badge(t, x.severity, t[SEV[x.severity]]).id(`rv-fsv-${x.id}`).tooltip(`${x.severity} severity`)).child(div().id(`rv-frv-${x.id}`).tooltip("The reviewer that found this").text_size(12).font_semibold().text_color(c).child(REVIEWERS[x.reviewer]?.[0] ?? x.reviewer))
-          .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.muted).child(`${x.file.split("/").pop()}:${x.line}`))
-          .child(div().id(`rv-fchk-${x.id}`).tooltip((st === "fixed" ? "Mark this finding as open again" : "Mark this finding as fixed")).accessibility_label("Toggle fixed").text_size(14).cursor_pointer().text_color(st === "fixed" ? t.ansi2 : t.muted)
-            .on_click((_e, cx) => { this.setFinding(x, st === "fixed" ? "open" : "fixed", cx); cx.stop_propagation(); }).child(st === "fixed" ? "✓" : "○")))
-        .child(div().id(`rv-ft-${x.id}`).tooltip("Show this finding's line in the diff").font_semibold().cursor_pointer().on_click((_e, cx) => { this.ffocus = x.id; this.jumpTo(`${x.file}:${x.line}`, cx); }).child(x.title))
-        // An analysis finding is part of its layer: name it, a click opens it.
-        .when(li >= 0, (e) => e.child(div().id(`rv-fly-${x.id}`).tooltip("Open the layer this finding belongs to").truncate().text_size(12).text_color(t.accent).cursor_pointer()
-          .on_click((_e, cx) => { this.goStep(li, cx); cx.notify(); }).child(`${x.category} · layer: ${plain(this.steps()[li]?.title)} →`)))
-        .child(div().line_height(1.5).child(TextView.markdown(`rv-fd-${x.id}`, x.detail + (x.suggestion ? `\n\n**Suggested:** ${x.suggestion}` : ""))))
-        .child(div().id(`rv-fst-${x.id}`).tooltip("Where this finding stands: open, in progress, fixed or dismissed").text_size(12).text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(`${FSTATUS[st]?.[0] ?? st}${r?.commit ? ` · ${String(r.commit).slice(0, 8)}` : ""}${r?.note ? ` · ${r.note}` : ""}`))
-        .when(Boolean(this.find.status[x.id]?.verify), (e) => { const v = this.find.status[x.id].verify; return e.child(div().text_size(12).whitespace_normal()
-          .text_color(t[{ fixed: "ansi2", not_fixed: "ansi1" }[v.result] ?? "ansi3"]).child(`Verified ${String(v.head).slice(0, 7)}: ${v.result.replace("_", " ")} — ${v.reason}`)); })
-        .child(h_flex().flex_wrap().gap(6)
-          .child(pill(`rv-fcm-${x.id}`, t, "Add as comment", (_e, cx) => this.findingComment(x, cx)).tooltip("Add this finding to your pending comments"))
-          .child(pill(`rv-fdi-${x.id}`, t, "Discuss in chat", (_e, cx) => this.discuss(x, cx)).tooltip("Discuss this finding with the PR's agent; a preview first, nothing is sent until you confirm"))
-          .children((() => { const fv = this.fixView(this.fixOf(x.id)); return !fv ? [pill(`rv-ffx-${x.id}`, t, "Fix…", (_e, cx) => this.fix([x], cx), false, t.foreground).tooltip("Fix this with an agent: a preview first; a sub-agent works in its own git worktree, never pushes and hands the fix to the PR's agent")]
-            : [badge(t, fv.handed ? "Handed to PR agent" : fv.commit ? `Fix ready on ${fv.job.branch ?? "the PR"}` : `Fixing · ${fv.status}`, fv.commit ? t.ansi2 : t.ansi3).id(`rv-ffb-${x.id}`).tooltip("The fix agent's progress on this finding"),
-              ...(fv.job.terminal ? [pill(`rv-fgo-${x.id}`, t, "Go to fix", () => this.goFix(fv.job)).tooltip("Show the fix agent's terminal")] : []),
-              ...(fv.commit && fv.job.target === "sub" ? [pill(`rv-fap-${x.id}`, t, "Apply to PR", (_e, cx) => this.applyFix(fv.job, cx), false, fv.handed ? undefined : t.ansi2)
-                .tooltip(fv.handed ? "The PR's agent got this fix to take over; cherry-pick it onto the PR's checkout yourself only if it doesn't (not pushed)" : "Cherry-pick the fix commits onto the PR's checkout; nothing is pushed")] : []),
-              ...(fv.job.target === "sub" ? [pill(`rv-fdc-${x.id}`, t, "Discard fix", (_e, cx) => this.discardFix(fv.job, cx)).tooltip("Delete the fix's worktree and branch")] : [])]; })())
-          .child(pill(`rv-fdm-${x.id}`, t, "Dismiss", (_e, cx) => this.setFinding(x, "dismissed", cx)).tooltip("Mark this finding as dismissed")));
+    const all = this.findings(), c = this.counts(), runs = this.find.runs, toVerify = this.verifyList(), notes = this.openSugs(), m = model();
+    const by = (...st) => all.filter((x) => st.includes(this.fstatus(x)));
+    const unresolved = by("open", "recheck"), sent = by("progress");
+    const name = (k) => REVIEWERS[k]?.[0] ?? k;
+    // Each source with what it found: a number, "no findings" (it ran) or "not run".
+    const ran = { analysis: Boolean(this.ai), ...Object.fromEntries(Object.keys(ALL_REVIEWERS).map((k) => [k, Boolean(runs[k]?.at)])) };
+    const sources = [...new Set(["analysis", ...reviewersNow().map(([k]) => k), ...all.flatMap((x) => x.sources.map((y) => y.reviewer))])].map((k) => {
+      const n = all.filter((x) => x.sources.some((y) => y.reviewer === k)).length;
+      return { k, n, text: runs[k]?.busy ? `${name(k)}: running` : n ? `${name(k)} ${n}` : ran[k] ? `${name(k)}: no findings` : `${name(k)}: not run` };
+    }).filter((x) => x.k !== "ai" || x.n);
+    const row = (x) => {
+      const st = this.fstatus(x), on = this.ffocus === x.id, col = t[SEV[x.severity]] ?? t.accent, li = this.layerOf(x), settled = st === "fixed" || st === "dismissed";
+      const wide = on || (x.security && x.severity === "high" && !settled); // an unresolved high security finding keeps its whole title
+      const facts = this.fixFacts(x), others = x.sources.filter((y) => y.title !== x.title || y.detail !== x.detail);
+      return v_flex().id(`rv-fc-${x.id}`).flex_none().px(8).py(on ? 8 : 4).gap(6).rounded(7).border_l(3).border_color(on ? t.accent : col).when(on, (e) => e.bg(t.surface)).text_size(13.5)
+        .child(h_flex().id(`rv-ft-${x.id}`).tooltip("Open this finding and show its line in the diff").gap(8).items_start().cursor_pointer().hover((h) => h.text_color(t.foreground))
+          .on_click((_e, cx) => { this.ffocus = on ? null : x.id; if (!on) this.jumpTo(`${x.file}:${x.line}`, cx); cx.notify(); })
+          .child(badge(t, x.severity, col))
+          .when(Boolean(x.security), (e) => e.child(badge(t, "Security", t.ansi1)))
+          .child(div().flex_1().min_w(0).font_semibold().text_color(settled ? t.dim : t.foreground).when(!wide, (e) => e.truncate()).when(wide, (e) => e.whitespace_normal()).child(x.title))
+          .child(div().flex_none().text_size(12).text_color(t.muted).child(`${x.file.split("/").pop()}:${x.line}${this.findRow(x) < 0 ? " · outside the diff" : ""}`))
+          .child(div().flex_none().text_size(12).font_semibold().text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(FSTATUS[st]?.[0] ?? st)))
+        .when(on, (e) => e
+          .child(div().text_size(12).text_color(t.muted).whitespace_normal().child(`Found by ${this.sourcesOf(x)}`))
+          // An analysis finding is part of its layer: name it, a click opens it.
+          .when(li >= 0, (e) => e.child(div().id(`rv-fly-${x.id}`).tooltip("Open the layer this finding belongs to").truncate().text_size(12).text_color(t.accent).cursor_pointer()
+            .on_click((_e, cx) => { this.goStep(li, cx); cx.notify(); }).child(`${x.category} · layer: ${plain(this.steps()[li]?.title)} →`)))
+          .child(div().line_height(1.5).child(TextView.markdown(`rv-fd-${x.id}`, x.detail + (x.suggestion ? `\n\n**Suggested:** ${x.suggestion}` : ""))))
+          // What the other sources say about the same line, in their own words and with their own severity.
+          .children(others.map((y, k) => div().id(`rv-fsrc-${x.id}-${k}`).text_size(12.5).text_color(t.muted).line_height(1.5).whitespace_normal().child(`${name(y.reviewer)} (${y.severity}): ${plain(y.title)}${y.detail ? `. ${plain(y.detail)}` : ""}`)))
+          .when(facts.length > 0, (e) => e.child(v_flex().p(8).gap(3).rounded(6).border_1().border_color(t.border)
+            .children(facts.map(([label, text]) => h_flex().gap(8).items_start().text_size(12.5).line_height(1.5)
+              .child(div().w(52).flex_none().text_color(t.muted).child(label)).child(div().flex_1().min_w(0).whitespace_normal().child(text))))))
+          .child(h_flex().flex_wrap().gap(6)
+            .child(pill(`rv-fcm-${x.id}`, t, "Add as comment", (_e, cx) => this.findingComment(x, cx)).tooltip("Add this finding to your pending comments"))
+            .child(pill(`rv-fdi-${x.id}`, t, "Discuss in chat", (_e, cx) => this.discuss(x, cx)).tooltip("Discuss this finding with the PR's agent; a preview first, nothing is sent until you confirm"))
+            .children((() => { const fv = this.fixView(this.fixOf(x.id)); return !fv ? [pill(`rv-ffx-${x.id}`, t, "Fix…", (_e, cx) => this.fix([x], cx), false, t.foreground).tooltip("Fix this with an agent: a preview first; a sub-agent works in its own git worktree, never pushes and hands the fix to the PR's agent")]
+              : [badge(t, fv.handed ? "Handed to PR agent" : fv.commit ? `Fix ready on ${fv.job.branch ?? "the PR"}` : `Fixing · ${fv.status}`, fv.commit ? t.ansi2 : t.ansi3).id(`rv-ffb-${x.id}`).tooltip("The fix agent's progress on this finding"),
+                ...(fv.job.terminal ? [pill(`rv-fgo-${x.id}`, t, "Go to fix", () => this.goFix(fv.job)).tooltip("Show the fix agent's terminal")] : []),
+                ...(fv.commit && fv.job.target === "sub" ? [pill(`rv-fap-${x.id}`, t, "Apply to PR", (_e, cx) => this.applyFix(fv.job, cx), false, fv.handed ? undefined : t.ansi2)
+                  .tooltip(fv.handed ? "The PR's agent got this fix to take over; cherry-pick it onto the PR's checkout yourself only if it doesn't (not pushed)" : "Cherry-pick the fix commits onto the PR's checkout; nothing is pushed")] : []),
+                ...(fv.job.target === "sub" ? [pill(`rv-fdc-${x.id}`, t, "Discard fix", (_e, cx) => this.discardFix(fv.job, cx)).tooltip("Delete the fix's worktree and branch")] : [])]; })())
+            .child(settled ? pill(`rv-fro-${x.id}`, t, "Reopen", (_e, cx) => this.setFinding(x, "open", cx)).tooltip("Make this finding unresolved again")
+              : pill(`rv-fdm-${x.id}`, t, "Dismiss finding", (_e, cx) => this.dismiss(x, cx)).tooltip(`Dismiss this finding${x.sources.length > 1 ? ` with all ${x.sources.length} of its sources` : ""}; it stays here under Dismissed`))));
     };
-    const sevs = ["high", "medium", "low"].map((k) => [k, all.filter((x) => x.severity === k && OPEN_ST.includes(this.fstatus(x))).length]).filter(([, n]) => n);
+    const section = (title, list, right = null, hint = null) => v_flex().flex_none().gap(2)
+      .child(h_flex().pt(10).pb(2).px(6).gap(8).items_center().child(div().flex_1().text_size(11.5).font_semibold().text_color(t.muted).child(`${title} · ${list.length}`)).children([right].filter(Boolean)))
+      .when(Boolean(hint), (e) => e.child(div().px(6).pb(2).text_size(12.5).line_height(1.5).text_color(t.muted).whitespace_normal().child(hint)))
+      .children(list.map(row));
+    const verify = div().id("rv-verify").tooltip("One model call checks on the PR head whether the findings sent to Fix are fixed now").px(9).h(26).flex().items_center().gap(6).rounded(6).border_1().text_size(12.5)
+      .border_color(toVerify.length && !this.verifyBusy ? t.foreground : t.border).text_color(toVerify.length && !this.verifyBusy ? t.foreground : t.dim)
+      .when(toVerify.length > 0 && !this.verifyBusy, (e) => e.cursor_pointer().hover((h) => h.bg(t.hover)).on_click((_e, cx) => this.runVerify(cx)))
+      .child(this.verifyBusy ? `Verifying ${this.verifyBusy.n}…` : `Verify fixes (${toVerify.length})`);
+    const sentHint = !sent.length ? "No fix is out. A finding sent to Fix stays unresolved and shows here until it is verified."
+      : `A fix sent does not resolve a finding. Verify is one ${modelLabel(m)} call that reads the PR head and says fixed, not fixed or unclear; only fixed moves a finding to Fixed.${toVerify.length ? "" : " Nothing to verify yet: the PR head has not moved since these fixes were sent."}`;
     return v_flex().flex_1().min_h(0)
       .child(v_flex().flex_none().px(14).py(10).gap(8).border_b(1).border_color(t.border)
-        .child(h_flex().gap(8).items_center().child(div().text_size(14.5).font_semibold().child("Severity findings"))
-          .child(div().text_size(12.5).text_color(t.muted).child([`${all.length} ${all.length === 1 ? "finding" : "findings"}`, ...sevs.map(([k, n]) => `${n} ${k}`)].join(" · "))))
-        .child(h_flex().flex_wrap().gap(4).child(chip("reviewer", "all", "All", all.length))
-          .children(Object.entries(REVIEWERS).filter(([k]) => reviewersNow().some(([n]) => n === k) || all.some((x) => x.reviewer === k)).map(([k, [label]]) => chip("reviewer", k, label.replace(" review", ""), count((x) => x.reviewer === k)))))
-        .child(h_flex().flex_wrap().gap(4).child(chip("severity", "all", "Any severity"))
-          .children(["high", "medium", "low"].map((v) => chip("severity", v, v, count((x) => x.severity === v)))))
-        .child(h_flex().flex_wrap().gap(4).children([["open", "Open"], ["fixed", "Fixed"], ["dismissed", "Dismissed"], ["all", "All"]].map(([v, label]) =>
-          chip("status", v, label, v === "all" ? all.length : v === "open" ? count((x) => ["open", "progress", "recheck"].includes(this.fstatus(x))) : count((x) => this.fstatus(x) === v)))))
-        .child(h_flex().gap(8).items_center()
-          .child(div().flex_1().text_size(12).text_color(t.muted).child(Object.values(runs).some((r) => r.busy) ? "A reviewer is running…" : all.length ? `${shown.length} shown` : "No findings yet. Run a reviewer:"))
-          .when(open.length > 0, (e) => e.child(pill("rv-fixall", t, `Fix ${open.length} open (shown)`, (_e, cx) => this.fix(open, cx), false, t.foreground).tooltip("Fix the open findings shown here with an agent; a preview first, then the PR's agent takes the fix over and pushes")))))
-      .when(!all.length, (e) => e.child(h_flex().flex_none().flex_wrap().px(14).py(8).gap(6).border_b(1).border_color(t.border)
+        .child(div().id("rv-fcount").tooltip("Unresolved findings by severity; a finding with a fix sent stays unresolved until it is verified").text_size(13.5).font_semibold().child(countLine(c)))
+        .child(h_flex().flex_wrap().gap(4).children(sources.map((x) => div().id(`rv-fsrcn-${x.k}`).tooltip(x.n ? `Findings ${name(x.k)} is a source of` : ran[x.k] ? `${name(x.k)} ran and found nothing` : `${name(x.k)} has not run on this PR`)
+          .px(8).h(22).flex().items_center().rounded(6).border_1().border_color(t.border).text_size(12).text_color(x.n ? t.foreground : t.muted).child(x.text))))
+        .when(Object.values(runs).some((r) => r.busy), (e) => e.child(div().text_size(12).text_color(t.muted).child("A reviewer is running…"))))
+      .when(!all.length, (e) => e.child(h_flex().flex_none().flex_wrap().px(14).py(8).gap(6).items_center().border_b(1).border_color(t.border)
+        .child(div().text_size(12).text_color(t.muted).child("Run a reviewer:"))
         .children(reviewersNow().map(([k, [label]]) => pill(`rv-frun-${k}`, t, runs[k]?.busy ? `${label} running…` : label, (_e, cx) => this.runReviewer(k, cx), false, t.foreground).tooltip("Run this reviewer read-only on the PR head; its findings show here")))))
       .child(div().flex_1().min_h(0).relative()
-        .child(v_flex().id("rv-find-left").absolute().inset_0().overflow_y_scroll().p(8).gap(6)
-          .children(inDiff.map(card))
-          .when(outside.length > 0, (e) => e.child(div().pt(8).text_size(12).font_semibold().text_color(t.muted).child(`OUTSIDE THE DIFF · ${outside.length}`)).children(outside.map(card))))
+        .child(v_flex().id("rv-find-left").absolute().inset_0().overflow_y_scroll().px(8).pb(12).gap(2)
+          // The two kinds of unresolved findings add up to the number in the tab and in the line above.
+          .child(section("FIX SENT", sent, verify, sentHint))
+          .child(section("NO FIX SENT", unresolved, unresolved.length > 0 && pill("rv-fixall", t, `Fix these ${unresolved.length}…`, (_e, cx) => this.fix(unresolved, cx), false, t.foreground).tooltip("Fix these findings with an agent; a preview first, then the PR's agent takes the fix over and pushes")))
+          .when(c.fixed > 0, (e) => e.child(section("FIXED", by("fixed"))))
+          .when(c.dismissed > 0, (e) => e.child(section("DISMISSED", by("dismissed"))))
+          // Suggestions alone on their lines: notes, not findings, not counted above.
+          .when(notes.length > 0, (e) => e.child(v_flex().flex_none().gap(2)
+            .child(div().pt(10).pb(2).px(6).text_size(11.5).font_semibold().text_color(t.muted).child(`AI NOTES · ${notes.length} · not counted as findings`))
+            .children(notes.map((s) => h_flex().id(`rv-fnote-${s.key}`).tooltip("Show this note's line in the diff").flex_none().px(8).h(26).gap(8).items_center().rounded(6).cursor_pointer().hover((h) => h.bg(t.hover)).text_size(12.5).text_color(t.muted)
+              .on_click((_e, cx) => { this.sug = s.key; this.jumpTo(`${s.path}:${s.line}`, cx); cx.notify(); })
+              .child(div().flex_none().child(s.severity)).child(div().flex_1().min_w(0).truncate().child(plain(s.reason))).child(div().flex_none().child(`${s.path.split("/").pop()}:${s.line}`)))))))
         .child(Scrollbar.vertical("rv-find-left").absolute().inset_0()));
   },
 
   filesPane(t) {
     const files = this.shown().patch, byPath = new Map(files.map((f) => [f.path, f]));
-    const seen = files.filter((f) => this.prog.seen.has(f.path)).length;
+    const seen = files.filter((f) => this.prog.seen.has(f.path)).length, open = this.openFindings(); // the flags add up to the Findings tab's number
     const add = files.reduce((n, f) => n + f.add, 0), del = files.reduce((n, f) => n + f.del, 0);
     return v_flex().flex_1().min_h(0)
       .child(h_flex().flex_none().px(14).h(38).gap(10).items_center().border_b(1).border_color(t.border).text_size(12.5)
@@ -3318,7 +3348,7 @@ export const ReviewMode = {
       .child(div().flex_1().min_h(0).relative()
         .child(v_flex().id("rv-tree").absolute().inset_0().overflow_y_scroll().p(6)
           .children(fileTree(files.map((f) => f.path), this.closedDirs).map((n) => {
-            const f = byPath.get(n.path), cm = f ? this.comments.filter((c) => c.file === f.path).length : 0, sg = f ? this.openSugs(f.path).length : 0;
+            const f = byPath.get(n.path), cm = f ? this.comments.filter((c) => c.file === f.path).length : 0, sg = f ? open.filter((x) => x.file === f.path).length : 0;
             return h_flex().id(`rv-t-${n.dir ? "d" : "f"}-${n.path}`).tooltip((n.dir ? "Fold or unfold this folder" : "Show this file's diff")).h(28).flex_none().pl(8 + 14 * n.depth).pr(8).gap(8).items_center().rounded(6).text_size(13).cursor_pointer()
               .when(!n.dir && this.fileFocus === n.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover))
               .on_click((_e, cx) => {
@@ -3329,7 +3359,7 @@ export const ReviewMode = {
               .child(div().w(12).flex_none().text_color(t.muted).child(n.dir ? (this.closedDirs.has(n.path) ? "▸" : "▾") : ""))
               .when(!n.dir, (e) => e.child(div().id(`rv-tst-${n.path}`).tooltip(`File ${f.status}`).w(14).flex_none().text_size(11.5).font_semibold().text_color(t[STATUS[f.status][1]]).child(STATUS[f.status][0])))
               .child(div().flex_1().min_w(0).truncate().text_color(n.dir ? t.muted : this.prog.seen.has(n.path) ? t.muted : t.foreground).child(n.dir ? `${n.name}/` : n.name))
-              .when(sg > 0, (e) => e.child(div().id(`rv-tsg-${n.path}`).tooltip(`${sg} open AI suggestions in this file`).text_size(11.5).text_color(t.ansi3).child(`⚑ ${sg}`)))
+              .when(sg > 0, (e) => e.child(div().id(`rv-tsg-${n.path}`).tooltip(`${sg} unresolved ${sg === 1 ? "finding" : "findings"} in this file`).text_size(11.5).text_color(t.ansi3).child(`⚑ ${sg}`)))
               .when(cm > 0, (e) => e.child(div().id(`rv-tcm-${n.path}`).tooltip(`${cm} pending comments in this file`).text_size(11.5).text_color(t.accent).child(`● ${cm}`)))
               .when(!n.dir && f.add > 0, (e) => e.child(div().id(`rv-tad-${n.path}`).tooltip(`${f.add} lines added`).text_size(11.5).text_color(t.ansi2).child(`+${f.add}`)))
               .when(!n.dir && f.del > 0, (e) => e.child(div().id(`rv-tdl-${n.path}`).tooltip(`${f.del} lines removed`).text_size(11.5).text_color(t.ansi1).child(`−${f.del}`)))
@@ -3347,7 +3377,7 @@ export const ReviewMode = {
   sizeOf(it) {
     if (it.t === "row") return it.src[it.ri].kind === "@" ? 30 : ROW;
     if (it.t === "step") return 66 + 24 * it.s.questions.length;
-    if (it.t === "sug") return 44 + 21 * this.lines(it.s.reason);
+    if (it.t === "sug") return this.sug === it.s.key ? 56 + 21 * this.lines(it.s.reason) : 26;
     if (it.t === "pad") return 60;
     if (it.t === "fold") return it.h;
     if (it.t === "hidden") return 24;
@@ -3357,9 +3387,9 @@ export const ReviewMode = {
     if (it.t === "gh") return 44 + 21 * Math.min(6, this.lines(it.g.body));
     if (it.t === "compose") return COMPOSE;
     if (it.t === "composeact") return ACT + 4;
-    if (it.t === "sugact" || it.t === "cact" || it.t === "fact") return ACT;
+    if (it.t === "cact" || it.t === "fact") return ACT;
     if (it.t === "def") return 190;
-    if (it.t === "find") return 44 + 21 * Math.min(3, this.lines(`${it.f.title} ${it.f.detail}`));
+    if (it.t === "find") return 44 + 21 * Math.min(3, this.lines(`${it.f.title} ${it.f.detail}`)) + (this.fixLine(it.f) ? 21 : 0);
     return { path: 30, file: 44, gap: 30, note: 30 }[it.t];
   },
 
@@ -3400,28 +3430,33 @@ export const ReviewMode = {
         .child(seg(`↓ ${MORE} lines`).id(`rv-gap-${it.path}-${it.r.gap}-d`).tooltip(`Show ${MORE} more lines below the hunk above`)).child(seg(`↑ ${MORE} lines`).id(`rv-gap-${it.path}-${it.r.gap}-u`).tooltip(`Show ${MORE} more lines above the next hunk`))
         .child(div().id(`rv-gap-${it.path}-${it.r.gap}-a`).tooltip("Show every hidden line of this gap").flex_1().child(h === null ? "Load rest of file" : `Show all ${h} lines`));
     }
-    if (it.t === "sug" || it.t === "sugact") {
-      const s = it.s, c = t[LEVEL[s.severity]];
-      const card = (e) => e.border_l(4).border_r(1).border_color(this.sug === s.key ? t.accent : c).bg(c + "14");
-      if (it.t === "sugact") {
-        return div().w_full().h(ACT).pl(GUTTER).pr(16).pb(6).child(card(h_flex()).size_full().px(12).gap(BTN_GAP).items_center().border_b(1)
-          .child(button(t, "Accept (a)", c, t.foreground).id(`rv-sa-a-${s.key}`).tooltip("Add this suggestion to your pending comments (a)")).child(button(t, "Dismiss (x)", t.border, t.muted).id(`rv-sa-x-${s.key}`).tooltip("Hide this suggestion (x)")));
-      }
-      return div().w_full().h(this.sizeOf(it)).pl(GUTTER).pr(16).pt(6).child(card(v_flex()).size_full().px(12).pt(8).gap(6).border_t(1).text_size(13.5)
-        .child(h_flex().h(18).gap(8).items_center().child(badge(t, s.severity, c).id(`rv-lsv-${s.key}`).tooltip(`AI suggestion, ${s.severity} severity`)).child(div().text_size(12).text_color(t.muted).child(`AI suggestion · line ${s.line}${s.approx ? " ~" : ""}`)))
-        .child(div().flex_1().min_h(0).overflow_hidden().line_height(1.55).whitespace_normal().child(plain(s.reason))));
+    // An AI suggestion alone on its line: a one-line margin note without buttons, not a finding and not counted. A
+    // click opens its whole text (this.sug); a and x still take it as a comment or hide it.
+    if (it.t === "sug") {
+      const s = it.s, open = this.sug === s.key;
+      return div().w_full().h(this.sizeOf(it)).pl(GUTTER).pr(16).py(2).cursor_pointer().child(v_flex().size_full().px(12).justify_center().gap(4).border_l(2).border_color(open ? t.accent : t.border).text_size(12.5)
+        .child(h_flex().h(20).flex_none().gap(8).items_center().text_color(t.muted)
+          .child(div().flex_none().child(`${open ? "▾" : "▸"} AI note · ${s.severity}${s.approx ? " · near this line" : ""}`))
+          .when(!open, (e) => e.child(div().flex_1().min_w(0).truncate().child(plain(s.reason)))))
+        .when(open, (e) => e.child(div().flex_1().min_h(0).overflow_hidden().text_size(13.5).line_height(1.55).whitespace_normal().text_color(t.foreground).child(plain(s.reason)))
+          .child(div().h(20).flex_none().text_size(12).text_color(t.muted).child("A note, not a finding. Press a to add it as a comment, x to hide it."))));
     }
     if (it.t === "find" || it.t === "fact") {
-      const f = it.f, c = t[REVIEWERS[f.reviewer]?.[1]] ?? t.accent, st = this.fstatus(f);
+      const f = it.f, c = t[SEV[f.severity]] ?? t.accent, st = this.fstatus(f), line = this.fixLine(f);
       const card = (e) => e.border_l(4).border_r(1).border_color(c).bg(c + "12");
       if (it.t === "fact") {
+        const live = Boolean(this.fixOf(f.id)?.terminal);
         return div().w_full().h(ACT).pl(GUTTER).pr(16).pb(6).child(card(h_flex()).size_full().px(12).gap(BTN_GAP).items_center().border_b(1)
           .child(button(t, "Add as comment", t.border, t.foreground).id(`rv-fa-c-${f.id}`).tooltip("Add this finding to your pending comments")).child(button(t, "Discuss in chat", t.border, t.foreground).id(`rv-fa-d-${f.id}`).tooltip("Discuss this finding with the PR's agent; a preview first"))
-          .child(button(t, "Fix", c, t.foreground).id(`rv-fa-f-${f.id}`).tooltip("Fix this with an agent: a preview first; a sub-agent never pushes")).child(button(t, "Dismiss", t.border, t.muted).id(`rv-fa-x-${f.id}`).tooltip("Mark this finding as dismissed")));
+          .child(button(t, live ? "Go to fix" : "Fix", c, t.foreground).id(`rv-fa-f-${f.id}`).tooltip(live ? "Show the fix agent's terminal" : "Fix this with an agent: a preview first; a sub-agent never pushes"))
+          .child(button(t, "Dismiss finding", t.border, t.muted).id(`rv-fa-x-${f.id}`).tooltip(`Dismiss this finding${f.sources.length > 1 ? ` with all ${f.sources.length} of its sources` : ""}; it stays in the Findings tab under Dismissed`)));
       }
       return div().w_full().h(this.sizeOf(it)).pl(GUTTER).pr(16).pt(6).child(card(v_flex()).size_full().px(12).pt(8).gap(4).border_t(1).text_size(13.5)
-        .child(h_flex().h(18).gap(8).items_center().child(badge(t, f.severity, t[SEV[f.severity]]).id(`rv-lfs-${f.id}`).tooltip(`${f.severity} severity`)).child(div().id(`rv-lfr-${f.id}`).tooltip("The reviewer that found this").text_size(12).font_semibold().text_color(c).child(REVIEWERS[f.reviewer]?.[0] ?? f.reviewer))
-          .child(div().id(`rv-lfst-${f.id}`).tooltip("Where this finding stands").text_size(12).text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(FSTATUS[st]?.[0] ?? st)))
+        .child(h_flex().h(18).gap(8).items_center().child(badge(t, f.severity, c).id(`rv-lfs-${f.id}`).tooltip(`${f.severity} severity: the highest of its sources`))
+          .when(Boolean(f.security), (e) => e.child(badge(t, "Security", t.ansi1).id(`rv-lfsec-${f.id}`).tooltip("A security finding: the security review found it, or its content is about security")))
+          .child(div().id(`rv-lfr-${f.id}`).tooltip("Where this finding comes from, each source with its own severity").min_w(0).truncate().text_size(12).font_semibold().text_color(t.muted).child(this.sourcesOf(f)))
+          .child(div().id(`rv-lfst-${f.id}`).tooltip("Where this finding stands: unresolved, fix sent, fixed (verified) or dismissed").flex_none().text_size(12).font_semibold().text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(FSTATUS[st]?.[0] ?? st)))
+        .when(Boolean(line), (e) => e.child(div().h(17).flex_none().truncate().text_size(12).text_color(t.muted).child(line)))
         .child(div().flex_1().min_h(0).overflow_hidden().line_height(1.55).whitespace_normal().child(`${f.title}. ${plain(f.detail)}`)));
     }
     if (it.t === "ch" || it.t === "cb" || it.t === "cr") return this.cardRow(it, t);
@@ -3604,7 +3639,7 @@ export const ReviewMode = {
     const keys = itemKeys(items), sizes = items.map((it) => this.sizeOf(it));
     if (listShown) { this.items = items; this.at = at; this.byKey = new Map(keys.map((k, i) => [k, items[i]])); }
     if (heads) this.layFiles(items, keys, sizes, heads.filter((h) => h < items.length));
-    const listId = `rv-list-${this.tab === "steps" ? "steps" : "files"}`, sug = this.openSugs().find((s) => s.key === this.sug);
+    const listId = `rv-list-${this.tab === "steps" ? "steps" : "files"}`;
     const range = this.fsel && rangeOf(this.rowsFor(this.fsel.path), this.fsel.a, this.fsel.b);
     this.selKeys = range ? new Set(this.rowsFor(this.fsel.path).slice(range[0], range[1] + 1).map(lineKey)) : null;
     const tabBtn = (id, label) => div().id(`rv-tab-${id}`).tooltip(TAB_TIP[id]).flex_1().h(32).flex().items_center().justify_center().rounded(7).text_size(13.5).cursor_pointer()
@@ -3617,7 +3652,7 @@ export const ReviewMode = {
           .child(h_flex().flex_none().p(8).gap(6).border_b(1).border_color(t.border)
             .child(tabBtn("files", `Files · ${this.shown().patch.length}`)).child(tabBtn("steps", `Layers${this.ai ? ` · ${this.ai.steps.filter((s) => !s.pseudo).length}` : ""}`))
             .child(tabBtn("comments", `Comments${this.commentRowsNow().length ? ` · ${this.commentRowsNow().length}` : ""}`))
-            .child(tabBtn("findings", `Findings${this.findings().length ? ` · ${this.findings().filter((x) => ["open", "progress", "recheck"].includes(this.fstatus(x))).length}` : ""}`)))
+            .child(tabBtn("findings", `Findings${this.findings().length ? ` · ${this.counts().unresolved}` : ""}`)))
           .child(this.tab === "steps" ? this.stepsPane(t) : this.tab === "findings" ? this.findingsPane(t) : this.tab === "comments" ? this.commentsPane(t) : this.filesPane(t)))
         .child(this.splitter(t))
         .child(v_flex().flex_1().min_w(0).h_full().relative()
@@ -3643,7 +3678,6 @@ export const ReviewMode = {
               : div().p(20).text_size(13.5).text_color(this.error ? t.ansi1 : t.muted).child(this.error || (this.loading || !this.patch
                 ? h_flex().gap(8).child(div().child(SPIN[0]).frames(SPIN, 90)).child("Loading…") : "No diff")))
             .child(Scrollbar.vertical(listId).absolute().inset_0())))
-          .when(Boolean(sug), (e) => e.child(div().flex_none().p(10).border_t(1).border_color(t.border).child(this.sugCard(sug, t, false))))
           .when(Boolean(this.note), (e) => e.child(div().flex_none().px(14).py(8).border_t(1).border_color(t.border).text_size(12.5).text_color(/Could not|Not sent|Not posted|Select a line/.test(this.note ?? "") ? t.ansi1 : t.muted).child(this.note)))
           .when(Boolean(this.replyTo), (e) => e.child(this.replyBar(t)))
           .when(this.selected().length > 0, (e) => e.child(this.selectionBar(t)))

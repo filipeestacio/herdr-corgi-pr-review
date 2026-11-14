@@ -270,7 +270,7 @@ export function mapReview(answer, hunks) {
     if (!row) continue;
     const old = row.kind === "-", reason = s.text ?? "";
     suspects.push({ key: `${h.path}:${old ? "-" : "+"}${row.number}:${hash(reason)}`, hunk: h.id, path: h.path, line: row.number, old,
-      severity: level(s.severity) === "skim" ? "low" : level(s.severity), reason, approx: !exact });
+      severity: level(s.severity) === "skim" ? "low" : level(s.severity), reason, approx: !exact, ...(s.category ? { category: String(s.category) } : {}) });
   }
   // Newer analyses add behavior, merge risk, effort, repo rule checks, an architecture picture and the blast radius;
   // older ones have none of them (null / empty).
@@ -389,14 +389,70 @@ export function parseReports(text) {
   return out;
 }
 
-// A finding's status: the agent's report beats the panel's own (open, progress, fixed, dismissed); a finding from
-// an older head whose line changed since is "recheck" unless it is settled.
+// A finding's status: open ("Unresolved"), progress ("Fix sent"), fixed, dismissed, or recheck (unresolved, from an
+// older head, and its line changed since). The fix agent's report never settles a finding: "fixed" comes only from a
+// passed verification (applyVerification) or the reviewer's own mark, so a finding sent to Fix stays unresolved, in
+// the diff and among the blockers, with the report next to it. progress needs a fix on its way (fixHead) that the
+// agent did not decline; an older "progress" from a chat draft reads open. A dismissal covers the sources the finding
+// had then (st.ids): when another source reports the same line later, it is unresolved again.
 export function findingStatus(f, status, reports, head, lineNow) {
-  const r = reports[f.id], own = status[f.id]?.s ?? "open";
-  const s = r && !status[f.id]?.verify ? (r.status === "fixed" ? "fixed" : "dismissed") : own; // a verification beats the agent's report
-  if ((s === "open" || s === "progress") && head && f.head && f.head !== head && lineNow !== undefined && lineNow.trim() !== (f.code ?? "").trim()) return "recheck";
+  const st = status[f.id], own = st?.s ?? "open";
+  const s = (own === "progress" && (!st.fixHead || reports[f.id]?.status === "wontfix")) || (own === "dismissed" && st.ids && (f.ids ?? []).some((id) => !st.ids.includes(id))) ? "open" : own;
+  if (s === "open" && head && f.head && f.head !== head && lineNow !== undefined && lineNow.trim() !== (f.code ?? "").trim()) return "recheck";
   return s;
 }
+
+// ---- one finding per defect (review.js: every view reads this list)
+
+const rank = (x) => RISKS.indexOf(x.severity);
+const RAISE = new Set(["security", "availability"]);
+// A suggestion's text as a finding's title (its first sentence) and detail (the rest).
+const titled = (text) => { const m = /^(.{12,160}?)[.;]\s+(.+)$/s.exec(String(text).trim()); return m ? [m[1], m[2]] : [String(text).trim().replace(/\.$/, ""), ""]; };
+
+// Findings (the reviewers' and the analysis') and AI suggestions on the same file and new-side line are one finding:
+// the highest severity leads (its title and text show), every source stays in `sources` with its own severity, and
+// `security` is true when any source says so (the security reviewer, or a category). A suggestion alone on its line
+// is a note (not a finding, not counted), unless it is high or about security or availability: then it is a finding
+// of its own. The id is the source's that already has a status (so "Fix sent" and its report survive a run that adds
+// a source to the line), else the leading one's; `ids` has them all.
+// → {findings: [{...the leading source, id, ids, severity, security, step, sources: [{id, reviewer, severity, title,
+// detail, suggestion}]}], notes: [suspect]}, findings by severity, then file and line.
+export function mergeFindings(findings, suspects = [], status = {}) {
+  const groups = new Map(), notes = [], raised = new Set();
+  const put = (key, x) => { if (!groups.has(key)) groups.set(key, []); groups.get(key).push(x); };
+  const at = (s) => `${s.path}:${s.line}`;
+  const own = (s) => { const [title, detail] = titled(s.reason); return { id: `s${hash(s.key)}`, reviewer: "ai", file: s.path, line: s.line, end: s.line, severity: s.severity, category: s.category ?? "bug", title, detail, suggestion: "" }; };
+  for (const f of findings) put(f.line ? `${f.file}:${f.line}` : `id:${f.id}`, f);
+  // ponytail: a suggestion on a removed line stays a note (findings sit on new-side lines).
+  for (const s of suspects) if (!s.old && !groups.has(at(s)) && (s.severity === "high" || RAISE.has(s.category))) { put(at(s), own(s)); raised.add(s); }
+  for (const s of suspects) { if (raised.has(s)) continue; if (!s.old && groups.has(at(s))) put(at(s), own(s)); else notes.push(s); }
+  const out = [...groups.values()].map((g) => {
+    const lead = [...g].sort((a, b) => rank(a) - rank(b))[0], coded = g.find((x) => x.head);
+    const held = g.filter((x) => status[x.id]).sort((a, b) => String(status[b.id].at ?? "").localeCompare(String(status[a.id].at ?? "")))[0];
+    return { ...lead, id: (held ?? lead).id, ids: g.map((x) => x.id), end: Math.max(...g.map((x) => x.end ?? x.line ?? 0)), step: g.find((x) => x.step)?.step ?? null,
+      suggestion: lead.suggestion || g.find((x) => x.suggestion)?.suggestion || "", ...(coded ? { head: coded.head, code: coded.code } : {}),
+      security: g.some((x) => x.reviewer === "security" || x.category === "security"),
+      sources: g.map((x) => ({ id: x.id, reviewer: x.reviewer, severity: x.severity, title: x.title, detail: x.detail ?? "", suggestion: x.suggestion ?? "" })) };
+  });
+  return { findings: out.sort((a, b) => rank(a) - rank(b) || a.file.localeCompare(b.file) || a.line - b.line), notes };
+}
+
+// The one way findings are counted (tab, bar, Overview, the Findings header): unresolved is open, recheck and fix
+// sent; high/medium/low and security count the unresolved ones, so the severities add up to `unresolved`.
+export function findingCounts(findings, statusOf) {
+  const c = { total: findings.length, unresolved: 0, sent: 0, fixed: 0, dismissed: 0, high: 0, medium: 0, low: 0, security: 0 };
+  for (const f of findings) {
+    const s = statusOf(f);
+    if (s === "fixed" || s === "dismissed") { c[s] += 1; continue; }
+    c.unresolved += 1; c[f.severity] = (c[f.severity] ?? 0) + 1;
+    if (s === "progress") c.sent += 1;
+    if (f.security) c.security += 1;
+  }
+  return c;
+}
+// "12 unresolved: 7 high, 5 medium · 1 with a fix sent · 2 fixed · 1 dismissed"
+export const countLine = (c) => (!c.total ? "No findings" : [`${c.unresolved} unresolved${c.unresolved ? `: ${["high", "medium", "low"].filter((k) => c[k]).map((k) => `${c[k]} ${k}`).join(", ")}` : ""}`,
+  c.sent && `${c.sent} with a fix sent`, c.fixed && `${c.fixed} fixed`, c.dismissed && `${c.dismissed} dismissed`].filter(Boolean).join(" · "));
 
 // One prompt asking the PR's agent to fix findings and to report each back as a JSON line in `report`.
 export function fixPrompt(findings, pr, report, lang) {
@@ -605,15 +661,16 @@ export function preMergeChecks({ title, rules = [], ctx = null }) {
   return out;
 }
 
-// What stands between the PR and a merge, most severe first: conflicts, failing CI, failed rules, high/critical open
-// findings, fixes not verified on this head, overlapping open PRs.
-export function mergeBlockers({ checks = [], findings = [], unverified = 0, related = null }) {
+// What stands between the PR and a merge, most severe first: conflicts, failing CI, failed rules, high/critical
+// unresolved findings (sent(f): a fix is out for it, which does not resolve it), fixes not verified on this head,
+// overlapping open PRs.
+export function mergeBlockers({ checks = [], findings = [], unverified = 0, related = null, sent = () => false }) {
   const out = [];
   if (checks.some((c) => c.name === "No merge conflicts" && c.ok === false)) out.push({ severity: "high", title: "Code conflicts need to be resolved", why: "The base branch changed the same lines since this branch was cut: merge or rebase the base first." });
   const ci = checks.filter((c) => c.ci && c.ok === false);
   if (ci.length) out.push({ severity: "high", title: `${ci.length} CI ${ci.length === 1 ? "check is" : "checks are"} failing`, why: ci.map((c) => c.name.replace(/^CI: /, "")).join(", ") });
   for (const c of checks.filter((x) => (x.rule || x.name === "Conventional Commit title") && x.ok === false)) out.push({ severity: "medium", title: `Rule not met: ${c.name}`, why: c.why ?? "", where: c.where });
-  for (const f of findings.filter((x) => x.severity === "high" || x.severity === "critical")) out.push({ severity: "high", title: f.title, why: `${f.file}:${f.line} · open ${f.severity} finding`, finding: f.id });
+  for (const f of findings.filter((x) => x.severity === "high" || x.severity === "critical")) out.push({ severity: "high", title: f.title, why: `${f.file}:${f.line} · unresolved ${f.severity} finding${sent(f) ? " · fix sent, not verified" : ""}`, finding: f.id });
   if (unverified) out.push({ severity: "medium", title: `${unverified} ${unverified === 1 ? "fix is" : "fixes are"} not verified`, why: "Sent to Fix before the last push: verify them on the new head." });
   for (const p of related?.open ?? []) if (p.overlap > 0) out.push({ severity: "low", title: `Overlaps with open PR #${p.number}`, why: `Both change ${p.overlap} ${p.overlap === 1 ? "file" : "files"} (${(p.files ?? []).slice(0, 3).join(", ")}): agree on the merge order.`, url: p.url });
   return out;

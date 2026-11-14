@@ -213,13 +213,15 @@ export const applyPrompt = (job) => `The reviewer's fix is ready on branch ${job
 
 // ---- the Comments tab and the Show switch
 
-export const SHOW_KINDS = [["mine", "Yours"], ["ai", "AI"], ["agents", "Agents"], ["github", "GitHub"], ["notes", "Notes"]];
+// "ai" (the stored key) is the findings and the AI notes under their lines.
+export const SHOW_KINDS = [["mine", "Yours"], ["ai", "Findings"], ["agents", "Agents"], ["github", "GitHub"], ["notes", "Notes"]];
 export const showOf = (s) => Object.fromEntries(SHOW_KINDS.map(([k]) => [k, s?.[k] !== false])); // all on by default
 // Every comment of the PR as a row for the Comments tab: pending ones, sent threads (with their state and replies),
 // other people's GitHub comments, notes. state: pending | waiting | replied | fixed | declined | github | note.
 // stale(id): the person's own comment or note whose lines changed since (pr.js isStale).
 export function commentRows({ pending = [], threads = [], replies = {}, gh = [], ghOwn = () => false, notes = [], stale = () => false }) {
-  const rows = withIds(pending).map((c) => ({ id: c.id, kind: "pending", src: c.from === "ki" ? "ai" : "mine", file: c.file, line: c.end, old: Boolean(c.old), text: c.text, state: "pending", replies: 0, stale: stale(c.id) }));
+  // A comment taken from an AI note or a finding is yours once it is pending.
+  const rows = withIds(pending).map((c) => ({ id: c.id, kind: "pending", src: "mine", file: c.file, line: c.end, old: Boolean(c.old), text: c.text, state: "pending", replies: 0, stale: stale(c.id) }));
   for (const t of threads) {
     const r = replies[t.id] ?? [], last = r.at(-1)?.status, g = ghRepliesTo(gh, t.ghId).length;
     const state = last === "fixed" ? "fixed" : last === "wontfix" ? "declined" : last || g ? "replied" : "waiting";
@@ -255,14 +257,15 @@ export function ghShown(gh, { resolved = false, allBots = false } = {}) {
   const { kept, hidden } = latestBotComments(gh ?? []), list = allBots ? gh ?? [] : kept;
   return { list: resolved ? list : list.filter((g) => !g.resolved), resolved: list.filter((g) => g.resolved && !g.in_reply_to_id).length, botsHidden: hidden };
 }
-// "5 comments · 2 pending · 1 waiting on agent · 2 fixed"
+// "5 comments · 2 pending · 1 sent to an agent · 2 reported fixed": a comment's own states. "Fixed" alone is a
+// finding's word, after a verification; here the agent only says so.
 export function commentSummary(rows) {
   const mine = rows.filter((r) => r.kind === "pending" || r.kind === "thread"), n = (s) => mine.filter((r) => r.state === s).length;
-  return [`${mine.length} ${mine.length === 1 ? "comment" : "comments"}`, n("pending") && `${n("pending")} pending`, n("waiting") && `${n("waiting")} waiting on agent`,
-    n("replied") && `${n("replied")} replied`, n("fixed") && `${n("fixed")} fixed`, n("declined") && `${n("declined")} declined`].filter(Boolean).join(" · ");
+  return [`${mine.length} ${mine.length === 1 ? "comment" : "comments"}`, n("pending") && `${n("pending")} pending`, n("waiting") && `${n("waiting")} sent to an agent`,
+    n("replied") && `${n("replied")} replied`, n("fixed") && `${n("fixed")} reported fixed`, n("declined") && `${n("declined")} declined`].filter(Boolean).join(" · ");
 }
-// The tab's filters: state (all | pending | waiting | replied | fixed) and the Show switch's kinds.
+// The Comments list: what the Show switch's kinds let through (state: "all", or one state).
 export const filterRows = (rows, state, show) => rows.filter((r) => show[r.src] !== false && (state === "all" || r.state === state));
-// The Show switch's counts: comments per kind in the diff (AI: suggestions and findings).
-export const showCounts = ({ rows, ai = 0, agents = 0 }) => ({ mine: rows.filter((r) => r.src === "mine").length, ai: ai + rows.filter((r) => r.src === "ai").length, agents,
+// The Show switch's counts: comments per kind in the diff; ai: the unresolved findings, the Findings tab's number.
+export const showCounts = ({ rows, findings = 0, agents = 0 }) => ({ mine: rows.filter((r) => r.src === "mine").length, ai: findings, agents,
   github: rows.filter((r) => r.src === "github").length, notes: rows.filter((r) => r.src === "notes").length });

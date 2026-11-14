@@ -180,16 +180,52 @@ assert.deepEqual(rangeOf(again, "+3", "+3"), [lo, lo]);
 
 console.log("ok");
 
-// Findings: reports (last line wins, half lines skipped) beat the panel's status; moved code asks for a recheck.
-const { parseReports, findingStatus, fixPrompt } = await import("./pr.js");
+// Findings: reports (last line wins, half lines skipped) never settle a finding; moved code asks for a recheck.
+const { parseReports, findingStatus, fixPrompt, mergeFindings, findingCounts, countLine } = await import("./pr.js");
 const reps = parseReports('{"id":"a","status":"wontfix"}\n{"id":"a","status":"fixed","commit":"abc"}\n{"id":"b","sta');
 assert.deepEqual(Object.keys(reps), ["a"]);
 const fa = { id: "a", head: "h1", code: "x()" }, fb = { id: "b", head: "h1", code: "y()" };
-assert.equal(findingStatus(fa, {}, reps, "h2", "z()"), "fixed");
-assert.equal(findingStatus(fb, { b: { s: "progress" } }, reps, "h1", "y()"), "progress");
+// The agent reports "fixed": the finding stays "Fix sent" (progress) until a verification, also when the head moved.
+assert.equal(findingStatus(fa, { a: { s: "progress", fixHead: "h1" } }, reps, "h1", "x()"), "progress");
+assert.equal(findingStatus(fa, { a: { s: "progress", fixHead: "h1" } }, reps, "h2", "z()"), "progress");
+assert.equal(findingStatus(fa, { a: { s: "fixed", fixHead: "h1", verify: { result: "fixed" } } }, reps, "h2", "z()"), "fixed");
+assert.equal(findingStatus(fa, {}, reps, "h1", "x()"), "open", "a report alone settles nothing");
+// The agent declined, or "progress" came from a chat draft (no fixHead): unresolved again.
+assert.equal(findingStatus(fb, { b: { s: "progress", fixHead: "h1" } }, { b: { id: "b", status: "wontfix" } }, "h1", "y()"), "open");
+assert.equal(findingStatus(fb, { b: { s: "progress" } }, reps, "h1", "y()"), "open");
+// A dismissal covers the sources of then: a source that joins the line later makes it unresolved again.
+assert.equal(findingStatus({ id: "b", ids: ["b", "s1"] }, { b: { s: "dismissed", ids: ["b", "s1"] } }, {}, "h1", undefined), "dismissed");
+assert.equal(findingStatus({ id: "b", ids: ["sec", "b", "s1"] }, { b: { s: "dismissed", ids: ["b", "s1"] } }, {}, "h1", undefined), "open");
+assert.equal(findingStatus({ id: "b", ids: ["sec", "b"] }, { b: { s: "dismissed" } }, {}, "h1", undefined), "dismissed", "an older dismissal without its sources stays");
 assert.equal(findingStatus(fb, {}, reps, "h2", "  y()"), "open");
 assert.equal(findingStatus(fb, {}, reps, "h2", "y(1)"), "recheck");
 assert.equal(findingStatus(fb, { b: { s: "dismissed" } }, reps, "h2", "y(1)"), "dismissed");
+{
+  // One finding per defect: same file and new-side line merge, the highest severity leads, every source stays.
+  const A = (id, file, line, severity, extra = {}) => ({ id, reviewer: "analysis", step: "k1", file, line, end: line, severity, category: "structure", title: `T ${id}`, detail: `D ${id}`, suggestion: "", ...extra });
+  const S = (path, line, severity, reason, extra = {}) => ({ key: `${path}:+${line}:${reason}`, hunk: "h", path, line, old: false, severity, reason, approx: false, ...extra });
+  const sec = { id: "sec1", reviewer: "security", file: "t.yaml", line: 18, end: 20, severity: "high", title: "Token unset", detail: "Fails open", suggestion: "Fail closed", code: "x", head: "h1" };
+  const list = [sec, A("a1", "t.yaml", 18, "medium", { category: "security", suggestion: "Set it" }), A("a2", "e.py", 9, "high"), A("a3", "e.py", 30, "medium")];
+  const sugs = [S("e.py", 9, "high", "No id. Dedupe is impossible."), S("t.yaml", 18, "medium", "Token is empty"), S("e.py", 12, "low", "Nit"), S("e.py", 40, "high", "Import couples the two. Split it."),
+    S("e.py", 50, "medium", "Open bucket", { category: "security" }), S("e.py", 9, "low", "old side", { old: true })];
+  const m = mergeFindings(list, sugs);
+  assert.deepEqual(m.findings.map((f) => [f.file, f.line, f.severity, f.sources.map((x) => `${x.reviewer}:${x.severity}`).join(" ")]), [
+    ["e.py", 9, "high", "analysis:high ai:high"], ["e.py", 40, "high", "ai:high"], ["t.yaml", 18, "high", "security:high analysis:medium ai:medium"],
+    ["e.py", 30, "medium", "analysis:medium"], ["e.py", 50, "medium", "ai:medium"]]);
+  assert.deepEqual(m.notes.map((s) => s.reason), ["Nit", "old side"], "a suggestion alone on its line is a note; a high or security one is a finding");
+  const tok = m.findings[2];
+  assert.deepEqual([tok.id, tok.ids.length, tok.title, tok.security, tok.step, tok.end, tok.head], ["sec1", 3, "Token unset", true, "k1", 20, "h1"]);
+  assert.deepEqual([m.findings[1].title, m.findings[1].detail, m.findings[1].security, m.findings[4].security], ["Import couples the two", "Split it.", false, true]);
+  // The source that already has a status keeps the id, so a fix sent for it and its report stay with the finding.
+  assert.equal(mergeFindings(list, sugs, { a1: { s: "progress", fixHead: "h1", at: "2" } }).findings[2].id, "a1");
+  assert.equal(mergeFindings([{ ...sec, line: 0 }, { ...sec, id: "sec2", line: 0 }]).findings.length, 2, "findings without a line never merge");
+  // One count for every view: the severities add up to the unresolved ones; a fix sent is still unresolved.
+  const st = { sec1: "progress", a2: "open", a3: "dismissed" };
+  const c = findingCounts(m.findings, (f) => st[f.id] ?? (f.line === 40 ? "fixed" : "recheck"));
+  assert.deepEqual(c, { total: 5, unresolved: 3, sent: 1, fixed: 1, dismissed: 1, high: 2, medium: 1, low: 0, security: 2 });
+  assert.equal(countLine(c), "3 unresolved: 2 high, 1 medium · 1 with a fix sent · 1 fixed · 1 dismissed");
+  assert.equal(countLine(findingCounts([], () => "open")), "No findings");
+}
 const fp = fixPrompt([{ id: "a1", severity: "high", reviewer: "codex", file: "a.js", line: 3, end: 4, title: "T", detail: "D", suggestion: "S" }], { number: 7, title: "Fix", url: "u" }, "/r.jsonl");
 assert.ok(fp.includes("[a1] high · codex · `a.js`:3–4: T") && fp.includes(">> /r.jsonl") && fp.includes('"id": "a1"'));
 console.log("ok");
@@ -263,9 +299,10 @@ console.log("ok");
   assert.equal(out.f1.s, "fixed"); assert.equal(out.f1.fixHead, "a1"); assert.equal(out.f1.verify.reason, "guarded");
   assert.equal(out.f2.s, "open"); assert.equal(out.f2.verify.result, "not_fixed");
   assert.equal(out.f3.s, "open"); assert.equal(out.f3.verify.result, "unclear");
-  // A verification beats the agent's "fixed" report.
+  // Only the verification settles it: "not fixed" reopens, the agent's "fixed" report alone leaves "Fix sent".
   assert.equal(findingStatus({ id: "f2" }, out, { f2: { id: "f2", status: "fixed" } }, null, undefined), "open");
-  assert.equal(findingStatus({ id: "f2" }, st, { f2: { id: "f2", status: "fixed" } }, null, undefined), "fixed");
+  assert.equal(findingStatus({ id: "f1" }, out, { f1: { id: "f1", status: "fixed" } }, null, undefined), "fixed");
+  assert.equal(findingStatus({ id: "f2" }, st, { f2: { id: "f2", status: "fixed" } }, null, undefined), "progress");
 
   // Columns: longest path from the sources; a cycle does not hang.
   const lv = levels([{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }], [{ from: "a", to: "b" }, { from: "b", to: "c" }, { from: "a", to: "c" }, { from: "x", to: "d" }]);
@@ -299,9 +336,10 @@ console.log("ok");
     ctx: { checks: [{ name: "build", bucket: "pass" }, { name: "lint", bucket: "fail" }, { name: "e2e", bucket: "pending" }, { name: "x", bucket: "skipping" }], mergeable: "CONFLICTING" } });
   assert.deepEqual(checks.map((c) => c.ok), [false, false, true, false, null, false]);
   assert.equal(preMergeChecks({ title: "feat(api): SHELF-1 add x" })[0].ok, true);
-  const bl = mergeBlockers({ checks, findings: [{ id: "f", title: "SQL injection", severity: "high", file: "a", line: 1 }, { id: "g", severity: "low" }], unverified: 2,
+  const bl = mergeBlockers({ checks, findings: [{ id: "f", title: "SQL injection", severity: "high", file: "a", line: 1 }, { id: "g", severity: "low" }], unverified: 2, sent: (f) => f.id === "f",
     related: { open: [{ number: 9, overlap: 2, files: ["a", "b"] }, { number: 10, overlap: 0 }] } });
   assert.deepEqual(bl.map((x) => x.title), ["Code conflicts need to be resolved", "1 CI check is failing", "Rule not met: Conventional Commit title", "Rule not met: No secrets", "SQL injection", "2 fixes are not verified", "Overlaps with open PR #9"]);
+  assert.equal(bl[4].why, "a:1 · unresolved high finding · fix sent, not verified");
 
   // Triage: type from the prefix, effort from the analysis else the size, P1 for overlap or high risk.
   const tr = triageOf({ pr: { title: "feat(x): y" }, analysis: { effort: { score: 3 }, mergeRisk: { level: "high", why: "auth" } } });

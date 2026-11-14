@@ -53,13 +53,14 @@ title bar (traffic lights at 12, 16):
   `Finish your review (n) ▾` while n comments are pending.
 - The body (`{part: "review"}`): a 420 px left column with tabs `Files · n`, `Layers · n`, `Findings · n`.
   Layers: model, cost and age; merge risk and effort; `Layers / By risk`, `‹ Prev`, `Next ›`, `Re-analyze`;
-  pages Overview, Security blast radius, Architecture impact, Verify; a yellow "Needs your attention" box; the
+  pages Overview, Security blast radius, Architecture impact; a yellow "Needs your attention" box; the
   layers (✓ when checked, title, risk badge `high` `ansi1` / `medium` `ansi3` / `low` `ansi4` / `skim` `muted`,
   "n files touched", why it matters; the current one expanded with explanation, check questions and flow cards
   with example inputs and outputs).
 - On the right one virtual list of 22 px rows: the step header, then each hunk with old/new line numbers,
-  `+` rows tinted `#2ea043`, `−` rows `#f85149`, and cards inline: AI suggestions (`Accept (a)`, `Dismiss (x)`)
-  and findings (severity badge, reviewer in its color, `Comment`, `Discuss in chat`, `Fix`, `Dismiss`).
+  `+` rows tinted `#2ea043`, `−` rows `#f85149`, and inline: AI notes (one muted line, a click opens the text;
+  `a` adds it as a comment, `x` hides it) and findings, one per file and line (severity badge, its sources with
+  their severities, its state, `Add as comment`, `Discuss in chat`, `Fix`, `Dismiss finding`).
 - Commenting as on GitHub's "Files changed": hovering the line numbers shows a `+`. The composer is two list rows
   under the selection's last line (168 px and 48 px, `accent` border): "Comment on lines 13–15", a fixed-height
   textarea, then `Suggestion` (inserts a GitHub suggestion block with the selected lines), `Cancel`,
@@ -128,8 +129,9 @@ Explore shows Overview, Layers, Architecture and Files for a topic, without a di
   the time and the cost cap; it can take minutes. After a push, "Only new changes" analyses just the new commits.
 - `Reviews ▾` lists Claude code review, Security review and (when installed) Codex review with their last run;
   Run starts one in the background on a checkout of the PR head; findings appear inline and under Findings.
-- `Fix` sends findings to the agent, which reports back per finding; after the next push "Verify fixes"
-  checks them (fixed ✓, not fixed → open again, unclear).
+- `Fix` sends findings to the agent, which reports back per finding. The finding reads "Fix sent" and stays
+  unresolved (in the diff, counted, a blocker when high) with the agent, branch, commit and report; after the next
+  push "Verify fixes" in the Findings tab checks them (fixed → Fixed, not fixed → Unresolved again, unclear).
 - "Discuss in chat" pastes the finding into the agent's terminal in a floating window without sending it (or
   into a chat mod's bubble, PROVIDERS.md).
 - The analysis writes in the `language` setting; prompts are English.

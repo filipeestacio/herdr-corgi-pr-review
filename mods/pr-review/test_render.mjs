@@ -106,9 +106,36 @@ for (const n of [0, 3, 310]) {
   v.archFocus = null; v.page = null; v.cur = 1;
   ok(`${n} files: the same layer open in the Layers view`, () => v.render(cx));
   // Its analysis finding: in the layer above, and in the Findings tab (read live from the analysis, linked to its layer).
-  assert.deepEqual(v.findings().map((f) => f.id), ["a1"]); assert.equal(v.layerOf(lf), 1);
-  v.tab = "findings"; v.ffilter = { reviewer: "analysis", severity: "all", status: "open" };
+  assert.deepEqual(v.findings().map((f) => f.id), ["a1"]); assert.equal(v.layerOf(v.findings()[0]), 1);
+  v.tab = "findings";
   ok(`${n} files: the Findings tab with an analysis finding`, () => v.render(cx));
+  if (n === 3) {
+    // One finding per defect: the security reviewer's finding and an AI suggestion on the same line merge into it,
+    // a suggestion alone on its line stays a note. Sent to Fix with a "fixed" report it is still unresolved: counted,
+    // a blocker, a card in the diff; the layer lists it although the reviewer, not the analysis, leads it.
+    v.find = { ...v.find, list: [{ id: "s1", reviewer: "security", file: "src/f0.ts", line: 2, end: 2, severity: "high", title: "Open door", detail: "d", suggestion: "" }],
+      status: { a1: { s: "progress", fixHead: "h0", at: "2024-01-01" } }, reports: { a1: { id: "a1", status: "fixed", commit: "22e31c88f2", note: "done" } } };
+    const sug = (line, severity, reason) => ({ key: `src/f0.ts:+${line}:${reason}`, hunk: v.hunks[0].id, path: "src/f0.ts", line, old: false, severity, reason });
+    v.ai = { ...v.ai, suspects: [sug(2, "medium", "same line"), sug(4, "low", "a nit")] };
+    const [f] = v.findings();
+    assert.deepEqual([v.findings().length, f.id, f.ids, f.security, v.sourcesOf(f)], [1, "a1", ["s1", "a1", f.ids[2]], true, "Security review: high · Analysis: high · AI suggestion: medium"]);
+    assert.deepEqual(v.openSugs().map((s) => s.reason), ["a nit"]);
+    assert.equal(v.fstatus(f), "progress");
+    assert.deepEqual([v.counts().unresolved, v.counts().sent, v.counts().security, v.openFindings().length], [1, 1, 1, 1]);
+    assert.match(v.blockersNow().find((b) => b.finding === "a1").why, /unresolved high finding · fix sent, not verified/);
+    assert.equal(v.fixLine(f), "commit 22e31c88 · agent reports fixed · not verified");
+    assert.deepEqual(v.fixFacts(f).map(([k]) => k), ["Commit", "Report", "Check"]);
+    assert.deepEqual(v.layerFindings(v.ai.steps[1]).map((x) => x.id), ["a1"]);
+    v.ffocus = "a1";
+    ok("the Findings tab: a merged finding open, with a fix sent", () => v.render(cx));
+    v.tab = "files"; v.page = null; v.sug = v.openSugs()[0].key;
+    ok("the diff: the finding's card and the note, opened", () => { v.render(cx); layout(0); });
+    assert.deepEqual(v.items.filter((it) => ["find", "fact", "sug"].includes(it.t)).map((it) => it.t), ["find", "fact", "sug"], "a fix sent stays in the diff; one note, no buttons");
+    v.dismiss(f, cx);
+    assert.deepEqual([v.fstatus(v.findings()[0]), v.counts().unresolved], ["dismissed", 0]); assert.match(v.note, /all 3 sources of it/);
+    v.find = { ...v.find, list: [], status: {}, reports: {} }; v.ai = { ...v.ai, suspects: [] }; v.sug = null; v.ffocus = null; v.note = null; v.tab = "findings";
+    console.log("one finding per defect ok");
+  }
   v.ai = { ...v.ai, steps: v.ai.steps.map((s) => ({ ...s, findings: [] })) };
   assert.deepEqual(v.findings(), [], "a finding the newest analysis no longer has is gone");
   v.tab = "files"; v.page = null; v.deep.drawer[v.deepKey()] = "open";

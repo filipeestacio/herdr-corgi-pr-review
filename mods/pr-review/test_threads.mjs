@@ -139,12 +139,13 @@ console.log("threads ok");
     ghOwn: (g) => g.id === 7 || g.in_reply_to_id === 7, notes: [{ id: "n1", anchor: { file: "a.py", end: 3 }, summary: "note" }, { id: "n2", anchor: { node: "x" }, summary: "card" }] });
   assert.deepEqual(rows.map((r) => `${r.file}:${r.line}:${r.state}`), ["a.py:1:github", "a.py:2:waiting", "a.py:3:note", "a.py:5:fixed", "a.py:9:pending", "b.py:4:pending", "c.py:1:replied"], "by file and line");
   assert.equal(rows.find((r) => r.id === "t3").replies, 1, "a GitHub reply counts");
-  assert.equal(TH.commentSummary(rows), "5 comments · 2 pending · 1 waiting on agent · 1 replied · 1 fixed");
+  assert.equal(TH.commentSummary(rows), "5 comments · 2 pending · 1 sent to an agent · 1 replied · 1 reported fixed");
   const show = TH.showOf({ github: false });
   assert.deepEqual(show, { mine: true, ai: true, agents: true, github: false, notes: true });
   assert.deepEqual(TH.filterRows(rows, "all", show).map((r) => r.id), ["t1", "n1", "t2", "p2", "p1", "t3"], "GitHub hidden");
-  assert.deepEqual(TH.filterRows(rows, "pending", TH.showOf({ ai: false })).map((r) => r.id), ["p1"], "pending, without AI");
-  assert.deepEqual(TH.showCounts({ rows, ai: 3, agents: 2 }), { mine: 4, ai: 4, agents: 2, github: 1, notes: 1 });
+  assert.deepEqual(TH.filterRows(rows, "pending", TH.showOf({ ai: false })).map((r) => r.id), ["p2", "p1"], "a comment taken from an AI note is yours: the Findings switch leaves it");
+  assert.deepEqual(TH.showCounts({ rows, findings: 3, agents: 2 }), { mine: 5, ai: 3, agents: 2, github: 1, notes: 1 }, "Findings shows the findings' own count");
+  assert.equal(TH.SHOW_KINDS.find(([k]) => k === "ai")[1], "Findings");
   console.log("comments tab ok");
 }
 // ---- GitHub: resolved threads, bots by their latest reviewed commit, outdated comments; STALE on own rows

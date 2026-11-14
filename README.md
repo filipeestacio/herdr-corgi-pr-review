@@ -81,8 +81,9 @@ what they call on the right, each with the reason it matters.
   before you open a file. The layers group 40 files into five steps you can tick off.
 - **The author pushed again.** You see only what changed since your last review, and one click re-analyses just
   that part.
-- **You want a second opinion.** Run a Claude code review, a security review or Codex. Findings land on their lines;
-  send one to the agent with *Fix*, then *Verify* checks the new commit.
+- **You want a second opinion.** Run a Claude code review, a security review or Codex. Findings land on their lines,
+  one per defect whoever found it; send one to the agent with *Fix* (it stays unresolved as "Fix sent"), then *Verify*
+  checks the new commit: only that makes it "Fixed".
 - **You don't know the codebase.** Hover a name or ⌘-click it to read its definition, see example values next to
   the changed lines, and look at the architecture picture to see which services the change touches.
 
@@ -96,8 +97,8 @@ what they call on the right, each with the reason it matters.
 - Comments as on GitHub: click a line number (shift-click for a range) or press `c` for a comment box under the
   line, with Suggestion, Post now to GitHub (or Send to agent…) and Start a review. Comments are compact cards;
   sent and posted ones stay as threads with the agent's replies (by comment id) and GitHub's, and survive restarts.
-- A Comments tab lists every comment by file with its state and replies; Show: Yours · AI · Agents · GitHub · Notes
-  decides what appears in the diff.
+- A Comments tab lists every comment by file with its state and replies; Show: Yours · Findings · Agents · GitHub ·
+  Notes in the bar is the one filter for what appears in the diff and in that list.
 - Finish your review: a summary, Comment / Approve / Request changes, and every item that would go out with a tick and
   inline edit. Only what is ticked is posted; the line above Submit names the gh login and the PR. AI suggestions,
   findings and notes never go out unless you add them as comments.
@@ -110,6 +111,10 @@ what they call on the right, each with the reason it matters.
 - Big PRs: the analysis gets every hunk, inlines what fits, reads the rest itself and splits into passes when it has
   to; it says what it read in detail and what it only skimmed.
 - Reviewers: Claude code review, security review, Codex (when installed), each finding with Discuss, Fix and Verify.
+- One finding per defect: the reviewers' findings, the analysis' and AI suggestions on the same file and line are one
+  entry with its sources ("Security review: high · Analysis: medium"), the highest severity counts. A suggestion alone
+  on its line is a one-line note, not counted. States: Unresolved, Fix sent (still unresolved, with agent, branch,
+  commit and report), Fixed (after a passed verification), Dismissed. Every view shows the same count.
 - Incremental: "since your last review" view and analysis.
 - A resizable layers column (drag the divider, double-click for the default width).
 - Model per review (Haiku, Sonnet, Opus); LLM calls only on click.
