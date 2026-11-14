@@ -26,7 +26,7 @@ import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf,
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState, codeOf, isStale } from "./pr.js";
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible, pastTop } from "./views.js";
-import { worst, byUrgency, byFocus, attentionCounts, layerAccess, analysisAge } from "./views.js";
+import { worst, byUrgency, byFocus, attentionCounts, layerAccess, analysisAge, stateHints } from "./views.js";
 import { archView, archLegend, visualsCard, visualCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
 import { visualPlan } from "./stack.js";
 import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCALE } from "./views.js";
@@ -605,17 +605,17 @@ export const ReviewMode = {
     }
     // A PR you didn't open may use the active space's checkout of its repo (cwd); your own PRs keep the dedicated clones.
     const local = this.prSel.source && this.root ? ["--local", this.root] : [];
-    this.cloning = clone;
+    this.cloning = clone; this.checkout = { busy: true }; // shown at the top of the Analysis tab (stateHints)
     cx.spawn(async (cx) => {
       const roots = C.cloneRoots(ctxDoc(), this.ctxId(), this.cfg?.cloneRoot ?? "~/code").flatMap((d) => ["--root", d.replace(/^~(?=\/|$)/, home())]);
       const env = this.ctxEnv(this.ctxId()), argv = [...env, "python3", `${appHome()}/mods/pr-review/worktree.py`, url, ...roots, ...local, ...(clone ? ["--clone"] : [])];
       const r = await exec(argv[0], argv.slice(1), { timeout: 600000 })
         .catch((e) => ({ code: 1, stderr: String(e) }));
-      this.cloning = false;
+      this.cloning = false; this.checkout = null;
       if (this.prSel?.url !== url) return;
       if (r.code === 3) { this.needClone = JSON.parse(r.stdout).need_clone; this.loadContext(cx); cx.notify(); return; }
       this.needClone = null;
-      if (r.code !== 0) { this.note = `Could not check out the PR head: ${r.stderr.trim().slice(0, 200)}`; cx.notify(); return; }
+      if (r.code !== 0) { this.checkout = { error: r.stderr.trim().slice(0, 200) }; cx.notify(); return; }
       const w = JSON.parse(r.stdout);
       this.head ??= w.head;
       this.worktree = { url, head: w.head, path: w.path };
@@ -752,7 +752,7 @@ export const ReviewMode = {
     if (mode === "run") {
       if (this.aiBusy) return;
       if (!job.req.hunks.length) { this.aiError = "No diff"; return cx.notify(); }
-      if (!this.worktree && !this.prSel.space) { this.pendingRun = true; this.note = "Analysis starts once the PR head is checked out…"; return cx.notify(); }
+      if (!this.worktree && !this.prSel.space) { this.pendingRun = true; return cx.notify(); } // the Analysis tab says it waits (stateHints)
       // Every hunk goes along: review.py inlines what fits and lets the model read the rest (no "too large" cut).
       const all = (hs) => hs.map(({ alias, id, path, lines }) => ({ alias, id, path, lines }));
       let req = { ...job.req, hunks: all(job.hunks), cut: [] };
@@ -2872,10 +2872,15 @@ export const ReviewMode = {
           .child(div().text_size(13.5).line_height(1.5).child(`No ${modelLabel(m)} analysis for this diff yet. One thorough run reads the code around the changes and groups them into layers by intent, with explanations, check questions, suspicious lines, merge risk, review effort, repo rule checks, pictures and example values. It can take several minutes.`))
           .child(h_flex().gap(10).items_center().child(run(`Analyze with ${modelLabel(m)}`))
             .child(div().text_size(12).text_color(t.muted).child(this.estimate(m))))))
-        .when(Boolean(this.aiBusy), (e) => e.child(h_flex().gap(8).items_center().text_size(13).text_color(t.muted).child(div().child(SPIN[0]).frames(SPIN, 90))
+        .when(Boolean(this.aiBusy), (e) => e.child(h_flex().gap(8).items_center().text_size(13).text_color(t.foreground).child(div().child(SPIN[0]).frames(SPIN, 90))
           .child(div().flex_1().child(`${modelLabel(this.aiBusy.model)} is reading ${this.aiBusy.incremental ? "the new changes" : "the code"}${this.aiBusy.passes ? ` · Pass ${this.aiBusy.pass} of ${this.aiBusy.passes}` : ""} · ${clock(Date.now() - this.aiBusy.started)} · cap $${CAP[tierOf(this.aiBusy.model)]}`))
           .child(pill("rv-cancel", t, "Cancel", (_e, cx) => this.cancelAi(cx), false, t.ansi1).tooltip("Stop the running analysis"))))
         .when(Boolean(this.aiError), (e) => e.child(div().text_size(12.5).text_color(t.ansi1).whitespace_normal().child(this.aiError)))
+        // What is going on (checkout, an analysis waiting for it, reviewer runs), in the text color with a spinner while
+        // it runs: here, not as a grey line under the page.
+        .children(stateHints({ checkout: this.checkout, pendingRun: this.pendingRun, runs: this.find.runs, names: Object.fromEntries(Object.entries(REVIEWERS).map(([k, v]) => [k, v[0]])) })
+          .map((h) => h_flex().id(`rv-hint-${h.key}`).gap(8).items_center().text_size(12.5).text_color(h.error ? t.ansi1 : t.foreground)
+            .when(Boolean(h.spin), (x) => x.child(div().flex_none().child(SPIN[0]).frames(SPIN, 90))).child(div().flex_1().min_w(0).whitespace_normal().child(h.text))))
         // Which head the analysis read and how old it is, in sight (the run's model and cost stay in Re-analyze's tooltip);
         // amber once the PR moved on, with what to do about it.
         .when(Boolean(ai), (e) => { const a = analysisAge({ head: ai.head, exact: ai.exact, now: this.worktree?.head ?? this.head, age: ago(ai.generated) });
