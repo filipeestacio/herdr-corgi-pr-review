@@ -207,7 +207,7 @@ export const SEVERITY_SCALE = ["high", "medium", "low"].map((s) => `${s}: ${Obje
 export function factRows(f) {
   const why = IMPACT[f?.impact]?.[1], known = Boolean(f?.effect || f?.certainty);
   return [why && ["Severity", `${f.severity ?? IMPACT[f.impact][0]}, because ${why}.`], f?.effect && ["Effect", f.effect],
-    CERTAINTY[f?.certainty] && ["Certainty", CERTAINTY[f.certainty]],
+    CERTAINTY[f?.certainty] && ["Certainty", `${CERTAINTY[f.certainty]}${probedText(f)}`],
     f?.preconditions?.length ? ["Preconditions", f.preconditions.join("; ")] : known && ["Preconditions", "None: it always happens."]].filter(Boolean);
 }
 
@@ -578,16 +578,23 @@ export function areaFindings(area, k, findings) {
 // (`evidence` or `at`: "file:line" or "file:line-end"; a finding's own range counts). Returns Map(index in edges then
 // transitions -> {findings, severity: the highest}); a transition without a place has none.
 const RANK = { critical: 0, high: 1, medium: 2, low: 3 };
+// Wave C2 V4: a finding marks only the transition it names, not every transition in its lines: by breaks {from, to}
+// with the states' names, else the transition(s) whose line is nearest its own, within NEAR_T lines (ties: all).
+const NEAR_T = 3;
 export function transitionMarks(v, findings) {
-  const out = new Map(), place = (s) => /^(.+?):(\d+)(?:-(\d+))?/.exec(String(s ?? ""));
-  [...(v?.edges ?? []), ...(v?.transitions ?? [])].forEach((e, i) => {
-    const m = place(e.evidence) ?? place(e.at);
-    if (!m) return;
-    const [path, a, b] = [m[1], Number(m[2]), Number(m[3] ?? m[2])];
-    const hit = (findings ?? []).filter((f) => f.file && (f.file === path || f.file.endsWith(`/${path}`) || path.endsWith(`/${f.file}`)) && (f.line ?? 0) <= b && (f.end ?? f.line ?? 0) >= a);
-    if (hit.length) out.set(i, { findings: hit, severity: hit.map((f) => f.severity).sort((x, y) => (RANK[x] ?? 9) - (RANK[y] ?? 9))[0] });
-  });
-  return out;
+  const out = new Map(), place = (s) => /^(.+?):(\d+)(?:-(\d+))?/.exec(String(s ?? "")), eq = (x, y) => String(x ?? "").toLowerCase() === String(y ?? "").toLowerCase();
+  const ts = [...(v?.edges ?? []), ...(v?.transitions ?? [])].map((e, i) => { const m = place(e.evidence) ?? place(e.at); return { e, i, m: m && [m[1], Number(m[2]), Number(m[3] ?? m[2])] }; });
+  const add = (i, f) => { const x = out.get(i) ?? { findings: [] }; x.findings.push(f); out.set(i, x); };
+  for (const f of findings ?? []) {
+    const named = f.breaks && ts.filter(({ e }) => (f.breaks.from || f.breaks.to) && (!f.breaks.from || eq(f.breaks.from, e.from)) && (!f.breaks.to || eq(f.breaks.to, e.to)));
+    if (named?.length) { named.forEach(({ i }) => add(i, f)); continue; }
+    const lo = f.line ?? 0, hi = f.end ?? f.line ?? 0, file = (path) => f.file && (f.file === path || f.file.endsWith(`/${path}`) || path.endsWith(`/${f.file}`));
+    const near = ts.filter(({ m }) => m && file(m[0]) && Math.max(0, m[1] - hi, lo - m[2]) <= NEAR_T), gap = ({ m }) => (lo >= m[1] && lo <= m[2] ? 0 : Math.abs(lo - m[1]));
+    const best = Math.min(...near.map(gap));
+    near.filter((t) => gap(t) === best).forEach(({ i }) => add(i, f));
+  }
+  for (const x of out.values()) x.severity = x.findings.map((f) => f.severity).sort((a, b) => (RANK[a] ?? 9) - (RANK[b] ?? 9))[0];
+  return new Map([...out].sort(([a], [b]) => a - b));
 }
 
 // Where the runs' self-reports in "What each run checked" contradict each other or the findings: an area one run calls
@@ -1161,3 +1168,36 @@ export function runLabel(run, price = null, age = "", short = false) {
   if (run?.state === "done") return short ? `Re-run${p}` : `Re-run${p} · last run${age ? ` ${age}` : ""}${run.head ? ` on ${String(run.head).slice(0, 7)}` : ""}`;
   return `${run?.state === "failed" ? "Run again" : "Run"}${p}`;
 }
+// The page's verdict in two parts (wave C2 V2): a short sentence ("5 of 11 paths block the merge.") and the count by
+// reason, most first ("a visible effect is lost: 2 · load grows without a limit: 1"); null without a blocker.
+export function resVerdictParts(paths) {
+  const b = (paths ?? []).filter((p) => p.blocker), by = new Map();
+  if (!b.length) return null;
+  for (const p of b) { const w = p.blocker.reason ?? p.blocker.why ?? ""; by.set(w, (by.get(w) ?? 0) + 1); }
+  return { head: `${b.length} of ${paths.length} ${paths.length === 1 ? "path" : "paths"} ${b.length === 1 ? "blocks" : "block"} the merge.`,
+    counts: [...by].sort((x, y) => y[1] - x[1]).map(([w, n]) => `${w}: ${n}`) };
+}
+// Where a chosen path starts on the map: the card of its first step (a call e<k> by the card it leaves), else null.
+export function resStartCard(p, arch) {
+  for (const s of p?.steps ?? []) {
+    const e = /^e(\d+)$/.exec(String(s)), id = e ? arch?.edges?.[Number(e[1])]?.from : resCardOf(s, arch);
+    if (id) return id;
+  }
+  return p?.reach?.[0] ?? null;
+}
+// Wave C2 V3: a resilience path whose probe reproduced it (status done, result reproduced) confirms its findings:
+// certainty "confirmed", with probed {id, strength} so the word can say how ("confirmed, platform modeled" when the
+// script modeled the platform). paths: the run's paths (p.findings ids, p.probe); probes: review.js probesNow. Pure.
+export function withProbes(findings, paths, probes) {
+  const by = new Map();
+  for (const p of paths ?? []) {
+    const x = (probes ?? []).find((q) => (q.id === p.probe || q.of === p.id) && q.status === "done" && q.result === "reproduced");
+    if (x) for (const id of p.findings ?? []) by.set(id, { id: x.id, strength: x.strength ?? null });
+  }
+  if (!by.size) return findings;
+  return (findings ?? []).map((f) => { const hit = (f.ids ?? [f.id]).map((id) => by.get(id)).find(Boolean); return hit ? { ...f, certainty: "confirmed", probed: hit } : f; });
+}
+// The certainty as a word, with how a probe confirmed it ("confirmed, platform modeled").
+export const certaintyText = (f) => `${f?.certainty ?? ""}${f?.certainty === "confirmed" && f?.probed?.strength === "models_env" ? ", platform modeled" : ""}`;
+// Which probe confirmed a finding, as a sentence after its certainty (" Probe r1 reproduced it, with the platform modeled.").
+export const probedText = (f) => (f?.certainty === "confirmed" && f?.probed ? ` Probe ${f.probed.id} reproduced it${f.probed.strength === "models_env" ? ", with the platform modeled" : ""}.` : "");
