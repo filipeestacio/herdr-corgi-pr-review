@@ -537,13 +537,6 @@ export function byFocus(steps, open) {
     .map((x) => x.s);
 }
 
-// The "Needs your attention" heading counts by decision, not by severity: "⛨ 2 · 3 criteria not met · 4 other
-// blockers". list: the box's items ({security}); notMet: the task's criteria broken or not done.
-export function attentionCounts(list, notMet = 0) {
-  const sec = list.filter((a) => a.security).length, rest = list.length - sec;
-  return [sec && `⛨ ${sec}`, notMet && `${notMet} ${notMet === 1 ? "criterion" : "criteria"} not met`, rest && `${rest} ${sec ? "other " : ""}${rest === 1 ? "blocker" : "blockers"}`].filter(Boolean);
-}
-
 // A layer's ways in and rights: the access rows (the analysis' or the security run's) at one of its files that are
 // public or opened by this PR, with the sentence for the mark at its row ("This layer opens a public route (Api)."),
 // so a layer that adds a way in shows it without a finding. null: none.
@@ -1131,3 +1124,29 @@ export function resByProbe(paths, probes) {
 // in its 15 px row) below does not touch it. In arch.js extra rows of 18 px each, with the card's 3 px gap.
 export const RES_MARK_ROW = { h: 18, below: 3 };
 export const resMarkRows = () => (RES_MARK_ROW.h + RES_MARK_ROW.below + 3) / 18;
+
+// "Before merge" counted by what decides it, one number per group, in the rows' order: "⛨ 2 security", "5 criteria"
+// (the criteria not met that its rows break or stand for, each once), "5 resilience paths", "14 high" (the other
+// findings by severity), "2 checks", "1 fix to verify", "1 overlapping PR". rows: review.js mergeRows (pr.js
+// beforeMerge and the Resilience run's rows); seen: rows already shown, whose criteria are not counted again. -> [{key, n, text}]
+const mergeKey = (r) => (r.kind === "security" ? "security" : r.kind === "criterion" || r.kind === "ask" ? "criteria" : r.kind === "resilience" ? (r.path ? "resilience" : "blind")
+  : r.kind === "finding" ? `sev-${r.finding?.severity ?? "high"}` : r.kind === "verify" || r.kind === "overlap" ? r.kind : "checks");
+export function mergeGroups(rows, seen = []) {
+  const say = { security: (n) => `⛨ ${n} security`, criteria: (n) => `${n} ${n === 1 ? "criterion" : "criteria"}`, resilience: (n) => `${n} resilience ${n === 1 ? "path" : "paths"}`,
+    blind: (n) => `${n} not observable`, verify: (n) => `${n} ${n === 1 ? "fix" : "fixes"} to verify`, overlap: (n) => `${n} overlapping ${n === 1 ? "PR" : "PRs"}`, checks: (n) => `${n} ${n === 1 ? "check" : "checks"}` };
+  const groups = new Map(), asks = new Set(seen.flatMap((r) => (r.asks?.length ? r.asks : [r.ask]).filter(Boolean).map((a) => a.id)));
+  for (const r of rows) {
+    const k = mergeKey(r);
+    if (!groups.has(k)) groups.set(k, 0);
+    if (k === "criteria") for (const a of r.asks?.length ? r.asks : [r.ask]) { if (a && !asks.has(a.id)) { asks.add(a.id); groups.set(k, groups.get(k) + 1); } }
+    else groups.set(k, groups.get(k) + 1);
+  }
+  return [...groups].filter(([, n]) => n > 0).map(([key, n]) => ({ key, n, text: say[key] ? say[key](n) : `${n} ${key.slice(4)}` }));
+}
+// The rows shown of "Before merge" (and the box over the layers): at most n, the first of each group before a
+// second of any, in the rows' order, so a criterion is not pushed out by security and resilience rows. of(x): the row.
+export function mergeFirst(items, n = 5, of = (x) => x) {
+  const pick = new Set(), round = (k) => { const seen = new Set(); for (const x of items) { if (pick.size >= n) return; const g = mergeKey(of(x)); if (!pick.has(x) && !seen.has(g) && [...pick].filter((y) => mergeKey(of(y)) === g).length < k) { seen.add(g); pick.add(x); } } };
+  for (let k = 1; pick.size < Math.min(n, items.length); k++) round(k);
+  return items.filter((x) => pick.has(x));
+}

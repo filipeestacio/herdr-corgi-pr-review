@@ -179,8 +179,8 @@ for (const n of [0, 3, 310]) {
   v.toggleSeen("src/f1.ts", cx); assert.deepEqual([v.done(one), v.done(two)], [true, false], "all its files viewed");
   assert.deepEqual(v.layerFindings(one).map((f) => f.id), ["a2", "s9"], "the reviewer's finding counts at the layer of its file");
   assert.deepEqual(v.layerFindings(two).map((f) => f.id), ["c9"]);
-  assert.deepEqual(v.attention().map((a) => [a.label, a.security, a.at]), [["Open door", true, "f1.ts:3"], ["Wrong sum", false, "f0.ts:1"], ["Rule not met: Conventional Commit title", false, ""]],
-    "the blockers by severity, security first among equals; no layers and no medium finding");
+  assert.deepEqual(v.attention().map((a) => [a.label, a.security, a.at]), [["Open door", true, "f1.ts:3"], ["Rule not met: Conventional Commit title", false, ""], ["Wrong sum", false, "f0.ts:1"]],
+    "the Overview's Before merge rows in their order (pr.js beforeMerge): security first; no layers and no medium finding");
   v.tab = "steps"; v.page = "arch";
   ok("Analysis tab beside a page: the pages on top, the attention box open", () => v.render(cx));
   const list = v.attention();
@@ -197,11 +197,11 @@ for (const n of [0, 3, 310]) {
   v.tab = "files";
   ok("Files tab: findings in words, the security mark, the ticks", () => v.render(cx));
   v.find = { ...v.find, status: { a2: { s: "progress", fixHead: "h0", at: "2024-01-01" } } };
-  assert.deepEqual(v.attention().map((a) => a.sent), [false, true, false], "a fix sent stays a blocker and says so");
+  assert.deepEqual(v.attention().map((a) => a.sent), [false, false, true], "a fix sent stays a blocker and says so");
   v.tab = "steps"; v.attFold = false;
   ok("Analysis tab: a blocker with a fix sent", () => v.render(cx));
   v.dismiss(v.findingById("s9"), cx); v.dismiss(v.findingById("a2"), cx);
-  assert.deepEqual(v.attention().map((a) => a.severity), ["medium"], "the findings settled: the title rule is left");
+  assert.deepEqual(v.attention().map((a) => [a.label, a.severity]), [["Rule not met: Conventional Commit title", null]], "the findings settled: the title rule is left (a check has no severity)");
   v.tab = "steps"; v.prSel = { ...v.prSel, title: "feat: t" };
   ok("Analysis tab without blockers", () => v.render(cx));
   assert.deepEqual(v.attention(), []);

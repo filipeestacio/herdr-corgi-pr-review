@@ -26,7 +26,7 @@ import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf,
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState, codeOf, isStale } from "./pr.js";
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible, pastTop } from "./views.js";
-import { worst, byUrgency, byFocus, attentionCounts, layerAccess, analysisAge, stateHints, noteRule } from "./views.js";
+import { worst, byFocus, layerAccess, analysisAge, stateHints, noteRule, mergeGroups, mergeFirst } from "./views.js";
 import { archView, archLegend, visualsCard, visualCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR, bulletChart } from "./stack.js";
 import { visualPlan } from "./stack.js";
 import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCALE } from "./views.js";
@@ -2817,40 +2817,50 @@ export const ReviewMode = {
   // is about several files, or in an analysis from before it did).
   asked(s, q, k) { const f = s.questionFiles?.[k]; return f ? `${f.split("/").pop()} — ${q}` : q; },
 
-  // What stands in the way of a merge, most urgent first: the merge blockers (pr.js mergeBlockers, the Overview's
-  // list), security findings first, then by severity. No layers: those are the list below.
+  // What stands before the merge: the Overview's "Before merge" rows (mergeRows), the same list in the same order with
+  // the same click. No layers: those are the list below.
   attention() {
-    const of = (b) => (b.finding ? this.findingById(b.finding) : null), sec = (b) => Boolean(of(b)?.security), ranked = byUrgency(this.blockersNow(), sec);
-    return [...ranked.filter(sec), ...ranked.filter((b) => !sec(b))].map((b) => {
-      const f = of(b);
-      return { severity: b.severity, label: b.title, why: b.why ?? "", security: Boolean(f?.security), certainty: f?.certainty ?? null, finding: Boolean(f), sent: Boolean(f) && this.fstatus(f) === "progress", at: f ? `${f.file.split("/").pop()}:${f.line}` : "",
-        go: (cx) => { if (f) this.openFinding(f); else if (b.where) this.jumpTo(b.where, cx); else this.page = "overview"; } };
+    return this.mergeRows().map((r) => {
+      const f = r.finding ?? null;
+      return { row: r, severity: f?.severity ?? null, label: r.kind === "ask" ? `${r.title}: ${r.ask.state === "not_done" ? "not done" : r.ask.state}` : r.title, why: r.why || r.title, security: r.kind === "security",
+        certainty: f?.certainty ?? null, finding: Boolean(f), sent: Boolean(f) && this.fstatus(f) === "progress", at: r.where ? r.where.split("/").pop() : "", go: (cx) => this.goMergeRow(r, cx) };
     });
+  },
+  // A click on a row of "Before merge" (or the box over the layers): the finding, the criterion, the check or the path.
+  goMergeRow(r, cx) {
+    const f = r.finding;
+    if (f) { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); }
+    else if (r.kind === "ask") { this.page = "overview"; (this.askOpen ??= new Set()).add("crit"); this.askOpen.add(r.ask.id); }
+    else if (r.kind === "verify") this.tab = "findings";
+    else if (r.kind === "overlap" && r.url) this.openRelated({ url: r.url }, cx);
+    else if (r.kind === "resilience") { this.page = "res"; this.resOpen = r.path; }
+    else { this.page = "overview"; this.rulesOpen = true; }
   },
 
   // The box above the layers: the first few blockers, one line each. Folded to its heading while a layer is open
   // (attFold: your own click on the heading, until another page or layer view opens).
   attentionBox(t, list, folded) {
-    const SHOWN = 5, rest = list.slice(SHOWN);
+    const shown = mergeFirst(list, 5, (a) => a.row), rest = list.filter((a) => !shown.includes(a)), SYM = { criterion: "✗", ask: "○", verify: "↻", overlap: "⇄", resilience: "↯" };
     return v_flex().flex_none().p(10).gap(4).rounded(8).border_1().border_l(3).border_color(t.ansi3).bg(t.ansi3 + "10")
       .child(h_flex().id("rv-att-head").tooltip(folded ? "Show what stands in the way of a merge" : "Fold this list").gap(6).items_center().cursor_pointer().text_size(11.5)
         .on_click((_e, cx) => { this.attFold = !folded; cx.notify(); })
         .child(div().flex_none().w(10).text_color(t.ansi3).child(folded ? "▸" : "▾"))
         .child(div().flex_1().font_semibold().text_color(t.ansi3).child("NEEDS YOUR ATTENTION"))
-        .child(h_flex().flex_none().gap(4).text_color(t.muted).children(attentionCounts(list, this.taskNow().rows.filter((r) => ["broken", "not_done"].includes(r.ask.state)).length)
-          .flatMap((p, k) => [...(k ? [div().text_color(t.dim).child("·")] : []), div().when(p.startsWith("⛨"), (e) => e.text_color(t.ansi1)).child(p)]))))
-      .when(!folded, (e) => e.children(list.slice(0, SHOWN).map((a, k) => h_flex().id(`rv-att-${k}`).tooltip(a.why || "Go to this item").h(26).px(4).gap(8).items_center().rounded(5).cursor_pointer().hover((s) => s.bg(t.hover))
+        .child(h_flex().flex_none().gap(4).text_color(t.muted).children(mergeGroups(list.map((a) => a.row))
+          .flatMap((p, k) => [...(k ? [div().text_color(t.dim).child("·")] : []), div().when(p.key === "security", (e) => e.text_color(t.ansi1)).child(p.text)]))))
+      // A row as in "Before merge": the severity as a stripe, the kind as a symbol (⛨ security, ↯ resilience, ✗ criterion).
+      .when(!folded, (e) => e.children(shown.map((a, k) => h_flex().id(`rv-att-${k}`).tooltip(a.why || "Go to this item").h(26).pl(6).pr(4).gap(8).items_center().rounded(4).border_l(3)
+        .border_color(a.severity ? t[SEV[a.severity]] ?? t.muted : t.border).cursor_pointer().hover((s) => s.bg(t.hover))
         .on_click((_e, cx) => { a.go(cx); cx.notify(); })
-        .child(badge(t, a.severity, t[SEV[a.severity]] ?? t.ansi1))
-        .when(a.security, (x) => x.child(div().flex_none().text_size(13).text_color(t.ansi1).child("⛨")))
+        .child(div().w(14).flex_none().text_size(13).text_color(a.security ? t.ansi1 : t.muted).child(a.security ? "⛨" : SYM[a.row.kind] ?? (a.finding ? "!" : "✗")))
         .children([certaintyWord(t, a, `rv-att-c-${k}`)].filter(Boolean))
         .child(div().flex_1().min_w(0).truncate().text_size(13).child(a.label))
         .when(a.sent, (x) => x.child(div().flex_none().text_size(11.5).text_color(t[FSTATUS.progress[1]]).child(FSTATUS.progress[0])))
         .when(Boolean(a.at), (x) => x.child(div().flex_none().text_size(11.5).text_color(t.muted).child(a.at)))))
-        .when(rest.length > 0, (x) => x.child(div().id("rv-att-more").tooltip(rest.some((a) => a.finding) ? "Open the Findings tab" : "Open the Overview page").h(22).px(4).flex().items_center().rounded(5).cursor_pointer()
+        .when(rest.length > 0, (x) => x.child(div().id("rv-att-more").tooltip("Open the Overview: its Before merge list has them all").h(22).px(4).flex().items_center().rounded(5).cursor_pointer()
           .text_size(12).text_color(t.muted).hover((s) => s.text_color(t.foreground))
-          .on_click((_e, cx) => { if (rest.some((a) => a.finding)) this.tab = "findings"; else this.page = "overview"; cx.notify(); })
-          .child(`${rest.length} more: ${worst(rest).words} →`))));
+          .on_click((_e, cx) => { this.page = "overview"; (this.askOpen ??= new Set()).add("bm-all"); cx.notify(); })
+          .child(`${rest.length} more: ${mergeGroups(rest.map((a) => a.row), shown.map((a) => a.row)).map((p) => p.text).join(", ")} →`))));
   },
 
   // The PR's pages (Overview, Architecture, Security) at the top of the Analysis tab, above its layers: they are part
@@ -2940,7 +2950,8 @@ export const ReviewMode = {
           .when(canInc, (e) => e.child(pill("rv-reinc", t, "Only new changes", (_e, cx) => this.loadAi(cx, "run", true), false, t.accent)
             .tooltip(`Analyze only the ${this.since.files.length} files changed since your last review and merge the new layers in`))))
         // Above the list, not in it: folded to one line while a layer is open, it still says what is left to decide.
-        .when(attention.length > 0, (e) => e.child(this.attentionBox(t, attention, this.attFolded(attention)))))
+        // Not beside the Overview: its "Before merge" is the same list, and one ranking on a screen is enough.
+        .when(attention.length > 0 && this.page !== "overview", (e) => e.child(this.attentionBox(t, attention, this.attFolded(attention)))))
       .child(div().flex_1().min_h(0).relative()
         .child(v_flex().id("rv-steps-left").absolute().inset_0().overflow_y_scroll().track_scroll(this.leftScroll).p(8).gap(4)
           .child(h_flex().flex_none().mt(2).px(10).gap(8).items_center().text_size(11.5).font_semibold().text_color(t.muted)
@@ -4491,15 +4502,7 @@ export const ReviewMode = {
       rule: ["✗", t.foreground], verify: ["↻", t.ansi3], overlap: ["⇄", t.muted], resilience: ["↯", t.foreground] };
     const mergeRow = (r, k) => {
       const f = r.finding, id = `rv-bm-${k}`, [sym, col] = SYM[r.kind] ?? ["·", t.muted], breaks = r.asks.map((a) => a.short || plain(a.text));
-      const click = (_e, cx) => {
-        if (f) { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); }
-        else if (r.kind === "ask") { (this.askOpen ??= new Set()).add("crit"); this.askOpen.add(r.ask.id); }
-        else if (r.kind === "verify") this.tab = "findings";
-        else if (r.kind === "overlap" && r.url) this.openRelated({ url: r.url }, cx);
-        else if (r.kind === "resilience") { this.page = "res"; this.resOpen = r.path; }
-        else { this.rulesOpen = true; }
-        cx.notify();
-      };
+      const click = (_e, cx) => { this.goMergeRow(r, cx); cx.notify(); };
       return h_flex().id(id).tooltip([r.title, r.why, breaks.length && `Breaks: ${breaks.join("; ")}`, f && certaintyLine(f)].filter(Boolean).join("\n")).gap(8).items_center().pl(10).pr(6).py(3).rounded(4).border_l(3)
         .border_color(f ? t[SEV[f.severity]] ?? t.muted : t.border).cursor_pointer().hover((s) => s.bg(t.hover)).on_click(click)
         .child(div().w(16).flex_none().font_semibold().text_color(col).child(sym))
@@ -4516,13 +4519,16 @@ export const ReviewMode = {
       .child(div().flex_none().text_size(13).font_semibold().child(label)).child(h_flex().flex_1().min_w(0).gap(6).items_center().text_size(12.5).text_color(t.muted).child(summary))
       .child(div().flex_none().text_size(12).text_color(t.muted).child(on ? "▾" : "▸"));
     const out = [];
-    // Before merge
-    const shown = open("bm-all") ? rows : rows.slice(0, 6);
-    out.push(head("rv-bm", `Before merge (${rows.length})`, "What stands before the merge, most urgent first: security, the findings that break a criterion, criteria not met, then failed checks, fixes to verify and overlapping PRs"));
+    // Before merge: counted by group (views.js mergeGroups), at most five rows, the first of each group before a second
+    const shown = open("bm-all") ? rows : mergeFirst(rows, 5), groups = mergeGroups(rows), hidden = rows.filter((r) => !shown.includes(r));
+    out.push(head("rv-bm", "Before merge", "What stands before the merge, most urgent first: security, the findings that break a criterion, criteria not met, then failed checks, fixes to verify and overlapping PRs",
+      h_flex().flex_none().gap(4).text_size(12.5).font_normal().text_color(t.muted).children(groups.flatMap((p, k) => [...(k ? [div().text_color(t.dim).child("·")] : []), div().when(p.key === "security", (e) => e.text_color(t.ansi1)).child(p.text)]))));
     if (Boolean(task.note)) out.push(div().px(6).pb(4).text_size(12).text_color(t.ansi3).truncate().child(task.note));
     if (!rows.length) out.push(div().px(6).text_size(13).text_color(t.muted).child(ai ? "Nothing stands before the merge." : "No analysis yet: the reviewers' findings are below."));
     out.push(...shown.map(mergeRow));
-    if (shown.length < rows.length) out.push(div().id("rv-bm-more").px(16).py(2).text_size(12).text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground)).on_click(flip("bm-all")).child(`${rows.length - shown.length} more ▸`));
+    if (hidden.length) out.push(div().id("rv-bm-more").px(16).py(2).text_size(12).text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground)).on_click(flip("bm-all"))
+      .child(`${hidden.length} more: ${mergeGroups(hidden, shown).map((p) => p.text).join(", ")} ▸`));
+    else if (open("bm-all") && rows.length > 5) out.push(div().id("rv-bm-less").px(16).py(2).text_size(12).text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground)).on_click(flip("bm-all")).child("Show the first five ▴"));
     out.push(div().h(14));
     // Criteria: met of all and their symbols in one line
     const crit = list.rows, extra = list.extra;
