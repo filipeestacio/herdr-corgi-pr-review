@@ -518,6 +518,6 @@ export function probeOutcome(id, { result = null, answer = null, script = "", at
   const base = r?.base ? { status: PROBE_STATUS.includes(r.base.status) ? r.base.status : "script_failed", line: short(r.base.line, 300), rev: short(r.base.rev, 40),
     verdict: BASE_WORDS[r.base.verdict] ? r.base.verdict : "unknown" } : null;
   return { state: "done", status: r?.status ?? "script_failed", strength: r?.strength ?? null, line: r ? short(r.line, 300) : "The runner gave no result for the script.",
-    base, pre_existing: Boolean(r?.pre_existing), network_barrier: Boolean(r?.network_barrier), head: r?.head ?? null, ms: Number(r?.ms) || 0,
+    base, pre_existing: Boolean(r?.pre_existing), network_barrier: Boolean(r?.network_barrier), sandbox: r?.sandbox ?? null, head: r?.head ?? null, ms: Number(r?.ms) || 0,
     output: short(r?.output, 4200), reason: said, script: short(script, 4000), at };
 }

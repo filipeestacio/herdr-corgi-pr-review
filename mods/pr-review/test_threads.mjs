@@ -336,3 +336,9 @@ console.log("threads ok");
   }
   console.log("probe question ok");
 }
+
+// ---- wave R2: the evidence names the fence the script ran in (probe.py sandbox), so the outcome keeps it
+{
+  const r = JSON.stringify({ id: "p1", status: "reproduced", line: "x", network_barrier: true, sandbox: "sandbox-exec", head: "h", ms: 1 });
+  assert.deepEqual([TH.probeOutcome("p1", { result: r, script: "print(1)" }).sandbox, TH.probeOutcome("p1", { script: "" }).sandbox], ["sandbox-exec", undefined]);
+}

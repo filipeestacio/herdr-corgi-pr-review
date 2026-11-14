@@ -4193,7 +4193,9 @@ export const ReviewMode = {
     // pre_existing: true (the base breaks the same way) greys the probe; "unknown" (the base was not comparable) says so.
     const done = x.status === "done", now = this.worktree?.head ?? this.head, old = x.older || x.pre_existing === true || (done && x.head && now && x.head !== now), open = this.resProbeOpen === x.id;
     const BASE = { reproduced: "breaks the same way", not_reproduced: "not reproduced", new_in_pr: "new in this PR", new: "new in this PR", unknown: "unknown", not_run: "not run" };
-    const base = typeof x.base === "object" && x.base ? `on base: ${BASE[x.base.status] ?? resWord(x.base.status)}${x.base.line ? `, ${x.base.line}` : ""}` : x.base && `on base: ${x.base}`;
+    // The base in words: the runner's verdict (threads.js BASE_WORDS: already on the base, new in this PR, unknown on the
+    // base, not on the base), else (an older result) its status.
+    const base = typeof x.base === "object" && x.base ? `${TH.BASE_WORDS[x.base.verdict] ?? `on base: ${BASE[x.base.status] ?? resWord(x.base.status)}`}${x.base.line ? `, ${x.base.line}` : ""}` : x.base && `on base: ${x.base}`;
     // Not run: the runner never ran a script (no head, no time), with why; never "script failed".
     const notRun = done && (x.result === "not_run" || (x.result === "script_failed" && !x.head && !x.ms));
     const RES = { reproduced: ["✓", "reproduced", t.foreground], not_reproduced: ["✗", "not reproduced", t.muted], script_failed: ["!", "script failed", t.ansi3], unknown: ["?", "unknown", t.muted] };
