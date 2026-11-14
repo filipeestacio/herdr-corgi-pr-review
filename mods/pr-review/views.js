@@ -352,3 +352,7 @@ export function pairSide(x, w, l, r) {
   const half = w / 2, right = x >= half;
   return { side: right ? "r" : "l", ri: right ? r : l, x: right ? x - half : x, w: half };
 }
+// The diff's view: the person's choice ("split" | "unified", kept in shared), else side by side when both halves of a
+// list `width` px wide hold about 80 columns of code.
+export const SPLIT_COLS = 80;
+export const diffModeOf = (chosen, width, charW) => (chosen === "split" || chosen === "unified" ? chosen : codeCols(width / 2, HALF_GUTTER, charW) >= SPLIT_COLS ? "split" : "unified");

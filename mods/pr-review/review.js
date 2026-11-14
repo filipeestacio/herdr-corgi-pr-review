@@ -27,7 +27,7 @@ import { archView, archModel, archLegend, visualsCard, visualCard, segBar, foldC
 import { visualPlan } from "./stack.js";
 import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCALE } from "./views.js";
 import { wrapCode, codeCols, sliceSpans } from "./views.js"; // long lines wrap
-import { pairRows, pairSide, HALF_GUTTER } from "./views.js"; // side by side
+import { pairRows, pairSide, HALF_GUTTER, diffModeOf } from "./views.js"; // side by side
 import { plainText } from "./pr.js";
 import { hasSources, archLayout, archBands } from "./arch.js";
 import * as TH from "./threads.js";
@@ -401,6 +401,7 @@ export const ReviewMode = {
     // by side (the unified view takes the line): on its code, shift-click on its code, on its line number, on its
     // "+ Comment" chip. The same handler as the click (onItem).
     else if (name === "line") this.pressLine(arg, cx);
+    else if (name === "diff") setShared("review.diff", arg === "split" || arg === "unified" ? arg : null); // diff:split | unified (the top bar's switch), diff:auto: what fits
     else if (name === "copy-link") copyText(this.prSel?.url ?? "");
     else if (name === "copy-state") this.copyState();
     // For scripts: what the wheel does in the right pane's page (scroll:top | bottom | <a section of the page>), and a
@@ -1268,7 +1269,8 @@ export const ReviewMode = {
     const units = split ? pairRows(rows).map((p) => (p.full !== undefined ? { ri: p.full } : { ri: p.r ?? p.l, l: p.l, r: p.r })) : rows.map((_, ri) => ({ ri }));
     return { split, cols, units, parts: (u) => (u.l === undefined ? n(u.ri) : Math.max(n(u.l), n(u.r))) };
   },
-  diffMode() { return shared("review.diff") === "split" ? "split" : "unified"; },
+  // Side by side or unified: the person's choice (shared "review.diff", the switch in the top bar), else what fits.
+  diffMode() { return diffModeOf(shared("review.diff"), this.listW ?? 900, this.codeCharW()); },
 
   stepsItems(steps = this.steps()) {
     const items = [], at = {};
@@ -2373,6 +2375,8 @@ export const ReviewMode = {
       .child(link("rv-model", h_flex().gap(4).child(this.aiBusy ? div().child(SPIN[0]).frames(SPIN, 90) : div()).child(modelText).child("▾"),
         menu("models", modelChoices(this.ctxId()).map((c) => [`${c.value === m ? "✓ " : ""}${c.label} · ${priceText(c.value)} · ${this.estimate(c.value)}`, false, `model:${c.value}`]), 470)).tooltip("Pick the model for the AI analysis; each option shows its cost estimate").accessibility_label("Model"))
       .child(sep())
+      .child(h_flex().gap(10).items_center().child(link("rv-diffmode", div().child(this.diffMode() === "split" ? "Side by side" : "Unified"), () => setShared("review.diff", this.diffMode() === "split" ? "unified" : "split"))
+        .tooltip(`The diff ${this.diffMode() === "split" ? "shows the old and the new lines side by side" : "shows old and new lines in one column"}. Click to switch; your choice is kept.`)).child(sep()))
       .child(link("rv-values", div().text_color(valuesOn() ? t.foreground : t.muted).child(`Example values ${valuesOn() ? "on" : "off"}`), () => setShared("review.values", !valuesOn())).tooltip("Example values from the flow traces, shown inline in the diff: click to switch"))
       .child(link("rv-keys", div().child("?"), () => openOverlay({ mod: "pr-review", props: { part: "keys" }, kind: "popup", ...KEYS_POP })).tooltip("Keyboard shortcuts").accessibility_label("Keyboard shortcuts"))
       .child(link("rv-more", div().child("⋯"), menu("more", [["Explore a topic…", false, "explore"], ["Mark done", false, "done"], ["Copy link", false, "copy-link"], ["Copy review state", false, "copy-state"], ...(this.prSel?.url?.startsWith("https://github.com") ? [["Open on GitHub", false, "open-gh"]] : [])])).tooltip("Explore a topic, mark done, copy the link or the review's state as text, open on GitHub").accessibility_label("More actions"));
@@ -3621,8 +3625,8 @@ export const ReviewMode = {
       }
       // Side by side: two halves of equal width and height; an empty one (a line only on the other side) is grey.
       if (it.l !== undefined) return h_flex().h(ROW).w_full()
-        .child(it.l === null ? div().flex_1().min_w(0).h_full().bg(t.surface) : this.lineView(it, t, it.l, "l").flex_1().min_w(0))
-        .child(it.r === null ? div().flex_1().min_w(0).h_full().bg(t.surface).border_l(1).border_color(t.border) : this.lineView(it, t, it.r, "r").flex_1().min_w(0).border_l(1).border_color(t.border));
+        .child(it.l === null ? div().flex_1().min_w(0).h_full().bg(t.muted + "14") : this.lineView(it, t, it.l, "l").flex_1().min_w(0))
+        .child(it.r === null ? div().flex_1().min_w(0).h_full().bg(t.muted + "14").border_l(1).border_color(t.border) : this.lineView(it, t, it.r, "r").flex_1().min_w(0).border_l(1).border_color(t.border));
       return this.lineView(it, t, it.ri, null).w_full();
     }
     if (it.t === "gap") {
@@ -3768,7 +3772,8 @@ export const ReviewMode = {
     const r = it.src[ri], starts = this.wrapsOf(it.src, ri, it.cols), part = it.part ?? 0, first = part === 0, last = part === starts.length - 1;
     const on = Boolean(this.selKeys && this.fsel?.path === it.path && this.selKeys.has(lineKey(r)) && (!side || !this.fsel.side || this.fsel.side === side));
     const tone = r.kind === "+" ? t.ansi2 : r.kind === "-" ? t.ansi1 : null, focus = it.hunk && it.hunk === this.focusHunk, newSide = side !== "l";
-    if (starts[part] === undefined) return div().h(ROW).when(Boolean(tone), (e) => e.bg(tint(r.kind) + "1a")).when(on, (e) => e.bg(t.selection)); // under a half's shorter line
+    if (starts[part] === undefined) return h_flex().h(ROW).when(Boolean(tone), (e) => e.bg(tint(r.kind) + "1a")).when(on, (e) => e.bg(t.selection)) // under a half's shorter line
+      .child(div().w(4).h_full().flex_none()).child(div().w(side ? 48 : 96).h_full().flex_none().when(Boolean(tone), (e) => e.bg(tint(r.kind) + "40")));
     const num = (n) => div().w(48).h_full().flex_none().pr(8).flex().items_center().justify_end().text_color(t.muted).child(n === undefined || !first ? "" : String(n));
     const sel = on && !this.composing && this.fsel?.b === lineKey(r) && last, trace = last && newSide && r.kind !== "-" && this.traces?.get(`${it.path}:${r.n}`);
     return h_flex().h(ROW).font_family(settings().font_family ?? "JetBrains Mono").text_size(13).cursor_pointer()

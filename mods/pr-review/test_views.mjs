@@ -319,3 +319,11 @@ assert.deepEqual(pairSide(100, 1000, 3, 4), { side: "l", ri: 3, x: 100, w: 500 }
 assert.deepEqual(pairSide(600, 1000, 3, 4), { side: "r", ri: 4, x: 100, w: 500 }, "x from the right half's left edge");
 assert.deepEqual(pairSide(500, 1000, null, 4), { side: "r", ri: 4, x: 0, w: 500 }, "the middle belongs to the right half");
 assert.equal(pairSide(10, 1000, null, 4).ri, null, "an empty left half: no row");
+import { diffModeOf, HALF_GUTTER, codeCols as cc } from "./views.js";
+const wide = 2 * (HALF_GUTTER + 12 + 80 * 7.8);
+assert.equal(diffModeOf(null, wide, 7.8), "split", "two halves of 80 columns fit: side by side");
+assert.equal(cc(wide / 2, HALF_GUTTER, 7.8), 80);
+assert.equal(diffModeOf(null, wide - 20, 7.8), "unified", "a little narrower: one column");
+assert.equal(diffModeOf("unified", wide * 2, 7.8), "unified", "the person's choice goes first");
+assert.equal(diffModeOf("split", 400, 7.8), "split");
+assert.equal(diffModeOf("bogus", 400, 7.8), "unified");
