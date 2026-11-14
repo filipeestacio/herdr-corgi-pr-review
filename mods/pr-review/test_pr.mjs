@@ -683,3 +683,20 @@ console.log("ok");
   assert.deepEqual(securityStart(), { start: false, offer: false, reasons: [] });
   console.log("ok security start");
 }
+
+// ---- the recommended model for a run
+{
+  const { recommendModel, tierSteps } = await import("./pr.js");
+  assert.deepEqual(recommendModel("security", { lines: 200, files: 9, rules: ["route", "auth"] }), { tier: "sonnet", why: "its checks are narrow and the diff is of ordinary size" }, "the security review is a Sonnet");
+  assert.equal(recommendModel("security", { lines: 4000, files: 9, rules: ["auth"] }).tier, "opus", "unless the diff is large");
+  assert.deepEqual(recommendModel("analysis", { lines: 200, files: 9, rules: ["route", "auth"] }), { tier: "opus", why: "the diff touches auth, where a missed weakness costs most" });
+  assert.equal(recommendModel("analysis", { lines: 200, files: 9 }).tier, "sonnet");
+  assert.equal(recommendModel("analysis", { lines: 3000, files: 9 }).tier, "opus");
+  assert.equal(recommendModel("analysis", { lines: 100, files: 3, risk: "high", rules: ["route"] }).tier, "opus");
+  assert.equal(recommendModel("fix", { lines: 3000, files: 80 }).tier, "sonnet", "a fix is small however big the PR");
+  assert.equal(recommendModel("fix", { security: true }).tier, "opus"); assert.equal(recommendModel("verify", { security: true }).tier, "opus");
+  assert.equal(recommendModel("ask", { lines: 9000, rules: ["auth"] }).tier, "sonnet");
+  for (const k of ["analysis", "security", "verify", "ask", "fix"]) assert.notEqual(recommendModel(k, {}).tier, "haiku", "never Haiku for code");
+  assert.match(recommendModel("analysis", {}).why, /^the diff is of ordinary size$/);
+  assert.deepEqual([tierSteps("sonnet"), tierSteps("opus")], [{ up: "opus", down: null }, { up: null, down: "sonnet" }]);
+}

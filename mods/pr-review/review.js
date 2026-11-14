@@ -20,6 +20,7 @@ import { findingSteps, funnel, funnelLine, ownerOf, quickFirst, hasEffort } from
 import { overviewMd, findingMd, findingsMd, layerMd, architectureMd, securityMd, verifyContextMd } from "./markdown.js"; // Copy this page as Markdown
 import { highlightJob, highlightStep, highlightLines, langOf, colors, renderLine, refAt } from "./syntax.js";
 import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js";
+import { recommendModel, tierSteps } from "./pr.js";
 import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf, codeModel, priceOf, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch, withSecurity, securityStart } from "./pr.js";
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState, codeOf, isStale } from "./pr.js";
@@ -367,7 +368,7 @@ export const ReviewMode = {
     this.askIn = InputState.new({ placeholder: "Ask about this… (Enter)" });
     this.askIn.on("submit", (_e, cx) => this.askNow(cx));
     this.deep = { threads: {}, drills: {}, pins: {}, drawer: {} }; this.askBusy = null; this.askErr = null; this.askAbout = null;
-    cx.spawn(async (cx) => { const d = JSON.parse(await readTextFile(deepFile()).catch(() => null) ?? "null"); if (d) this.deep = { threads: d.threads ?? {}, drills: d.drills ?? {}, pins: d.pins ?? {}, drawer: d.drawer ?? {} }; cx.notify(); });
+    cx.spawn(async (cx) => { const d = JSON.parse(await readTextFile(deepFile()).catch(() => null) ?? "null"); if (d) this.deep = { threads: d.threads ?? {}, drills: d.drills ?? {}, pins: d.pins ?? {}, drawer: d.drawer ?? {}, runModels: d.runModels ?? {} }; cx.notify(); });
     this.refresh(cx);
     this.fh.focus();
     cx.timer.after(400, () => this.fh.focus());
@@ -464,6 +465,7 @@ export const ReviewMode = {
     else if (name === "arch-wrap") this.setArchWrap(!this.archWrapOn());
     else if (name === "sec-card") { this.page = "blast"; this.tab = "steps"; this.secCard(arg || null, cx); } // a click on a card of the Security page's picture ("": unlight)
     else if (name === "vis") { this.toggleVis(arg); } // a click on a folded or open state diagram over a layer's code (vis|<layer>|<k>)
+    else if (name === "run-model") { const [kind, tier] = String(arg).split(":"); if (["sonnet", "opus"].includes(tier)) this.updateDeep(cx, (d) => ({ ...d, runModels: { ...(d.runModels ?? {}), [`${this.deepKey()}|${kind}`]: tier === this.runTier(kind).tier ? null : tier } })); else this.offerMenu = this.offerMenu === kind ? null : kind; } // run-model:<kind> opens Change model, run-model:<kind>:<tier> picks one
     else if (name === "scope-row") { this.page = "blast"; this.scopeRow = this.scopeRow === arg ? null : arg || null; } // a click on a row of "What each run checked" (<area> or run:<kind>)
     else if (name === "page-part") { const k = (this.pageParts ?? []).indexOf(arg); if (k >= 0) this.pageScrolls[this.page]?.scroll_to_item(k); }
     // The same model calls as their buttons (a click each, never by themselves): Refresh diagrams, and a card's
@@ -982,11 +984,11 @@ export const ReviewMode = {
     return o ? `The diff gives reasons for a security review: ${o.reasons.slice(0, 3).join("; ")}${o.reasons.length > 3 ? `, and ${o.reasons.length - 3} more` : ""}. It does not start by itself on someone else's PR, because the reviewer reads the PR's code and text.` : null;
   },
 
-  runReviewer(kind, cx, auto = null) { // auto: why it started by itself (securityNow)
+  runReviewer(kind, cx, auto = null, use = null) { // auto: why it started by itself (securityNow); use: a model for this run only (runOffer)
     const pr = this.prSel, w = this.worktree;
     if (!reviewersNow().some(([k]) => k === kind) || !pr?.url) return;
     if (!w || w.local) { this.note = !w ? "Could not run: the PR head is not checked out yet" : "Could not run: reviewers need a PR (not a branch diff)"; return cx.notify(); }
-    const req = { kind, url: pr.url, number: pr.number, context: this.ctxReq(), model: model(), codexModel: shared("review.codexModel") || null, worktree: w.path, base: pr.base ?? "main",
+    const req = { kind, url: pr.url, number: pr.number, context: this.ctxReq(), model: use ?? model(), codexModel: shared("review.codexModel") || null, worktree: w.path, base: pr.base ?? "main",
       head: w.head, level: "medium", file: `${findDir()}/${hash(pr.url)}.json`, ...(auto ? { auto } : {}) };
     this.find.runs[kind] = { state: "running", busy: true, started: new Date().toISOString(), scope: null, error: null, head: w.head, ...(auto ? { auto } : {}) };
     setShared("review.reviewers", { ...this.find.runs });
@@ -3679,7 +3681,8 @@ export const ReviewMode = {
       .on_size_change((_s, cx) => this.loadVisibility(cx)) // once the page is laid out: is the repo public (for "Add as comment")
       .child(h_flex().gap(10).items_center().flex_wrap().child(div().flex_1().text_size(20).font_semibold().child("Security"))
         .child(chip(t, `⛨ Security · ${open.length}`, open.length ? t.ansi1 : t.muted, true, "rv-bl-secn", "Unresolved security findings, from every source"))
-        .when(data, (e) => e.child(pill("rv-bl-run", t, sr?.state === "running" ? "Security review running…" : sr?.state ? "Run security review again" : "Run security review", (_e, cx) => this.runReviewer("security", cx)).tooltip("Run the security reviewer on the PR head, read-only: one model call; its findings and what it checked show here"))))
+        .when(data && sr?.state === "running", (e) => e.child(pill("rv-bl-run", t, "Security review running…", () => {}).tooltip("The security reviewer is reading the PR head"))))
+      .when(data && sr?.state !== "running", (e) => e.child(this.runOffer("security", t)))
       // Someone else's PR with reasons (pr.js securityStart offer): why the Run button is there, with its cap.
       .when(data && Boolean(this.secOfferText()), (e) => e.child(div().id("rv-sec-offer").text_size(13).whitespace_normal().line_height(1.5).text_color(t.ansi3)
         .child(`${this.secOfferText()} Run security review: capped at $${REVIEW_CAP[tierOf(model())]}.`)));
@@ -3817,12 +3820,11 @@ export const ReviewMode = {
   },
   // No security data at all: why, and the run that makes it, with its price (the last run's, else the model's name).
   secEmpty(t) {
-    const c = this.find.runs.security?.cost, price = c > 0 ? `about $${Number(c).toFixed(2)}` : `capped at $${REVIEW_CAP[tierOf(model())]}`, offer = this.secOfferText();
+    const offer = this.secOfferText();
     return v_flex().id("rv-sec-empty").gap(10).p(16).rounded(10).border_1().border_color(t.border).bg(t.surface).max_w(760)
       .child(div().text_size(13.5).whitespace_normal().line_height(1.5).child("Nothing here yet: the security review has not run on this PR, and it does not start by itself for every PR."))
       .when(Boolean(offer), (e) => e.child(div().id("rv-sec-offer").text_size(13).whitespace_normal().line_height(1.5).text_color(t.ansi3).child(offer ?? "")))
-      .child(h_flex().child(pill("rv-sec-empty-run", t, `Run security review (${price})`, (_e, cx) => this.runReviewer("security", cx), false, t.foreground)
-        .tooltip(`One ${modelLabel(model())} call reads the PR head, read-only: ways in, trust zones, rights, and security findings with what it checked`)));
+      .child(this.runOffer("security", t));
   },
   // What each run says it checked: a line per run (not run, running, failed with its error, no findings, n findings;
   // what it read and left out), then a row per area with the run's own word for it. A self-report, and named so.
@@ -3880,6 +3882,34 @@ export const ReviewMode = {
     return v_flex().id("rv-sec-access").gap(8).p(12).rounded(10).border_1().border_color(t.border).bg(t.surface)
       .child(title("Rights granted"))
       .child(this.table(t, "rv-sec-acc-t", [["Resource", 230], ["Who", 190], ["May", null], ["Checked by", null], ["Used", 74], ["Place", 130]], rows, (k) => Boolean(this.blastFocus) && grants[k].node === this.blastFocus));
+  },
+  // ---- a run's model: the recommended class (pr.js recommendModel) one click away, a class up or down in a small menu,
+  // each with its price. The person's other choice is kept per review and kind (deep.json runModels).
+  runFacts() {
+    const files = this.patch ?? [];
+    return { lines: files.reduce((n, f) => n + (f.add ?? 0) + (f.del ?? 0), 0), files: files.length, rules: (this.ctx?.security_trigger?.reasons ?? []).map((x) => x?.rule).filter(Boolean), risk: this.ai?.mergeRisk?.level ?? null };
+  },
+  runTier(kind) { return { ...recommendModel(kind, this.runFacts()), chosen: this.deep.runModels?.[`${this.deepKey()}|${kind}`] ?? null }; },
+  // What a run of this kind costs on a class: the last run's cost scaled by the classes' output prices, else its cap.
+  // ponytail: one past run as the measure; a mean over runs when there are several kinds of PRs to compare.
+  runPrice(kind, tier) {
+    const r = kind === "analysis" ? (this.ai?.cost > 0 ? { cost: this.ai.cost, model: this.ai.model_id ?? this.ai.model } : null) : this.find.runs[kind]?.cost > 0 ? this.find.runs[kind] : null;
+    return r ? `about $${((r.cost * priceOf(tier)[1]) / priceOf(r.model)[1]).toFixed(2)}` : `capped at $${REVIEW_CAP[tier]}`;
+  },
+  // "<run>: <model> recommended because …" with Run on that model and Change model (a class up or down). kind: one
+  // that can start from here (security; the Overview adds analysis); null for another.
+  runOffer(kind, t) {
+    const START = { security: (tier, cx) => this.runReviewer("security", cx, null, tier) }, NAME = { analysis: "Analysis", security: "Security review", verify: "Verify", ask: "Ask", fix: "Fix" };
+    if (!START[kind]) return null;
+    const r = this.runTier(kind), tier = r.chosen ?? r.tier, steps = tierSteps(tier), menu = this.offerMenu === kind, label = (x) => MODELS[x]?.label ?? x;
+    const choose = (to, cx) => { const k = `${this.deepKey()}|${kind}`; this.offerMenu = null; this.updateDeep(cx, (d) => ({ ...d, runModels: { ...(d.runModels ?? {}), [k]: to === r.tier ? null : to } })); cx.notify(); };
+    return h_flex().id(`rv-offer-${kind}`).gap(8).items_center().flex_wrap().text_size(13)
+      .child(div().whitespace_normal().child(r.chosen && r.chosen !== r.tier ? `${NAME[kind]}: ${label(tier)}, your choice; ${label(r.tier)} is recommended because ${r.why}.` : `${NAME[kind]}: ${label(tier)} recommended because ${r.why}.`))
+      .child(pill(`rv-offer-run-${kind}`, t, `Run (${this.runPrice(kind, tier)})`, (_e, cx) => { this.offerMenu = null; START[kind](tier, cx); }, false, t.foreground)
+        .tooltip(`One ${label(tier)} call, read-only on the PR head; it stops at $${REVIEW_CAP[tier]}`))
+      .child(pill(`rv-offer-ch-${kind}`, t, menu ? "Change model ▴" : "Change model ▾", (_e, cx) => { this.offerMenu = menu ? null : kind; cx.notify(); }).tooltip("A class up or down for this run; Haiku is not offered for code"))
+      .when(menu, (e) => e.children([["up", steps.up], ["down", steps.down]].filter(([, x]) => x).map(([dir, x]) => pill(`rv-offer-${dir}-${kind}`, t, `${label(x)} (${this.runPrice(kind, x)})${x === r.tier ? " · recommended" : ""}`, (_e, cx) => choose(x, cx))
+        .tooltip(dir === "up" ? "A larger model: slower and dearer, better at long and subtle code" : "A smaller model: faster and cheaper"))));
   },
   // Whether the PR's repo is public, asked once per repo (gh repo view): the Security page says who can read a comment.
   loadVisibility(cx) {
