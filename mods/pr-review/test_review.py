@@ -194,6 +194,7 @@ assert sorted(placed) == sorted(h["alias"] for h in big), "every alias accounted
 assert r["answer"]["steps"][-1]["skimmed"] and r["answer"]["steps"][-1]["hunks"] == ["h10"]
 assert r["scope"]["passes"] == len(co) + 1 and r["scope"]["skimmed"] == 1 and r["cut"] == []
 assert [x["pass"] for x in statuses if "pass" in x][0] == 1 and statuses[-1]["passes"] == len(co) + 1, "progress: Pass k of n"
+assert r["usage"] == {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}  # the stub reports none
 assert r["answer"]["title"] == "T" and r["cost"] == round(0.1 * (len(co) + 1), 10) or abs(r["cost"] - 0.1 * (len(co) + 1)) < 1e-9
 print("ok scope")
 
@@ -231,6 +232,7 @@ assert c1["findings"] == [f1["id"]] and c2["findings"] == [f1["id"], f2["id"]]
 assert (f1["severity"], f1["impact"]) == ("high", "breaks_requirement"), "a finding that breaks a requirement is high"
 assert (c1["state"], c1["coverage"]) == ("partly", "partly"), "met with a finding that breaks it is partly"
 assert (c2["state"], c2["coverage"]) == ("broken", "absent") and (c3["state"], c3["coverage"]) == ("extra", "extra")
+assert ans["unlinked"] == [], "every broken or partly requirement here has a finding"
 assert f3["severity"] == "low" and f3["criteria"] == ["c3"] and c3["findings"] == [f3["id"]], "an extra change does not raise the severity"
 assert f4["criteria"] == [] and f4["severity"] == "medium" and "breaks" not in f4, "unknown requirement and node dropped"
 assert f2["breaks"] == {"from": "reminders", "to": "mailer", "edge": "e1"} and f3["breaks"] == {"node": "status"}
@@ -246,6 +248,7 @@ assert review.checked([{"area": "secrets", "result": "clean", "note": "none in t
 old = review.finish({"asks": [{"text": "a", "coverage": "absent", "hunks": []}, {"text": "b", "coverage": "seen", "hunks": []}],
                      "steps": [{"check_questions": ["q"], "findings": [{"file": "a.py", "line": 1, "severity": "medium", "category": "structure", "title": "f", "detail": "", "suggestion": ""}]}]})
 assert [(a["id"], a["state"], a["coverage"], a["findings"]) for a in old["asks"]] == [("c1", "not_done", "absent", []), ("c2", "met", "seen", [])]
+assert old["unlinked"] == ["c1"], "not_done without a finding that names it is reported, a met one is not"
 assert old["steps"][0]["findings"][0]["severity"] == "medium" and old["steps"][0]["findings"][0]["criteria"] == [] and old["steps"][0]["question_files"] == [""] and "component_counts" not in old
 
 # The prompt asks for all of it; a state diagram is not optional where the diff touches a state machine (also on a diagram refresh).

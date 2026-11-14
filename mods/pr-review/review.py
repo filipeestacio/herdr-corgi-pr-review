@@ -13,7 +13,7 @@ from the checkout's CLAUDE.md/AGENTS.md/CONTRIBUTING.md/.github instructions/ADR
 architecture picture, the blast radius (upstream candidates from git grep), an optional picture per layer, the inventory of
 what the PR adds (components, with owners from CODEOWNERS) and who may do what on its resources (access). finish() links
 requirements, findings and the picture and sets each finding's severity from the fixed scale. Writes {source, model, model_id, hunks, answer, cut,
-cost, ms, budget, task, generated} to `out` and `latest`; `status` holds {busy, pid, started} while it runs, then
+cost, usage ({input, output, cache_read, cache_write} tokens of all passes), ms, budget, task, generated} to `out` and `latest`; `status` holds {busy, pid, started} while it runs, then
 {done} or {error}. Every call goes to the optional usage ledger (llm.py). Texts are in the configured language. Exit 1 with the reason on stderr.
 """
 import datetime as dt
@@ -427,8 +427,8 @@ def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None,
                  "(ids of the architecture or visual nodes with source spec that this requirement describes, if any). Plus one "
                  "entry with state extra for each change the task doesn't ask for (text: what, why: what it adds, hunks: where, "
                  "acceptance false). Every finding that breaks a requirement names it in criteria, and every requirement with "
-                 "state broken or not_done is named by at least one finding (not_done: a requirement finding at the place "
-                 "where the missing part belongs).\n\nTask:\n" + task_text[:8000])
+                 "state partly, broken or not_done is named by at least one finding (partly: the finding for the part that "
+                 "is missing or wrong; not_done: a requirement finding at the place where the missing part belongs).\n\nTask:\n" + task_text[:8000])
     else:
         text += "\n\nasks: empty list."
     if cut:
@@ -637,7 +637,8 @@ COVERAGE = {"met": "seen", "partly": "partly", "broken": "absent", "not_done": "
 def finish(answer, root=None, paths=()):
     """The answer made consistent, in place. Requirements (asks): id, state (older ones: from coverage), coverage (from
     state, for readers of the older field), findings (ids of the findings that break it; a "met" one with findings is
-    partly). Findings: id (the UI's: "a" + fnv(category|file|title)), severity by the scale (judge), criteria only
+    partly). answer.unlinked: the ids of the requirements that are partly, broken or not_done although no finding names
+    them (the model owes one; the UI can say so instead of showing an empty list). Findings: id (the UI's: "a" + fnv(category|file|title)), severity by the scale (judge), criteria only
     those asks has, breaks only when the picture has it (place). Check questions: question_files as long as the
     questions, a path only when it is a file of the diff or the checkout. Components: owner from CODEOWNERS (None:
     nobody), and component_counts {new, changed, no_owner, codeowners: the repo has such a file}.
@@ -665,6 +666,7 @@ def finish(answer, root=None, paths=()):
         if a["findings"] and a["state"] == "met":
             a["state"] = "partly"
         a["coverage"] = COVERAGE[a["state"]]
+    answer["unlinked"] = [a["id"] for a in asks if a["state"] in ("partly", "broken", "not_done") and not a["findings"]]
     place(answer)
     comps = answer.get("components")
     if comps is not None:
@@ -954,7 +956,8 @@ def main(req):
     cost = sum(m.get("cost") or 0 for m in metas) if any(m.get("cost") is not None for m in metas) else None
     result = {"source": req.get("source") or req.get("pr"), "model": model, "model_id": next((m["model_id"] for m in metas if m.get("model_id")), model),
               "hunks": out_hunks, "answer": answer, "incremental": req.get("since") if prev else None, "cut": [], "scope": scope,
-              "cost": cost, "ms": sum(m.get("ms") or 0 for m in metas), "budget": cap,
+              "cost": cost, "usage": {k: sum((m.get("usage") or {}).get(k) or 0 for m in metas) for k in ("input", "output", "cache_read", "cache_write")},
+              "ms": sum(m.get("ms") or 0 for m in metas), "budget": cap,
               "task": {k: t[k] for k in ("title", "jira", "note")} if t else {},
               "generated": dt.datetime.now().astimezone().isoformat()}
     save(req["out"], result)

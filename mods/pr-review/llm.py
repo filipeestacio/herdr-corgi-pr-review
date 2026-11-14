@@ -104,7 +104,8 @@ def parse(stdout):
 def claude(feature, prompt, *, context=None, model="haiku", schema=None, system=None, budget=0.2,
            timeout=180, tools="", cwd=None, extra=(), meta=None, skills=False):
     """Runs `claude -p`, records the call, returns structured_output (with a schema) or the result text.
-    meta: a dict that gets {cost, tokens, ms, model_id, result, text} of the call, for callers that show them.
+    meta: a dict that gets {cost, tokens, usage ({input, output, cache_read, cache_write} tokens), ms, model_id,
+    result, text} of the call, for callers that show them.
     skills: keep skills and slash commands (a prompt like "/code-review medium 12") and read the run as a stream, since
     such a command may answer in a fork (parse); everything else stays lean."""
     lean = [a for a in LEAN if not (skills and a == "--disable-slash-commands")]
@@ -130,11 +131,12 @@ def claude(feature, prompt, *, context=None, model="haiku", schema=None, system=
     ms = (time.monotonic() - started) * 1000
     data = parse(out.stdout)
     usage = data.get("usage") or {}
-    tokens = sum(usage.get(k) or 0 for k in ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+    parts = {"input": "input_tokens", "output": "output_tokens", "cache_read": "cache_read_input_tokens", "cache_write": "cache_creation_input_tokens"}
+    tokens = sum(usage.get(k) or 0 for k in parts.values())
     ok = out.returncode == 0 and not data.get("is_error")
     log(feature, (context or {}).get("id") or "default", model, data.get("total_cost_usd") or 0, tokens, int(ms), ok)
     if meta is not None:
-        meta.update(cost=data.get("total_cost_usd"), tokens=tokens, ms=int(ms), model_id=next(iter(data.get("modelUsage") or {}), model),
+        meta.update(cost=data.get("total_cost_usd"), tokens=tokens, usage={k: usage.get(v) or 0 for k, v in parts.items()}, ms=int(ms), model_id=next(iter(data.get("modelUsage") or {}), model),
                     result=data.get("result"), text=data.get("text") or "")
     if not ok:
         raise RuntimeError(f"{feature}: {(out.stderr or out.stdout).strip()[:300]}")

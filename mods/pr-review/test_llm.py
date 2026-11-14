@@ -31,6 +31,7 @@ try:
         assert args[:4] == ["claude", "-p", "--model", "haiku"] and "--json-schema" in args and kw["input"] == "prompt"
         assert kw["env"]["CLAUDE_CONFIG_DIR"] == "/x/.claude-red" and "GONE" not in kw["env"]
         assert meta["cost"] == 0.0123 and meta["tokens"] == 15 and meta["model_id"] == "claude-haiku-x"
+        assert meta["usage"] == {"input": 10, "output": 5, "cache_read": 0, "cache_write": 0}
         assert llm.language() == "English" and llm.ledger_dir() is None
         assert not list(pathlib.Path(d).rglob("usage-*.jsonl"))
 
