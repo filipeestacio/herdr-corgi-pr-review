@@ -77,7 +77,8 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
   // opts.zoom (the person's zoom): a line is at least one device pixel wide, or it is not drawn when zoomed far out.
   const thin = Math.max(1.5, 1 / (opts.zoom || 1)), W = (p) => (opts.hl === p.num ? thin + 1 : thin);
   const dim = (el, on, by = fade) => (on ? el.opacity(by) : el);
-  const tipOf = (p) => [p.label, sourceStyle(p.source).tip, p.evidence].filter(Boolean).join("\n");
+  // A call's own tooltip (tip: the Security picture's, what the check is and holds on) says more than its label again.
+  const tipOf = (p) => [p.tip ?? p.label, sourceStyle(p.source).tip, p.evidence].filter(Boolean).join("\n");
   const hop = ARCH.HOP, els = [];
   // Dimmed paths first, the highlighted one last (fans share their trunk: the brightest copy ends on top).
   const order = L.paths.map((p, i) => [p, i]).sort(([a], [b]) => (opts.hl === a.num) - (opts.hl === b.num) || dimP(b) - dimP(a));
