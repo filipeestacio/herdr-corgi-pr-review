@@ -16,6 +16,15 @@ assert "ref" in sec["properties"]["findings"]["items"]["required"] and "reachabi
 for part in ("zones: the trust zones", "auth_kind (none:", "threats: a threat model", "none to fill a list", "without an authorizer"):
     assert part in sec["description"] and part not in code["description"], part
 
+# A reviewer reads someone else's code: only the checkout, read-only git, no network, and nothing that is not allowed.
+p = reviewers.PERMISSIONS
+assert p[:3] == ("--restricted", "--permission-mode", "dontAsk"), "file tools confined to the checkout, its .claude settings ignored, the rest refused"
+allowed, denied = p[p.index("--allowedTools") + 1:p.index("--disallowedTools")], p[p.index("--disallowedTools") + 1:]
+assert all(a in ("Read", "Grep", "Glob", "Agent") or a.startswith("Bash(git ") for a in allowed) and not any("gh " in a or "Web" in a for a in allowed)
+for opt in ("--output", "--ext-diff", "--textconv", "--no-index", "--contents"):
+    assert f"Bash(git *{opt}*)" in denied, opt
+assert {"Edit", "Write", "WebFetch", "WebSearch"} <= set(denied)
+
 # The picture comes from the newest analysis of the same PR that has one; a request file next to it is no analysis.
 home = pathlib.Path(tempfile.mkdtemp())
 (home / "cache").mkdir()

@@ -40,9 +40,15 @@ import review  # noqa: E402  (the severity scale and the areas of a run's self-r
 FEATURE = {"claude": "Claude code review", "security": "Security review", "codex": "Codex review"}
 BUDGET = {"haiku": 0.5, "sonnet": 3.0, "opus": 8.0}
 TIMEOUT = 1500
-READ_ONLY = ["Read", "Grep", "Glob", "Agent",
-             "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git status:*)", "Bash(git blame:*)",
-             "Bash(git merge-base:*)", "Bash(git rev-parse:*)", "Bash(git ls-files:*)", "Bash(gh pr diff:*)", "Bash(gh pr view:*)"]
+# What a reviewer may do: it reads someone else's code and text, which may carry instructions to it. So: read files in
+# the checkout (--restricted confines the file tools to it and ignores the checkout's own .claude settings), the git
+# commands that read history, nothing else (dontAsk: whatever no rule allows is refused, no prompt). No network (no
+# gh, no web tools), no writes. The denied options are the ones that write a file (--output), run a program
+# (--ext-diff, --textconv, a pager) or read outside the checkout (--no-index, blame --contents).
+READ_ONLY = ["Read", "Grep", "Glob", "Agent", *(f"Bash(git {c} *)" for c in ("diff", "log", "show", "status", "blame", "merge-base", "rev-parse", "ls-files"))]
+DENIED = ["Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch",
+          *(f"Bash(git *{o}*)" for o in ("--output", "--ext-diff", "--textconv", "--no-index", "--contents"))]
+PERMISSIONS = ("--restricted", "--permission-mode", "dontAsk", "--allowedTools", *READ_ONLY, "--disallowedTools", *DENIED)
 PLACE = {"file": review.S, "line": {"type": "integer"}, "end": {"type": "integer"}, **review.PROSE}
 # A review turned from text: what its words give, nothing judged on top.
 PLAIN_FINDINGS = {"type": "object", "required": ["findings"], "properties": {"findings": {"type": "array", "items": {
@@ -334,7 +340,7 @@ def claude_review(req, command):
         answer = llm.claude(FEATURE[req["kind"]], text, context=req.get("context"), model=req["model"],
                             schema=findings_schema(req["kind"]), budget=BUDGET[llm.tier(req["model"])], timeout=TIMEOUT, tools="Read,Grep,Glob,Agent,Bash",
                             cwd=req["worktree"], skills=skills, meta=meta,
-                            extra=("--allowedTools", *READ_ONLY, "--disallowedTools", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"))
+                            extra=PERMISSIONS)
         return answer, meta
     try:
         answer, meta = ask(command, True)
