@@ -397,6 +397,8 @@ export const ReviewMode = {
     if (name === "steps" || name === "files" || name === "findings" || name === "comments") this.tab = name;
     else if (name === "analysis") this.tab = "steps"; // the tab's name; "steps" stays valid
     else if (name === "def") this.defineAt(arg, cx);
+    else if (name === "cfile") { this.tab = "comments"; this.openCommentFile(arg); } // a file heading's click in the Comments tab
+    else if (name === "crow") { const r = this.commentRowsNow().find((x) => x.id === arg); if (r) { this.tab = "comments"; this.openCommentRow(r, cx); } } // a row's click in the Comments tab
     // page:verify is the Findings tab now: fixes sent and their verification sit there, under "Fix sent".
     else if (name === "page" && arg === "verify") this.tab = "findings";
     else if (name === "page") { this.tab = "steps"; this.page = PAGES.some(([k]) => k === arg) ? arg : "overview"; this.defFile = null; }
@@ -2584,6 +2586,16 @@ export const ReviewMode = {
         .flex_none().text_size(12).text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => { this.allBots = !this.allBots; cx.notify(); })
         .child(this.allBots ? `Hide ${g.botsHidden} older bot comments` : `${g.botsHidden} older bot ${g.botsHidden === 1 ? "comment" : "comments"} hidden`)));
   },
+  // A click on a row of the Comments tab (and the command crow:<id>): its whole text under it, its thread or note open
+  // in the diff, and the diff at its line.
+  openCommentRow(r, cx) {
+    this.crow = r.id;
+    if (r.kind === "thread") this.openThreads.add(r.id);
+    if (r.kind === "note") (this.openNotes ??= new Set()).add(r.id);
+    this.jumpTo(`${r.file}:${r.line}`, cx);
+  },
+  // A click on a file's heading in the Comments tab: the diff at that file's head, the tab stays.
+  openCommentFile(file) { this.page = null; this.defFile = null; this.unfold(file); this.sinceOn = false; this.fileFocus = file; this.scrollTo("files", file); },
   commentsPane(t) {
     // No filters here: the bar's Show switch is the one filter, each row carries its state. A comment's states are
     // its own (the talk with the agent), not a finding's: "Fixed" is a finding's word, after a verification.
@@ -2596,13 +2608,15 @@ export const ReviewMode = {
       .child(div().flex_1().min_h(0).relative()
         .child(v_flex().id("rv-comments-left").absolute().inset_0().overflow_y_scroll().p(8).gap(2)
           .when(!rows.length, (e) => e.child(div().p(6).text_size(12.5).text_color(t.muted).whitespace_normal().child(all.length ? "The Show switch in the bar hides these comments." : "Comments you write, send or post show here, with their replies.")))
-          .children(files.flatMap((file) => [div().flex_none().pt(8).pb(2).px(6).text_size(11.5).font_semibold().text_color(t.muted).truncate().child(file),
+          // A file's heading jumps to that file in the diff (its rows jump to their lines).
+          .children(files.flatMap((file) => [div().id(`rv-cfile-${file}`).tooltip("Show this file in the diff").flex_none().pt(8).pb(2).px(6).text_size(11.5).font_semibold().text_color(t.muted).truncate()
+            .cursor_pointer().hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => { this.openCommentFile(file); cx.notify(); }).child(file),
             ...rows.filter((r) => r.file === file).flatMap((r) => {
               const st = STATE[r.state], mine = r.kind === "pending" || r.kind === "thread";
               // A row is one line; the one clicked last shows its whole text under it, as Markdown.
               const whole = this.crow === r.id ? [div().id(`rv-crw-${r.id}`).ml(68).mr(6).mb(6).px(10).py(6).rounded(6).bg(t.surface).text_size(13).line_height(1.5).child(TextView.markdown(`rv-crwm-${r.id}`, r.src === "github" ? ghMd(r.text, true) : String(r.text ?? "")))] : [];
               return [h_flex().id(`rv-cr-${r.id}`).tooltip("Jump to this comment in the diff").flex_none().gap(8).items_center().px(6).h(30).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
-                .on_click((_e, cx) => { this.crow = r.id; if (r.kind === "thread") this.openThreads.add(r.id); if (r.kind === "note") (this.openNotes ??= new Set()).add(r.id); this.jumpTo(`${r.file}:${r.line}`, cx); })
+                .on_click((_e, cx) => this.openCommentRow(r, cx))
                 .child(div().id(`rv-crb-${r.id}`).tooltip((mine ? "Select to fix this comment with an agent" : "Only your own comments can be selected")).accessibility_label("Select comment").w(14).h(14).flex_none().rounded(3).border_1().border_color(sel.has(r.id) ? t.accent : mine ? t.input : "#00000000").bg(sel.has(r.id) ? t.accent : "#00000000")
                   .flex().items_center().justify_center().text_size(10).text_color(t.accent_foreground).child(sel.has(r.id) ? "✓" : "")
                   .when(mine, (e) => e.on_click((_e, cx) => { this.toggleSel(r.id, cx); cx.stop_propagation(); })))

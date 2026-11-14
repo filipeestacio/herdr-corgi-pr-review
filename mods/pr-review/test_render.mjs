@@ -205,6 +205,8 @@ for (const n of [0, 3, 310]) {
   v.tab = "steps"; v.prSel = { ...v.prSel, title: "feat: t" };
   ok("Analysis tab without blockers", () => v.render(cx));
   assert.deepEqual(v.attention(), []);
+  // The Comments tab: a file's heading and a row's command land the diff at that file (the tab stays).
+  v.tab = "files"; v.command("cfile:src/f2.ts", cx); assert.deepEqual([v.tab, v.top?.view, v.top?.key, v.fileFocus], ["comments", "files", "src/f2.ts", "src/f2.ts"]);
   console.log("left column ok");
 }
 // The minimized review: nothing without one, an entry with Resume and ✕ with one.
