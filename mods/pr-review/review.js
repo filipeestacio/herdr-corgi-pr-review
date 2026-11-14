@@ -4832,7 +4832,7 @@ export const ReviewMode = {
       Boolean(cost) && fact("rv-ov-cost", cost.split(" (")[0], `What the AI runs on this PR cost: ${cost}.`),
       fn.merged > 0 && fact("rv-ov-funnel", `${fn.reported} reported → ${fn.merged} merged → ${rows.length} before merge ▸`, `${funnelLine(fn, (k) => REVIEWERS[k]?.[0] ?? k)} ${rows.length} stand before the merge. Click for the Findings tab.`,
         (_e, cx) => { this.tab = "findings"; cx.notify(); }),
-      ctx?.at && this.freshFact(fact),
+      this.ctx?.at && this.freshFact(fact),
     ].filter(Boolean);
     const offer = this.runOffer?.("analysis") ?? null; // Paket A's model choice for the analysis, once there
     return h_flex().id("rv-ov-context").flex_wrap().gap(8).items_center().text_size(12.5).text_color(t.muted)
