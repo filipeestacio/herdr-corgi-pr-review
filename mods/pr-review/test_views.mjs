@@ -682,6 +682,7 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   const { resCardOf, resSentence } = await import("./views.js");
   const arch = { nodes: [{ id: "consumer", at: "library/consumer.py:11" }, { id: "mailer", at: "library/mailer.py:9" }, { id: "late", at: "library/consumer.py:40" }] };
   assert.deepEqual(["consumer", "library/consumer.py:19", "consumer.py:45", "library/mailer.py:3", "e6", "x.py:1"].map((s) => resCardOf(s, arch)), ["consumer", "consumer", "late", "mailer", null, null]);
+  assert.equal(resCardOf("library/mailer.py:14", { nodes: [{ id: "m", label: "Mailer (mailer.py)" }, { id: "c", at: "library/consumer.py:1" }] }), "m", "a card without a place, by the file in its label");
   assert.equal(resSentence({ trigger: "Mailer exhausts retries", end: "The record is acked" }), "Mailer exhausts retries: the record is acked");
   assert.equal(resSentence({ trigger: "x", end: "SQS never sees it" }), "x: SQS never sees it");
   assert.equal(resSentence({ trigger: "x", end: "Lambda times out" }), "x: Lambda times out", "a name keeps its capital");

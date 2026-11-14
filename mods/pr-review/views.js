@@ -921,7 +921,11 @@ export function resCardOf(step, arch) {
   if (!m) return null;
   const same = (a, b) => a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`);
   const mine = nodes.map((n) => ({ id: n.id, at: /^(.+?):(\d+)/.exec(String(n.at ?? n.evidence ?? "")) })).filter((x) => x.at && same(x.at[1], m[1]));
-  return (mine.filter((x) => Number(x.at[2]) <= Number(m[2])).sort((a, b) => Number(b.at[2]) - Number(a.at[2]))[0] ?? mine[0])?.id ?? null;
+  const hit = (mine.filter((x) => Number(x.at[2]) <= Number(m[2])).sort((a, b) => Number(b.at[2]) - Number(a.at[2]))[0] ?? mine[0])?.id;
+  if (hit) return hit;
+  // A card without a place that names its file in its label: "Mailer (mailer.py)".
+  const base = m[1].split("/").pop();
+  return nodes.find((n) => !(n.at ?? n.evidence) && new RegExp(`\\(${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\)`).test(String(n.label ?? "")))?.id ?? null;
 }
 // "Trigger: end" as one sentence: the end's first letter small unless it starts a name or a code word.
 // ponytail: only the usual first words of a sentence; a name (Lambda, Mailer) keeps its capital.
