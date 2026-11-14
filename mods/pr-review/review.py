@@ -22,6 +22,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -41,21 +42,28 @@ LEVELS = ["high", "medium", "low"]
 # What a model run that reads a PR may do (this analysis, and the reviewers in reviewers.py): it reads someone else's
 # code and text, which may carry instructions to it. --restricted confines the file tools to the checkout (and
 # --add-dir) and ignores the checkout's own .claude settings; dontAsk refuses whatever no rule allows. Allowed: the
-# file tools and the git commands that read history; no network, no writes. Denied: options that write a file
-# (--output), run a program (--ext-diff, --textconv) or read a file outside the checkout (--no-index, blame --contents,
-# -S, --ignore-revs-file), each by its shortest unambiguous prefix, since git takes abbreviated long options in some
-# commands (blame --con is --contents). llm.py also sets GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS for the run.
-GIT_READ = ("diff", "log", "show", "status", "blame", "merge-base", "rev-parse", "ls-files")
-GIT_DENIED = ("--ou", "--ext", "--textc", "--no-in", "--con", "--ignore-revs")
+# file tools and read-only git through safegit.py, fixed to this checkout (git diff with a path outside the repository
+# silently turns into --no-index and reads any file; safegit refuses such paths and the options that write a file,
+# run a program or read one, also abbreviated). git itself is denied; no network, no writes.
+SAFEGIT = pathlib.Path(__file__).with_name("safegit.py")
 
 
-def permissions(*tools):
-    """The CLI flags for a run with these tools plus read-only git."""
-    denied = ["Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch", *(f"Bash(git *{o}*)" for o in GIT_DENIED), "Bash(git blame*-S*)"]
-    return ("--restricted", "--permission-mode", "dontAsk", "--allowedTools", *tools, *(f"Bash(git {c} *)" for c in GIT_READ), "--disallowedTools", *denied)
+def git_call(root):
+    """The one way a run may call git: `python3 <safegit.py> <checkout>`, as the allow rule and the prompt say it."""
+    return f"python3 {shlex.quote(str(SAFEGIT))} {shlex.quote(str(root))}"
 
 
-READ_ONLY = permissions("Read", "Grep", "Glob")
+def git_hint(root):
+    """The prompt's line on how to call git (empty without a checkout)."""
+    return (f"Call git only as `{git_call(root)} <command> <args>`, with diff, log, show, status, blame, merge-base, rev-parse "
+            "or ls-files and paths relative to the checkout; plain git is refused.\n\n") if root else ""
+
+
+def permissions(root, *tools):
+    """The CLI flags for a run with these tools plus read-only git in root (None: no git)."""
+    denied = ["Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Bash(git *)"]
+    return ("--restricted", "--permission-mode", "dontAsk", "--allowedTools", *tools, *([f"Bash({git_call(root)} *)"] if root else []),
+            "--disallowedTools", *denied)
 SYSTEM = ("You are a thorough, experienced code reviewer and guide a person through the review of a pull request in {lang}: "
           "ordered by risk, with concrete check points and only real suspicious spots verified in the code, no style "
           "criticism. Take your time: read callers, types and surrounding code before you claim anything. "
@@ -917,9 +925,9 @@ def main_diagrams(req):
     prev = json.loads(pathlib.Path(req["diagrams"]).read_text())
     t = task(req.get("pr"), (ctx or {}).get("tickets", True))
     tools = bool(wt and pathlib.Path(wt).is_dir())
-    extra = READ_ONLY if tools else ()
+    extra = permissions(wt, "Read", "Grep", "Glob") if tools else ()
     meta = {}
-    answer = llm.claude(FEATURE_DIAGRAMS, diagrams_prompt(req["hunks"], prev, t and t["text"], tools, lang), context=ctx, model=model,
+    answer = llm.claude(FEATURE_DIAGRAMS, git_hint(wt if tools else None) + diagrams_prompt(req["hunks"], prev, t and t["text"], tools, lang), context=ctx, model=model,
                         schema=DIAGRAMS_SCHEMA, system=SYSTEM.format(lang=lang), budget=BUDGET_DIAGRAMS[llm.tier(model)], timeout=TIMEOUT,
                         cwd=wt if tools else pathlib.Path.home(), tools="Read,Grep,Glob,Bash" if tools else "", meta=meta, extra=extra)
     if not answer:
@@ -1047,8 +1055,8 @@ def main(req):
     index = write_run(run, hunks)
     cap, aliases = BUDGET[llm.tier(model)], [h["alias"] for h in hunks]
     # Read-only tools in the checkout plus the run's folder (the patches); without a checkout, only the folder.
-    extra = ("--effort", "high", "--add-dir", run, *READ_ONLY)
-    call = lambda feature, text, schema, budget, meta: llm.claude(feature, text, context=ctx, model=model, schema=schema, system=SYSTEM.format(lang=lang),  # noqa: E731
+    extra = ("--effort", "high", "--add-dir", run, *permissions(wt if tools else None, "Read", "Grep", "Glob"))
+    call = lambda feature, text, schema, budget, meta: llm.claude(feature, git_hint(wt if tools else None) + text, context=ctx, model=model, schema=schema, system=SYSTEM.format(lang=lang),  # noqa: E731
                                                               budget=budget, timeout=TIMEOUT, cwd=wt if tools else run, tools="Read,Grep,Glob,Bash", meta=meta, extra=extra)
     cohorts = None if prev else cohorts_of(hunks, INLINE[llm.tier(model)])
     metas = []

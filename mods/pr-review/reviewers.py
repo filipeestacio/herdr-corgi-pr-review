@@ -42,7 +42,8 @@ BUDGET = {"haiku": 0.5, "sonnet": 3.0, "opus": 8.0}
 TIMEOUT = 1500
 # What a reviewer may do: the analysis' rules (review.permissions: the checkout, read-only git, no network, no writes,
 # whatever no rule allows refused), plus Agent for the slash commands that split their work.
-PERMISSIONS = review.permissions("Read", "Grep", "Glob", "Agent")
+def permissions(worktree):
+    return review.permissions(worktree, "Read", "Grep", "Glob", "Agent")
 PLACE = {"file": review.S, "line": {"type": "integer"}, "end": {"type": "integer"}, **review.PROSE}
 # A review turned from text: what its words give, nothing judged on top.
 PLAIN_FINDINGS = {"type": "object", "required": ["findings"], "properties": {"findings": {"type": "array", "items": {
@@ -102,13 +103,13 @@ ASK_SECURITY = (
 ASK_JSON = "\n\n" + ASK
 
 
-def findings_schema(kind):
+def findings_schema(kind, worktree=None):
     """What a Claude reviewer answers with. The ask is also the schema's description: a slash command that runs as a
-    fork takes no extra prompt text (it would read it as the review target), but it sees the schema. The security
-    reviewer also answers with its view (SECURITY)."""
+    fork takes no extra prompt text (it would read it as the review target), but it sees the schema; so the way to call
+    git (review.git_hint) stands there too. The security reviewer also answers with its view (SECURITY)."""
     sec = kind == "security"
     extra = {"ref": S, "reachability": {"enum": REACH}} if sec else {}  # every Claude reviewer may name the way from outside (review.PATH)
-    return {"type": "object", "description": ASK + (ASK_SECURITY if sec else ""), "required": ["findings", "scope", *(SECURITY if sec else [])], "properties": {
+    return {"type": "object", "description": review.git_hint(worktree) + ASK + (ASK_SECURITY if sec else ""), "required": ["findings", "scope", *(SECURITY if sec else [])], "properties": {
         "findings": {"type": "array", "items": {"type": "object", "required": ["file", "line", "title", "detail", *review.JUDGED, *(["ref"] if sec else [])],
                                                "properties": {**PLACE, **review.JUDGED, **review.PATH, **extra}}},
         "scope": {"type": "object", "required": ["read", "checked", "skipped"], "properties": {
@@ -332,9 +333,9 @@ def claude_review(req, command):
     def ask(text, skills):
         meta = {}
         answer = llm.claude(FEATURE[req["kind"]], text, context=req.get("context"), model=req["model"],
-                            schema=findings_schema(req["kind"]), budget=BUDGET[llm.tier(req["model"])], timeout=TIMEOUT, tools="Read,Grep,Glob,Agent,Bash",
+                            schema=findings_schema(req["kind"], req["worktree"]), budget=BUDGET[llm.tier(req["model"])], timeout=TIMEOUT, tools="Read,Grep,Glob,Agent,Bash",
                             cwd=req["worktree"], skills=skills, meta=meta,
-                            extra=PERMISSIONS)
+                            extra=permissions(req["worktree"]))
         return answer, meta
     try:
         answer, meta = ask(command, True)
@@ -343,7 +344,7 @@ def claude_review(req, command):
     except RuntimeError as e:
         if not missing_command(e):
             raise
-        answer, meta = ask(PLAIN[req["kind"]].format(base=req["base"], number=req["number"]) + req.get("more", "") + ASK_JSON
+        answer, meta = ask(review.git_hint(req["worktree"]) + PLAIN[req["kind"]].format(base=req["base"], number=req["number"]) + req.get("more", "") + ASK_JSON
                            + (ASK_SECURITY if req["kind"] == "security" else ""), False)
         meta["fallback"] = True
     if answer is None and (meta.get("text") or "").strip():
@@ -386,7 +387,7 @@ def main(arg):
         pic, made = picture(req["file"])
         req = {**req, "more": picture_text(pic)}
         answer, meta = claude_review(req, f"/security-review\n\nReview the changes of this checkout against origin/{req['base']} "
-                                          f"(git diff origin/{req['base']}...HEAD), which are PR #{req['number']}." + req["more"] + ASK_JSON + ASK_SECURITY)
+                                          f"(git diff origin/{req['base']}...HEAD), which are PR #{req['number']}. " + review.git_hint(req["worktree"]) + req["more"] + ASK_JSON + ASK_SECURITY)
     else:
         answer, meta = codex_review(req)
     findings = normalize(answer.get("findings"), req["kind"], wt)
