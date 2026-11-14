@@ -910,6 +910,12 @@ console.log("ok");
   assert.deepEqual([blockerOf(P("p", "effect", ["mailer"], "finding", ["duplicate_effect"]), null, null, fx)?.why, blockerOf(P("p", "effect", ["library/audit.py:3"], "finding", ["duplicate_effect"]), null, null, fx),
     blockerOf(P("p", "silent", ["events.py:20"], "finding", ["lost_effect"], { end: "no mails and no signal" }), null, null, fx)?.why],
     ["a visible effect happens twice", null, "a visible effect is lost"], "a mail twice blocks, a log line twice does not; the end can name the mail");
+  // A path named by its lines finds its calls in the same files; the map's marks come from the same facts.
+  const byLines = P("p", "retry", ["library/consumer.py:21", "library/mailer.py:20"], "finding", ["no_dlq"], { visible: false });
+  assert.equal(ladderOf(byLines, deps).text, "no limit until the message expires (4 days)", "consumer.py:21 finds the consumer's call at consumer.py:14");
+  const { marksOf } = await import("./pr.js");
+  assert.deepEqual(marksOf(byLines, [{ ...deps[0], timeout: { s: 10 } }, deps[1]]), [{ at: "e5", mark: "⏱ 10 s" }, { at: "e5", mark: "no DLQ" },
+    { at: "library/mailer.py:14", mark: "×3" }, { at: "library/mailer.py:20", mark: "✕ silent" }]);
   // A dead-letter queue bounds a poison message; a slow call in a request that is not redelivered fails, it does not come back.
   const dlqDeps = [{ edge: "e6", at: "consumer.py:13", mode: "async", trigger: { batch: 5, partial_batch: true, dlq: true, max_receive: 3 } }];
   assert.equal(blockerOf(P("p", "other", ["handler.py:21"], "finding", ["poison_message"]), null, null, [], dlqDeps), null, "the DLQ takes it after three receives");
