@@ -315,13 +315,15 @@ function layerFindings(list, step) {
 
 // What a newer analysis or reviewer says about a finding beyond its text, in one shape whoever found it (an older one
 // has none of it): impact (what the severity follows from), effect (one sentence), preconditions ([]: it always
-// happens), certainty (confirmed | derived | assumed), criteria (ids of the asks it breaks) and breaks ({node} or
-// {from, to, edge} in the architecture picture, else null), and effort (how much work the fix is: quick | moderate |
-// heavy, null when the analysis does not say).
+// happens), certainty (confirmed | derived | assumed), criteria (ids of the asks it breaks), breaks ({node} or
+// {from, to, edge} in the architecture picture, else null), effort (how much work the fix is: quick | moderate |
+// heavy, null when the analysis does not say), and for a security finding reachable_from (ids of the access rows
+// it can be reached through) and reachability (public | authenticated | internal_only | unknown).
 export const EFFORTS = ["quick", "moderate", "heavy"];
 export const findingFacts = (f) => ({ impact: f.impact ?? null, effect: String(f.effect ?? ""), preconditions: (f.preconditions ?? []).map(String),
   certainty: ["confirmed", "derived", "assumed"].includes(f.certainty) ? f.certainty : null, criteria: (f.criteria ?? []).map(String), breaks: f.breaks ?? null,
-  effort: EFFORTS.includes(f.effort) ? f.effort : null });
+  effort: EFFORTS.includes(f.effort) ? f.effort : null,
+  reachable_from: (f.reachable_from ?? []).map(String), reachability: ["public", "authenticated", "internal_only", "unknown"].includes(f.reachability) ? f.reachability : null });
 
 // A suspicious line taken over as a pending review comment (rows: its hunk's or file's rows); null when not shown there.
 export function suspectComment(s, rows, id) {

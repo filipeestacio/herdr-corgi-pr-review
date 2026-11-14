@@ -1,6 +1,7 @@
 // Run: node test_views.mjs  (the panel's picking / selected state, the in-progress cap, a flow visual as archLayout input)
 import assert from "node:assert/strict";
 import { panelState, bodyTab, capped, flowArch, IN_PROGRESS_MAX, wheelStep, GESTURE_MS, byState, listRows, riskSignal, progressText, pendingText } from "./views.js";
+import { scopeTable, runSummary, exposureOf, surfaceOf } from "./views.js";
 import { archLayout } from "./arch.js";
 
 // Picking until something is chosen; PRs ▾ goes back to picking without dropping the choice.
@@ -277,3 +278,70 @@ assert.ok(mdHeight(`- ${long}`, 300) >= mdHeight(long, 300));
 assert.ok(mdHeight("# Title", 600) > mdHeight("Title", 600));
 // It never gives less than the plain wrapped text does, so nothing that fit before is cut now.
 for (const w of [200, 420, 900]) assert.ok(mdHeight(long, w) >= 21 * wrapCount(long, w));
+
+// ---- the Security page: what each run checked, and a run in words
+{
+  const analysis = { checked: [{ area: "authentication", result: "finding", note: "empty token" }, { area: "secrets", result: "clean", note: "" }, { area: "tests", result: "weird" }] };
+  const runs = { security: { state: "done", scope: { checked: [{ area: "secrets", result: "not_checked", note: "out of scope" }, { area: "dependencies", result: "clean", note: "none new" }] } },
+    claude: { state: "done", scope: null }, codex: { state: "failed", error: "no output" } };
+  const tab = scopeTable(analysis, runs);
+  assert.deepEqual(tab.cols, ["analysis", "security"], "only runs that reported a scope get a column");
+  assert.deepEqual(tab.rows.map((r) => r.area), ["authentication", "secrets", "tests", "dependencies"]);
+  assert.deepEqual(tab.rows[1].cells, { analysis: { result: "clean", note: "" }, security: { result: "not_checked", note: "out of scope" } });
+  assert.equal(tab.rows[0].cells.security, null, "an area a run does not cover is empty, not clean");
+  assert.equal(tab.rows[2].cells.analysis.result, "not_checked", "an unknown result is never read as clean");
+  assert.deepEqual(scopeTable(null, {}), { cols: [], rows: [] }); // an older analysis, nothing run
+  assert.deepEqual(scopeTable(undefined, undefined), { cols: [], rows: [] });
+  assert.equal(runSummary(null), "not run"); assert.equal(runSummary({ state: null }), "not run");
+  assert.equal(runSummary({ state: "running" }), "running");
+  assert.equal(runSummary({ state: "failed", error: "Codex review: no findings file" }), "failed: Codex review: no findings file");
+  assert.equal(runSummary({ state: "done", count: 0 }), "no findings"); assert.equal(runSummary({ state: "done", count: 2 }), "2 findings");
+  assert.equal(runSummary({ state: "done", count: 2 }, 1), "1 finding", "the count on the list now wins over the run's own");
+}
+
+// ---- the Security page: the attack surface from the access rows
+{
+  assert.equal(exposureOf({ public: true, auth: "none" }), "open"); assert.equal(exposureOf({ public: true, auth: "" }), "open");
+  assert.equal(exposureOf({ public: true }), "open"); assert.equal(exposureOf({ public: true, auth: "None (no authorizer on the route)" }), "open");
+  assert.equal(exposureOf({ public: true, auth: "bearer token checked in handler.py" }), "public");
+  assert.equal(exposureOf({ public: true, auth: "nonce check in the handler" }), "public", "a word that only starts like none is a check");
+  assert.equal(exposureOf({ public: false, auth: "none" }), "internal"); assert.equal(exposureOf(null), "internal");
+  assert.equal(exposureOf({ public: true, auth: "nothing checks it", auth_kind: "code" }), "public", "auth_kind wins over the free text");
+  assert.equal(exposureOf({ public: true, auth: "bearer token", auth_kind: "none" }), "open");
+  const access = [{ resource: "role policy", kind: "queue", public: false, auth: "IAM" }, { resource: "admin route", kind: "route", public: false, auth: "IAM" },
+    { resource: "api", kind: "route", public: true, auth: "an authorizer" }, { resource: "bucket", kind: "bucket", public: true, auth: "none" }];
+  const s = surfaceOf(access);
+  assert.deepEqual(s.entries.map((x) => [x.resource, x.exposure, x.k]), [["bucket", "open", 3], ["api", "public", 2], ["admin route", "internal", 1]], "most exposed first; a public bucket is a way in");
+  assert.deepEqual(s.grants.map((x) => x.resource), ["role policy"]);
+  assert.deepEqual(surfaceOf(undefined), { entries: [], grants: [] });
+}
+
+// ---- the Security page: order of the findings, the way in the PR opens unasked, a zone's rights
+{
+  const { reachLevel, secOrder, extraWays, zoneRights, blastLine } = await import("./views.js");
+  assert.equal(reachLevel({ reachability: "authenticated" }, [{ exposure: "open" }]), "authenticated", "the analysis' word wins");
+  assert.equal(reachLevel({}, [{ exposure: "internal" }, { exposure: "public" }]), "authenticated", "derived: the most exposed way in");
+  assert.equal(reachLevel({}, [{ exposure: "open" }]), "public"); assert.equal(reachLevel({ reachability: "moon" }), "unknown");
+  const f = (id, severity) => ({ id, severity });
+  const o = secOrder([{ f: f("a", "high"), level: "internal_only", crosses: true }, { f: f("b", "low"), level: "public", crosses: false }, { f: f("c", "medium"), level: "public", crosses: true },
+    { f: f("d", "high"), level: "public", crosses: true }, { f: f("e", "high"), level: "unknown", crosses: null }]);
+  assert.deepEqual(o.map((r) => r.f.id), ["d", "c", "b", "a", "e"]);
+  assert.equal(o[0].why, "Reachable from the internet, over a trust boundary, high severity.");
+  assert.equal(o[4].why, "Not known from where it can be reached, high severity.", "no zones: nothing said about boundaries");
+  // PR #2: the extra ask "/remind" sits in handler.py; the route's card is the handler. Two extras on one way, or one
+  // extra on two ways: no match. A way in the PR does not open: no match.
+  const route = { k: 0, opened_by_pr: true, files: ["template.yaml", "library/handler.py"] }, other = { k: 1, opened_by_pr: true, files: ["library/api.py"] };
+  const x1 = { id: "x1", state: "extra", files: ["library/handler.py"] };
+  assert.deepEqual(extraWays([{ id: "c1", state: "broken", files: ["library/handler.py"] }, x1], [route, other]).map((m) => [m.entry.k, m.ask.id]), [[0, "x1"]]);
+  assert.deepEqual(extraWays([x1, { id: "x2", state: "extra", files: ["template.yaml"] }], [route]), []);
+  assert.deepEqual(extraWays([{ ...x1, files: ["library/handler.py", "library/api.py"] }], [route, other]), []);
+  assert.deepEqual(extraWays([x1], [{ ...route, opened_by_pr: false }]), []); assert.deepEqual(extraWays(undefined, undefined), []);
+  const zones = [{ id: "z_net", name: "Internet", trust: "public" }, { id: "z_fd", name: "FrontDesk function", trust: "authenticated" }, { id: "z_c", name: "Consumer", trust: "internal" }];
+  const nodes = [{ id: "caller", zone: "z_net" }, { id: "handler", label: "handler", zone: "z_fd" }, { id: "consumer", zone: "z_c" }];
+  const access = [{ resource: "LoanEvents", principal: "FrontDesk function", actions: ["sqs:SendMessage"], used: false }, { resource: "Loans", principal: "Consumer", actions: ["sqs:ReceiveMessage"], used: true }];
+  const zr = zoneRights(zones, nodes, [{ node: "handler" }], access);
+  assert.deepEqual(zr.map((z) => [z.zone.id, z.rights.map((r) => r.resource)]), [["z_fd", ["LoanEvents"]]], "only zones with a way in");
+  assert.equal(blastLine(zr[0]), "If FrontDesk function is compromised, it can sqs:SendMessage on LoanEvents (granted, never used).");
+  assert.equal(blastLine({ zone: zones[2], rights: [] }), "If Consumer is compromised, it holds no right the analysis names.");
+  assert.deepEqual(zoneRights([], nodes, [{ node: "handler" }], access), []);
+}
