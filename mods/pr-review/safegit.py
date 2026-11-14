@@ -5,8 +5,10 @@
 
 and never git itself. An allowlist, nothing else passes (exit 2 with the reason):
 - commands: diff, log, show, status, blame, merge-base, rev-parse, ls-files;
-- options: only those listed for the command below, none that takes a file; a value is given as --opt=value, a short
-  one attached or as the next argument (-n 5, -L 1,5);
+- options: only those listed for the command below, none that takes a file. A long option's value only as --opt=value.
+  A short option with a required value (-n, -S, -G, -L) attached or as the next argument, which must not start with -;
+  one whose value git takes only attached (-U3, -uno, -M50%) only attached, never bare. Every value is checked as a
+  path too. Where safegit might split an argument differently from git, it refuses;
 - every other argument is a revision or a path: relative, inside the checkout: no leading / or ~, no .. segment (also
   a bare ..; a revision range like base..head is no segment and stays allowed), also after : (rev:path).
 git runs as `git --no-pager -C <checkout>`, with no external diff, no textconv, GIT_CEILING_DIRECTORIES above the
@@ -17,12 +19,14 @@ import re
 import subprocess
 import sys
 
-FLAG, VALUE = None, "value"  # an option without a value, or with one (a word, number, format or pattern; never a file)
+# An option without a value; with a required value (a word, number, format or pattern; never a file); or with a
+# value git reads only when attached (-U3, -uno, -M50%): bare it would be read differently, so it is refused.
+FLAG, VALUE, ATTACHED = None, "value", "attached"
 DIFF = {"--stat": FLAG, "--numstat": FLAG, "--shortstat": FLAG, "--name-only": FLAG, "--name-status": FLAG, "--summary": FLAG, "--raw": FLAG,
-        "-p": FLAG, "--patch": FLAG, "-u": FLAG, "--no-patch": FLAG, "-s": FLAG, "-U": VALUE, "--unified": VALUE, "--minimal": FLAG,
+        "-p": FLAG, "--patch": FLAG, "-u": FLAG, "--no-patch": FLAG, "-s": FLAG, "-U": ATTACHED, "--unified": VALUE, "--minimal": FLAG,
         "--patience": FLAG, "--histogram": FLAG, "-w": FLAG, "--ignore-all-space": FLAG, "-b": FLAG, "--ignore-space-change": FLAG,
         "--ignore-blank-lines": FLAG, "--word-diff": FLAG, "--color": VALUE, "--no-color": FLAG, "--exit-code": FLAG, "--quiet": FLAG,
-        "-M": FLAG, "--find-renames": FLAG, "--no-renames": FLAG, "--diff-filter": VALUE, "-R": FLAG, "--function-context": FLAG, "-W": FLAG,
+        "-M": ATTACHED, "--find-renames": FLAG, "--no-renames": FLAG, "--diff-filter": VALUE, "-R": FLAG, "--function-context": FLAG, "-W": FLAG,
         "--full-index": FLAG, "--abbrev": VALUE, "--no-prefix": FLAG, "--text": FLAG, "-a": FLAG, "--stat-width": VALUE}
 LOG = {**DIFF, "--oneline": FLAG, "--format": VALUE, "--pretty": VALUE, "-n": VALUE, "--max-count": VALUE, "--skip": VALUE, "--since": VALUE,
        "--until": VALUE, "--after": VALUE, "--before": VALUE, "--author": VALUE, "--committer": VALUE, "--grep": VALUE, "-S": VALUE, "-G": VALUE,
@@ -32,9 +36,9 @@ OPTIONS = {
     "diff": {**DIFF, "--merge-base": FLAG, "--cached": FLAG, "--staged": FLAG},
     "log": LOG,
     "show": LOG,
-    "blame": {"-L": VALUE, "-w": FLAG, "-M": FLAG, "--porcelain": FLAG, "--line-porcelain": FLAG, "-e": FLAG, "--show-email": FLAG, "-s": FLAG,
+    "blame": {"-L": VALUE, "-w": FLAG, "-M": ATTACHED, "--porcelain": FLAG, "--line-porcelain": FLAG, "-e": FLAG, "--show-email": FLAG, "-s": FLAG,
               "--date": VALUE, "-l": FLAG, "-t": FLAG, "--root": FLAG},
-    "status": {"--short": FLAG, "-s": FLAG, "--porcelain": FLAG, "--branch": FLAG, "-b": FLAG, "--untracked-files": VALUE, "-u": VALUE},
+    "status": {"--short": FLAG, "-s": FLAG, "--porcelain": FLAG, "--branch": FLAG, "-b": FLAG, "--untracked-files": VALUE, "-u": ATTACHED},
     "merge-base": {"--all": FLAG, "--is-ancestor": FLAG, "--fork-point": FLAG, "--octopus": FLAG},
     "rev-parse": {"--short": FLAG, "--verify": FLAG, "--abbrev-ref": FLAG, "--symbolic-full-name": FLAG, "--is-inside-work-tree": FLAG, "-q": FLAG, "--quiet": FLAG},
     "ls-files": {"--cached": FLAG, "-c": FLAG, "--modified": FLAG, "-m": FLAG, "--others": FLAG, "-o": FLAG, "--exclude-standard": FLAG, "--stage": FLAG,
@@ -90,14 +94,21 @@ def refused(cmd, args):
                 return f"option {name} takes no value"
             continue
         if not value and not eq:
-            if not short or k >= len(args):
-                return f"option {name} needs its value as {name}=…" if not short else f"option {name} needs a value"
+            if not short:
+                return f"option {name} needs its value as {name}=…"
+            if kind == ATTACHED:
+                return f"option {name} takes its value attached ({name}…), not bare"
+            if k >= len(args) or args[k].startswith("-"):
+                return f"option {name} needs a value that is not an option"
             value = args[k]
             k += 1
-        if name in PATH_VALUES:
-            why = bad_path(value.rsplit(":", 1)[-1]) if ":" in value else None
-            if why:
-                return why
+        if not value:
+            return f"option {name} needs a value"
+        if value.startswith("-"):
+            return f"option {name}: a value may not start with -"
+        why = bad_path(value.rsplit(":", 1)[-1] if name in PATH_VALUES else value)  # -L 1,5:path: the path after the last :
+        if why:
+            return why
     return None
 
 
