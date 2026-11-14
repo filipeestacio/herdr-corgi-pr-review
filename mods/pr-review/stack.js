@@ -251,6 +251,8 @@ export function visualsCard(visuals, t, id, onJump, tab = 0, onTab = null, wrapX
     .child(visualCard(visuals[k], t, `${id}-${k}`, onJump, wrapX));
 }
 
+// ponytail: which folded call lists are open, kept here (visualCard has no state of its own); lost on a reload.
+const openLists = new Set();
 const nativeX = (id, _w, _h, el, pb = 0) => div().id(id).w_full().overflow_x_scroll().pb(pb).child(el);
 const edgesOf = (v) => [...(v.edges ?? []), ...(v.transitions ?? [])];
 const edgeText = (v, e, prefix = "") => { const name = (id) => v.nodes.find((n) => n.id === id)?.label ?? id; return `${prefix}${name(e.from)} → ${name(e.to)}${transitionText(e) ? ` · ${transitionText(e)}` : ""}`; };
@@ -306,7 +308,14 @@ export function visualCard(v, t, id, onJump, wrapX = null, wide = null) {
   if (v.kind === "sequence" && P) {
     body = seqView(P.Q, t, `${id}-sq`);
   } else if (v.kind === "sequence") {
-    body = v_flex().gap(6).child(h_flex().flex_wrap().gap(4).children(v.nodes.map(box))).children(edges.map((e, k) => edge(e, k, `${k + 1}. `)));
+    // The same diagram as over a layer's code (seqLayout), in one row that scrolls sideways when wider than its room;
+    // the numbered calls under it folded to one line.
+    const Q = seqLayout(v, 200 * v.nodes.length), open = openLists.has(id);
+    body = v_flex().gap(6).child((wrapX ?? nativeX)(`${id}-sq`, Q.width, Q.height, seqView(Q, t, `${id}-sv`)))
+      .child(h_flex().id(`${id}-calls`).gap(6).cursor_pointer().text_size(11.5).text_color(t.muted).hover((x) => x.text_color(t.foreground))
+        .tooltip(open ? "Fold the list of calls" : "Show every call with its whole text").on_click((_e, cx) => { if (open) openLists.delete(id); else openLists.add(id); cx.stop_propagation(); cx.notify(); })
+        .child(open ? "▾" : "▸").child(`${edges.length} numbered ${edges.length === 1 ? "call" : "calls"}`))
+      .when(open, (e) => e.children(edges.map((x, k) => edge(x, k, `${k + 1}. `))));
   } else if (v.kind === "state_machine" && P) {
     // Every transition with its whole text: the diagram cuts a label where its line leaves no room.
     const list = v_flex().flex_1().min_w(0).children(edges.map((e, k) => div().id(`${id}-tr${k}`).flex_none().pt(4).text_size(12).line_height(1.5).whitespace_normal()
@@ -354,7 +363,7 @@ function seqView(Q, t, id) {
       div().id(`${id}-t${k}`).absolute().left(lo + (self ? 28 : 8)).top(e.y + (self ? 12 : 4)).max_w(Q.width - lo - (self ? 32 : 12)).h(17).px(3).bg(t.surface).text_size(11.5)
         .text_color(e.changed && e.source !== "existing" ? t.foreground : t.muted).tooltip([text, e.evidence].filter(Boolean).join("\n")).child(div().truncate().child(text))];
   });
-  return div().id(id).relative().flex_none().w(Q.width).h(Q.height).children([...heads, ...calls]);
+  return div().id(id).relative().flex_none().w(Q.width).h(Q.height).children([gridBg(t, Q.width, Q.height), ...heads, ...calls]);
 }
 
 // A state diagram at stateLayout's positions: start dot, end ring, state cards (Parallel/Map blocks with their

@@ -2957,7 +2957,12 @@ export const ReviewMode = {
       ...(this.archFocus && a.nodes.some((x) => x.id === this.archFocus) ? [["card", this.archCard(t, a, marks)]] : []),
       ...(this.archFocus && this.drillAt(`arch:${this.archFocus}`) ? [["inside", this.drillPanel(t, `arch:${this.archFocus}`)]] : []),
       // Only the calls whose text is not on their line in the picture (a fan's, a stub's, a text cut short).
-      ...(L.paths.some((p) => !p.text || p.text.cut) ? [["calls", archLegend(L, t, "rv-arch-edges", "Calls without their whole text in the picture", opts)]] : []),
+      // Folded to one line with their number; open, the list (archLegend).
+      ...(L.paths.some((p) => !p.text || p.text.cut) ? [["calls", v_flex().gap(6)
+        .child(h_flex().id("rv-arch-calls").gap(8).items_center().cursor_pointer().text_size(13).text_color(t.muted).hover((x) => x.text_color(t.foreground))
+          .tooltip(this.fold.archCalls ? "Fold this list" : "Show these calls with their whole text").on_click((_e, cx) => { this.fold.archCalls = !this.fold.archCalls; cx.notify(); })
+          .child(this.fold.archCalls ? "▾" : "▸").child(`Calls without their whole text in the picture · ${L.paths.filter((p) => !p.text || p.text.cut).length}`))
+        .when(Boolean(this.fold.archCalls), (e) => e.child(archLegend(L, t, "rv-arch-edges", "Calls without their whole text in the picture", opts)))]] : []),
       ...((this.ai.components ?? []).length ? [["components", this.componentsTable(t, a)]] : []),
       ...(this.ai?.visuals?.length > 0 ? [["views", v_flex().gap(12).child(div().pt(6).text_size(13).font_semibold().text_color(t.muted).child("More views")).child(div().max_w(760).child(more()))]] : [])]);
   },
@@ -3660,14 +3665,14 @@ export const ReviewMode = {
     // Nothing to show: no security run has delivered anything (it does not start by itself for every PR), no finding is
     // about security, and the analysis names no way in, right or trust zone.
     const empty = !sr?.state && !sec.length && !(this.ai?.access ?? []).length && !(a?.zones ?? []).length;
+    // Without security data (no security run, no zone, no access row) no picture: the offer to make it (secEmpty, which
+    // has the Run button and the reasons), then whatever the other runs found about security.
+    const data = sr?.state === "done" || (this.ai?.access ?? []).length > 0 || zoned;
     const head = v_flex().gap(6)
       .on_size_change((_s, cx) => this.loadVisibility(cx)) // once the page is laid out: is the repo public (for "Add as comment")
       .child(h_flex().gap(10).items_center().flex_wrap().child(div().flex_1().text_size(20).font_semibold().child("Security"))
         .child(chip(t, `⛨ Security · ${open.length}`, open.length ? t.ansi1 : t.muted, true, "rv-bl-secn", "Unresolved security findings, from every source"))
         .when(data, (e) => e.child(pill("rv-bl-run", t, sr?.state === "running" ? "Security review running…" : sr?.state ? "Run security review again" : "Run security review", (_e, cx) => this.runReviewer("security", cx)).tooltip("Run the security reviewer on the PR head, read-only: one model call; its findings and what it checked show here"))))
-    // Without security data (no security run, no zone, no access row) no picture: the offer to make it (secEmpty, which
-    // has the Run button and the reasons), then whatever the other runs found about security.
-    const data = sr?.state === "done" || (this.ai?.access ?? []).length > 0 || zoned;
       // Someone else's PR with reasons (pr.js securityStart offer): why the Run button is there, with its cap.
       .when(data && Boolean(this.secOfferText()), (e) => e.child(div().id("rv-sec-offer").text_size(13).whitespace_normal().line_height(1.5).text_color(t.ansi3)
         .child(`${this.secOfferText()} Run security review: capped at $${REVIEW_CAP[tierOf(model())]}.`)));
