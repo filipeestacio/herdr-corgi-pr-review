@@ -1127,3 +1127,7 @@ export function resByProbe(paths, probes) {
     return p;
   });
 }
+// A path's mark line in a card of the Resilience map: 18 px high and 3 px under it, so a finding's chip (about 18 px
+// in its 15 px row) below does not touch it. In arch.js extra rows of 18 px each, with the card's 3 px gap.
+export const RES_MARK_ROW = { h: 18, below: 3 };
+export const resMarkRows = () => (RES_MARK_ROW.h + RES_MARK_ROW.below + 3) / 18;

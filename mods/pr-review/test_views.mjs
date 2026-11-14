@@ -788,3 +788,14 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.equal(resByProbe(paths, done("already_on_base"))[0].blocker, null);
   assert.deepEqual([resByProbe(paths, done("new_in_pr"))[0].blocker.unclear, resByProbe(paths, done("unknown"))[0].blocker.unclear, resByProbe(paths, [])[1]], [false, true, paths[1]]);
 }
+
+// ---- a path's mark line in a card of the Resilience map has its own room: the card grows by the line, its space
+// under it and the card's gap, so the mark does not sit on a finding's chip (R2 follow-up)
+{
+  const { RES_MARK_ROW, resMarkRows } = await import("./views.js");
+  const arch = { nodes: [{ id: "a", label: "A", description: "one line" }, { id: "b", label: "B" }], edges: [{ from: "a", to: "b", label: "x" }] };
+  const h = (rows) => archLayout(arch, "diff", (n) => (n.id === "a" ? rows : 0)).nodes.find((n) => n.id === "a").h;
+  const base = h(0), finding = h(1), both = h(1 + resMarkRows());
+  assert.equal(both - finding, RES_MARK_ROW.h + RES_MARK_ROW.below + 3, "the mark's line, the space under it and the card's gap");
+  assert.ok(finding >= base, "a finding's row keeps its 18 px");
+}

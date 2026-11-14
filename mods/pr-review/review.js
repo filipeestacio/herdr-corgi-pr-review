@@ -38,7 +38,7 @@ import { pollDue, pollAfter, windowActive } from "./pr.js"; // background fetche
 import { hasSources, archLayout, archBands } from "./arch.js";
 import { archMarks, transitionText } from "./arch.js";
 import { resStartOf, resOrder, resPicture, budgetBar, resPathView, resCardOf, resSentence, resMarksOn } from "./views.js";
-import { resWord, resToolText, resVerdict, resWatch, resTwice, PROBE_TYPICAL, resEdgeMarks, resByProbe } from "./views.js"; // wave R2: words, verdict, watch, doubled ways
+import { resWord, resToolText, resVerdict, resWatch, resTwice, PROBE_TYPICAL, resEdgeMarks, resByProbe, RES_MARK_ROW, resMarkRows } from "./views.js"; // wave R2: words, verdict, watch, doubled ways
 import { withResilience, resilienceStart, RUN_TYPICAL } from "./pr.js"; // the Resilience run's data // the Resilience page
 import { wayOf, wayText, passZones, runsIn } from "./views.js"; // panel round 3: ways through every gate, zones passed on
 import { transitionMarks, effectiveFrom, inProcess, mapArch, crossingsOf, crossingChanged, secSentence, TRUST_ORDER } from "./views.js";
@@ -3274,7 +3274,7 @@ export const ReviewMode = {
     // The map as the boundary really runs (views.js mapArch): the Internet card at the way in, no zone on shared code,
     // no "‖" on a call in one process.
     const memo = (this.fitMemos ??= {});
-    if (memo[slot]?.key !== key) memo[slot] = { key, L: archLayout(mapArch(a, this.ai?.access, this.ai?.bypasses ?? []), this.archMode, (n) => (m.nodes.has(n.id) ? 1 : 0) + (more?.has(n.id) ? 1 : 0), fit, { labels: true, labelPx: labelPx ?? undefined, marked: (es) => es.some((i) => m.edges.has(i)) }) };
+    if (memo[slot]?.key !== key) memo[slot] = { key, L: archLayout(mapArch(a, this.ai?.access, this.ai?.bypasses ?? []), this.archMode, (n) => (m.nodes.has(n.id) ? 1 : 0) + (more?.has(n.id) ? resMarkRows() : 0), fit, { labels: true, labelPx: labelPx ?? undefined, marked: (es) => es.some((i) => m.edges.has(i)) }) };
     return memo[slot].L;
   },
   // ---- sideways scrollers inside the scrolling page (the architecture canvas, the flow, state-machine and blast
@@ -4121,8 +4121,8 @@ export const ReviewMode = {
       if (lit.length) { const lo = Math.min(...lit.map((n) => n.x)) - 40, hi = Math.max(...lit.map((n) => n.x + n.w)) + 40; s.x = Math.max(0, !room ? lo : hi - lo > room ? hi - room : lo < s.x || hi > s.x + room ? lo : s.x); }
       if (room || !lit.length) this.resMapFor = key;
     }
-    const deco = (n) => (byNode.has(n.id) ? [div().id(`rv-res-mk-${n.id}`).flex_none().h(17).text_size(13).font_semibold().text_color(/✕|∞|no /.test(byNode.get(n.id)) ? t.ansi1 : t.foreground).child(byNode.get(n.id))]
-      : !p && on.has(n.id) ? [div().id(`rv-res-st-${n.id}`).flex_none().h(17).text_size(13).text_color(t.muted).child("○ the run starts here")] : []);
+    const deco = (n) => (byNode.has(n.id) ? [div().id(`rv-res-mk-${n.id}`).flex_none().h(RES_MARK_ROW.h).mb(RES_MARK_ROW.below).flex().items_center().text_size(13).font_semibold().text_color(/✕|∞|no /.test(byNode.get(n.id)) ? t.ansi1 : t.foreground).child(byNode.get(n.id))]
+      : !p && on.has(n.id) ? [div().id(`rv-res-st-${n.id}`).flex_none().h(RES_MARK_ROW.h).mb(RES_MARK_ROW.below).flex().items_center().text_size(13).text_color(t.muted).child("○ the run starts here")] : []);
     return v_flex().id("rv-res-map").gap(6)
       .child(div().text_size(12).text_color(t.muted).child(p ? `Path ${p.id}: lit on the map, the rest dimmed.` : start.length ? "○: where the run would start." : "Open a path to light it on the map."))
       .child(this.archCanvas(t, L, opts, { id: "rv-res-canvas", pic: "rv-res-pic", decorate: deco, notes: false }));
