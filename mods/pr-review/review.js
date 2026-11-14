@@ -33,6 +33,7 @@ import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCAL
 import { wrapCode, codeCols, sliceSpans } from "./views.js"; // long lines wrap
 import { pairRows, pairSide, HALF_GUTTER, diffModeOf, oneSided, stackOf, chipAt, textW } from "./views.js"; // side by side; the bar's stack
 import { plainText } from "./pr.js";
+import { pollDue, pollAfter, windowActive } from "./pr.js"; // background fetches (ghTick)
 import { hasSources, archLayout, archBands } from "./arch.js";
 import { archMarks, transitionText } from "./arch.js";
 import { transitionMarks, effectiveFrom, inProcess, mapArch, crossingsOf, crossingChanged, secSentence, TRUST_ORDER } from "./views.js";
@@ -124,7 +125,8 @@ const STALE_TIP = "The code here changed since this comment was written";
 const CARD_W = 720, CARD_MIN = 420, CARD_HEAD = 32, CARD_REPLY = 34, CARD_GAP = 6;
 const THREAD_COLOR = { fixed: "ansi2", answered: "accent", wontfix: "muted", question: "ansi3", sent: "ansi4", posted: "ansi4" };
 const PROBE = "0".repeat(40);
-const CTX_MS = 10 * 60000; // related PRs, CI checks, mergeability (related.py): asked again after this while the review is open
+const CTX_MS = 10 * 60000; // related PRs, CI checks, mergeability (related.py): asked again after this when the review opens, else by ↻
+const GH_MS = 5 * 60000; // the PR's head and its GitHub review comments while the review is open and the window in front (ghTick)
 const OPEN_ST = ["open", "progress", "recheck"];
 // A finding's card in the diff: its height folded, the label column of an open one, the link at its head's right end.
 const FIND_FOLDED = 34, FIND_LABEL = 112, FIND_LINK = 150;
@@ -353,7 +355,8 @@ export const ReviewMode = {
       await exec("mkdir", ["-p", repliesDir()]).catch(() => null);
       for (;;) { await watchFolder(repliesDir()).catch(() => null); await this.loadThreads(cx); }
     });
-    cx.timer.every(180000, (cx) => { if (this.prSel) { this.loadGhComments(cx); this.loadThreads(cx); } }); // GitHub replies: every 3 min while open
+    this.ghPoll = pollAfter(null, true, Date.now()); // opening asks GitHub (onSource, refresh): the first tick is GH_MS later
+    cx.timer.every(60000, (cx) => this.ghTick(cx)); // a time check; GitHub at most every GH_MS (ghTick)
     cx.timer.every(10000, (cx) => this.proofTick(cx)); // Verify with an agent: its answer file, while one runs
     for (const [st, k] of [[this.draft, "draft"], [this.summary, "summary"], [this.itemEdit, "item"], [this.sendText, "send"]]) {
       st.on("focus", (_e, cx) => { this.typing = k; cx.notify(); });
@@ -599,7 +602,8 @@ export const ReviewMode = {
   },
 
   makeWorktree(cx, clone = false) {
-    const url = this.prSel.url;
+    const url = this.prSel.url, want = this.prSel.headSha ?? null, job = `${url}|${want}|${clone}`;
+    if (this.wtIn === job) return; // the same checkout is being made
     this.worktree = null;
     if (this.prSel.space && this.root) {
       this.worktree = { url, head: this.head, path: this.root, local: true }; setShared("review.worktree", this.worktree); this.applyTrust();
@@ -608,11 +612,16 @@ export const ReviewMode = {
     // A PR you didn't open may use the active space's checkout of its repo (cwd); your own PRs keep the dedicated clones.
     const local = this.prSel.source && this.root ? ["--local", this.root] : [];
     this.cloning = clone; this.checkout = { busy: true }; // shown at the top of the Analysis tab (stateHints)
+    this.wtIn = job;
     cx.spawn(async (cx) => {
       const roots = C.cloneRoots(ctxDoc(), this.ctxId(), this.cfg?.cloneRoot ?? "~/code").flatMap((d) => ["--root", d.replace(/^~(?=\/|$)/, home())]);
       const env = this.ctxEnv(this.ctxId()), argv = [...env, "python3", `${appHome()}/mods/pr-review/worktree.py`, url, ...roots, ...local, ...(clone ? ["--clone"] : [])];
-      const r = await exec(argv[0], argv.slice(1), { timeout: 600000 })
+      // The checkout from last time still at this head (its HEAD file says so): no fetch, no checkout. A new head
+      // (checkHead) comes back here with another sha and runs worktree.py.
+      const had = shared("review.worktree"), same = !clone && want && had?.url === url && had.head === want && !had.local && await worktreeAt(had.path, want);
+      const r = same ? { code: 0, stdout: JSON.stringify({ head: want, path: had.path }) } : await exec(argv[0], argv.slice(1), { timeout: 600000 })
         .catch((e) => ({ code: 1, stderr: String(e) }));
+      if (this.wtIn === job) this.wtIn = null;
       this.cloning = false; this.checkout = null;
       if (this.prSel?.url !== url) return;
       if (r.code === 3) { this.needClone = JSON.parse(r.stdout).need_clone; this.loadContext(cx); cx.notify(); return; }
@@ -650,18 +659,23 @@ export const ReviewMode = {
   },
 
   // Related PRs, CI checks and mergeability (related.py: gh and git, no LLM), cached per PR head in pr-data/cache.
-  loadContext(cx) {
+  // force: ask GitHub even when the cached one is fresh (the Overview's ↻). One related.py per file at a time.
+  loadContext(cx, force = false) {
     const url = this.prSel?.url, head = this.worktree?.head ?? this.head;
     if (!url?.startsWith("https://") || !head) return;
     const out = `${cacheDir()}/ctx-${hash(url)}-${head}.json`;
+    if (this.ctxIn === out) return;
     cx.spawn(async (cx) => {
       const before = JSON.parse(await readTextFile(out).catch(() => null) ?? "null");
       if (this.prSel?.url !== url) return;
       if (before) { this.ctx = before; this.securityNow(cx); this.publish(); cx.notify(); }
-      if (before && Date.now() - Date.parse(before.at) < CTX_MS) return;
+      if (before && !force && Date.now() - Date.parse(before.at) < CTX_MS) return;
+      if (this.ctxIn === out) return;
+      this.ctxIn = out; cx.notify();
       const req = { url, head, base: this.prSel.base ?? "main", branch: this.prSel.head ?? null, worktree: this.worktree?.path ?? null, files: (this.patch ?? []).map((f) => f.path).filter((f) => !lowValue(f)), out }; // lockfiles would relate everything
       const r = await exec("python3", [`${appHome()}/mods/pr-review/related.py`, JSON.stringify(req)], { timeout: 400000 }).catch(() => null);
-      if (this.prSel?.url !== url || r?.code !== 0) return;
+      if (this.ctxIn === out) this.ctxIn = null;
+      if (this.prSel?.url !== url || r?.code !== 0) return cx.notify();
       this.ctx = JSON.parse(r.stdout);
       this.securityNow(cx);
       exec("python3", [`${appHome()}/mods/pr-review/prs.py`, "--prune"]).catch(() => null); // bounds the cache folder
@@ -2284,8 +2298,15 @@ export const ReviewMode = {
   // stay and show like other comments whose line is gone. One GraphQL call adds each thread's resolved state; when it
   // fails the comments still show, just none as resolved.
   loadGhComments(cx) {
+    const url = this.prSel?.url;
+    cx.spawn(async (cx) => { const g = await this.ghComments(); if (g && this.prSel?.url === url) { this.gh = g; cx.notify(); } });
+  },
+  // The comments themselves: a list, false when gh failed, null when not asked (no GitHub PR, dry run). One fetch at a
+  // time: an ask while one runs for this PR gets the same answer.
+  ghComments() {
     const pr = this.prSel, m = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(pr?.url ?? "");
-    if (!m || this.cfg?.dryRun) return; // dry run: no network (the demo)
+    if (!m || this.cfg?.dryRun) return Promise.resolve(null); // dry run: no network (the demo)
+    if (this.ghIn?.url === pr.url) return this.ghIn.p;
     const env = this.ctxEnv(this.ctxId()), [owner, name] = m[1].split("/");
     const rest = [...env, "gh", "api", "--paginate", `repos/${m[1]}/pulls/${m[2]}/comments?per_page=100`,
       "--jq", ".[] | {id, path, line, original_line, side, user: .user.login, user_type: .user.type, commit_id, original_commit_id, outdated: (.line == null and .subject_type != \"file\"), body, at: .created_at, in_reply_to_id, url: .html_url}"];
@@ -2294,12 +2315,11 @@ export const ReviewMode = {
     const graph = [...env, "gh", "api", "graphql", "--paginate", "-f", `query=${query}`, "-f", `owner=${owner}`, "-f", `name=${name}`, "-F", `number=${m[2]}`,
       "--jq", ".data.repository.pullRequest.reviewThreads.nodes[] | {id: .comments.nodes[0].databaseId, resolved: .isResolved, outdated: .isOutdated}"];
     const lines = (r) => (r?.code === 0 ? r.stdout.split("\n").filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean) : null);
-    cx.spawn(async (cx) => {
-      const [r, t] = await Promise.all([rest, graph].map((a) => exec(a[0], a.slice(1), { timeout: 30000 }).catch(() => null)));
-      if (r?.code !== 0 || this.prSel?.url !== pr.url) return;
-      this.gh = TH.withThreadState(lines(r), lines(t) ?? []);
-      cx.notify();
-    });
+    const p = Promise.all([rest, graph].map((a) => exec(a[0], a.slice(1), { timeout: 30000 }).catch(() => null)))
+      .then(([r, t]) => (r?.code === 0 ? TH.withThreadState(lines(r), lines(t) ?? []) : false))
+      .finally(() => { if (this.ghIn?.p === p) this.ghIn = null; });
+    this.ghIn = { url: pr.url, p };
+    return p;
   },
   // GitHub's comments as the review shows them (threads.js ghShown), memoized: the Show switch's resolved and bots.
   ghNow() {
@@ -4810,6 +4830,7 @@ export const ReviewMode = {
       Boolean(cost) && fact("rv-ov-cost", cost.split(" (")[0], `What the AI runs on this PR cost: ${cost}.`),
       fn.merged > 0 && fact("rv-ov-funnel", `${fn.reported} reported → ${fn.merged} merged → ${rows.length} before merge ▸`, `${funnelLine(fn, (k) => REVIEWERS[k]?.[0] ?? k)} ${rows.length} stand before the merge. Click for the Findings tab.`,
         (_e, cx) => { this.tab = "findings"; cx.notify(); }),
+      ctx?.at && this.freshFact(fact),
     ].filter(Boolean);
     const offer = this.runOffer?.("analysis") ?? null; // Paket A's model choice for the analysis, once there
     return h_flex().id("rv-ov-context").flex_wrap().gap(8).items_center().text_size(12.5).text_color(t.muted)
@@ -5014,6 +5035,37 @@ export const ReviewMode = {
       .child(div().flex_1().min_w(0).whitespace_normal().child(`Could not save your progress (viewed files, checked layers, your place): ${why}. It is kept in this window; it is lost if you close the review before it is saved.`))
       .child(pill("rv-save-again", t, "Save again", (_e, cx) => this.saveProgress(cx), false, t.foreground).tooltip("Write your progress to disk again"));
   },
+
+  // While the review is open: the PR's head and its GitHub review comments, at most every GH_MS and only while the
+  // window is in front (nobody reads it behind other windows; the next minute's tick catches up once it is). A failure
+  // waits twice as long each time (pr.js pollDue). force: the Overview's ↻, CI checks and related PRs too. A new head
+  // reloads the diff (checkHead's path), and with it the review's hunks (main.js syncSource).
+  ghTick(cx, force = false) {
+    const pr = this.prSel;
+    if (!pr?.url || this.ghBusy || (!force && (!windowActive() || !pollDue(this.ghPoll, Date.now(), GH_MS)))) return;
+    this.ghBusy = true;
+    if (force) this.loadContext(cx, true);
+    cx.spawn(async (cx) => {
+      const [gh, sha] = await Promise.all([this.ghComments(), pr.url.startsWith("https://") ? this.headOf(pr.url) : null]);
+      this.ghBusy = false;
+      this.ghPoll = pollAfter(this.ghPoll, gh !== false && (sha !== null || !pr.url.startsWith("https://")), Date.now());
+      if (this.prSel?.url !== pr.url) return;
+      if (gh) this.gh = gh;
+      await this.loadThreads(cx);
+      if (sha) this.heads.set(pr.url, { at: Date.now(), sha });
+      if (sha && sha !== this.prSel.headSha) { this.prSel = { ...this.prSel, headSha: sha }; this.refresh(cx, true); }
+      cx.notify();
+    });
+    cx.notify();
+  },
+  // The Overview's "Updated … ago ↻": how old the GitHub facts on this page are (CI checks, mergeability, related PRs),
+  // and the way to fetch them again, instead of asking GitHub on a timer.
+  freshFact(fact) {
+    const busy = Boolean(this.ctxIn), at = Date.parse(this.ctx.at);
+    const label = busy ? "Updating…" : Date.now() - at < 60000 ? "Updated just now ↻" : `Updated ${ago(this.ctx.at)} ↻`;
+    return fact("rv-ov-fresh", label, "When CI checks, mergeability and related PRs were read from GitHub. New commits and review comments are checked every 5 minutes while this window is in front. Click to read all of it again now.",
+      busy ? null : (_e, cx) => { this.ghTick(cx, true); cx.stop_propagation(); });
+  },
 };
 
 const LAYER_FILES = 12; // an open layer lists this many of its files in the left column
@@ -5044,6 +5096,12 @@ const PUBLIC_TIP = "This comes from a security finding: once posted, its text is
 function tabTip(id, t, tip, label) {
   return HoverCard.new(`${id}-tip`).anchor("top_center").open_delay(700).trigger(label)
     .content(div().max_w(280).px(10).py(6).rounded(6).border_1().border_color(t.border).bg(t.popover).text_size(12.5).text_color(t.foreground).whitespace_normal().child(tip));
+}
+
+// Whether a checkout (a linked worktree: its .git file names the gitdir) is at this commit: two file reads, no git.
+async function worktreeAt(path, sha) {
+  const dir = /^gitdir: (.+)$/m.exec(await readTextFile(`${path}/.git`).catch(() => null) ?? "")?.[1]?.trim();
+  return Boolean(dir) && (await readTextFile(`${dir}/HEAD`).catch(() => null) ?? "").trim() === sha;
 }
 
 // The Findings tab and the diff's finding cards (package F): how sure a security finding is, as one word in a line

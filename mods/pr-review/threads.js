@@ -218,8 +218,11 @@ export function fixCommentsPrompt({ pr, comments, file, lang, branch = null, pat
 // kind: "fix" or "verify" (the label); deny: the rules refused in any mode (a verify agent: NO_NET).
 export function subAgentArgs({ parent, cwd, name, env = [], task, job, auto = false, model = "sonnet", kind = "fix", deny = NO_PUSH }) {
   return ["run", "--bg", "--json", "--no-notify", "--name", name, "--cwd", cwd, ...(parent ? ["--parent", parent] : ["--no-parent"]),
-    "--label", `pr-review.${kind}=${job}`, "--", ...env, "claude", "--model", model, "--disallowedTools", ...deny, ...permissionArgs(auto), task];
+    "--label", `pr-review.${kind}=${job}`, "--", ...env, "claude", "--model", model, ...NO_MCP, "--disallowedTools", ...deny, ...permissionArgs(auto), task];
 }
+// No MCP server for an agent working on PR code: the task quotes PR text that may carry injected instructions, and the
+// context's servers (mail, calendar, docs) would let them reach outside. The same rule as the model runs (llm.py).
+export const NO_MCP = ["--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}'];
 // A fix agent never pushes, never opens a PR and never hands its fix to another session (hc send): the task says so,
 // and these deny rules refuse the commands in any permission mode. The list takes any number of rules, so an option with one value has to follow it (permissionArgs).
 // ponytail: a guard for the plain commands, not a sandbox (a push wrapped in a script gets past it).

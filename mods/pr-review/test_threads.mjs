@@ -107,6 +107,8 @@ assert.equal(args[args.indexOf("--cwd") + 1], "/w", "in its own worktree");
 assert.deepEqual(args.slice(args.indexOf("--") + 1, args.indexOf("claude") + 1), ["env", "CLAUDE_CONFIG_DIR=/c", "claude"], "on the PR's context");
 assert.deepEqual(args.slice(args.indexOf("--permission-mode")), ["--permission-mode", "auto", "Fix it"], "in auto mode");
 assert.ok(TH.subAgentArgs({ parent: null, cwd: "/w", name: "n", task: "x", job: "j" }).includes("--no-parent"));
+assert.deepEqual(args.slice(args.indexOf("--strict-mcp-config"), args.indexOf("--strict-mcp-config") + 3), ["--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}'], "no MCP server of the context");
+assert.ok(args.indexOf("--strict-mcp-config") < args.indexOf("--disallowedTools"), "before the deny list, which takes any number of values");
 const untrusted = TH.subAgentArgs({ parent: null, cwd: "/w", name: "n", task: "x", job: "j" });
 assert.deepEqual(untrusted.slice(untrusted.indexOf("--permission-mode")), ["--permission-mode", "manual", "--setting-sources", "user", "x"], "an untrusted PR: manual, said outright, without the checkout's settings");
 assert.equal(TH.applyPlan({ status: " M src/a.ts\n?? x", head: "abc", branch: "fix/7-c1" }).ok, false, "a dirty checkout: refused");
