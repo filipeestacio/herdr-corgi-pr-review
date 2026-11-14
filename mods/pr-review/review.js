@@ -3968,7 +3968,7 @@ export const ReviewMode = {
     const toggle = (key, text) => div().id(`rv-ask-${key}-n`).flex_none().text_size(12).text_color(t.muted).cursor_pointer().on_click((_e, cx) => { this.toggleAsk(key); cx.notify(); }).child(text);
     const MAX = 5, toVerify = this.verifyList().length;
     const groups = [], settled = [];
-    if (list.security.length > 0 || offer) groups.push(h("rv-ask-sec", `Security · ${list.security.length}`, "Unresolved security findings, from every source; they stand before the task's criteria", offer),
+    if (list.security.length > 0 || offer) groups.push(h("rv-ask-sec", h_flex().gap(6).child(div().text_color(t.ansi1).child("⛨")).child(`Security · ${list.security.length}`), "Unresolved security findings, from every source; they stand before the task's criteria", offer),
       ...(list.security.length ? list.security.map((f) => finding(f, `rv-ask-s-${f.id}`, true)) : [div().px(6).text_size(12.5).text_color(t.muted).child("No unresolved security finding.")]));
     if (toVerify) groups.push(h_flex().id("rv-ask-verify").tooltip("Fixes sent before the last push, not verified on the new head: click for the Findings tab").pt(first ? 0 : 12).px(6).gap(8).items_center().rounded(6).cursor_pointer()
       .hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.tab = "findings"; cx.notify(); }).child(div().w(16).flex_none().text_color(t.ansi3).child("↻")).child(`${n(toVerify, "fix")} to verify ▸`.replace("fixs", "fixes")));
