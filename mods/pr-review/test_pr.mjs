@@ -954,6 +954,7 @@ console.log("ok");
   assert.equal(dq.counts.blockers, 2);
   assert.equal(blockerOf(P("p", "state", ["e5"], "finding", ["reads_foreign_state", "poison_message"]), null, null), null, "reading another process' state is a finding, its poison message blocks in its own path");
   assert.equal(blockerOf(P("p", "retry", ["e5"], "mitigated", ["no_dlq"], { limited_by: "a.py:1" }), ladderOf(p1, deps), null), null, "only a path with a finding blocks");
+  assert.equal(blockerOf(P("p", "retry", ["queue", "e5", "consumer"], "finding", ["unbounded_retry"]), ladderOf(p1, deps), null).at, "library/consumer.py:14", "a path without a line blocks at its ladder's place");
   assert.deepEqual(blockerOf(P("p4", "request", ["e0", "library/mailer.py:14"], "finding", ["no_throttle", "swallowed_retry", "dishonest_response"]), null, null),
     { why: "the route answers success while the work is lost", at: "library/mailer.py:14" }, "POST /remind answers 202 while the mail is lost");
   assert.deepEqual(blockerOf(P("p", "silent", ["events.py:20"], "finding", [], { visible: false }), null, null), { why: "the path repeats or loses effects and nothing signals it", at: "events.py:20" });
