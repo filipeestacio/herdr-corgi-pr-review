@@ -161,3 +161,21 @@ export function pastTop(sizes, i, viewH) {
   for (let j = i; j < sizes.length; j++) { if (y + sizes[j] / 2 > want) return j; y += sizes[j]; }
   return sizes.length - 1; // less than a view below it: the list's end, which is as high as it gets
 }
+
+// ---- the Security page's "what each run checked"
+export const AREA_NAME = { authentication: "Authentication", authorization: "Authorization", input_validation: "Input validation", secrets: "Secrets", permissions: "Permissions",
+  personal_data: "Personal data", dependencies: "Dependencies", correctness: "Correctness", error_handling: "Error handling", concurrency: "Concurrency", state: "State", contracts: "Contracts", tests: "Tests" };
+// One row per area, one column per run that reported a scope. analysis: the analysis file's `scope` ({checked: [{area,
+// result, note}]} or null); runs: pr.js runsOf. → {cols: [run key], rows: [{area, cells: {<run key>: {result, note} |
+// null}}]}: areas in the order they are first named, null where a run does not cover the area, an unknown result
+// counted as not_checked.
+export function scopeTable(analysis, runs = {}) {
+  const sources = [["analysis", analysis?.checked], ...Object.entries(runs ?? {}).map(([k, r]) => [k, r?.scope?.checked])].filter(([, c]) => Array.isArray(c) && c.length > 0);
+  const areas = [...new Set(sources.flatMap(([, c]) => c.map((x) => x.area)))];
+  const cell = (x) => (x ? { result: ["finding", "clean", "not_checked"].includes(x.result) ? x.result : "not_checked", note: String(x.note ?? "") } : null);
+  return { cols: sources.map(([k]) => k), rows: areas.map((area) => ({ area, cells: Object.fromEntries(sources.map(([k, c]) => [k, cell(c.find((x) => x.area === area))])) })) };
+}
+// A run in words, so "not run", "failed" and "no findings" never look alike. r: a run of runsOf (or {state}); count:
+// its findings on the list now.
+export const runSummary = (r, count = r?.count ?? 0) => (!r?.state ? "not run" : r.state === "running" ? "running" : r.state === "failed" ? `failed: ${r.error || "no error text"}`
+  : count ? `${count} ${count === 1 ? "finding" : "findings"}` : "no findings");

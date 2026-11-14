@@ -1,6 +1,7 @@
 // Run: node test_views.mjs  (the panel's picking / selected state, the in-progress cap, a flow visual as archLayout input)
 import assert from "node:assert/strict";
 import { panelState, bodyTab, capped, flowArch, IN_PROGRESS_MAX, wheelStep, GESTURE_MS, byState, listRows, riskSignal, progressText, pendingText } from "./views.js";
+import { scopeTable, runSummary } from "./views.js";
 import { archLayout } from "./arch.js";
 
 // Picking until something is chosen; PRs ▾ goes back to picking without dropping the choice.
@@ -194,3 +195,23 @@ assert.equal(progressText(), "");
 
 assert.equal(pendingText([{ file: "a.py" }]), "1 pending comment in 1 file");
 assert.equal(pendingText([{ file: "a.py" }, { file: "a.py" }, { file: "b.py" }]), "3 pending comments in 2 files");
+
+// ---- the Security page: what each run checked, and a run in words
+{
+  const analysis = { checked: [{ area: "authentication", result: "finding", note: "empty token" }, { area: "secrets", result: "clean", note: "" }, { area: "tests", result: "weird" }] };
+  const runs = { security: { state: "done", scope: { checked: [{ area: "secrets", result: "not_checked", note: "out of scope" }, { area: "dependencies", result: "clean", note: "none new" }] } },
+    claude: { state: "done", scope: null }, codex: { state: "failed", error: "no output" } };
+  const tab = scopeTable(analysis, runs);
+  assert.deepEqual(tab.cols, ["analysis", "security"], "only runs that reported a scope get a column");
+  assert.deepEqual(tab.rows.map((r) => r.area), ["authentication", "secrets", "tests", "dependencies"]);
+  assert.deepEqual(tab.rows[1].cells, { analysis: { result: "clean", note: "" }, security: { result: "not_checked", note: "out of scope" } });
+  assert.equal(tab.rows[0].cells.security, null, "an area a run does not cover is empty, not clean");
+  assert.equal(tab.rows[2].cells.analysis.result, "not_checked", "an unknown result is never read as clean");
+  assert.deepEqual(scopeTable(null, {}), { cols: [], rows: [] }); // an older analysis, nothing run
+  assert.deepEqual(scopeTable(undefined, undefined), { cols: [], rows: [] });
+  assert.equal(runSummary(null), "not run"); assert.equal(runSummary({ state: null }), "not run");
+  assert.equal(runSummary({ state: "running" }), "running");
+  assert.equal(runSummary({ state: "failed", error: "Codex review: no findings file" }), "failed: Codex review: no findings file");
+  assert.equal(runSummary({ state: "done", count: 0 }), "no findings"); assert.equal(runSummary({ state: "done", count: 2 }), "2 findings");
+  assert.equal(runSummary({ state: "done", count: 2 }, 1), "1 finding", "the count on the list now wins over the run's own");
+}

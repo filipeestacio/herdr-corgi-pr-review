@@ -53,14 +53,6 @@ export function foldCard(t, id, title, right, open, toggle, body) {
     .when(open, (e) => e.child(v_flex().px(14).pb(12).gap(8).child(body())));
 }
 
-// The layout for a picture, memoized (the page renders often; the layout is the same until the analysis changes).
-const memo = new Map();
-export function archModel(arch, view = "diff", extra = () => 0) {
-  const key = `${view}|${JSON.stringify(arch)}`;
-  if (!memo.has(key)) { if (memo.size > 12) memo.delete(memo.keys().next().value); memo.set(key, archLayout(arch, view, extra)); }
-  return memo.get(key);
-}
-
 // The whole PR's architecture (or a layer's flow) at arch.js's positions: dashed group frames, node cards with glyph,
 // title (2 lines), description (3 lines; the whole text as tooltip), states (an orchestrator's lane) and status;
 // each path on its own lane with an arrow, a hop where it crosses another, and its numbered badge; a stub with its

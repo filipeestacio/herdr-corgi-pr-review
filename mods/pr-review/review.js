@@ -21,9 +21,10 @@ import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf,
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState, codeOf, isStale } from "./pr.js";
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible, pastTop } from "./views.js";
-import { archView, archModel, archLegend, visualsCard, visualCard, statCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
+import { archView, archLegend, visualsCard, visualCard, statCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
 import { hasSources, archLayout, archBands } from "./arch.js";
 import { archMarks } from "./arch.js";
+import { scopeTable, runSummary, AREA_NAME } from "./views.js";
 import * as TH from "./threads.js";
 import { leftWidth, rowClick, CHIP_W, ASK_W, keyRoute, scopeLine, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf, rangeLabel, pinAnchor, pinAdd, pinDrop, pinsOf, pinsOn, codePins, drillPush, drillTo, crumbs, drillKey, cachePut, mapDrill, exploreId, exploreIndex, exploreAi, pathOf, lineOf, repoOfRemote, exploreTrust, layersForNode } from "./explore.js";
 
@@ -107,7 +108,7 @@ const PROBE = "0".repeat(40);
 const CTX_MS = 10 * 60000; // related PRs, CI checks, mergeability (related.py): asked again after this while the review is open
 const OPEN_ST = ["open", "progress", "recheck"];
 // The Layers tab's pages (left nav); null: the diff of the current layer.
-const PAGES = [["overview", "Overview"], ["blast", "Security blast radius"], ["arch", "Architecture impact"]]; // measures the mono font's character width, for clicks on tokens inside the virtual list
+const PAGES = [["overview", "Overview"], ["blast", "Security"], ["arch", "Architecture impact"]]; // measures the mono font's character width, for clicks on tokens inside the virtual list
 
 // "Reviews ▾" in the bar opens this popup (props {part: "reviews"}): each reviewer with its last run; Run reaches the
 // review copy through its nextCommand.
@@ -3154,38 +3155,101 @@ export const ReviewMode = {
       .child(div().id(`rv-pnx-${pin.id}`).tooltip("Remove this note").accessibility_label("Remove note").flex_none().text_color(t.muted).hover((s) => s.text_color(t.foreground)).child("✕").on_click((_e, cx) => { this.unpin(pin.id, cx); cx.stop_propagation(); })));
   },
 
+  // ---- the Security page (key "blast", from its former name): a list, top to bottom the unresolved security findings
+  // (each with what it needs to happen and how sure it is), what every run says it checked, and who may reach what.
+  // No picture: the Architecture page has the one map.
   blastPage(t) {
-    const sec = this.findings().filter((f) => f.security), runs = this.find.runs.security; // security comes from a finding's content, not only from the security run
-    const blast = this.ai?.blast ?? (sec.length ? { units: [...new Set(sec.map((f) => f.file))].map((file, k) => ({ id: `f${k}`, label: file.split("/").pop(), type: "file", status: "changed", files: [file], spots: (this.fileHunks?.get(file) ?? []).length })), context: [] } : null);
-    const header = v_flex().p(12).gap(8).rounded(10).border_1().border_color(t.border).bg(t.surface)
-      .child(h_flex().gap(10).items_center().child(div().flex_1().text_size(20).font_semibold().child("Security blast radius"))
-        .when(Boolean(blast), (e) => e.child(pill("rv-bl-expand", t, this.blastOpen ? "Collapse all" : "Expand all", (_e, cx) => { this.blastOpen = !this.blastOpen; cx.notify(); }).tooltip("Expand or collapse the details of every part")))
-        .child(!sec.length && !runs?.at && !runs?.busy ? div().text_size(12.5).text_color(t.muted).child("No security review yet:") : chip(t, `Security · ${this.counts().security}`, this.counts().security ? t.ansi1 : t.muted, false, "rv-bl-secn", "Unresolved security findings, from every source"))
-        .child(pill("rv-bl-run", t, runs?.busy ? "Security review running…" : runs?.at ? "Run security review again" : "Run security review", (_e, cx) => this.runReviewer("security", cx)).tooltip("Run the security reviewer on the PR head, read-only; findings show here")))
-      .child(div().text_size(13).text_color(t.muted).child("See the risks and the parts of the diff driving them."));
-    if (!blast) return v_flex().gap(12).child(header).child(div().text_size(13.5).text_color(t.muted).child(this.ai ? "No blast radius in this analysis and no security findings yet." : "No analysis yet: Analyze in the left column, or run the security review."));
-    const b = blastArch(blast, sec.filter((f) => OPEN_ST.includes(this.fstatus(f))));
-    const L = archModel(b, "diff", (n) => Math.min(2, n.findings?.length ?? 0));
-    const opts = this.archOpts("blast");
-    const deco = (n) => (n.findings ?? []).slice(0, 2).map((f, j) => h_flex().gap(4).items_center().child(chip(t, f.severity, t[SEVERITY_COLOR[f.severity]] ?? t.muted, true, `rv-deco-${n.id}-${j}`, `A ${f.severity}-severity security finding`))
-      .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.foreground).child(f.title)));
-    const go = (n, _e, cx) => { const h = this.fileHunks?.get(n.file)?.[0]; if (h) this.jumpTo(`${n.file}:${h.rows.find((r) => r.n)?.n ?? ""}`, cx); else if (n.file) { this.note = `${n.file} is not in the diff (related context)`; cx.notify(); } };
-    return v_flex().gap(12)
-      .child(header.child(div().text_size(13).font_semibold().child(`${b.counts.added} Added | ${b.counts.changed} Changed | ${b.counts.up} Upstream | ${b.counts.down} Downstream`)))
-      .child(this.hscroll("rv-blast-scroll", L.width + 4, L.height + 4, archView(L, t, "rv-blast", go, deco, opts), t))
-      .child(archLegend(L, t, "rv-blast-edges", "How the context links to the changes", opts, true))
-      .when(this.blastOpen, (e) => e.children((blast.units ?? []).flatMap((u) => (u.files ?? []).flatMap((file) => (this.fileHunks?.get(file) ?? []).map((h) => this.hunkBlock(h, t, `${u.id}`))))));
+    const sec = this.findings().filter((f) => f.security), open = sec.filter((f) => OPEN_ST.includes(this.fstatus(f))); // security comes from a finding's content, not only from the security run
+    const runs = this.find.runs, sr = runs.security, title = (text) => div().text_size(14).font_semibold().child(text);
+    const head = v_flex().gap(6)
+      .on_size_change((_s, cx) => this.loadVisibility(cx)) // once the page is laid out: is the repo public (for "Add as comment")
+      .child(h_flex().gap(10).items_center().flex_wrap().child(div().flex_1().text_size(20).font_semibold().child("Security"))
+        .child(chip(t, `⛨ Security · ${open.length}`, open.length ? t.ansi1 : t.muted, true, "rv-bl-secn", "Unresolved security findings, from every source"))
+        .child(pill("rv-bl-run", t, sr?.state === "running" ? "Security review running…" : sr?.state ? "Run security review again" : "Run security review", (_e, cx) => this.runReviewer("security", cx)).tooltip("Run the security reviewer on the PR head, read-only: one model call; its findings and what it checked show here")))
+      .child(div().text_size(13).text_color(t.muted).whitespace_normal().child("The unresolved security findings, what each run says it checked, and who may reach what."));
+    return [["head", head], ["findings", this.secFindings(t, sec, open)], ["scope", this.secScope(t, title)], ["access", this.secAccess(t, title)]];
   },
-
-  // A hunk drawn plainly (pages: outside the virtual list), at most 60 lines.
-  hunkBlock(h, t, key) {
-    const mono = settings().font_family ?? "JetBrains Mono";
-    return v_flex().id(`rv-hb-${key}-${h.id}`).flex_none().rounded(8).border_1().border_color(t.border).overflow_hidden().font_family(mono).text_size(12)
-      .child(div().px(10).py(4).bg(t.raised).text_color(t.muted).truncate().child(`${h.path}  ${h.rows[0]?.text ?? ""}`))
-      .children(h.rows.slice(1, 61).map((r) => h_flex().h(18).when(r.kind === "+" || r.kind === "-", (e) => e.bg(tint(r.kind) + "1a"))
-        .child(div().w(44).flex_none().pr(6).text_right().text_color(t.muted).child(r.number === undefined ? "" : String(r.number)))
-        .child(div().w(14).flex_none().text_color(r.kind === "+" ? t.ansi2 : r.kind === "-" ? t.ansi1 : t.muted).child(r.kind === " " ? "" : r.kind))
-        .child(div().flex_1().min_w(0).truncate().child(expandTabs(r.text)))));
+  // The unresolved security findings, whole: nothing to unfold. Each says what it leads to, what it needs to happen
+  // and how sure the source is; "Open finding" has the rest (text, fix, dismiss) in the Findings tab.
+  secFindings(t, sec, open) {
+    const sr = this.find.runs.security, settled = sec.length - open.length;
+    // ponytail: formatted here until the Diff package's helper for these facts (views.js) is merged; then use that.
+    const CERTAIN = { confirmed: "Confirmed: something that ran shows it.", derived: "Derived from the code that was read; nothing ran.", assumed: "Assumed: it depends on something that could not be checked." };
+    const facts = (f) => [f.effect && ["Effect", f.effect],
+      f.certainty && ["Only if", f.preconditions.length ? f.preconditions.join("; ") : "Nothing else: it holds as the code stands."],
+      f.certainty && ["Certainty", CERTAIN[f.certainty]], ["Found by", this.sourcesOf(f)]].filter(Boolean);
+    const vis = this.repoVis?.[this.prSel?.repo], repo = this.prSel?.repo ?? "the repository";
+    const reach = vis === "PUBLIC" ? `This repository (${repo}) is public: anyone can read the comment.` : vis ? `This repository (${repo}) is ${vis.toLowerCase()}: everyone with access to it can read the comment.` : "Everyone who can see the PR can read the comment.";
+    const row = (f) => {
+      const st = this.fstatus(f), col = t[SEV[f.severity]] ?? t.accent, at = `${f.file}:${f.line}`;
+      return v_flex().id(`rv-sec-${f.id}`).gap(8).p(12).rounded(8).border_l(3).border_color(col).bg(t.surface)
+        .child(h_flex().gap(8).items_start()
+          .child(badge(t, f.severity, col))
+          .child(div().flex_1().min_w(0).text_size(14).font_semibold().whitespace_normal().line_height(1.4).child(plain(f.title)))
+          .child(div().id(`rv-sec-at-${f.id}`).flex_none().text_size(12).text_color(t.accent).cursor_pointer().hover((x) => x.underline()).tooltip("Show this line in the diff").on_click((_e, cx) => this.jumpTo(at, cx)).child(`${f.file.split("/").pop()}:${f.line} ↗`))
+          .child(div().flex_none().text_size(12).font_semibold().text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(FSTATUS[st]?.[0] ?? st)))
+        .child(v_flex().gap(3).children(facts(f).map(([label, text]) => h_flex().gap(8).items_start().text_size(12.5).line_height(1.5)
+          .child(div().w(64).flex_none().text_color(t.muted).child(label)).child(div().flex_1().min_w(0).whitespace_normal().child(text)))))
+        .child(h_flex().gap(6).items_center().flex_wrap()
+          .child(pill(`rv-sec-open-${f.id}`, t, "Open finding", (_e, cx) => { this.openFinding(f); this.jumpTo(at, cx); cx.notify(); }).tooltip("Its whole text in the Findings tab, with Fix and Dismiss, and its line in the diff"))
+          .child(pill(`rv-sec-cm-${f.id}`, t, vis === "PUBLIC" ? "Add as public comment" : "Add as comment", (_e, cx) => this.findingComment(f, cx)).tooltip(`Add this finding to your pending comments. ${reach}`)));
+    };
+    const none = sr?.state === "done" ? "The security review and the other runs left no unresolved security finding." : sr?.state === "failed" ? "No unresolved security finding from the other runs. The security review failed (see below), so it has not looked."
+      : sr?.state === "running" ? "No unresolved security finding so far. The security review is still running." : "No unresolved security finding from the other runs. The security review has not run on this PR.";
+    return v_flex().gap(8)
+      // The text names how the weakness is used: say who will read it, before it is added. Once, above the list.
+      .when(open.length > 0, (e) => e.child(div().id("rv-sec-public").text_size(12.5).text_color(vis === "PUBLIC" ? t.ansi3 : t.muted).whitespace_normal()
+        .child(`“${vis === "PUBLIC" ? "Add as public comment" : "Add as comment"}” puts a finding's text, with the way to use the weakness, into a comment on the PR once you post your review. ${reach}`)))
+      .children(open.map(row))
+      .when(!open.length, (e) => e.child(div().text_size(13.5).text_color(t.muted).whitespace_normal().child(none)))
+      .when(settled > 0, (e) => e.child(div().text_size(12.5).text_color(t.muted).child(`${settled} more security ${settled === 1 ? "finding is" : "findings are"} fixed or dismissed: see the Findings tab.`)));
+  },
+  // What each run says it checked: a line per run (not run, running, failed with its error, no findings, n findings;
+  // what it read and left out), then a row per area with the run's own word for it. A self-report, and named so.
+  secScope(t, title) {
+    const runs = this.find.runs, all = this.findings(), tab = scopeTable(this.ai?.scope, runs);
+    const from = (k) => all.filter((f) => f.sources.some((x) => x.reviewer === k)).length;
+    const lines = [["analysis", "Analysis", this.aiBusy ? { state: "running" } : this.ai ? { state: "done" } : null, null], ...reviewersNow().map(([k, [label]]) => [k, label, runs[k] ?? null, runs[k]?.scope ?? null])];
+    const RESULT = { finding: ["Finding", t.ansi1], clean: ["Clean", t.ansi2], not_checked: ["Not checked", t.ansi3] };
+    const cell = (c) => (!c ? div().text_color(t.dim).child("–") : h_flex().gap(6).items_start()
+      .child(chip(t, RESULT[c.result][0], RESULT[c.result][1], c.result !== "clean")).child(div().flex_1().min_w(0).whitespace_normal().text_color(t.muted).child(c.note)));
+    return v_flex().id("rv-sec-scope").gap(8).p(12).rounded(10).border_1().border_color(t.border).bg(t.surface)
+      .child(title("What each run checked"))
+      .child(div().text_size(12.5).text_color(t.muted).whitespace_normal().child("Each model run reports this about itself. It says where the run looked, not that the code is safe; “–” means the area was not part of that run."))
+      .child(v_flex().gap(3).children(lines.map(([k, label, r, scope]) => {
+        const failed = r?.state === "failed";
+        return h_flex().id(`rv-sec-run-${k}`).gap(8).items_start().text_size(12.5).line_height(1.5)
+          .child(div().w(150).flex_none().font_semibold().child(label))
+          .child(div().flex_1().min_w(0).whitespace_normal().text_color(failed ? t.ansi1 : r?.state ? t.foreground : t.muted)
+            .child([runSummary(r, from(k)), scope?.read?.length ? `read: ${scope.read.join(", ")}` : null, scope?.skipped?.length ? `left out: ${scope.skipped.join("; ")}` : null,
+              r?.state === "done" && k !== "analysis" && !scope ? "it reported no scope" : null].filter(Boolean).join(" · ")));
+      })))
+      .child(tab.rows.length ? this.table(t, "rv-sec-scope-t", [["Area", 130], ...tab.cols.map((k) => [REVIEWERS[k]?.[0] ?? k, null])], tab.rows.map((r) => [AREA_NAME[r.area] ?? r.area, ...tab.cols.map((k) => cell(r.cells[k]))]))
+        : div().text_size(12.5).text_color(t.muted).whitespace_normal().child("No run has reported what it checked: the analysis is older than this report, or nothing has run yet."));
+  },
+  // Who may reach what, from the template (the analysis' `access`): a row per right or entry point; public ones and
+  // rights the code never uses are marked.
+  secAccess(t, title) {
+    const list = this.ai?.access ?? [];
+    const rows = list.map((x, k) => [div().font_semibold().child(x.resource ?? ""), x.principal ?? "", (x.actions ?? []).join(", "),
+      x.public ? h_flex().child(chip(t, "Public", t.ansi1, true)) : div().text_color(t.muted).child("No"), x.auth ?? "",
+      x.used === false ? h_flex().child(chip(t, "Not used", t.ansi3, true, `rv-sec-acc-u${k}`, "The code in this PR never uses this right")) : div().text_color(t.muted).child(x.used === true ? "Yes" : "–"),
+      x.at ? div().id(`rv-sec-acc-at-${k}`).text_color(t.accent).cursor_pointer().hover((s) => s.underline()).tooltip("Show this place in the diff").on_click((_e, cx) => this.jumpTo(x.at, cx)).child(x.at) : ""]);
+    return v_flex().id("rv-sec-access").gap(8).p(12).rounded(10).border_1().border_color(t.border).bg(t.surface)
+      .child(title("Who may reach what"))
+      .child(list.length ? this.table(t, "rv-sec-acc-t", [["Resource", 210], ["Who", 170], ["May", null], ["Public", 60], ["Checked by", null], ["Used", 74], ["Place", 130]], rows)
+        : div().text_size(12.5).text_color(t.muted).whitespace_normal().child(this.ai ? "This analysis lists no rights or entry points: the PR changes none, or the analysis is older than this list." : "No analysis yet: Analyze in the left column."));
+  },
+  // Whether the PR's repo is public, asked once per repo (gh repo view): the Security page says who can read a comment.
+  loadVisibility(cx) {
+    const repo = this.prSel?.repo;
+    if (!repo || this.repoVis?.[repo] !== undefined) return;
+    this.repoVis = { ...this.repoVis, [repo]: null };
+    const argv = [...this.ctxEnv(this.ctxId()), "gh", "repo", "view", repo, "--json", "visibility", "--jq", ".visibility"];
+    cx.spawn(async (cx) => {
+      const r = await exec(argv[0], argv.slice(1), { timeout: 20000 }).catch(() => null);
+      if (r?.code === 0 && r.stdout.trim()) { this.repoVis = { ...this.repoVis, [repo]: r.stdout.trim() }; cx.notify(); }
+    });
   },
 
   // The CLIs' models for this PR's context (models.py), asked at most once a day per context: Claude lists what that
