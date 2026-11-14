@@ -28,6 +28,7 @@ PATH_KINDS = ["retry", "timeout", "race", "state", "effect", "load", "silent", "
 ADD_RESULTS = ["justified", "questionable", "unjustified"]
 LIKELIHOOD = ["likely", "possible", "rare", "cannot_happen"]
 PROBE_KINDS = ["retry", "redelivery", "race", "idempotency", "clock", "db_count", "telemetry", "budget"]
+PROBE_ID = re.compile(r"[A-Za-z0-9_-]{1,40}")  # a probe id: a file name, a branch, a write rule (threads.js PROBE_ID, probe.py ID)
 STRENGTHS = ["runs_pr_code", "forced_schedule", "models_env"]
 # What a path breaks, in the words pr.js turns into a blocker's reason (pr.js RES_BLOCKING).
 FAILING = ["unbounded_retry", "no_dlq", "poison_message", "over_timeout", "duplicate_effect", "lost_effect", "swallowed_retry",
@@ -213,8 +214,11 @@ def view(answer, findings, pic, known, changed=None):
               "breaks_at": r.get("breaks_at") if isinstance(r.get("breaks_at"), int) else None, "findings": fids(r.get("findings")),
               "oncall": str(r.get("oncall") or ""), "possible_today": r.get("possible_today") if isinstance(r.get("possible_today"), bool) else None, "note": str(r.get("note") or "")}
              for r in lst("races") if r.get("id")]
+    # A probe's id names a file, a branch and a write rule of its agent: only letters, digits, - and _ (1 to 40), the
+    # same rule as threads.js PROBE_ID and probe.py ID. Another id is dropped, and not_checked says so.
+    bad = [p for p in lst("probes") if p.get("claim") and not PROBE_ID.fullmatch(str(p.get("id") or ""))]
     probes = [{**{k: p.get(k) for k in ("id", "claim", "of")}, "kind": enum(p.get("kind"), PROBE_KINDS), "strength": enum(p.get("strength"), STRENGTHS), "status": "proposed"}
-              for p in lst("probes") if p.get("id") and p.get("claim")]
+              for p in lst("probes") if p.get("claim") and PROBE_ID.fullmatch(str(p.get("id") or ""))]
     probe_ids = {p["id"] for p in probes}
     paths = []
     for k, p in enumerate(lst("paths"), 1):
@@ -255,7 +259,8 @@ def view(answer, findings, pic, known, changed=None):
             "paths": paths,
             "checks": [{"check": str(c.get("check") or ""), "result": enum(c.get("result"), CHECK_RESULTS) or "not_checkable", "at": at(c.get("at")) or None,
                         "why": str(c.get("why") or ""), "findings": fids(c.get("findings"))} for c in lst("checks") if c.get("check")],
-            "probes": probes, "not_checked": [str(x) for x in answer.get("not_checked") or []]}
+            "probes": probes, "not_checked": [str(x) for x in answer.get("not_checked") or []]
+            + [f"A probe was dropped: its id {str(p.get('id') or '')[:40]!r} is not 1 to 40 letters, digits, - or _." for p in bad]}
 
 
 def retry_under_redelivery(deps, additions):

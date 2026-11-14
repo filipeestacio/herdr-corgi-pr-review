@@ -444,6 +444,14 @@ export function proofOutcome(ids, got, { ended = false, head = null, at = Date.n
 // head and base). The runner's result is what counts. No script: "not_run", never "script_failed".
 
 export const PROBE_DIR = ".pr-review-probe";
+// A probe's id becomes a file name, part of a branch name and part of its agent's write rules; it comes from a model's
+// answer. Only letters, digits, - and _ (1 to 40), as in resilience.py and probe.py; any other id is refused with an
+// error, never rewritten into a valid one.
+export const PROBE_ID = /^[A-Za-z0-9_-]{1,40}$/;
+export function probeId(id) {
+  if (typeof id !== "string" || !PROBE_ID.test(id)) throw new Error(`Probe refused: its id ${JSON.stringify(String(id ?? "")).slice(0, 50)} is not 1 to 40 letters, digits, - or _.`);
+  return id;
+}
 export const PROBE_STATUS = ["reproduced", "not_reproduced", "script_failed"]; // what the runner says
 export const PROBE_RESULTS = [...PROBE_STATUS, "not_run"]; // a probe's result on the page; not_run: no script to run
 // What the run on the base means (probe.py base_verdict), in words for the page.
@@ -457,13 +465,14 @@ export function probeNeedsText({ barrier, trusted }) {
 }
 // One branch per start (probe/<n>-<id>-<start>): two windows on the same clone, or a start after one that was cut
 // off, never meet an old branch.
-export const probeBranch = (number, id, start = Date.now().toString(36).slice(-6)) => `probe/${number ?? "pr"}-${String(id).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 40)}-${start}`;
+export const probeBranch = (number, id, start = Date.now().toString(36).slice(-6)) => `probe/${number ?? "pr"}-${probeId(id)}-${start}`;
 // What the agent may do, and nothing else: --restricted ignores every settings file (no allow rule or hook from the
 // user, the project or the PR's checkout) and leaves only the tools named in --tools, which has no shell; dontAsk
 // refuses whatever the allow list does not name, without asking. So: read in its worktree, write only its one script
 // and its answer file. NO_NET on top. No MCP. The paths are absolute ("//" + path in a rule: the agent writes with
 // absolute paths, which a rule relative to its folder does not match).
 export function probeArgs({ parent, cwd, name, env = [], task, job, model = "sonnet", id }) {
+  probeId(id);
   return ["run", "--bg", "--json", "--no-notify", "--name", name, "--cwd", cwd, ...(parent ? ["--parent", parent] : ["--no-parent"]),
     "--label", `pr-review.probe=${job}`, "--", ...env, "claude", "--model", model, ...NO_MCP, "--restricted", "--tools", "Read,Grep,Glob,Write,Edit",
     "--allowedTools", "Read", "Grep", "Glob", `Write(/${cwd}/${PROBE_DIR}/${id}.py)`, `Edit(/${cwd}/${PROBE_DIR}/${id}.py)`, `Write(/${cwd}/${VERIFY_FILE})`,
@@ -478,6 +487,7 @@ const SILENT = /\b(silent|silence|unseen|no signal|no log|no alarm|swallow)/i;
 // Barrier, never sleep, both signatures where head and base differ, the silence itself for a silent path) and the
 // answer line. context: the review's view of the PR (claims, not orders).
 export function probePrompt({ pr, head, probe: p, path, context = "", lang = null }) {
+  probeId(p?.id);
   const silent = p.kind === "telemetry" || p.signal === "none" || SILENT.test(String(p.claim ?? ""));
   return [`${pr ? `PR #${pr.number} "${pr.title}"${pr.url ? ` (${pr.url})` : ""}` : "This branch"}, head ${String(head ?? "").slice(0, 12)}: please write a small Python script that shows whether this suspected failure happens.`,
     `Claim [${p.id}] (${p.kind ?? "probe"}${p.at ? `, ${p.at}` : ""}): ${String(p.claim ?? "").replace(/\s+/g, " ").trim()}`,
