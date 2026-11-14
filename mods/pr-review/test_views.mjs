@@ -223,6 +223,15 @@ assert.equal(pendingText([{ file: "a.py" }, { file: "a.py" }, { file: "b.py" }])
   assert.deepEqual(attentionCounts([{ security: true }, { security: true }, {}, {}, {}], 3), ["⛨ 2", "3 criteria not met", "3 other blockers"]);
   assert.deepEqual(attentionCounts([{}], 0), ["1 blocker"]);
   assert.deepEqual(attentionCounts([{ security: true }], 1), ["⛨ 1", "1 criterion not met"]);
+  // A layer's ways in and rights from the access rows at its files: public or opened by the PR; others do not count.
+  const { layerAccess } = await import("./views.js");
+  const acc = [{ resource: "FrontDesk Api", kind: "route", public: true, auth_kind: "code", at: "template.yaml:24" },
+    { resource: "Queue", kind: "queue", principal: "FrontDesk function", actions: ["sqs:SendMessage"], public: false, opened_by_pr: true, at: "template.yaml:20" },
+    { resource: "Old table", kind: "table", principal: "Job", actions: ["read"], public: false, at: "infra/db.yaml:3" }];
+  assert.deepEqual(layerAccess(acc, ["deploy/template.yaml"]), { entries: 1, grants: 1,
+    text: "This layer opens a public route (FrontDesk Api), and grants FrontDesk function sqs:SendMessage on Queue." });
+  assert.equal(layerAccess(acc, ["infra/db.yaml", "src/a.py"]), null, "an old right the PR does not open");
+  assert.equal(layerAccess([], ["a"]), null);
 }
 // ---- a finding's facts, its card's line, the rows' heights, the sequence diagram (the diff and a layer's head)
 import { factRows, findingAnchor, wrapCount, seqLayout, IMPACT, SEVERITY_SCALE, SEQ } from "./views.js";

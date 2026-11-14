@@ -476,3 +476,16 @@ export function attentionCounts(list, notMet = 0) {
   const sec = list.filter((a) => a.security).length, rest = list.length - sec;
   return [sec && `⛨ ${sec}`, notMet && `${notMet} ${notMet === 1 ? "criterion" : "criteria"} not met`, rest && `${rest} ${sec ? "other " : ""}${rest === 1 ? "blocker" : "blockers"}`].filter(Boolean);
 }
+
+// A layer's ways in and rights: the access rows (the analysis' or the security run's) at one of its files that are
+// public or opened by this PR, with the sentence for the mark at its row ("This layer opens a public route (Api)."),
+// so a layer that adds a way in shows it without a finding. null: none.
+export function layerAccess(access, files) {
+  const at = (x) => String(x.at ?? "").replace(/:\d+(?:-\d+)?$/, ""), has = (p) => files.some((f) => f === p || f.endsWith(`/${p}`) || p.endsWith(`/${f}`));
+  const rows = (access ?? []).filter((x) => (x.public || x.opened_by_pr) && at(x) && has(at(x)));
+  if (!rows.length) return null;
+  const { entries, grants } = surfaceOf(rows);
+  const say = [...entries.map((x) => `opens ${x.public ? "a public" : "a"} ${x.kind || "way in"}${x.resource ? ` (${x.resource})` : ""}`),
+    ...grants.map((x) => `grants ${x.principal || "someone"} ${(x.actions ?? []).join(", ") || "a right"}${x.resource ? ` on ${x.resource}` : ""}`)];
+  return { entries: entries.length, grants: grants.length, text: `This layer ${say.join(", and ")}.` };
+}
