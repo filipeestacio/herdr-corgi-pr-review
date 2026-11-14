@@ -513,6 +513,13 @@ console.log("ok");
   assert.equal(plainText("- one\n- two\n1. three"), "one two three");
   assert.equal(plainText("## Why\nsee [the docs](https://example.com) now"), "Why see the docs now");
   assert.deepEqual([plainText("#2 feat: loan_id"), plainText("plain title"), plainText(null)], ["#2 feat: loan_id", "plain title", ""]);
+  // A bot's comment in HTML: the tags go, an image alone gives its alt text or "(image)"; a type in angle brackets stays.
+  const logo = '<a href="https://x.dev"><picture><source media="(prefers-color-scheme: dark)" srcset="d.png"><img alt="Coverage report" src="l.png"></picture></a>';
+  assert.equal(plainText(`${logo}\n\n**Coverage** dropped by 2%.`), "Coverage dropped by 2%.");
+  assert.equal(plainText(`<p align="center">${logo}</p>`), "Coverage report");
+  assert.equal(plainText('<img src="x.png">'), "(image)");
+  assert.equal(plainText("returns `Vec<String>` and <T> stays"), "returns Vec<String> and <T> stays");
+  assert.equal(plainText("<!-- bot:meta -->\nDeploy preview <b>ready</b>"), "Deploy preview ready");
   // A suggestion's title is cut at the first sentence end outside inline code, and is plain.
   const sug = (line, reason) => ({ key: `e.py:+${line}`, hunk: "h", path: "e.py", line, old: false, severity: "high", reason });
   assert.deepEqual(mergeFindings([], [sug(1, "`json.loads(x); y` raises `KeyError` on a missing id; both return 500."), sug(2, "Import couples the two. Split it."), sug(3, "No sentence end here")]).findings.map((f) => [f.title, f.detail]),

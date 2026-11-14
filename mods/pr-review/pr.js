@@ -876,13 +876,18 @@ export function reviewState({ pr, head = "", list, counts, findings, statusOf, p
 
 // A Markdown text as one plain line, for a folded card, a list row or a title: its first paragraph only, without code
 // blocks, list markers, a heading's "#" or a quote's ">", and without the marks of code, bold and links. A text that
-// is nothing but a code block (a GitHub suggestion) gives the block's first line.
+// is nothing but a code block (a GitHub suggestion) gives the block's first line. HTML tags (a bot's <a><picture>…)
+// go; a text that is then empty but had an image gives the image's alt text, or "(image)".
 export function plainText(text) {
-  const src = String(text ?? ""), noCode = src.replace(/^[ \t]*(```|~~~)[^\n]*\n[\s\S]*?(?:\n[ \t]*\1[^\n]*|$)/gm, "");
+  const raw = String(text ?? "").replace(/<!--[\s\S]*?-->/g, ""), src = raw.replace(HTML_TAG, " ");
+  if (!src.trim() && /<img\b/i.test(raw)) return /<img\b[^>]*\balt\s*=\s*"([^"]+)"/i.exec(raw)?.[1].trim() || "(image)";
+  const noCode = src.replace(/^[ \t]*(```|~~~)[^\n]*\n[\s\S]*?(?:\n[ \t]*\1[^\n]*|$)/gm, "");
   const para = noCode.split(/\n[ \t]*\n/).find((p) => p.trim()) ?? src.split("\n").find((l) => l.trim() && !/^[ \t]*(```|~~~)/.test(l)) ?? "";
   return para.split("\n").map((l) => l.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "").replace(/^\s*(?:#{1,6}\s+|>\s?)/, "")).join(" ")
     .replace(/`([^`]*)`/g, "$1").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/\s+/g, " ").trim();
 }
+// The HTML tags GitHub renders in a comment, by name: a type like `Vec<String>` or `<T>` is no tag.
+const HTML_TAG = /<\/?(?:a|abbr|b|blockquote|br|code|details|div|em|h[1-6]|hr|i|img|kbd|li|ol|p|picture|pre|source|span|strong|sub|summary|sup|table|tbody|td|th|thead|tr|ul)\b[^>]*>/gi;
 
 // ---- the Findings tab: a finding's way into the PR, how its number comes about, owners, effort (review.js findingsPane)
 
