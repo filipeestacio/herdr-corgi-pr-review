@@ -179,3 +179,64 @@ export function scopeTable(analysis, runs = {}) {
 // its findings on the list now.
 export const runSummary = (r, count = r?.count ?? 0) => (!r?.state ? "not run" : r.state === "running" ? "running" : r.state === "failed" ? `failed: ${r.error || "no error text"}`
   : count ? `${count} ${count === 1 ? "finding" : "findings"}` : "no findings");
+
+// ---- the Security page's attack surface
+// How exposed an access row is: "open" (reachable without the cloud account's credentials and nothing checks the
+// caller), "public" (reachable so, something checks the caller), "internal". What checks: `auth_kind` (none | code |
+// gateway | iam) when the analysis has it, else the first word of the free text `auth`.
+export const exposureOf = (x) => (!x?.public ? "internal" : (x.auth_kind ? x.auth_kind === "none" : /^(|none|no|nothing|unauthenticated|-|–)$/i.test(String(x.auth ?? "").trim().replace(/[\s.(:;,].*$/, ""))) ? "open" : "public");
+export const EXPOSURE = { open: "Public, no auth", public: "Public, auth", internal: "Internal" };
+// The analysis' access rows as the ways in (entry points: everything public, and routes, endpoints and APIs) and the
+// rights granted (the rest: IAM and resource policies). Each row keeps its index `k` and gets its `exposure`; the
+// entries come most exposed first, then in the given order.
+export function surfaceOf(access) {
+  const order = Object.keys(EXPOSURE), rows = (access ?? []).map((x, k) => ({ ...x, k, exposure: exposureOf(x) }));
+  const entry = (x) => Boolean(x.public) || /route|endpoint|api|url|http|gateway|ingress/i.test(String(x.kind ?? ""));
+  return { entries: rows.filter(entry).sort((a, b) => order.indexOf(a.exposure) - order.indexOf(b.exposure) || a.k - b.k), grants: rows.filter((x) => !entry(x)) };
+}
+
+// ---- the Security page's order of findings, the way in the PR opens unasked, and what a zone's component may do
+// How far out a finding can be reached from: the analysis' word when it has one (stated), else from the most exposed
+// way in at it (derived: open → public, public with a check → authenticated, internal → internal_only), else unknown.
+export const REACH = ["public", "authenticated", "internal_only", "unknown"];
+const FROM_EXPOSURE = { open: "public", public: "authenticated", internal: "internal_only" };
+export const reachLevel = (f, ways = []) => (REACH.includes(f?.reachability) ? f.reachability
+  : ways.map((x) => FROM_EXPOSURE[x.exposure]).filter(Boolean).sort((a, b) => REACH.indexOf(a) - REACH.indexOf(b))[0] ?? "unknown");
+const SEV_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
+const REACH_WHY = { public: "Reachable from the internet", authenticated: "Reachable by an authenticated caller", internal_only: "Reachable only from inside", unknown: "Not known from where it can be reached" };
+// rows [{f, level, crosses: true | false | null (the analysis names no zones)}], most exposed first, then the ones whose
+// way crosses a trust boundary, then by severity; each with `why` it stands there, in a few words.
+export function secOrder(rows) {
+  return [...rows].sort((a, b) => REACH.indexOf(a.level) - REACH.indexOf(b.level) || Number(Boolean(b.crosses)) - Number(Boolean(a.crosses)) || (SEV_RANK[a.f.severity] ?? 9) - (SEV_RANK[b.f.severity] ?? 9))
+    .map((r) => ({ ...r, why: [REACH_WHY[r.level], r.crosses === true ? "over a trust boundary" : r.crosses === false ? "no trust boundary on the way" : null, `${r.f.severity} severity`].filter(Boolean).join(", ") + "." }));
+}
+
+// The way in this PR opens although the task does not ask for it: an ask of state "extra" whose places (files: its
+// hunks' and its findings' files) hold the way in's place or its card's (files). Only a one-to-one match counts:
+// [{entry, ask}]. asks [{state, files}], entries [{opened_by_pr, files}].
+export function extraWays(asks, entries) {
+  const extra = (asks ?? []).filter((a) => a.state === "extra"), open = (entries ?? []).filter((x) => x.opened_by_pr !== false);
+  const hits = (a, x) => x.files.some((f) => a.files.includes(f));
+  return extra.flatMap((a) => {
+    const mine = open.filter((x) => hits(a, x));
+    return mine.length === 1 && extra.filter((b) => hits(b, mine[0])).length === 1 ? [{ entry: mine[0], ask: a }] : [];
+  });
+}
+
+// What a component in a zone with a way in may do: the access rows whose principal is the zone or one of its cards
+// (by name). [{zone, rights: [{resource, actions, used}]}] for each zone that holds a way in's card, in zone order.
+export function zoneRights(zones, nodes, entries, access) {
+  const norm = (s) => String(s ?? "").trim().toLowerCase(), cards = nodes ?? [];
+  const zoneOf = (id) => cards.find((n) => n.id === id)?.zone;
+  const held = new Set((entries ?? []).map((x) => zoneOf(x.node)).filter(Boolean));
+  return (zones ?? []).filter((z) => held.has(z.id)).map((z) => {
+    const names = new Set([z.name, z.id, ...cards.filter((n) => n.zone === z.id).flatMap((n) => [n.label, n.id])].filter(Boolean).map(norm));
+    return { zone: z, rights: (access ?? []).filter((x) => names.has(norm(x.principal))).map((x) => ({ resource: x.resource ?? "", actions: x.actions ?? [], used: x.used })) };
+  });
+}
+// That as a sentence: "If FrontDesk function is compromised, it can sqs:SendMessage on LoanEvents (granted, never used)."
+export function blastLine({ zone, rights }) {
+  const name = zone.name ?? zone.id;
+  if (!rights.length) return `If ${name} is compromised, it holds no right the analysis names.`;
+  return `If ${name} is compromised, it can ${rights.map((r) => `${r.actions.join(", ") || "act"} on ${r.resource}${r.used === false ? " (granted, never used)" : ""}`).join("; ")}.`;
+}

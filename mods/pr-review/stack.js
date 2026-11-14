@@ -1,7 +1,7 @@
 // The review layout's "change stack" pieces drawn natively (no libraries): the architecture picture, a layer's
 // picture (flow, sequence, state machine, steps), stat cards, segmented bars, collapsible cards, the PR triage card.
 // Pure layout lives in arch.js (archLayout) and pr.js (levels); these only draw. UI text is English.
-import { div } from "gpui-kit";
+import { div, PathBuilder } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { levels } from "./pr.js";
 import { archLayout, archFocus, stateLayout, transitionText, sourceStyle, hasSources, pathMark, SPEC_TIP, ARCH, LABEL } from "./arch.js";
@@ -9,7 +9,7 @@ import { flowArch } from "./views.js";
 
 export const STATUS_COLOR = { new: "ansi2", added: "ansi2", changed: "accent", unchanged: "muted", removed: "ansi1" };
 export const SEVERITY_COLOR = { critical: "ansi1", high: "ansi1", medium: "ansi3", low: "ansi4", minimal: "ansi2" };
-const GLYPH = { component: "◧", data: "⛁", service: "⚙", "api·service": "⇄", api: "⇄", context: "</>", queue: "☰", job: "⏱", ui: "▣" };
+const GLYPH = { external: "⇢", component: "◧", data: "⛁", service: "⚙", "api·service": "⇄", api: "⇄", context: "</>", queue: "☰", job: "⏱", ui: "▣" };
 
 // A small "spec" tag: the element is only in the PR description/ticket, not found in the diff.
 export const specTag = (t, id) => div().id(id).flex_none().px(4).rounded(4).border_1().border_dashed().border_color(t.ansi5).text_size(10).text_color(t.ansi5).tooltip(SPEC_TIP).child("spec");
@@ -60,13 +60,16 @@ export function foldCard(t, id, title, right, open, toggle, body) {
 // others are listed in archLegend.
 // onNode(node, event, cx) opens a card's place (its "Show in diff ↗" link, for cards with at or file); decorate(node) adds lines
 // to a card (findings); opts {hl: path num to highlight, onHl(num | null, cx), focus: node id, hover: node id,
-// onFocus(id | null, cx), onHover(id | null, cx), marks: arch.js archMarks, zoom}. A focused node (clicked) keeps its paths
+// onFocus(id | null, cx), onHover(id | null, cx), marks: arch.js archMarks, zoom, keep: a Set of node ids (with
+// nothing focused or hovered, the other cards and the lines not between two of them are dimmed: the Security page's
+// view), numbers: false (no number on a line unless it carries a mark)}. A focused node (clicked) keeps its paths
 // and neighbours and dims the other lines to 25% (a hovered one to 55%); the other cards only to 60%, so their names
 // stay readable. Clicking a chip focuses its target. marks: where unresolved findings sit. A card shows the highest
 // severity with the count, and "flow breaks here" when one of them breaks the flow at it (the layout keeps a row:
 // extra); a call shows the same above its text, or as the colour of its number when it has no text on the line.
 export function archView(L, t, id, onNode, decorate, opts = {}) {
-  const Fc = archFocus(L, opts.focus), F = Fc ?? archFocus(L, opts.hover), fade = Fc ? 0.25 : 0.55;
+  const kept = opts.keep ? { nodes: opts.keep, paths: new Set(L.paths.filter((p) => opts.keep.has(p.to) && p.from.some((f) => opts.keep.has(f))).map((p) => p.num)) } : null;
+  const Fc = archFocus(L, opts.focus), Fh = Fc ? null : archFocus(L, opts.hover), F = Fc ?? Fh ?? kept, fade = Fh ? 0.55 : 0.25;
   const hlP = L.paths.find((p) => p.num === opts.hl), hlNodes = new Set(hlP ? [...hlP.from, hlP.to] : []);
   const dimP = (p) => Boolean(F) && !F.paths.has(p.num), dimN = (n) => Boolean(F) && !F.nodes.has(n.id);
   // A spec-only call in the legend's colour for it ("Spec only").
@@ -105,7 +108,7 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
   }
   // A marked call without its text on the line: its number in the severity's colour (the legend row has the count).
   const bare = (p) => (p.text?.mark ? null : pathMark(marks, p));
-  const badges = L.paths.flatMap((p, i) => (p.badge ? [dim(div().id(`${id}-b${i}`).absolute().left(p.badge.x - ARCH.BADGE / 2).top(p.badge.y - ARCH.BADGE / 2).w(ARCH.BADGE).h(ARCH.BADGE)
+  const badges = L.paths.flatMap((p, i) => (p.badge && (opts.numbers !== false || bare(p)) ? [dim(div().id(`${id}-b${i}`).absolute().left(p.badge.x - ARCH.BADGE / 2).top(p.badge.y - ARCH.BADGE / 2).w(ARCH.BADGE).h(ARCH.BADGE)
     .flex().items_center().justify_center().rounded_full().border_1().border_color(bare(p) ? sevOf(bare(p)) : color(p)).bg(opts.hl === p.num ? t.accent + "33" : bare(p) ? sevOf(bare(p)) + "26" : t.background)
     .text_size(11).text_color(t.foreground).tooltip([tipOf(p), bare(p) && markTip(bare(p))].filter(Boolean).join("\n")).child(String(p.num))
     .when(Boolean(opts.onHl), (e) => e.on_hover((on, cx) => opts.onHl(on ? p.num : null, cx)))
@@ -124,17 +127,24 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
     .child(div().min_w(0).truncate().child(p.chip.text))
     .when(Boolean(opts.onHl), (e) => e.on_hover((on, cx) => opts.onHl(on ? p.num : null, cx)))
     .when(Boolean(opts.onFocus), (e) => e.cursor_pointer().on_click((_e, cx) => { opts.onFocus(p.to, cx); cx.stop_propagation(); })), dimP(p))] : []));
-  const groups = L.groups.map((g, i) => div().id(`${id}-g${i}`).absolute().left(g.x).top(g.y).w(g.w).h(g.h).rounded(12).border_1().border_dashed()
-    .border_color(t.border).child(h_flex().px(PAD_IN).h(26).items_center().gap(6).text_size(11.5)
+  // A frame: a group, or a trust zone (arch.js zoneArch: the colour of its trust level, a light tint, the level's word
+  // in the header). A bare group (cards outside every zone) has no frame.
+  const groups = L.groups.flatMap((g, i) => (g.bare ? [] : [div().id(`${id}-g${i}`).absolute().left(g.x).top(g.y).w(g.w).h(g.h).rounded(12).border_1().border_dashed()
+    .border_color(g.trust ? trustColor(t, g.trust) : t.border).when(Boolean(g.trust), (e) => e.bg(trustColor(t, g.trust) + "0f")).child(h_flex().px(PAD_IN).h(26).items_center().gap(6).text_size(11.5)
       .child(div().flex_1().min_w(0).truncate().font_semibold().text_color(t.foreground).child(g.label ?? ""))
-      .child(div().flex_none().text_color(t.muted).child(g.kind ?? ""))));
+      .child(div().flex_none().text_color(g.trust ? trustColor(t, g.trust) : t.muted).child(g.kind ?? "")))]));
+  // A call over a trust boundary: two bars across its line, before the arrow.
+  const crossings = L.paths.flatMap((p, i) => (p.crosses ? [dim(div().id(`${id}-x${i}`).absolute().left(p.arrow.x - 24).top(p.arrow.y - 9).w(12).h(18).flex().items_center().justify_center()
+    .text_size(13).font_semibold().text_color(t.ansi3).tooltip(`Crosses a trust boundary${typeof p.crosses === "string" ? `: ${p.crosses}` : ""}`).child("‖"), dimP(p))] : []));
   const nodes = L.nodes.map((n, i) => {
     const st = sourceStyle(n.source), c = st.tone === "muted" ? t.muted : t[STATUS_COLOR[n.status] ?? "muted"];
     const live = st.tone !== "muted" && n.status && n.status !== "unchanged", lit = hlNodes.has(n.id) || opts.focus === n.id;
     const open = Boolean(onNode && (n.at || n.file)), tip = [n.cut ? `${n.label ?? n.id}\n\n${n.description ?? ""}` : "", st.tip, n.evidence].filter(Boolean).join("\n\n");
-    return dim(v_flex().id(`${id}-n${i}`).absolute().left(n.x).top(n.y).w(n.w).h(n.h).px(10).py(8).gap(3).rounded(8).border_1()
-      .border_color(lit ? t.accent : live ? c : t.border).when(live && !st.dashed, (e) => e.border_l(4)).when(lit, (e) => e.border_2()).when(st.dashed, (e) => e.border_dashed())
-      .bg(lit ? t.accent + "1a" : n.status === "new" ? t.ansi2 + "14" : t.surface)
+    // A caller from outside (type external) is a dashed capsule.
+    const ext = n.type === "external";
+    return dim(v_flex().id(`${id}-n${i}`).absolute().left(n.x).top(n.y).w(n.w).h(n.h).px(ext ? 16 : 10).py(8).gap(3).rounded(ext ? 28 : 8).border_1()
+      .border_color(lit ? t.accent : live ? c : ext ? t.muted : t.border).when(live && !st.dashed && !ext, (e) => e.border_l(4)).when(lit, (e) => e.border_2()).when(st.dashed || ext, (e) => e.border_dashed())
+      .bg(lit ? t.accent + "1a" : ext ? t.background : n.status === "new" ? t.ansi2 + "14" : t.surface)
       .when(Boolean(tip), (e) => e.tooltip(tip))
       .when(Boolean(opts.onFocus), (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => opts.onFocus(opts.focus === n.id ? null : n.id, cx)))
       .when(!opts.onFocus && open, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((ev, cx) => onNode(n, ev, cx)))
@@ -155,7 +165,7 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
         .child(div().flex_1())
         .when(open && Boolean(opts.onFocus) && n.w >= ARCH.W, (e) => e.child(div().id(`${id}-o${i}`).flex_none().px(4).rounded(4).text_color(t.accent).cursor_pointer().hover((s) => s.bg(t.hover))
           .tooltip("Show this place in the diff").child("Show in diff ↗").on_click((ev, cx) => { onNode(n, ev, cx); cx.stop_propagation(); })))
-        .when(Boolean(n.status), (e) => e.child(chip(t, n.status === "new" ? "ADDED" : n.status.toUpperCase(), c, false, `${id}-st${i}`, `Status in this PR: ${n.status === "new" ? "added" : n.status}`)))), dimN(n), Math.max(fade, 0.6));
+        .when(Boolean(n.status) && !(ext && n.status === "unchanged"), (e) => e.child(chip(t, n.status === "new" ? "ADDED" : n.status.toUpperCase(), c, false, `${id}-st${i}`, `Status in this PR: ${n.status === "new" ? "added" : n.status}`)))), dimN(n), Math.max(fade, 0.6));
   });
   // An orchestrator's states: a lane down the card, one row each; a state that calls a component ends in "→" where its
   // line leaves the card.
@@ -165,7 +175,7 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
       .child(div().flex_1().min_w(0).truncate().text_color(s.source === "spec" || s.source === "existing" ? t.muted : t.foreground).child(s.name))
       .when(s.source === "spec", (e) => e.child(specTag(t, `${id}-s${i}-${k}-sp`)))
       .when(Boolean(s.calls), (e) => e.child(div().flex_none().text_color(t.muted).child("→"))))), dimN(n), Math.max(fade, 0.6))]));
-  return div().id(id).relative().flex_none().w(L.width + 4).h(L.height + 4).children([...groups, ...els, ...nodes, ...states, ...texts, ...badges, ...chips]);
+  return div().id(id).relative().flex_none().w(L.width + 4).h(L.height + 4).children([gridBg(t, L.width + 4, L.height + 4), ...groups, ...els, ...crossings, ...nodes, ...states, ...texts, ...badges, ...chips]);
 }
 const FLOW_FITS = 380;
 // A layer's flow laid out by archLayout with narrower cards (the column is about 420 px), memoized.
@@ -182,6 +192,18 @@ function flowModel(v) {
   return flowMemo.get(key);
 }
 const cap = (s) => String(s ?? "").replace(/^./, (c) => c.toUpperCase());
+// Trust zones (arch.js zoneArch): a colour per trust level, none of them the severity red.
+const TRUST = { public: "ansi3", authenticated: "ansi4", internal: "ansi6", data: "ansi5" };
+const trustColor = (t, trust) => t[TRUST[trust] ?? "ansi6"];
+// Whether a picture has something about trust to explain: zones as frames, or a call over a boundary.
+export const hasTrust = (L) => Boolean(L) && (L.groups.some((g) => g.trust) || L.paths.some((p) => p.crosses));
+// That explanation, in one row: the trust levels of the frames shown, and the mark of a call over a boundary.
+export function trustLegend(L, t) {
+  const levels = [...new Set(L.groups.map((g) => g.trust).filter(Boolean))];
+  return h_flex().gap(10).text_size(11.5).text_color(t.muted)
+    .when(levels.length > 0, (e) => e.child("Trust zones:").children(levels.map((z) => h_flex().gap(4).items_center().child(div().w(10).h(10).rounded(3).border_1().border_dashed().border_color(trustColor(t, z)).bg(trustColor(t, z) + "33")).child(z))))
+    .when(L.paths.some((p) => p.crosses), (e) => e.child(h_flex().gap(4).items_center().child(div().font_semibold().text_color(t.ansi3).child("‖")).child("call over a trust boundary")));
+}
 // What a mark's chip says in full: the count by kind, then the titles (at most five).
 const markTip = (m) => [`${m.n} unresolved ${m.n === 1 ? "finding" : "findings"} here, the highest is ${m.severity}${m.breaks ? `; ${m.breaks === m.n ? (m.n === 1 ? "it breaks" : "all break") : `${m.breaks} of them break`} the flow at this place` : ""}.`,
   ...m.findings.slice(0, 5).map((f) => `· ${f.title}`), ...(m.n > 5 ? [`· and ${m.n - 5} more`] : [])].join("\n");
@@ -325,7 +347,7 @@ export function stateView(L, t, id, onJump) {
     return [hline(`${id}-sl${i}`, s.x1, s.x2, s.y, c, s.dashed), div().id(`${id}-sc${i}`).absolute().left(s.chip.x).top(s.chip.y).w(s.chip.w).h(s.chip.h).px(5).flex().items_center()
       .rounded(5).border_1().border_color(c).when(s.dashed, (e) => e.border_dashed()).bg(t.background).text_size(10.5).text_color(t.foreground).tooltip(s.text).child(div().truncate().child(s.text))];
   });
-  return div().id(id).relative().flex_none().w(L.width).h(L.height + 2).children([...els, ...nodes, ...kids, ...loops, ...stubs]);
+  return div().id(id).relative().flex_none().w(L.width).h(L.height + 2).children([gridBg(t, L.width, L.height + 2), ...els, ...nodes, ...kids, ...loops, ...stubs]);
 }
 
 // The PR triage card (pr.js triageOf): priority, title, the why in an accent quote bar, chips, repo and number.
@@ -338,4 +360,16 @@ export function triageCard(t, id, pr, tri, onClick) {
     .when(Boolean(tri.why), (e) => e.child(div().pl(8).border_l(3).border_color(t.accent).text_size(11.5).line_height(1.4).text_color(t.foreground).whitespace_normal().child(tri.why)))
     .child(h_flex().flex_wrap().gap(4).children(tri.chips.map((c, k) => chip(t, c, /security/i.test(c) ? t.ansi1 : t.muted, false, `${id}-ch${k}`, triageTip(c)))))
     .child(div().id(`${id}-rp`).text_size(10.5).text_color(t.dim).tooltip("Repository and PR number").child(`${pr.repo} #${pr.number}`));
+}
+
+// A faint grid behind a picture (graph paper): one painted path (window.paint_path) with a line every GRID px, as many
+// as the box holds, in the text colour at 7 % strength (low contrast in both themes). One element however big the picture is.
+const GRID = 24;
+export function gridBg(t, w, h) {
+  // ponytail: coordinates in % of the box, as the other mods' paint_path rings do.
+  const X = (x) => `${(100 * x) / w}%`, Y = (y) => `${(100 * y) / h}%`;
+  let p = PathBuilder.stroke(1);
+  for (let x = GRID; x < w; x += GRID) p = p.move_to(X(x), "0%").line_to(X(x), "100%");
+  for (let y = GRID; y < h; y += GRID) p = p.move_to("0%", Y(y)).line_to("100%", Y(y));
+  return globalThis.window.paint_path(p.build(), t.foreground + "12").absolute().top(0).left(0).w(w).h(h);
 }

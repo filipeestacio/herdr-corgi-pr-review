@@ -1,7 +1,7 @@
 // Run: node test_arch.mjs  (the architecture / blast radius layout: columns, lanes, ports, fans, stubs, hops, badges,
 // card sizes, focus, orchestrator states)
 import assert from "node:assert/strict";
-import { archLayout, archBands, archFocus, archMarks, pathMark, labelLines, stateLayout, sourceStyle, hasSources, crossings, clampText, wrapLines, ARCH, LABEL } from "./arch.js";
+import { archLayout, archBands, archFocus, archMarks, pathMark, labelLines, zoneArch, stateLayout, sourceStyle, hasSources, crossings, clampText, wrapLines, ARCH, LABEL } from "./arch.js";
 import { blastArch } from "./pr.js";
 
 const inside = (s, r) => (s.y1 === s.y2
@@ -373,7 +373,7 @@ assert.deepEqual(clampText("short", 10, 3), { text: "short", lines: 1, cut: fals
     nodes: ["a1", "a2", "b1", "b2", "c1", "c2"].map((id) => ({ id, label: id, group: id[0] })),
     edges: [["a1", "a2"], ["a2", "b1"], ["b1", "b2"], ["b2", "c1"], ["c1", "c2"]].map(([from, to]) => ({ from, to, label: "calls" })) };
   const L = archLayout(arch);
-  assert.deepEqual(archBands(L, L.width + 10), [{ x0: 0, x1: L.width, h: L.height }]);
+  assert.deepEqual(archBands(L, L.width + 10), [{ x0: 0, x1: L.width, h: L.height, in: [], out: [] }]);
   const view = Math.round(L.width / 2.5), B = archBands(L, view);
   assert.ok(B.length >= 3, `${B.length} bands`);
   assert.equal(B[0].x0, 0); assert.equal(B.at(-1).x1, L.width);
@@ -403,6 +403,10 @@ const mail = { groups: [{"id": "fd", "label": "Front desk Lambda"}, {"id": "core
   for (const s of second.segments) for (const n of L.nodes) assert.ok(!inside(s, n), `the long line runs through ${n.id}`);
   assert.ok(second.segments.some((s) => s.y1 === s.y2 && s.y1 > bottom), "it runs under the cards");
   assert.ok(L.height > Math.max(...second.segments.map((s) => Math.max(s.y1, s.y2))), "and inside the picture");
+  // A call can be asked for as a line (the Security page's way from an entry to a finding): no stub then, also
+  // without texts on the lines.
+  const forced = archLayout(mail, "diff", () => 0, true, { lines: (i) => i === 6 }), fl = forced.paths.find((p) => p.edges.includes(6));
+  assert.deepEqual([fl.kind, fl.text, fl.chip], ["long", undefined, undefined]); sane(forced, "forced line");
   // Every call has its text next to its number, on no card and on no other text; the gutters grew to hold them.
   assert.ok(L.width > plain.width);
   const texts = L.paths.map((p) => p.text);
@@ -428,6 +432,13 @@ const mail = { groups: [{"id": "fd", "label": "Front desk Lambda"}, {"id": "core
   const hs = archBands(L, 900).map((b) => b.h);
   assert.ok(hs.length > 1 && hs.every((h) => h > 0 && h <= L.height) && Math.max(...hs) === L.height, `band heights ${hs}`);
   assert.equal(archBands(L, 0)[0].h, L.height);
+  // A line that goes on in the next band is named at both ends: what leaves a band on the right enters the next on the
+  // left, with the same numbers at the same height. Nothing enters the first band or leaves the last.
+  const BB = archBands(L, 900);
+  assert.deepEqual([BB[0].in, BB.at(-1).out], [[], []]);
+  BB.slice(0, -1).forEach((b, k) => { assert.ok(b.out.length > 0, `nothing leaves band ${k}`); assert.deepEqual(b.out, BB[k + 1].in); });
+  for (const b of BB) for (const m of [...b.in, ...b.out]) assert.ok(m.nums.length > 0 && m.nums.every((n) => L.paths.some((p) => p.num === n)));
+  assert.ok(BB.flatMap((b) => b.out).some((m) => m.back && m.nums.includes(L.paths.find((p) => p.kind === "long").num)), "the long line under the picture runs right to left");
   // A cut falls on the side of its gutter that keeps the bands short: the queue's line runs down to the consumer's
   // row, so its lane stays in the band of the tall column and the consumer's band is as tall as its frame.
   const once = archLayout({ ...mail, edges: mail.edges.slice(0, -1) }, "diff", () => 0, false, { labels: true }); // without the long line under the picture
@@ -462,9 +473,29 @@ const mail = { groups: [{"id": "fd", "label": "Front desk Lambda"}, {"id": "core
   // Two cards of one file: the last one that starts at or above the finding's line.
   const two = { nodes: [{ id: "a", at: "t.yaml:11" }, { id: "b", at: "t.yaml:28" }], edges: [] };
   assert.deepEqual([...archMarks(two, [f("x", "low", "t.yaml", 30), f("y", "low", "t.yaml", 12), f("z", "low", "t.yaml", 3)]).nodes].map(([k, v]) => [k, v.n]), [["b", 1], ["a", 2]]);
+  // A finding that names its way in sits on that way's card, not on the card of its file (a template line).
+  const acc = [{ id: "acc1", node: "handler" }, { id: "acc9", node: "no-such-card" }];
+  const way = (ids) => [...archMarks(mail, [{ ...f("token", "high", "template.yaml", 18), reachable_from: ids }], acc).nodes.keys()];
+  assert.deepEqual([way(["acc1"]), way(["acc9", "acc1"]), way(["acc9"]), way([])], [["handler"], ["handler"], ["queue"], ["queue"]]);
   // A bus merges calls: its mark is the sum, with the highest severity. Nothing marked: null.
   assert.deepEqual(pathMark(m, { edges: [0, 6] }).severity, "high"); assert.equal(pathMark(m, { edges: [0, 6] }).n, 2);
   assert.equal(pathMark(m, { edges: [3] }), null); assert.equal(pathMark(null, { edges: [0] }), null);
   assert.deepEqual([...archMarks(null, [f("x", "low", "a.py", 1)]).nodes], []);
+}
+
+// ---- trust zones passed through the layout
+{
+  // Trust zones as the frames (the Security page): the zones are the groups, a card without a zone stands in a
+  // bare group (laid out, not drawn), a call over a boundary says so. Without zones the picture is untouched.
+  const zoned = { ...mail, zones: [{ id: "z_fd", name: "Front desk function", trust: "authenticated" }, { id: "z_app", name: "Application", trust: "internal" }],
+    nodes: mail.nodes.map((n) => ({ ...n, zone: n.id === "handler" ? "z_fd" : n.id === "mailer" || n.id === "queue" ? undefined : "z_app" })),
+    edges: mail.edges.map((e) => (e.from === "handler" ? { ...e, crosses: true } : e)) };
+  const za = zoneArch(zoned), Z = archLayout(za);
+  assert.deepEqual(Z.groups.map((g) => [g.label, g.trust ?? null, Boolean(g.bare)]), [["Front desk function", "authenticated", false], ["Application", "internal", false], ["", null, true], ["", null, true]]);
+  assert.deepEqual(Object.fromEntries(za.nodes.map((n) => [n.id, n.group])), { handler: "z_fd", reminders: "z_app", status: "z_app", events: "z_app", consumer: "z_app", queue: "\0free:infra", mailer: "\0free:core" });
+  assert.deepEqual(Z.paths.filter((p) => p.crosses).map((p) => p.from[0]), ["handler"]);
+  assert.deepEqual(za.edges, zoned.edges, "the calls keep their indexes: findings find their call");
+  assert.equal(zoneArch(mail), mail); assert.equal(zoneArch(null), null);
+  assert.ok(archLayout(mail).paths.every((p) => p.crosses === null));
 }
 console.log("ok");

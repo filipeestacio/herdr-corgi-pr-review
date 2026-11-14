@@ -140,6 +140,9 @@ export function archFocus(L, id) {
 }
 
 // view: "diff" all, "before" without new nodes, "after" without removed ones. extra(n): more lines in a card (findings).
+// A path `crosses` when one of its calls goes over a trust boundary (an analysis that names zones; zoneArch makes the
+// zones the frames). opts.lines(edge index): a call that is drawn as a long line under the picture when it cannot be a line to the next
+// column, instead of a stub.
 // Returns {groups, nodes, paths, trunks, hops, width, height}; every box in px. paths: one per legend row {key, num,
 // mark, kind: "next" | "fan" | "stub", from: [ids], to, label, edges: [indexes], segments: [{x1, y1, x2, y2}],
 // arrow: {x, y, left}, badge: {x, y} (null for a stub), chip: {x, y, w, h, text} (stubs), trunk (fans: the trunk's
@@ -213,7 +216,10 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
   // ponytail: at most LABEL.LONG long lines, none into the first column (no gutter left of it) or from a state row;
   // the rest stay stubs. More would need lanes ordered by crossings, as the next-column lines have.
   const drawn = (e) => col.get(e.to) - col.get(e.from) === 1;
-  const longs = opts.labels ? edges.filter((e) => !drawn(e) && e.anchor === undefined && col.get(e.to) > 0 && edges.some((x) => x.to === e.to && drawn(x))).slice(0, LABEL.LONG) : [];
+  // opts.lines(edge index): calls that must be lines whatever their number (the Security page: the way from an entry to
+  // a finding), as far as a long line can be drawn.
+  const canLong = (e) => !drawn(e) && e.anchor === undefined && col.get(e.to) > 0, forced = edges.filter((e) => canLong(e) && opts.lines?.(e.i));
+  const longs = [...forced, ...(opts.labels ? edges.filter((e) => canLong(e) && !forced.includes(e) && edges.some((x) => x.to === e.to && drawn(x))).slice(0, LABEL.LONG) : [])];
   const kindOf = (e) => (drawn(e) ? "next" : longs.includes(e) ? "long" : "stub");
   const nexts = edges.filter((e) => kindOf(e) === "next");
 
@@ -272,7 +278,7 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
     const key = kind === "stub" || kind === "long" ? `${kind}:${e.i}` : fan ? `fan:${fanKey(e)}:${e.i}` : e.anchor !== undefined ? `rows:${e.from}>${e.to}` : `next:${e.to}:${norm(e.label)}:${e.source ?? ""}`;
     if (!byKey.has(key)) {
       const p = { key, kind: fan ? "fan" : kind, to: e.to, from: [], edges: [], label: e.label ?? "", dashed: Boolean(e.dashed) || e.source === "spec", source: e.source ?? null,
-        evidence: e.evidence ?? null, status: e.status ?? (e.changed ? "changed" : null) };
+        evidence: e.evidence ?? null, status: e.status ?? (e.changed ? "changed" : null), crosses: null };
       byKey.set(key, p); paths.push(p);
       if (fan) {
         const tk = `fan:${fanKey(e)}`;
@@ -284,6 +290,7 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
     const p = byKey.get(key);
     if (!p.from.includes(e.from)) p.from.push(e.from);
     p.edges.push(e.i);
+    if (e.crosses) p.crosses = e.crosses; // the call goes over a trust boundary (an analysis that names zones)
     if (e.anchor !== undefined) {
       anchorOf.set(`${key}:${e.from}`, [...(anchorOf.get(`${key}:${e.from}`) ?? []), e.anchor].sort((a, b) => a - b));
       if (e.label && !p.label.split(", ").includes(e.label)) p.label = p.label ? `${p.label}, ${e.label}` : e.label;
@@ -480,13 +487,15 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
 
 // Where the unresolved findings sit on the picture. One that breaks the flow says where (`breaks`: {node}, or {from,
 // to, edge: "e<index>"} for a call); one that does not (a reviewer's, mostly) goes to the card of its file: the last
-// card that starts at or above its line, else the file's first card; no card for the file: nowhere. Returns {nodes:
+// card that starts at or above its line, else the file's first card; no card for the file: nowhere. Before the file,
+// a finding that names the access rows it is reachable from (`reachable_from`, access: [{id, node}]) goes to the card
+// of the first such row: a missing token in the template belongs to the function it guards. Returns {nodes:
 // Map(id -> mark), edges: Map(edge index -> mark)}, mark = {findings, n, breaks: how many of them break the flow
 // there, severity: the highest}. Pass the unresolved findings only.
 const SEV_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 const placeOf = (at) => { const m = /^(.*?):(\d+)/.exec(String(at ?? "")); return { path: m?.[1] ?? (at ? String(at) : null), line: Number(m?.[2] ?? 0) }; };
 const sameFile = (a, b) => a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`);
-export function archMarks(arch, findings) {
+export function archMarks(arch, findings, access = []) {
   const nodes = new Map(), edges = new Map(), all = arch?.nodes ?? [], calls = arch?.edges ?? [];
   const put = (m, k, f, breaks) => {
     const x = m.get(k) ?? { findings: [], n: 0, breaks: 0, severity: f.severity };
@@ -500,6 +509,8 @@ export function archMarks(arch, findings) {
     const e = named && calls[Number(named[1])] ? Number(named[1]) : b.from && b.to ? calls.findIndex((x) => x.from === b.from && x.to === b.to) : -1;
     if (e >= 0) { put(edges, e, f, true); continue; }
     if (b.node && all.some((n) => n.id === b.node)) { put(nodes, b.node, f, true); continue; }
+    const way = (f.reachable_from ?? []).map((id) => (access ?? []).find((x) => x.id === id)?.node).find((id) => all.some((n) => n.id === id));
+    if (way) { put(nodes, way, f, false); continue; }
     const mine = places.filter((x) => f.file && sameFile(x.path, f.file));
     const card = mine.filter((x) => x.line <= (f.line ?? 0)).sort((x, y) => y.line - x.line)[0] ?? mine[0];
     if (card) put(nodes, card.id, f, false);
@@ -514,13 +525,26 @@ export function pathMark(marks, p) {
   return { findings: ms.flatMap((m) => m.findings), n: ms.reduce((s, m) => s + m.n, 0), breaks: ms.reduce((s, m) => s + m.breaks, 0), severity: top.severity };
 }
 
+// The picture with its trust zones as the frames (the Security page): `zones` [{id, name, trust}] become the groups, a
+// card moves into the group of its `zone`, and a card without a zone stands outside every frame (a group of its own
+// per former group, `bare`: laid out, not drawn). An analysis without zones: the picture as it is.
+export function zoneArch(arch) {
+  const zones = (arch?.zones ?? []).filter((z) => z?.id), ids = new Set(zones.map((z) => z.id));
+  if (!zones.length) return arch;
+  const free = [...new Set((arch.nodes ?? []).filter((n) => !ids.has(n.zone)).map((n) => n.group))];
+  return { ...arch, groups: [...zones.map((z) => ({ id: z.id, label: z.name ?? z.id, kind: z.trust ?? "", trust: z.trust ?? "internal" })), ...free.map((g) => ({ id: `\0free:${g}`, label: "", kind: "", bare: true }))],
+    nodes: (arch.nodes ?? []).map((n) => ({ ...n, group: ids.has(n.zone) ? n.zone : `\0free:${n.group}` })) };
+}
+
 // A picture wider than the view, cut into bands stacked top to bottom instead of one long row to scroll sideways:
 // cuts go through a gap no card, badge, chip or text covers, each band as wide as fits the view. Lines
-// crossing a cut run on in the next band at the same height (their number badges tell them apart). Returns [{x0, x1,
-// h}], h: how far down that band's frames and lines reach (a band is not as tall as the tallest one); one band (the
-// whole picture) when it fits or there is no gap to cut at.
+// crossing a cut run on in the next band at the same height. Returns [{x0, x1, h, in, out}], h: how far down that
+// band's frames and lines reach (a band is not as tall as the tallest one); out and in: the lines that cross its right
+// and its left cut, [{y, nums: the paths' numbers, back: the line runs right to left (a long line)}], so both ends of a
+// line that goes on in another band can carry its number. One band (the whole picture) when it fits or there is no
+// gap to cut at.
 export function archBands(L, viewW) {
-  if (!(viewW > 0) || L.width <= viewW) return [{ x0: 0, x1: L.width, h: L.height }];
+  if (!(viewW > 0) || L.width <= viewW) return [{ x0: 0, x1: L.width, h: L.height, in: [], out: [] }];
   const boxes = [...L.nodes, ...L.paths.flatMap((p) => [p.chip, p.text, p.badge && { x: p.badge.x - 9, w: 18 }])].filter((b) => b && b.w > 0).map((b) => [b.x, b.x + b.w]).sort((a, b) => a[0] - b[0]);
   // A gap can be cut right after what is left of it (lo: that gutter's lanes start the next band) or right before what
   // is right of it, a group's frame included (hi: they end this one).
@@ -537,7 +561,17 @@ export function archBands(L, viewW) {
   }
   const spans = [...L.groups.map((g) => [g.x, g.x + g.w, g.y + g.h]), ...L.paths.flatMap((p) => [...p.segments.map((s) => [Math.min(s.x1, s.x2), Math.max(s.x1, s.x2), Math.max(s.y1, s.y2) + 12]),
     ...[p.chip, p.text].filter(Boolean).map((b) => [b.x, b.x + b.w, b.y + b.h])])];
-  const bandsAt = (xs) => [0, ...xs].map((a, k) => ({ x0: a, x1: xs[k] ?? L.width })).map((b) => ({ ...b, h: Math.max(0, ...spans.filter(([a, z]) => a < b.x1 && z > b.x0).map(([, , y]) => y)) }));
+  const crossing = (c) => {
+    const at = new Map(); // y -> {y, nums, back}
+    for (const p of L.paths) for (const g of p.segments) if (g.y1 === g.y2 && Math.min(g.x1, g.x2) < c && Math.max(g.x1, g.x2) > c) {
+      const m = at.get(g.y1) ?? { y: g.y1, nums: [], back: g.x2 < g.x1 };
+      if (!m.nums.includes(p.num)) m.nums.push(p.num);
+      at.set(g.y1, m);
+    }
+    return [...at.values()].sort((a, b) => a.y - b.y);
+  };
+  const bandsAt = (xs) => [0, ...xs].map((a, k) => ({ x0: a, x1: xs[k] ?? L.width })).map((b) => ({ ...b, h: Math.max(0, ...spans.filter(([a, z]) => a < b.x1 && z > b.x0).map(([, , y]) => y)),
+    in: b.x0 > 0 ? crossing(b.x0) : [], out: b.x1 < L.width ? crossing(b.x1) : [] }));
   const tall = (xs) => bandsAt(xs).reduce((sum, b) => sum + b.h, 0);
   // Each cut on the side that makes the bands less tall: a line that runs far down its gutter goes to the band that is
   // tall anyway. hi only while the band left of it still fits the view.
