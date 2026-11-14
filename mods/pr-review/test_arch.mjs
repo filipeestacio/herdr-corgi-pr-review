@@ -575,3 +575,27 @@ console.log("ok");
   }
   console.log("ok long lines nest");
 }
+
+// Lines that run on top of each other are counted (overlapsOf) and the lanes avoid them: a chain of checks, each
+// with a "no" to its own answer and a "yes" to the next check (a flow from PR #1, rebuilt with other names).
+{
+  const { overlapsOf } = await import("./arch.js");
+  const { flowArch } = await import("./views.js");
+  const note = (k) => "A short note about this step of the check.".repeat(3).slice(0, k);
+  const n = ([id, label, k]) => ({ id, label, ...(k ? { note: note(k) } : {}), changed: true, source: "implemented" });
+  const v = { kind: "flow", title: "checks", nodes: [["ev", "Incoming event", 87], ["c1", 'Starts with "Key "?', 0], ["c2", "compare(key, SECRET)?", 83], ["c3", 'path == "/list"?', 0],
+    ["call", "api.list({})", 42], ["r1", "401 missing key", 0], ["r2", "403 wrong key", 0], ["r3", "404 not found", 0], ["r4", "200 + json(body)", 0]].map(n),
+    edges: [["ev", "c1", "authorization header"], ["c1", "r1", "no"], ["c1", "c2", "yes"], ["c2", "r2", "no"], ["c2", "c3", "yes"], ["c3", "r3", "no"], ["c3", "call", "yes"],
+      ["call", "r4", "status, body"]].map(([from, to, label]) => ({ from, to, label, changed: true, source: "implemented" })) };
+  for (const fit of [false, true]) {
+    const L = archLayout(flowArch(v), "diff", () => 0, fit, { labels: true }), drawn = [...L.paths.filter((p) => p.kind === "next" || p.kind === "long"), ...L.trunks];
+    assert.deepEqual([overlapsOf(drawn).length, L.overlaps.length], [0, 0]);
+  }
+  // The count itself: one stretch shared, a touch at a corner is none, the same path never overlaps itself.
+  const P = (key, ...segments) => ({ key, segments });
+  assert.equal(overlapsOf([P("a", { x1: 0, y1: 10, x2: 50, y2: 10 }), P("b", { x1: 40, y1: 11, x2: 90, y2: 11 })]).length, 1);
+  assert.equal(overlapsOf([P("a", { x1: 0, y1: 10, x2: 50, y2: 10 }), P("b", { x1: 50, y1: 10, x2: 90, y2: 10 })]).length, 0);
+  assert.equal(overlapsOf([P("a", { x1: 5, y1: 0, x2: 5, y2: 40 }, { x1: 5, y1: 20, x2: 5, y2: 60 })]).length, 0);
+  assert.equal(overlapsOf([P("a", { x1: 5, y1: 0, x2: 5, y2: 40 }), P("b", { x1: 6, y1: 20, x2: 6, y2: 60 })]).length, 1);
+  console.log("ok overlaps");
+}

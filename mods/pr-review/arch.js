@@ -112,6 +112,19 @@ export function crossings(paths) {
   return out;
 }
 
+// Stretches where two different paths run on top of each other (the same line within 2 px, sharing more than 4 px):
+// worse than a crossing, since nobody can tell the two apart there. [{a, b, x1, y1, x2, y2}] per pair of segments.
+export function overlapsOf(paths) {
+  const segs = paths.flatMap((p) => p.segments.map((s) => ({ p: p.key, h: s.y1 === s.y2, at: s.y1 === s.y2 ? s.y1 : s.x1, lo: s.y1 === s.y2 ? Math.min(s.x1, s.x2) : Math.min(s.y1, s.y2), hi: s.y1 === s.y2 ? Math.max(s.x1, s.x2) : Math.max(s.y1, s.y2) })));
+  const out = [];
+  for (let i = 0; i < segs.length; i++) for (let j = i + 1; j < segs.length; j++) {
+    const a = segs[i], b = segs[j], lo = Math.max(a.lo, b.lo), hi = Math.min(a.hi, b.hi);
+    if (a.p === b.p || a.h !== b.h || Math.abs(a.at - b.at) > 2 || hi - lo <= 4) continue;
+    out.push(a.h ? { a: a.p, b: b.p, x1: lo, y1: a.at, x2: hi, y2: a.at } : { a: a.p, b: b.p, x1: a.at, y1: lo, x2: a.at, y2: hi });
+  }
+  return out;
+}
+
 const overlaps = (a, b, m = 0) => a.x < b.x + b.w + m && b.x < a.x + a.w + m && a.y < b.y + b.h + m && b.y < a.y + a.h + m;
 
 // Where a picture's element comes from: implemented (in this PR's diff, evidence file:line), existing (already in the
@@ -438,7 +451,7 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
     if (!items.length) continue;
     const left = colX[c] + cw[c] + zone[c] + textW[c] + 14;
     const trialOf = (order) => new Map(order.map((p, k) => [p.key, left + k * LANE]));
-    const cost = (order) => { const trial = trialOf(order); return crossings(order.map((q) => ({ key: q.key, segments: part(q, trial) }))).length; };
+    const cost = (order) => { const trial = trialOf(order), ps = order.map((q) => ({ key: q.key, segments: part(q, trial) })); return crossings(ps).length + 2 * overlapsOf(ps).length; }; // running on top of each other counts as two crossings
     const tyOf = (q) => (q.kind === "out" ? Infinity : q.kind === "in" ? PY(q.p, "to", q.p.to) : q.kind === "trunk" ? Math.min(...q.branches.map((b) => PY(b, "to", b.to))) : PY(q, "to", q.to));
     const yOf = (q) => (q.kind === "out" ? PY(q.p, "from", q.p.from[0]) : q.kind === "in" ? channelY : Math.min(...ysOf(q)));
     const start = [...items].sort((a, b) => tyOf(a) - tyOf(b) || yOf(a) - yOf(b));
@@ -474,7 +487,7 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
     p.segments = [{ x1: sx, y1: sy, x2: x1, y2: sy }, { x1, y1: sy, x2: x1, y2: cy }, { x1, y1: cy, x2, y2: cy }, { x1: x2, y1: cy, x2, y2: ty }, { x1: x2, y1: ty, x2: T.x, y2: ty }];
     p.arrow = { x: T.x, y: ty, left: false };
   });
-  const hops = crossings([...paths.filter((p) => p.kind === "next" || p.kind === "long"), ...trunks]);
+  const drawnP = [...paths.filter((p) => p.kind === "next" || p.kind === "long"), ...trunks], hops = crossings(drawnP), overlapping = overlapsOf(drawnP);
 
   // Numbers in reading order: by the source's column, then where the line leaves it (top to bottom). A stub's chip
   // carries its number. ponytail: the chip keeps the width measured with its first number (same digit count up to 20).
@@ -507,7 +520,7 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
     .sort((a, b) => gIds.indexOf(a.id) - gIds.indexOf(b.id));
   const width = ncol ? colX[ncol - 1] + cw[ncol - 1] + gw[ncol - 1] : 0;
   const height = bottom + (longP.length ? 14 + longP.length * LANE : 0);
-  return { groups: outGroups, nodes, paths, trunks, hops, width, height };
+  return { groups: outGroups, nodes, paths, trunks, hops, overlaps: overlapping, width, height };
 }
 
 // Where the unresolved findings sit on the picture. One that breaks the flow says where (`breaks`: {node}, or {from,
