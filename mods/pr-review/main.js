@@ -18,7 +18,7 @@ import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, Editor, EditorState, TextView } from "gpui-base";
 import { spaces, panes, focused, agents, exec, hc, run, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, home, layout, props, watchFolder, nextCommand } from "herdr";
 import { diffRows, buildPrompt, splitPatch, selection, nextChange, lineLabel, anchorRow, buildReview, hunksOf, hash, uiLine, reviewRequest, mapReview, triageOf, isSecurity } from "./pr.js";
-import { parsePrRef, ghTarget, pruneSources, codeModel } from "./pr.js";
+import { parsePrRef, ghTarget, pruneSources, codeModel, windowActive } from "./pr.js";
 import * as C from "./context.js";
 import { loadDiff, saveDiff } from "./diffcache.js";
 import { setupBanner, renderSetup, loadSetup, runSetup, openUrl, readConfig } from "./setup-view.js";
@@ -31,7 +31,7 @@ import { highlightJob, highlightStep, langOf, colors, renderLine, editorSyntax }
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html" };
 const PRESETS = [["Explain", "Explain this change to me: what it does and why."], ["Look up docs", "Look up the docs for the APIs, classes and functions used here and summarize what matters for this spot."]];
 const READ = ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "diff.autoRefreshIndex=false"];
-const PRS_MS = 5 * 60 * 1000; // prs.py: transcripts by stamp, open PRs' state from GitHub
+const PRS_MS = 5 * 60 * 1000; // prs.py: transcripts by stamp, open PRs' state from GitHub; only while the list can be seen (scanIfDue)
 const PR_INFO_MS = 5 * 60 * 1000; // a branch's PR / a picked PR's head (gh pr view): asked again in the background after this
 const TTL_MS = 10 * 60 * 1000; // a remembered context is shown as is (no exec) unless dirty or older than this
 const MEMO = 8, WATCHES = 3; // remembered contexts; repos watched at once
@@ -153,9 +153,9 @@ export default class PrReview extends View {
       if (url === BRANCH && !this.prSel) this.branchPicked = true;
       const pr = url && url !== BRANCH && !this.prSel ? this.prs.find((p) => p.url === url) ?? (shared("pr.picked") ?? {})[url] : null;
       if (pr) this.choose(pr, cx);
-      await this.scanPrs(cx);
+      this.scanIfDue(cx);
     });
-    cx.timer.every(PRS_MS, (cx) => cx.spawn(async (cx) => { if (await this.scanPrs(cx) && this.prSel && inView()) this.refresh(cx); }));
+    cx.timer.every(60000, (cx) => this.scanIfDue(cx)); // a time check; prs.py itself at most every PRS_MS
   }
 
   key() { return this.prSel?.url ?? JSON.stringify(location()); }
@@ -193,6 +193,14 @@ export default class PrReview extends View {
     await writeTextFile(lock, "0", mine).catch(() => null);
     await this.loadPrs(cx);
     return true;
+  }
+
+  // prs.py only while someone can see the list: the panel shown (or placed in a layout without it) and the window in
+  // front. Hidden or behind other windows it asks nothing; shown again, it asks once the last try is PRS_MS old.
+  scanIfDue(cx) {
+    if (!visible() || !windowActive() || Date.now() - (this.scanAt ?? 0) < PRS_MS) return;
+    this.scanAt = Date.now();
+    cx.spawn(async (cx) => { if (await this.scanPrs(cx) && this.prSel && inView()) this.refresh(cx); });
   }
 
   // A folder's repo: {root, gitdir, base: origin's default branch}, one spawn per folder; null outside a repo.
@@ -252,12 +260,19 @@ export default class PrReview extends View {
     if (seen && Date.now() - seen.at < PR_INFO_MS) return;
     this.heads.set(pr.url, { at: Date.now(), sha: seen?.sha ?? pr.headSha });
     cx.spawn(async (cx) => {
-      const v = await exec("gh", ["pr", "view", pr.url, "--json", "headRefOid"], { timeout: 30000 }).catch(() => null);
-      const sha = v?.code === 0 ? JSON.parse(v.stdout).headRefOid : null;
+      const sha = await this.headOf(pr.url);
       if (!sha) return;
       this.heads.set(pr.url, { at: Date.now(), sha });
       if (this.prSel?.url === pr.url && sha !== this.prSel.headSha) { this.prSel = { ...this.prSel, headSha: sha }; this.refresh(cx, true); }
     });
+  }
+
+  // A PR's head from GitHub (gh pr view), null when gh can't say; asked once at a time per PR (a second ask shares it).
+  headOf(url) {
+    const busy = (this.headIn ??= new Map());
+    if (!busy.has(url)) busy.set(url, exec("gh", ["pr", "view", url, "--json", "headRefOid"], { timeout: 30000 })
+      .then((v) => (v.code === 0 ? JSON.parse(v.stdout).headRefOid ?? null : null)).catch(() => null).finally(() => busy.delete(url)));
+    return busy.get(url);
   }
 
   choose(pr, cx) {
@@ -361,12 +376,18 @@ export default class PrReview extends View {
   // A new source: its pending comments, and its walkthrough when that view is open.
   async syncSource(cx) {
     const key = this.sourceKey();
-    if (key === this.reviewKey) return;
+    if (key === this.reviewKey) {
+      // The review on a new head of the same PR (checkHead): its hunks, checkout and analysis state again; whole files
+      // were read at the old head.
+      const head = this.prSel?.headSha;
+      if (this.part === "review" && head && this.srcHead && head !== this.srcHead) { this.srcHead = head; this.full = {}; await this.onSource(cx); }
+      return;
+    }
     this.reviewKey = key; this.editing = null; this.walk = null; this.walkError = null; this.read = new Set(); this.step = 0;
     const text = key ? await readTextFile(reviews()).catch(() => null) : null;
     this.comments = (text ? JSON.parse(text)[key] : null) ?? [];
     if (this.view === "walk") this.openWalk(cx, false);
-    if (this.part === "review") await this.onSource(cx);
+    if (this.part === "review") { this.srcHead = this.prSel?.headSha ?? null; await this.onSource(cx); }
   }
 
   async load(path, context) {
@@ -650,10 +671,13 @@ export default class PrReview extends View {
       if (!key) { this.srcLists.repo = { key: null, prs: [] }; this.loadTriage(cx); return cx.notify(); } // no GitHub repo here: the list says what to do
       const before = await readTextFile(sourcesFile()).catch(() => null), doc = JSON.parse(before ?? "{}");
       if (!force && doc[key] && Date.now() - doc[key].at < SOURCE_MS) { this.srcLists[now] = { key, ...doc[key] }; this.loadTriage(cx); return cx.notify(); }
+      if (this.srcIn === key) return; // this list is being fetched: that answer serves this ask too
+      this.srcIn = key;
       this.srcLists[now] = { key, prs: doc[key]?.prs ?? [], at: doc[key]?.at, loading: true }; cx.notify();
       const args = now === "repo" ? ["pr", "list", "-R", sr.slug, "--state", "open", "--limit", "50", "--json", GH_FIELDS]
         : ["search", "prs", "--review-requested=@me", "--state", "open", "--limit", "50", "--json", "repository,number,title,author,updatedAt,url,isDraft"];
       const r = await exec("gh", args, { timeout: 60000 }).catch((e) => ({ code: 1, stderr: String(e) }));
+      this.srcIn = null;
       if (r.code !== 0) { this.srcLists[now] = { ...this.srcLists[now], loading: false, error: `gh: ${r.stderr.trim().slice(0, 160)}` }; return cx.notify(); }
       const spaceC = spaceCtx(location().space);
       const prs = JSON.parse(r.stdout).map((p) => {
@@ -962,6 +986,7 @@ export default class PrReview extends View {
     // Go to: a handed-over PR (outside render), and the reviews-in-progress items when that list changes.
     if (shared("pr.goto")?.url && !this.gotoQueued) { this.gotoQueued = true; cx.timer.after(0, (cx) => { this.gotoQueued = false; this.takeGoto(cx); }); }
     if (shared("review.open") !== this.gotoOpen) { this.gotoOpen = shared("review.open"); cx.timer.after(0, () => this.publishGoto()); }
+    if (!this.scanQueued && visible() && windowActive() && Date.now() - (this.scanAt ?? 0) >= PRS_MS) { this.scanQueued = true; cx.timer.after(0, (cx) => { this.scanQueued = false; this.scanIfDue(cx); }); }
     // The selection is never dropped here: a PR the view hides gets a banner instead.
     // refresh() notifies, which render may not: queue it once, right after this render.
     if (!this.refreshQueued && visible() && (this.key() !== this.context || (!this.prSel && this.root && this.dirty.has(this.root)))) {
