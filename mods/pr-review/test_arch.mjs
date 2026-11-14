@@ -373,7 +373,7 @@ assert.deepEqual(clampText("short", 10, 3), { text: "short", lines: 1, cut: fals
     nodes: ["a1", "a2", "b1", "b2", "c1", "c2"].map((id) => ({ id, label: id, group: id[0] })),
     edges: [["a1", "a2"], ["a2", "b1"], ["b1", "b2"], ["b2", "c1"], ["c1", "c2"]].map(([from, to]) => ({ from, to, label: "calls" })) };
   const L = archLayout(arch);
-  assert.deepEqual(archBands(L, L.width + 10), [{ x0: 0, x1: L.width, h: L.height, in: [], out: [] }]);
+  assert.deepEqual(archBands(L, L.width + 10), [{ x0: 0, x1: L.width, h: L.height, y0: 0, in: [], out: [] }]);
   const view = Math.round(L.width / 2.5), B = archBands(L, view);
   assert.ok(B.length >= 3, `${B.length} bands`);
   assert.equal(B[0].x0, 0); assert.equal(B.at(-1).x1, L.width);
@@ -574,4 +574,48 @@ console.log("ok");
     assert.ok(y("a") > y("b"), "the line that ends further right starts lower");
   }
   console.log("ok long lines nest");
+}
+
+// Lines that run on top of each other are counted (overlapsOf) and the lanes avoid them: a chain of checks, each
+// with a "no" to its own answer and a "yes" to the next check (a flow from PR #1, rebuilt with other names).
+{
+  const { overlapsOf } = await import("./arch.js");
+  const { flowArch } = await import("./views.js");
+  const note = (k) => "A short note about this step of the check.".repeat(3).slice(0, k);
+  const n = ([id, label, k]) => ({ id, label, ...(k ? { note: note(k) } : {}), changed: true, source: "implemented" });
+  const v = { kind: "flow", title: "checks", nodes: [["ev", "Incoming event", 87], ["c1", 'Starts with "Key "?', 0], ["c2", "compare(key, SECRET)?", 83], ["c3", 'path == "/list"?', 0],
+    ["call", "api.list({})", 42], ["r1", "401 missing key", 0], ["r2", "403 wrong key", 0], ["r3", "404 not found", 0], ["r4", "200 + json(body)", 0]].map(n),
+    edges: [["ev", "c1", "authorization header"], ["c1", "r1", "no"], ["c1", "c2", "yes"], ["c2", "r2", "no"], ["c2", "c3", "yes"], ["c3", "r3", "no"], ["c3", "call", "yes"],
+      ["call", "r4", "status, body"]].map(([from, to, label]) => ({ from, to, label, changed: true, source: "implemented" })) };
+  for (const fit of [false, true]) {
+    const L = archLayout(flowArch(v), "diff", () => 0, fit, { labels: true }), drawn = [...L.paths.filter((p) => p.kind === "next" || p.kind === "long"), ...L.trunks];
+    assert.deepEqual([overlapsOf(drawn).length, L.overlaps.length], [0, 0]);
+  }
+  // The count itself: one stretch shared, a touch at a corner is none, the same path never overlaps itself.
+  const P = (key, ...segments) => ({ key, segments });
+  assert.equal(overlapsOf([P("a", { x1: 0, y1: 10, x2: 50, y2: 10 }), P("b", { x1: 40, y1: 11, x2: 90, y2: 11 })]).length, 1);
+  assert.equal(overlapsOf([P("a", { x1: 0, y1: 10, x2: 50, y2: 10 }), P("b", { x1: 50, y1: 10, x2: 90, y2: 10 })]).length, 0);
+  assert.equal(overlapsOf([P("a", { x1: 5, y1: 0, x2: 5, y2: 40 }, { x1: 5, y1: 20, x2: 5, y2: 60 })]).length, 0);
+  assert.equal(overlapsOf([P("a", { x1: 5, y1: 0, x2: 5, y2: 40 }), P("b", { x1: 6, y1: 20, x2: 6, y2: 60 })]).length, 1);
+  console.log("ok overlaps");
+}
+
+// A long line from the top card of its column runs over the picture when that saves a crossing (PR #2's reminders →
+// mailer, rebuilt with other names): no crossing and no shared stretch left, the picture moved down by the room for
+// the channel (L.top), and a band without the line can leave that room out (y0).
+{
+  const N = (id, group, label) => ({ id, group, label, description: "d", type: "service", status: "new" });
+  const arch = { groups: [{ id: "in", label: "Callers", kind: "x" }, { id: "fd", label: "Front", kind: "lambda" }, { id: "q", label: "Queue", kind: "x" }, { id: "rc", label: "Consumer", kind: "lambda" }],
+    nodes: [N("client", "in", "client"), N("handler", "fd", "handler"), N("rem", "fd", "producer"), N("status", "fd", "state machine"), N("events", "fd", "events"), N("queue", "q", "queue"),
+      N("consumer", "rc", "consumer"), N("store", "rc", "store"), N("mailer", "rc", "mailer")],
+    edges: [["client", "handler", "POST /x"], ["rem", "status", "transition"], ["rem", "mailer", "mails directly"], ["handler", "consumer", "direct call"], ["status", "events", "publish"],
+      ["events", "queue", "send"], ["queue", "consumer", "trigger"], ["consumer", "store", "read"], ["consumer", "mailer", "send mail"]].map(([from, to, label]) => ({ from, to, label })) };
+  for (const fit of [false, true]) {
+    const L = archLayout(arch, "diff", () => 0, fit, { labels: true }), up = L.paths.filter((p) => p.kind === "long" && p.segments.some((s) => s.y1 === s.y2 && s.y1 < L.top));
+    assert.deepEqual([L.hops.length, L.overlaps.length, up.length, L.top > 0], [0, 0, 1, true]);
+    assert.ok(Math.min(...L.nodes.map((n) => n.y), ...L.groups.map((g) => g.y)) >= L.top, "nothing but the channel above");
+    const B = archBands(L, Math.round(L.width / 3));
+    assert.ok(B.some((b) => b.y0 === 0) && B.every((b) => b.y0 <= L.top));
+  }
+  console.log("ok a line over the picture");
 }

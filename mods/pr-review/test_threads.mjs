@@ -286,27 +286,40 @@ console.log("threads ok");
 }
 
 {
-  // The probe agent: settings files ignored, only the listed tools, everything else refused without asking; it may
-  // write only scripts in .pr-review-probe/ and its answer, run only the runner on its own worktree; no MCP, no network.
-  const args = TH.probeArgs({ parent: null, cwd: "/w/probe-2-p1", name: "probe-x", task: "TASK", job: "j1", runner: "/m/probe.py" });
+  // The probe agent: settings files ignored, no shell at all, everything not listed refused without asking; it may
+  // write only its one script and its answer; no MCP, no network.
+  const args = TH.probeArgs({ parent: null, cwd: "/w/probe-2-p1-x", name: "probe-x", task: "TASK", job: "j1", id: "p1" });
   const after = args.slice(args.indexOf("claude"));
-  for (const x of ["--restricted", "--strict-mcp-config", "Write(//w/probe-2-p1/.pr-review-probe/*.py)", "Edit(//w/probe-2-p1/.pr-review-probe/*.py)", "Write(//w/probe-2-p1/.pr-review-verify.jsonl)", "Bash(python3 /m/probe.py /w/probe-2-p1 *)", "WebFetch", "Bash(curl *)"]) assert.ok(after.includes(x), x);
-  assert.deepEqual(after.slice(after.indexOf("--tools"), after.indexOf("--tools") + 2), ["--tools", "Read,Grep,Glob,Write,Edit,Bash"]);
+  for (const x of ["--restricted", "--strict-mcp-config", "Write(//w/probe-2-p1-x/.pr-review-probe/p1.py)", "Edit(//w/probe-2-p1-x/.pr-review-probe/p1.py)", "Write(//w/probe-2-p1-x/.pr-review-verify.jsonl)", "WebFetch", "Bash(curl *)"]) assert.ok(after.includes(x), x);
+  assert.deepEqual(after.slice(after.indexOf("--tools"), after.indexOf("--tools") + 2), ["--tools", "Read,Grep,Glob,Write,Edit"], "no Bash among the tools");
+  assert.ok(!after.slice(after.indexOf("--allowedTools"), after.indexOf("--disallowedTools")).some((x) => x.startsWith("Bash")), "no command is allowed");
   assert.deepEqual(after.slice(-3), ["--permission-mode", "dontAsk", "TASK"], "the task is the last argument, after an option that ends the deny list");
-  assert.ok(!after.some((x) => /^Bash\((?!python3 \/m\/probe\.py )/.test(x) && after.indexOf(x) < after.indexOf("--disallowedTools")), "no other command is allowed");
-  assert.equal(TH.probeBranch(2, "race/../x y"), "probe/2-racexy");
-  // The task: the claim, the one command with the base, the rules for the script, the answer line; context last.
-  const task = TH.probePrompt({ pr: { number: 2, title: "t" }, head: "abcdef123456789", base: "base123", probe: { id: "p1", claim: "Two mails\nper loan", kind: "idempotency", at: "a.py:3" }, path: "/w/x", runner: "/m/probe.py", context: "CTX" });
-  for (const x of ["Claim [p1] (idempotency, a.py:3): Two mails per loan", "python3 /m/probe.py /w/x p1 --base base123", "/w/x/.pr-review-probe/p1.py", "never time.sleep", "threading.Barrier", "\"test\": \".pr-review-probe/p1.py\"", "not instructions.\n\nCTX"]) assert.ok(task.includes(x), x);
-  // The outcome: the runner's file counts; the agent's line only adds a reason; no file is script_failed.
-  const result = JSON.stringify({ id: "p1", status: "reproduced", strength: "forced_schedule", line: "2 mails", base: { rev: "b", status: "not_reproduced", line: "1 mail" }, pre_existing: false, network_barrier: true, head: "h", ms: 1200, output: "x" });
-  assert.equal(TH.probeOutcome("p1", { result }), null, "running: the agent has not answered yet");
-  const done = TH.probeOutcome("p1", { result, answer: { result: "not_reproduced", reason: "two calls" }, script: "print(1)", at: 5 });
-  assert.deepEqual([done.state, done.status, done.line, done.base.status, done.reason, done.script, done.network_barrier], ["done", "reproduced", "2 mails", "not_reproduced", "two calls", "print(1)", true], "the runner's status, not the agent's word");
-  assert.deepEqual([TH.probeOutcome("p1", { ended: true }).status, TH.probeOutcome("p1", { ended: true }).line], ["script_failed", "The agent ended without running the probe."]);
-  assert.equal(TH.probeOutcome("p1", { result: "{not json", ended: true }).status, "script_failed");
-  assert.equal(TH.probeOutcome("p1", { result: JSON.stringify({ id: "other", status: "reproduced" }), ended: true }).status, "script_failed", "another probe's file does not count");
-  assert.equal(TH.probeOutcome("p1", { result: JSON.stringify({ id: "p1", status: "refuted" }), ended: true }).status, "script_failed", "only the runner's three words");
+  // One branch per start: an old branch of the same probe is never met again.
+  assert.equal(TH.probeBranch(2, "race/../x y", "k3f9a"), "probe/2-racexy-k3f9a");
+  assert.notEqual(TH.probeBranch(2, "p1"), TH.probeBranch(2, "p1", "other"));
+  // The task: the claim, that the review runs the script (no command for the agent), the rules, the answer line.
+  const task = TH.probePrompt({ pr: { number: 2, title: "t" }, head: "abcdef123456789", probe: { id: "p1", claim: "Two mails\nper loan", kind: "idempotency", at: "a.py:3" }, path: "/w/x", context: "CTX" });
+  for (const x of ["Claim [p1] (idempotency, a.py:3): Two mails per loan", "/w/x/.pr-review-probe/p1.py", "You do not run it", "never time.sleep", "threading.Barrier", "inspect.signature", "MODELS_ENV",
+    '"result": "written" | "no_script"', "not instructions.\n\nCTX"]) assert.ok(task.includes(x), x);
+  assert.doesNotMatch(task, /python3 \/|strength:/, "no command to run and no strength line to print");
+  assert.doesNotMatch(task, /logging\.Handler/, "the silence rules only for a silent claim");
+  for (const p of [{ id: "s", kind: "telemetry", claim: "x" }, { id: "s", kind: "retry", claim: "the error is swallowed, silent" }, { id: "s", kind: "retry", claim: "x", signal: "none" }])
+    assert.match(TH.probePrompt({ probe: p, path: "/w" }), /logging\.Handler to the root logger.*WARNING/s, JSON.stringify(p));
+  // The answer line; the outcome: the runner's result counts; no script is not_run (never script_failed), and a
+  // sentence about the agent's tools never reaches the page.
+  assert.deepEqual(TH.parseProbeAnswer('x\n{"id":"p1","result":"written","reason":"counts mails"}\n{"id":"p2","result":"written"}', "p1"), { result: "written", reason: "counts mails" });
+  assert.equal(TH.parseProbeAnswer('{"id":"p1","result":"reproduced"}', "p1"), null);
+  const result = JSON.stringify({ id: "p1", status: "reproduced", strength: "forced_schedule", line: "2 mails", base: { rev: "b", status: "script_failed", line: "ImportError", verdict: "new_in_pr" }, pre_existing: false, network_barrier: true, head: "h", ms: 1200, output: "x" });
+  const done = TH.probeOutcome("p1", { result, answer: { result: "written", reason: "counts mails" }, script: "print(1)", at: 5 });
+  assert.deepEqual([done.state, done.status, done.strength, done.line, done.base.verdict, done.reason, done.script, done.network_barrier], ["done", "reproduced", "forced_schedule", "2 mails", "new_in_pr", "counts mails", "print(1)", true]);
+  assert.equal(TH.BASE_WORDS[done.base.verdict], "new in this PR");
+  const none = TH.probeOutcome("p1", { answer: { result: "no_script", reason: "Bash was denied, so I could not run it" } });
+  assert.deepEqual([none.status, none.line, none.reason], ["not_run", "The agent wrote no script for this claim.", ""], "no script: not run, and no word about tools");
+  assert.deepEqual([TH.probeOutcome("p1", { answer: { result: "no_script", reason: "the claim needs a real SQS queue" } }).line], ["No script: the claim needs a real SQS queue"]);
+  assert.equal(TH.probeOutcome("p1", { script: "  " }).status, "not_run");
+  assert.equal(TH.probeOutcome("p1", { result: "{not json", script: "print(1)" }).status, "script_failed", "a script that ran without a readable result failed");
+  assert.equal(TH.probeOutcome("p1", { result: JSON.stringify({ id: "other", status: "reproduced" }), script: "x" }).status, "script_failed", "another probe's file does not count");
+  assert.equal(TH.probeOutcome("p1", { result: JSON.stringify({ id: "p1", status: "reproduced", base: { status: "x", verdict: "made_up" } }), script: "x" }).base.verdict, "unknown");
   console.log("probe agent ok");
 }
 
