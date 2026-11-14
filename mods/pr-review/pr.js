@@ -1262,6 +1262,7 @@ export const tierSteps = (tier) => ({ up: tier === "sonnet" ? "opus" : null, dow
 // What a path breaks that blocks a merge, in the order the reason is told, with the reason in words. Alone no blocker:
 // no jitter, no alarm, no breaker, no trace context, high cardinality (they make a failure worse or harder to see).
 export const RES_BLOCKING = [
+  ["dishonest_response", "the route answers success while the work is lost"],
   ["unbounded_retry", "load grows without a limit"],
   ["no_dlq", "a message that always fails comes back until it expires"],
   ["poison_message", "a message that always fails comes back until it expires"],
@@ -1273,6 +1274,7 @@ export const RES_BLOCKING = [
   ["no_timeout_public", "a call without a timeout waits inside a public route's request"],
   ["removed_signal", "the PR removes the signal on this path"],
 ];
+const REDELIVERY = new Set(["load grows without a limit", "a message that always fails comes back until it expires", "the worst run outlasts its timeout and is delivered again"]);
 const days = (s) => (s >= 86400 ? `${Math.round(s / 86400)} ${Math.round(s / 86400) === 1 ? "day" : "days"}` : s >= 3600 ? `${Math.round(s / 3600)} h` : `${Math.round(s)} s`);
 // The calls a path goes through: the deps whose edge or place is one of its steps, or whose file a step is in (a
 // model often names the path by its lines, consumer.py:21, and the call by another line of the same file).
@@ -1295,7 +1297,7 @@ const depsOf = (path, deps) => {
 // an edge step that leaves the process (not in_process, e.g. queue → consumer) leads into.
 export function viaOf(path, arch, reach = reachOf(path, arch)) {
   const edges = arch?.edges ?? [], steps = new Set(path.steps ?? []);
-  return { via: edges.flatMap((e, k) => (steps.has(`e${k}`) || (reach.has(e.from) && reach.has(e.to)) ? [`e${k}`] : [])),
+  return { via: [...new Set([...[...steps].filter((s) => /^e\d+$/.test(s)), ...edges.flatMap((e, k) => (reach.has(e.from) && reach.has(e.to) ? [`e${k}`] : []))])],
     entered: edges.flatMap((e, k) => (steps.has(`e${k}`) && !e.in_process ? [e.to] : [])) };
 }
 // The node ids a path goes through on the map (arch: ai.arch): node steps, both ends of an edge step, and for a
@@ -1427,9 +1429,11 @@ export function withResilience(ai, block, head = null, findings = []) {
   // dead-letter queue behind p1 (a record raises) and p2 (the batch outlasts its timeout) is one blocker with two triggers.
   const spots = (p) => new Set([...p.findings, ...p.steps.filter((s) => deps.some((d) => d.edge === s || d.at === s))]);
   const act = (p) => String(p.action ?? "").trim().toLowerCase().replace(/[.\s]+$/, "");
+  // the same unlimited redelivery: a poison message and a batch over its timeout both come back from one queue
+  const again = (p) => REDELIVERY.has(p.blocker.why) && p.ladder?.factors.find((f) => f.n === null)?.at;
   for (const [k, p] of paths.entries()) {
     const first = p.blocker && paths.slice(0, k).find((q) => q.blocker && !q.same_cause && ((q.blocker.why === p.blocker.why && [...spots(p)].some((x) => spots(q).has(x))) ||
-      (act(p) && act(p) === act(q)) || (p.blocker.at && p.blocker.at === q.blocker.at)));
+      (act(p) && act(p) === act(q)) || (p.blocker.at && p.blocker.at === q.blocker.at) || (again(p) && again(p) === again(q))));
     if (first) { Object.assign(p, { blocker: null, same_cause: first.id }); first.triggers = [...(first.triggers ?? [first.id]), p.id]; }
   }
   paths.sort((a, b) => Number(Boolean(b.blocker)) - Number(Boolean(a.blocker)));

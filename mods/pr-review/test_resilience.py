@@ -113,6 +113,18 @@ assert [(x["kind"], x["signal"], x["visible"], x["seen_as"]) for x in r2["paths"
 assert r2["paths"][0]["failing"] == ["dishonest_response"] and (r2["races"][0]["oncall"], r2["races"][0]["possible_today"], r2["races"][0]["note"]) == ("a second mail, no error", False, "see p6")
 assert r2["state"][0]["invariant"] == "only transition() changes the status" and r2["state"][0]["writers"][0]["breaks"] is True
 assert (r2["additions"][0]["purpose"], r2["additions"][0]["next"]) == ("survive a flaky SMTP", "Drop the mailer retry; the queue redelivers")
+# A retry layer under a queue's redelivery is unjustified: the run's "questionable" is overruled, a missing one added.
+trig = {"node": "consumer", "at": "template.yaml:31", "mode": "async", "trigger": {"batch": 10}}
+under = lambda adds: resilience.view({"deps": [trig, {"node": "consumer", "edge": None, "at": "library/consumer.py:21", "mode": "in_process",
+                                                     "retry": {"layer": "mailer", "attempts": 3, "at": "library/mailer.py:13-20"}},
+                                               {"node": "handler", "at": "library/handler.py:21", "mode": "in_process", "retry": {"attempts": 3, "at": "library/x.py:1"}}],
+                                      "additions": adds}, [], pic, [])["additions"]
+got = under([{"what": "Mailer retry loop", "kind": "retry layer", "at": "library/mailer.py:13", "result": "questionable"}])
+assert [(a["what"], a["result"], a["next"]) for a in got] == [("Mailer retry loop", "unjustified", "Drop the retry on the queue path; the queue already delivers the message again")], got
+got = under([])
+assert [(a["what"], a["at"], a["result"], a["derived"]) for a in got] == [("mailer retry under the queue's redelivery", "library/mailer.py:13", "unjustified", True)], \
+    "added when the run left it out; the handler's retry has no queue under it"
+assert resilience.complexity_findings(got)[0]["file"] == "library/mailer.py" and got[0]["findings"]
 sch = reviewers.findings_schema("resilience")
 assert "node" in sch["properties"]["deps"]["items"]["required"] and {"signal", "seen_as"} <= set(sch["properties"]["paths"]["items"]["required"])
 pr2 = reviewers.PLAIN["resilience"].format(base="b", number=2)

@@ -8,6 +8,8 @@ the code itself, also unchanged templates and infrastructure the PR reaches. It 
 id and writes a new finding only for what is new. view() checks the answer against the picture and the findings and
 returns the block `resilience` of the findings file. Standard library only.
 """
+import re
+
 import review
 
 S, STRINGS, INT, BOOL = review.S, review.STRINGS, {"type": "integer"}, {"type": "boolean"}
@@ -110,7 +112,8 @@ STEPS = (
     "- what the PR adds: every component or mechanism it brings in (queue, dead-letter queue, step function, retry "
     "layer, breaker, bulkhead, cache, scheduler, new service or library, a new route, a shortcut past an existing "
     "path such as a route that calls a consumer directly), each measured by its purpose, not by a bug in it (a queue "
-    "nothing publishes to is a finding, not a question of its use); a retry layer under another one (a client retry "
+    "nothing publishes to is a finding, not a question of its use; judge result as if its findings were fixed, and put "
+    "what is broken today into findings and next); a retry layer under another one (a client retry "
     "under a queue's redelivery) is unjustified: what failure it solves at which line, how "
     "likely and how grave that failure is here, what it costs (parts, states and places to look; alarms, redrives, "
     "deploys; money, latency), the simpler alternative (a direct call instead of a step function, synchronous instead of "
@@ -239,6 +242,7 @@ def view(answer, findings, pic, known, changed=None):
                   "simpler": str(a.get("simpler") or ""), "result": enum(a.get("result"), ADD_RESULTS) or "questionable", "findings": fids(a.get("findings")),
                   "purpose": str(a.get("purpose") or ""), "next": str(a.get("next") or "")}
                  for a in lst("additions") if a.get("what")]
+    retry_under_redelivery(deps, additions)
     return {"deps": deps, "effects": effects, "state": state, "races": races, "additions": additions,
             "db_calls": [{"entry": str(d.get("entry") or ""), "per_request": str(d.get("per_request") or ""),
                           "calls": [{"op": c.get("op"), "target": c.get("target"), "at": at(c.get("at")), "in_loop": bool(c.get("in_loop"))} for c in d.get("calls") or [] if isinstance(c, dict)]}
@@ -252,6 +256,28 @@ def view(answer, findings, pic, known, changed=None):
             "checks": [{"check": str(c.get("check") or ""), "result": enum(c.get("result"), CHECK_RESULTS) or "not_checkable", "at": at(c.get("at")) or None,
                         "why": str(c.get("why") or ""), "findings": fids(c.get("findings"))} for c in lst("checks") if c.get("check")],
             "probes": probes, "not_checked": [str(x) for x in answer.get("not_checked") or []]}
+
+
+def retry_under_redelivery(deps, additions):
+    """A retry layer under a queue's redelivery is unjustified: a call that retries inside a consumer whose queue
+    delivers the whole message again (the mailer's three attempts under SQS). The run's word on such an addition is
+    overruled; one the run left out is added (derived). Changes additions in place."""
+    queues = {d["node"] for d in deps if d.get("trigger") and d.get("mode") == "async" and d.get("node")}
+    for d in deps:
+        r = d.get("retry") or {}
+        if d.get("node") not in queues or not str(r.get("attempts") or "").isdigit() or int(r["attempts"]) < 2:
+            continue
+        where = str(r.get("at") or d["at"]); loop = where.split(":")[0]
+        line = re.match(r"\d+", where.rpartition(":")[2]) if ":" in where else None
+        a = next((a for a in additions if "retry" in a["kind"].lower() and a["at"].split(":")[0] in (loop, "")), None)
+        if a is None:
+            a = {"what": f"{r.get('layer') or 'client'} retry under the queue's redelivery", "kind": "retry layer", "at": f"{loop}:{line[0]}" if line else loop,
+                 "solves": "", "likelihood": None, "cost": {"mental": "", "ops": "", "money": ""}, "simpler": "", "result": "unjustified", "findings": [],
+                 "purpose": "Retries a failed call inside one delivery", "next": "", "derived": True}
+            additions.append(a)
+        a["result"] = "unjustified"
+        a["simpler"] = a["simpler"] or "Let the queue's redelivery retry the message"
+        a["next"] = a["next"] or "Drop the retry on the queue path; the queue already delivers the message again"
 
 
 def complexity_findings(additions, head=None):

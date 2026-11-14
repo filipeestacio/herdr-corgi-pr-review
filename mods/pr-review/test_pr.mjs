@@ -954,6 +954,8 @@ console.log("ok");
   assert.equal(dq.counts.blockers, 2);
   assert.equal(blockerOf(P("p", "state", ["e5"], "finding", ["reads_foreign_state", "poison_message"]), null, null), null, "reading another process' state is a finding, its poison message blocks in its own path");
   assert.equal(blockerOf(P("p", "retry", ["e5"], "mitigated", ["no_dlq"], { limited_by: "a.py:1" }), ladderOf(p1, deps), null), null, "only a path with a finding blocks");
+  assert.deepEqual(blockerOf(P("p4", "request", ["e0", "library/mailer.py:14"], "finding", ["no_throttle", "swallowed_retry", "dishonest_response"]), null, null),
+    { why: "the route answers success while the work is lost", at: "library/mailer.py:14" }, "POST /remind answers 202 while the mail is lost");
   assert.deepEqual(blockerOf(P("p", "silent", ["events.py:20"], "finding", [], { visible: false }), null, null), { why: "the path repeats or loses effects and nothing signals it", at: "events.py:20" });
   const block = { head: "h1", deps, paths: [P("p2", "effect", ["reminders.py:20"], "finding", ["no_alarm"]), p1, P("p3", "effect", [], "mitigated", [], { limited_by: "x.py:9" }), P("p4", "race", [], "not_assessed", [])],
     checks: [{ check: "cors", result: "clean" }, { check: "rollback", result: "not_checkable" }], blind_spots: [{ id: "b1", failure: "publish never reaches SQS", at: "events.py:20", signal: "none", alarm: "none" },
@@ -979,6 +981,10 @@ console.log("ok");
   const two = withResilience(mapReview({ steps: [] }, []), { deps, paths: [{ ...p1, action: "Add a dead-letter queue." },
     P("p2", "timeout", ["x.py:3"], "finding", ["no_dlq"], { findings: ["slow"], action: "add a dead-letter queue", visible: false })] }).resilience;
   assert.deepEqual([two.counts.blockers, two.paths[0].triggers, two.paths[1].same_cause], [1, ["p1", "p2"], "p1"], "the same action is one blocker with two triggers");
+  const run5 = withResilience(mapReview({ steps: [] }, []), { deps, paths: [P("p2", "retry", ["e5", "library/consumer.py:14"], "finding", ["poison_message"], { findings: ["a"] }),
+    P("p3", "timeout", ["e5", "library/mailer.py:14"], "finding", ["over_timeout"], { findings: ["b"] }), P("p1", "effect", ["e5", "library/reminders.py:21"], "finding", ["duplicate_effect"], { findings: ["c"] })] }).resilience;
+  assert.deepEqual([run5.counts.blockers, run5.paths.find((p) => p.id === "p2").triggers, run5.paths.find((p) => p.id === "p1").blocker?.why],
+    [2, ["p2", "p3"], "a visible effect happens twice"], "a poison message and a batch over its timeout come back from one queue: one blocker; the double mail stays its own");
   assert.deepEqual([withResilience(mapReview({ steps: [] }, []), null).resilience, withResilience(mapReview({ steps: [] }, []), { paths: [] }).resilience.summary], [null, "The run found no path a failure takes through this change."]);
   // Before the run: what the diff adds, without a model (PR #2's template and handler).
   const files = splitPatch(["diff --git a/template.yaml b/template.yaml", "--- a/template.yaml", "+++ b/template.yaml", "@@ -0,0 +1,6 @@", "+  LoanEvents:", "+    Type: AWS::SQS::Queue",
