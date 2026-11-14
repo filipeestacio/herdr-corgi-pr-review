@@ -131,6 +131,11 @@ for (const n of [0, 3, 310]) {
     assert.deepEqual(v.layerFindings(v.ai.steps[1]).map((x) => x.id), ["a1"]);
     v.ffocus = "a1";
     ok("the Findings tab: a merged finding open, with a fix sent", () => v.render(cx));
+    // Its steps with the fix's details open, the owner of its file, and quick wins first once a finding has an effort.
+    v.fstep = { id: "a1", key: "sent" }; v.fsort = true; v.ai = { ...v.ai, components: [{ name: "F0", at: "src/f0.ts:1", owner: "@team" }] };
+    ok("the Findings tab: a step's details open, an owner, sorted by effort", () => v.render(cx));
+    v.command("finding-step:sent", cx); assert.equal(v.fstep, null, "the step's click again folds it");
+    v.command("findings-sort:", cx); assert.equal(v.fsort, false);
     v.tab = "files"; v.page = null; v.sug = v.openSugs()[0].key;
     ok("the diff: the finding's card and the note, opened", () => { v.render(cx); layout(0); });
     assert.deepEqual(v.items.filter((it) => ["find", "fact", "sug"].includes(it.t)).map((it) => it.t), ["find", "fact", "sug"], "a fix sent stays in the diff; one note, no buttons");

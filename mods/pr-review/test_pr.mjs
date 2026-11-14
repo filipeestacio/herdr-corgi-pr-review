@@ -409,7 +409,7 @@ console.log("ok");
   assert.deepEqual([old.unlinked, old.components, old.componentCounts, old.access, old.steps[0].questionFiles], [[], [], null, [], [""]]);
   const of = old.steps[0].findings[0];
   assert.match(of.id, /^a[0-9a-f]+$/);
-  assert.deepEqual(findingFacts(of), { impact: null, effect: "", preconditions: [], certainty: null, criteria: [], breaks: null });
+  assert.deepEqual(findingFacts(of), { impact: null, effect: "", preconditions: [], certainty: null, criteria: [], breaks: null, effort: null });
   const now = mapReview({ unlinked: ["c2"], components: [{ name: "Queue", status: "new" }], component_counts: { new: 1, changed: 0, no_owner: 1, codeowners: false }, access: [{ resource: "Api", public: true }],
     steps: [{ title: "s", hunks: ["h1"], check_questions: ["", "q1?", "q2?"], question_files: ["x.py", "a.py", ""],
       suggestions: [{ hunk: "h1", line: 2, side: "new", severity: "low", category: "availability", text: "No retry. Add one." }],
@@ -429,9 +429,9 @@ console.log("ok");
   const m = mergeFindings([sec, { ...nf, severity: "medium" }], now.suspects);
   assert.deepEqual(m.findings.map((f) => [f.file, f.line, f.severity, f.reviewer, f.category]), [["a.py", 9, "high", "security", undefined], ["a.py", 2, "low", "ai", "availability"]]);
   assert.deepEqual(m.notes, []);
-  assert.deepEqual(findingFacts(m.findings[0]), { impact: "unauthorized_access", effect: "Anyone reads it.", preconditions: ["redelivery"], certainty: "confirmed", criteria: ["c1"], breaks: { from: "n1", to: "n2", edge: "e5" } });
+  assert.deepEqual(findingFacts(m.findings[0]), { impact: "unauthorized_access", effect: "Anyone reads it.", preconditions: ["redelivery"], certainty: "confirmed", criteria: ["c1"], breaks: { from: "n1", to: "n2", edge: "e5" }, effort: null });
   assert.ok(m.findings[0].ids.includes(now.asks[0].findings[0]), "an ask finds its finding through ids");
-  assert.deepEqual(findingFacts(m.findings[1]), { impact: null, effect: "", preconditions: [], certainty: null, criteria: [], breaks: null });
+  assert.deepEqual(findingFacts(m.findings[1]), { impact: null, effect: "", preconditions: [], certainty: null, criteria: [], breaks: null, effort: null });
   // Reviewer runs: the state as written, or derived for an entry from before it was.
   const runs = runsOf({ a: { busy: true, started: "t" }, b: { at: "t", count: 0 }, c: { error: "boom", at: "t" }, d: { state: "failed", error: "x" }, e: { state: "done", scope: { read: ["a.py"], checked: [], skipped: [] }, at: "t" }, f: {} });
   assert.deepEqual(Object.values(runs).map((r) => r.state), ["running", "done", "failed", "failed", "done", null]);
@@ -508,4 +508,60 @@ console.log("ok");
   assert.deepEqual(mergeFindings([], [sug(1, "`json.loads(x); y` raises `KeyError` on a missing id; both return 500."), sug(2, "Import couples the two. Split it."), sug(3, "No sentence end here")]).findings.map((f) => [f.title, f.detail]),
     [["json.loads(x); y raises KeyError on a missing id", "both return 500."], ["Import couples the two", "Split it."], ["No sentence end here", ""]]);
   console.log("ok plain text");
+}
+
+// The Findings tab: a finding's steps, how the count comes about, owners, effort.
+{
+  const { findingSteps, funnel, funnelLine, ownerOf, quickFirst, hasEffort, findingFacts, mergeFindings } = await import("./pr.js");
+  const show = (steps) => steps.map((s) => `${s.done ? "+" : s.next ? ">" : "-"}${s.key}`).join(" ");
+  const facts = [["Agent", "a sub-agent (t2), done"], ["Branch", "fix/2-x"], ["Commit", "68999a3"], ["Report", "The agent reports it fixed."], ["Check", "Verified at ccddf95: unclear"]];
+  // Only reported: the next step says what is missing, by the finding's certainty; every step not reached has its sentence.
+  const s0 = findingSteps({ certainty: "derived" }, undefined);
+  assert.equal(show(s0), "+reported >evidence -sent -verified -in_pr");
+  assert.equal(s0[1].missing, "No evidence yet: the finding is derived from the code.");
+  assert.deepEqual(s0.map((s) => Boolean(s.missing)), [false, true, true, true, true]);
+  assert.match(findingSteps({ certainty: "assumed" }, {})[1].missing, /could not be checked/);
+  // A fix sent without evidence: evidence stays unmarked, the next step is the check; the fix's details sit at their step.
+  const s1 = findingSteps({ certainty: "derived" }, { s: "progress", fixHead: "h1" }, { report: { status: "fixed", commit: "68999a3" }, facts: facts.slice(0, 4) });
+  assert.equal(show(s1), "+reported -evidence +sent >verified -in_pr");
+  assert.match(s1[3].missing, /^Not verified yet: Verify checks the commit/);
+  assert.deepEqual([s1[2].details.map(([l]) => l), s1[3].details, s1[0].details], [["Agent", "Branch", "Commit", "Report"], [], []]);
+  // The agent declined: no fix on its way, with its reason; a check that did not pass says so.
+  const sd = findingSteps({ certainty: "confirmed" }, { s: "progress", fixHead: "h1" }, { report: { status: "wontfix", note: "not in this repo" }, facts: facts.slice(0, 4) });
+  assert.equal(show(sd), "+reported +evidence >sent -verified -in_pr");
+  assert.equal(sd[2].missing, "No fix on its way: the agent declined, not in this repo"); assert.equal(sd[2].details.length, 4, "what the agent said stays at its step");
+  const s2 = findingSteps({ certainty: "confirmed" }, { s: "open", fixHead: "h1", verify: { result: "not_fixed", reason: "still raises", head: "abcdef1234" } }, { facts });
+  assert.equal(show(s2), "+reported +evidence +sent >verified -in_pr");
+  assert.equal(s2[3].missing, "Not verified: the check at abcdef1 says not fixed, still raises");
+  assert.deepEqual(s2[3].details, [facts[4]]);
+  // Checked on the fix branch: verified, not in the PR; on the PR head: all five; an older mark by hand.
+  const branch = { s: "progress", fixHead: "h1", verify: { result: "fixed", head: "68999a3", branch: "fix/2-x" } };
+  const sb = findingSteps({ certainty: "derived" }, branch, { report: { status: "fixed" } });
+  assert.equal(show(sb), "+reported -evidence +sent +verified >in_pr");
+  assert.equal(sb[4].missing, "Verified on the fix branch, not in the PR yet: Apply to PR brings it in, then Verify checks the PR head.");
+  assert.match(findingSteps({}, { ...branch, verify: { ...branch.verify, result: "not_fixed" } })[3].missing, /^Not verified: the check on fix\/2-x at 68999a3 says not fixed\.$/);
+  assert.equal(show(findingSteps({ certainty: "confirmed" }, { s: "fixed", fixHead: "h1", verify: { result: "fixed", head: "h2" } })), "+reported +evidence +sent +verified +in_pr");
+  const sh = findingSteps({}, { s: "fixed" });
+  assert.equal(show(sh), "+reported -evidence -sent +verified >in_pr"); assert.equal(sh[4].missing, "Marked fixed by hand: no check has read the PR head.");
+  // The funnel: reported per source, merged, unresolved, of those on security, of those confirmed.
+  const A = (id, line, extra = {}) => ({ id, reviewer: "analysis", file: "a.py", line, end: line, severity: "medium", category: "bug", title: id, detail: "", ...extra });
+  const m = mergeFindings([{ ...A("s1", 3), reviewer: "security", severity: "high", certainty: "confirmed" }, { ...A("c1", 7), reviewer: "claude" }, A("a1", 3), A("a2", 7), A("a3", 9, { effort: "heavy" }), A("a4", 11, { effort: "quick" })],
+    [{ key: "k", path: "a.py", line: 9, old: false, severity: "low", reason: "same line" }]);
+  const st = { a4: "dismissed" }, x = funnel(m.findings, (f) => st[f.id] ?? "open");
+  assert.deepEqual(x, { by: [["analysis", 4], ["claude", 1], ["security", 1], ["ai", 1]], reported: 7, merged: 4, unresolved: 3, security: 1, confirmed: 1 });
+  const names = { analysis: "Analysis", claude: "Claude code review", security: "Security review", ai: "AI suggestion" };
+  assert.equal(funnelLine(x, (k) => names[k]),
+    "Analysis reported 4, Claude code review 1, Security review 1 and AI suggestion 1, 7 in all. Merged by file and line, that is 4 findings. 3 are unresolved, 1 of them on security, 1 of those confirmed by a run.");
+  assert.equal(funnelLine(funnel([m.findings[2]], () => "open")), "analysis reported 1 and ai 1, 2 in all. Merged by file and line, that is 1 finding. 1 is unresolved, none of them on security.");
+  assert.equal(funnelLine(funnel([m.findings[1]], () => "fixed")), "analysis reported 1 and claude 1, 2 in all. Merged by file and line, that is 1 finding. None are unresolved.");
+  assert.equal(funnelLine(funnel([], () => "open")), "No findings reported.");
+  // The owner of a finding's file, when a component there names one.
+  const comps = [{ name: "Queue", at: "a.py:6", owner: null }, { name: "Event", at: "a.py:20", owner: "@platform-team" }, { name: "Other", at: "b.py:1", owner: "@web" }];
+  assert.deepEqual([ownerOf({ file: "a.py" }, comps), ownerOf({ file: "b.py" }, comps), ownerOf({ file: "c.py" }, comps), ownerOf({ file: "a.py" }, undefined)], ["@platform-team", "@web", null, null]);
+  // Effort: passed through and merged; quick wins first keeps the order within one effort, the ones without it last.
+  assert.deepEqual([findingFacts({ effort: "quick" }).effort, findingFacts({ effort: "tiny" }).effort, findingFacts({}).effort], ["quick", null, null]);
+  assert.deepEqual(m.findings.map((f) => [f.line, f.effort]), [[3, null], [7, null], [9, "heavy"], [11, "quick"]]);
+  assert.deepEqual(quickFirst(m.findings).map((f) => f.line), [11, 9, 3, 7]);
+  assert.deepEqual([hasEffort(m.findings), hasEffort(m.findings.slice(0, 2))], [true, false]);
+  console.log("ok findings tab");
 }

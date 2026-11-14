@@ -16,6 +16,7 @@ import { parseReports, findingStatus, mergeFindings, findingCounts, countLine, r
 import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig } from "./setup-view.js";
 import { taskList, taskHead, verdictParts, reviewState, certaintyLine, severityTip, componentLine } from "./pr.js"; // the Overview page
+import { findingSteps, funnel, funnelLine, ownerOf, quickFirst, hasEffort } from "./pr.js"; // the Findings tab
 import { highlightJob, highlightStep, highlightLines, langOf, colors, renderLine, refAt } from "./syntax.js";
 import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js";
 import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf, priceOf, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch } from "./pr.js";
@@ -350,6 +351,10 @@ export const ReviewMode = {
     else if (name === "page" && arg === "verify") this.tab = "findings";
     else if (name === "page") { this.tab = "steps"; this.page = PAGES.some(([k]) => k === arg) ? arg : "overview"; }
     else if (name === "finding") { const f = this.findingById(arg); if (f) { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); } } // finding:<id>: a click on its row in the Findings tab
+    // The same as their clicks in the Findings tab: a step of the open finding (finding-step:sent | verified, again to
+    // fold it) and the order (findings-sort:quick, findings-sort: for the usual one).
+    else if (name === "finding-step") this.fstep = this.fstep?.id === this.ffocus && this.fstep.key === arg ? null : { id: this.ffocus, key: arg };
+    else if (name === "findings-sort") this.fsort = arg === "quick";
     else if (name === "verify") this.runVerify(cx);
     else if (name === "step") this.goStep(arg === "next" ? this.cur + 1 : arg === "prev" ? this.cur - 1 : Number(arg), cx);
     else if (name === "hunk") this.goHunk(arg === "prev" ? -1 : 1, cx);
@@ -3411,29 +3416,44 @@ export const ReviewMode = {
       const n = all.filter((x) => x.sources.some((y) => y.reviewer === k)).length;
       return { k, n, text: runs[k]?.state === "running" ? `${name(k)}: running` : n ? `${name(k)} ${n}` : runs[k]?.state === "failed" ? `${name(k)}: failed` : ran[k] ? `${name(k)}: no findings` : `${name(k)}: not run` };
     }).filter((x) => x.k !== "ai" || x.n);
+    // "Quick wins first" is offered once a finding says how much work its fix is; it reorders every section.
+    const efforts = hasEffort(all), order = (list) => (efforts && this.fsort ? quickFirst(list) : list);
     const row = (x) => {
       const st = this.fstatus(x), on = this.ffocus === x.id, col = t[SEV[x.severity]] ?? t.accent, li = this.layerOf(x), settled = st === "fixed" || st === "dismissed";
       const wide = on || (x.security && x.severity === "high" && !settled); // an unresolved high security finding keeps its whole title
-      const facts = this.fixFacts(x), others = x.sources.filter((y) => y.title !== x.title || y.detail !== x.detail);
+      const others = x.sources.filter((y) => y.title !== x.title || y.detail !== x.detail), owner = on ? ownerOf(x, this.ai?.components) : null;
+      // Its way into the PR as five steps in one line; the step that is next says what is missing, a step with
+      // details (the fix's agent, branch, commit and report, the check's result) opens them on a click.
+      const steps = on ? findingSteps(x, this.find.status[x.id], { report: this.find.reports[x.id], facts: this.fixFacts(x) }) : [];
+      const next = steps.find((s) => s.next), shown = steps.find((s) => this.fstep?.id === x.id && s.key === this.fstep.key && s.details.length);
       return v_flex().id(`rv-fc-${x.id}`).flex_none().px(8).py(on ? 8 : 4).gap(6).rounded(7).border_l(3).border_color(on ? t.accent : col).when(on, (e) => e.bg(t.surface)).text_size(13.5)
         .child(h_flex().id(`rv-ft-${x.id}`).tooltip("Open this finding and show its line in the diff").gap(8).items_start().cursor_pointer().hover((h) => h.text_color(t.foreground))
           .on_click((_e, cx) => { this.ffocus = on ? null : x.id; if (!on) this.jumpTo(`${x.file}:${x.line}`, cx); cx.notify(); })
           .child(badge(t, x.severity, col))
-          .when(Boolean(x.security), (e) => e.child(badge(t, "Security", t.ansi1)))
+          .when(Boolean(x.effort), (e) => e.child(div().id(`rv-fef-${x.id}`).tooltip("How much work the fix is, as the analysis sees it: quick, moderate or heavy").flex_none().pt(1).text_size(12).text_color(t.muted).child(x.effort)))
+          .when(Boolean(x.security), (e) => e.child(badge(t, "⛨ Security", t.ansi1).bg(t.ansi1 + "26")))
           .child(div().flex_1().min_w(0).font_semibold().text_color(settled ? t.dim : t.foreground).when(!wide, (e) => e.truncate()).when(wide, (e) => e.whitespace_normal()).child(x.title))
           .child(div().flex_none().text_size(12).text_color(t.muted).child(`${x.file.split("/").pop()}:${x.line}${this.findRow(x) < 0 ? " · outside the diff" : ""}`))
           .child(div().flex_none().text_size(12).font_semibold().text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(FSTATUS[st]?.[0] ?? st)))
         .when(on, (e) => e
-          .child(div().text_size(12).text_color(t.muted).whitespace_normal().child(`Found by ${this.sourcesOf(x)}`))
+          .child(div().text_size(12).text_color(t.muted).whitespace_normal().child(`Found by ${this.sourcesOf(x)}${owner ? ` · Owner: ${owner}` : ""}`))
           // An analysis finding is part of its layer: name it, a click opens it.
           .when(li >= 0, (e) => e.child(div().id(`rv-fly-${x.id}`).tooltip("Open the layer this finding belongs to").truncate().text_size(12).text_color(t.accent).cursor_pointer()
             .on_click((_e, cx) => { this.goStep(li, cx); cx.notify(); }).child(`${x.category} · layer: ${plain(this.steps()[li]?.title)} →`)))
           .child(div().line_height(1.5).child(TextView.markdown(`rv-fd-${x.id}`, x.detail + (x.suggestion ? `\n\n**Suggested:** ${x.suggestion}` : ""))))
           // What the other sources say about the same line, in their own words and with their own severity.
           .children(others.map((y, k) => div().id(`rv-fsrc-${x.id}-${k}`).text_size(12.5).text_color(t.muted).line_height(1.5).whitespace_normal().child(`${name(y.reviewer)} (${y.severity}): ${plain(y.title)}${y.detail ? `. ${plain(y.detail)}` : ""}`)))
-          .when(facts.length > 0, (e) => e.child(v_flex().p(8).gap(3).rounded(6).border_1().border_color(t.border)
-            .children(facts.map(([label, text]) => h_flex().gap(8).items_start().text_size(12.5).line_height(1.5)
-              .child(div().w(52).flex_none().text_color(t.muted).child(label)).child(div().flex_1().min_w(0).whitespace_normal().child(text))))))
+          .child(v_flex().gap(4)
+            .child(h_flex().flex_wrap().gap(4).items_center().text_size(12).children(steps.flatMap((s, k) => [k > 0 && div().flex_none().text_color(t.dim).child("→"),
+              div().id(`rv-fstep-${x.id}-${s.key}`).tooltip(`${s.done ? `${s.label}: reached.` : s.missing}${s.details.length ? " Click for the details." : ""}`)
+                .flex_none().px(7).h(20).flex().items_center().gap(4).rounded(10).border_1().border_color(s.done ? t.ansi2 : s.next ? t.ansi3 : t.border).text_color(s.done || s.next ? t.foreground : t.dim)
+                .when(s.done, (e) => e.bg(t.ansi2 + "1f")).when(shown === s, (e) => e.border_color(t.accent))
+                .when(s.details.length > 0, (e) => e.cursor_pointer().hover((h) => h.bg(t.hover)).on_click((_e, cx) => { this.fstep = shown === s ? null : { id: x.id, key: s.key }; cx.stop_propagation(); cx.notify(); }))
+                .child(s.done ? `✓ ${s.label}` : s.label).when(s.details.length > 0, (e) => e.child(div().text_color(t.muted).child(shown === s ? "▾" : "▸")))].filter(Boolean))))
+            .when(Boolean(next), (e) => e.child(div().id(`rv-fnext-${x.id}`).text_size(12.5).line_height(1.5).text_color(t.muted).whitespace_normal().child(next.missing)))
+            .when(Boolean(shown), (e) => e.child(v_flex().p(8).gap(3).rounded(6).border_1().border_color(t.border)
+              .children(shown.details.map(([label, text]) => h_flex().gap(8).items_start().text_size(12.5).line_height(1.5)
+                .child(div().w(52).flex_none().text_color(t.muted).child(label)).child(div().flex_1().min_w(0).whitespace_normal().child(text)))))))
           .child(h_flex().flex_wrap().gap(6)
             .child(pill(`rv-fcm-${x.id}`, t, "Add as comment", (_e, cx) => this.findingComment(x, cx)).tooltip("Add this finding to your pending comments"))
             .child(pill(`rv-fdi-${x.id}`, t, "Discuss in chat", (_e, cx) => this.discuss(x, cx)).tooltip("Discuss this finding with the PR's agent; a preview first, nothing is sent until you confirm"))
@@ -3449,7 +3469,7 @@ export const ReviewMode = {
     const section = (title, list, right = null, hint = null) => v_flex().flex_none().gap(2)
       .child(h_flex().pt(10).pb(2).px(6).gap(8).items_center().child(div().flex_1().text_size(11.5).font_semibold().text_color(t.muted).child(`${title} · ${list.length}`)).children([right].filter(Boolean)))
       .when(Boolean(hint), (e) => e.child(div().px(6).pb(2).text_size(12.5).line_height(1.5).text_color(t.muted).whitespace_normal().child(hint)))
-      .children(list.map(row));
+      .children(order(list).map(row));
     const verify = div().id("rv-verify").tooltip("One model call checks on the PR head whether the findings sent to Fix are fixed now").px(9).h(26).flex().items_center().gap(6).rounded(6).border_1().text_size(12.5)
       .border_color(toVerify.length && !this.verifyBusy ? t.foreground : t.border).text_color(toVerify.length && !this.verifyBusy ? t.foreground : t.dim)
       .when(toVerify.length > 0 && !this.verifyBusy, (e) => e.cursor_pointer().hover((h) => h.bg(t.hover)).on_click((_e, cx) => this.runVerify(cx)))
@@ -3458,9 +3478,13 @@ export const ReviewMode = {
       : `A fix sent does not resolve a finding. Verify is one ${modelLabel(m)} call that reads the PR head and says fixed, not fixed or unclear; only fixed moves a finding to Fixed.${toVerify.length ? "" : " Nothing to verify yet: the PR head has not moved since these fixes were sent."}`;
     return v_flex().flex_1().min_h(0)
       .child(v_flex().flex_none().px(14).py(10).gap(8).border_b(1).border_color(t.border)
-        .child(div().id("rv-fcount").tooltip("Unresolved findings by severity; a finding with a fix sent stays unresolved until it is verified").text_size(13.5).font_semibold().child(countLine(c)))
+        // How this number comes about is its help text: a line of its own would make the head three lines.
+        .child(div().id("rv-fcount").tooltip(`${funnelLine(funnel(all, (f) => this.fstatus(f)), name)} A finding with a fix sent stays unresolved until it is verified.`).text_size(13.5).font_semibold().child(countLine(c)))
         .child(h_flex().flex_wrap().gap(4).children(sources.map((x) => div().id(`rv-fsrcn-${x.k}`).tooltip(x.n ? `Findings ${name(x.k)} is a source of` : runs[x.k]?.state === "failed" ? `${name(x.k)} failed: ${runs[x.k].error ?? "no result"}` : ran[x.k] ? `${name(x.k)} ran and found nothing` : `${name(x.k)} has not run on this PR`)
-          .px(8).h(22).flex().items_center().rounded(6).border_1().border_color(t.border).text_size(12).text_color(x.n ? t.foreground : t.muted).child(x.text))))
+          .px(8).h(22).flex().items_center().rounded(6).border_1().border_color(t.border).text_size(12).text_color(x.n ? t.foreground : t.muted).child(x.text)))
+          .when(efforts, (e) => e.child(div().id("rv-fsort").tooltip(this.fsort ? "Listed with the quickest fixes first; click for the usual order, by severity" : "List the findings with the quickest fixes first")
+            .px(8).h(22).flex().items_center().rounded(6).border_1().cursor_pointer().text_size(12).border_color(this.fsort ? t.accent : t.border).bg(this.fsort ? t.selected : t.chrome).text_color(this.fsort ? t.foreground : t.muted)
+            .hover((h) => h.text_color(t.foreground)).on_click((_e, cx) => { this.fsort = !this.fsort; cx.notify(); }).child(this.fsort ? "✓ Quick wins first" : "Quick wins first"))))
         .when(Object.values(runs).some((r) => r.busy), (e) => e.child(div().text_size(12).text_color(t.muted).child("A reviewer is running…"))))
       .when(!all.length, (e) => e.child(h_flex().flex_none().flex_wrap().px(14).py(8).gap(6).items_center().border_b(1).border_color(t.border)
         .child(div().text_size(12).text_color(t.muted).child("Run a reviewer:"))
