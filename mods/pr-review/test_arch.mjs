@@ -527,3 +527,14 @@ console.log("ok");
   assert.deepEqual([...archMarks(arch, [tok], access, [{ where: { access: "acc1" }, findings: ["tok"], derived: true }]).nodes.keys()], ["q"], "a placeholder names nothing");
   assert.deepEqual([...archMarks(arch, [tok], access, [{ where: { edge: "e0" }, findings: ["tok"] }]).edges.keys()], [0]);
 }
+
+// ---- a way in stays next to its caller from outside instead of being pulled to the end of its group
+{
+  const { archLayout } = await import("./arch.js");
+  const arch = { groups: [{ id: "x", label: "Callers" }, { id: "fd", label: "Front desk" }, { id: "c", label: "Consumer" }],
+    nodes: [{ id: "cl", group: "x" }, { id: "h", group: "fd" }, { id: "r", group: "fd" }, { id: "s", group: "fd" }, { id: "e", group: "fd" }, { id: "co", group: "c" }],
+    edges: [{ from: "cl", to: "h" }, { from: "r", to: "s" }, { from: "s", to: "e" }, { from: "h", to: "co" }, { from: "e", to: "co" }] };
+  const L = archLayout(arch), col = (id) => L.nodes.find((n) => n.id === id).col;
+  assert.equal(col("h"), col("cl") + 1, "the handler stands right after its caller");
+  assert.ok(L.paths.find((p) => p.from.includes("cl")).kind !== "stub", "the call into it is a line, no stub");
+}

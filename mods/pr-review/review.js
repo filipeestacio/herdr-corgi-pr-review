@@ -3048,7 +3048,7 @@ export const ReviewMode = {
         .when(hasTrust(L), (e) => e.child(div().flex_none().child(trustLegend(L, t, a.zones))))
         .child(h_flex().flex_none().gap(2).p(2).rounded(7).border_1().border_color(t.border).child(seg("diff", "Structural diff")).child(seg("before", "Before")).child(seg("after", "After")))
         .child(div().id("rv-av-fit").flex_none().px(10).h(28).flex().items_center().rounded(7).border_1().border_color(fit ? t.accent : t.border).cursor_pointer().text_size(12.5)
-          .text_color(fit ? t.foreground : t.muted).tooltip("Narrow cards with shorter texts, so more of the picture fits a row").on_click((_e, cx) => { this.archFit = !fit; this.hsOf("rv-arch-canvas").x = 0; cx.notify(); }).child("Fit"))
+          .text_color(fit ? t.foreground : t.muted).tooltip(typeof this.archFit === "boolean" ? "Narrow cards with shorter texts, so more of the picture fits a row" : "Narrow cards with shorter texts: on by itself while the picture is wider than the view. A click decides for you").on_click((_e, cx) => { this.archFit = !fit; this.hsOf("rv-arch-canvas").x = 0; cx.notify(); }).child("Fit"))
         .child(div().id("rv-av-wrap").flex_none().px(10).h(28).flex().items_center().rounded(7).border_1().border_color(this.archWrapOn() ? t.accent : t.border).cursor_pointer().text_size(12.5)
           .text_color(this.archWrapOn() ? t.foreground : t.muted).tooltip("On: a picture wider than the view goes on in a second row. Off: one row to scroll sideways")
           .on_click((_e, cx) => { this.setArchWrap(!this.archWrapOn()); cx.notify(); }).child("Wrap"))],
@@ -3233,17 +3233,24 @@ export const ReviewMode = {
   archWrapOn() { return shared("review.archWrap") === true; },
   setArchWrap(on) { setShared("review.archWrap", on); this.hsOf("rv-arch-canvas").x = 0; },
   // Fit (narrow cards): only when switched on; the picture wraps instead.
-  archFitOn() { return this.archFit === true; },
+  // Fit: the person's choice when there is one; else on as soon as the usual cards are wider than the view, so the
+  // picture opens with every frame in sight (the view's width is known after the first layout: until then, off).
+  archFitOn() {
+    if (typeof this.archFit === "boolean") return this.archFit;
+    const s = this.hsOf("rv-arch-canvas"), L = s.viewW ? this.archL(false) : null;
+    return Boolean(L) && L.width + 44 > hsVisible(s.viewW / (settings().zoom || 1), this.drawerCover());
+  },
   // The picture shown: its layout with the calls' texts on their lines, a row in a card and above a call for the
   // findings there, normal or narrow cards (Fit). Memoized: the page renders often.
-  archL() {
+  archL(fit = this.archFitOn()) {
     const a = this.ai?.arch;
     if (!a) return null;
-    const m = this.archMarksNow(), fit = this.archFitOn(), key = `${fit}|${this.archMode}|${[...m.nodes.keys()]}|${[...m.edges.keys()]}|${JSON.stringify(a)}|${JSON.stringify(this.ai?.access ?? [])}`;
+    const m = this.archMarksNow(), key = `${fit}|${this.archMode}|${[...m.nodes.keys()]}|${[...m.edges.keys()]}|${JSON.stringify(a)}|${JSON.stringify(this.ai?.access ?? [])}`;
     // The map as the boundary really runs (views.js mapArch): the Internet card at the way in, no zone on shared code,
     // no "‖" on a call in one process.
-    if (this.fitMemo?.key !== key) this.fitMemo = { key, L: archLayout(mapArch(a, this.ai?.access, this.ai?.bypasses ?? []), this.archMode, (n) => (m.nodes.has(n.id) ? 1 : 0), fit, { labels: true, marked: (es) => es.some((i) => m.edges.has(i)) }) };
-    return this.fitMemo.L;
+    const memo = (this.fitMemos ??= {});
+    if (memo[fit]?.key !== key) memo[fit] = { key, L: archLayout(mapArch(a, this.ai?.access, this.ai?.bypasses ?? []), this.archMode, (n) => (m.nodes.has(n.id) ? 1 : 0), fit, { labels: true, marked: (es) => es.some((i) => m.edges.has(i)) }) };
+    return memo[fit].L;
   },
   // ---- sideways scrollers inside the scrolling page (the architecture canvas, the flow, state-machine and blast
   // pictures): clipped at their box, the content moved by left(-x); wheel and trackpad through wheelStep (one axis per
