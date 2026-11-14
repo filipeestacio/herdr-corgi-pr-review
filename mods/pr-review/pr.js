@@ -831,6 +831,12 @@ export function taskList(asks = [], findings = [], unlinked = [], statusOf = () 
     other: open.filter((f) => !f.security && !asks.some((a) => linked(a, f))), marked, criteria: criteria.length, met: criteria.filter((a) => a.state === "met").length };
 }
 const count = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+// The Overview's groups of criteria: the acceptance criteria ("head") and the rest of the description ("rest"), each
+// with whether all its rows are met (then it folds to one line at the end of the page).
+export function criteriaGroups(l) {
+  const marked = l.rows.filter((r) => l.marked && r.ask.acceptance), rest = l.rows.filter((r) => !marked.includes(r));
+  return [["head", marked], ["rest", rest]].filter(([, rows]) => rows.length).map(([key, rows]) => ({ key, rows, met: rows.every((r) => r.ask.state === "met") }));
+}
 const metText = (l) => `${l.met} of ${l.criteria} ${l.marked ? "acceptance criteria" : "criteria"} met`;
 // "0 of 5 acceptance criteria met, 1 extra"; "" without a task.
 export const taskHead = (l) => (l.rows.length + l.extra.length ? `${metText(l)}${l.extra.length ? `, ${l.extra.length} extra` : ""}` : "");
