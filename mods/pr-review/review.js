@@ -591,7 +591,8 @@ export const ReviewMode = {
   },
 
   makeWorktree(cx, clone = false) {
-    const url = this.prSel.url;
+    const url = this.prSel.url, want = this.prSel.headSha ?? null, job = `${url}|${want}|${clone}`;
+    if (this.wtIn === job) return; // the same checkout is being made
     this.worktree = null;
     if (this.prSel.space && this.root) {
       this.worktree = { url, head: this.head, path: this.root, local: true }; setShared("review.worktree", this.worktree); this.applyTrust();
@@ -600,11 +601,16 @@ export const ReviewMode = {
     // A PR you didn't open may use the active space's checkout of its repo (cwd); your own PRs keep the dedicated clones.
     const local = this.prSel.source && this.root ? ["--local", this.root] : [];
     this.cloning = clone;
+    this.wtIn = job;
     cx.spawn(async (cx) => {
       const roots = C.cloneRoots(ctxDoc(), this.ctxId(), this.cfg?.cloneRoot ?? "~/code").flatMap((d) => ["--root", d.replace(/^~(?=\/|$)/, home())]);
       const env = this.ctxEnv(this.ctxId()), argv = [...env, "python3", `${appHome()}/mods/pr-review/worktree.py`, url, ...roots, ...local, ...(clone ? ["--clone"] : [])];
-      const r = await exec(argv[0], argv.slice(1), { timeout: 600000 })
+      // The checkout from last time still at this head (its HEAD file says so): no fetch, no checkout. A new head
+      // (checkHead) comes back here with another sha and runs worktree.py.
+      const had = shared("review.worktree"), same = !clone && want && had?.url === url && had.head === want && !had.local && await worktreeAt(had.path, want);
+      const r = same ? { code: 0, stdout: JSON.stringify({ head: want, path: had.path }) } : await exec(argv[0], argv.slice(1), { timeout: 600000 })
         .catch((e) => ({ code: 1, stderr: String(e) }));
+      if (this.wtIn === job) this.wtIn = null;
       this.cloning = false;
       if (this.prSel?.url !== url) return;
       if (r.code === 3) { this.needClone = JSON.parse(r.stdout).need_clone; this.loadContext(cx); cx.notify(); return; }
@@ -4723,4 +4729,10 @@ const PUBLIC_TIP = "This comes from a security finding: once posted, its text is
 function tabTip(id, t, tip, label) {
   return HoverCard.new(`${id}-tip`).anchor("top_center").open_delay(700).trigger(label)
     .content(div().max_w(280).px(10).py(6).rounded(6).border_1().border_color(t.border).bg(t.popover).text_size(12.5).text_color(t.foreground).whitespace_normal().child(tip));
+}
+
+// Whether a checkout (a linked worktree: its .git file names the gitdir) is at this commit: two file reads, no git.
+async function worktreeAt(path, sha) {
+  const dir = /^gitdir: (.+)$/m.exec(await readTextFile(`${path}/.git`).catch(() => null) ?? "")?.[1]?.trim();
+  return Boolean(dir) && (await readTextFile(`${dir}/HEAD`).catch(() => null) ?? "").trim() === sha;
 }
