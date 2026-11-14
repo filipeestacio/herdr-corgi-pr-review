@@ -293,3 +293,22 @@ assert.equal(pairs("-+-+"), "0|1 2|3", "blocks written one after the other pair 
 assert.equal(pairs("+-"), "_|0 1|_", "an added line before a removed one is not its change");
 assert.equal(pairs(" g @-+n"), "0|0 =1 2|2 =3 4|5 =6", "a gap that still hides lines, a hunk header and a note take the whole width");
 assert.equal(pairs(""), "");
+
+// ---- long code lines wrap
+import { wrapCode, wrapHeight, codeCols, sliceSpans } from "./views.js";
+assert.deepEqual(wrapCode("short", 80), [0], "a line that fits does not break");
+assert.deepEqual(wrapCode("x".repeat(80), 80), [0], "exactly the width: one line");
+assert.deepEqual(wrapCode("x".repeat(25), 10), [0, 10, 20], "no place to break: at the width exactly");
+assert.deepEqual(wrapCode("aaaaaaaa bbbbbbbbbbbbbbbbbbbb", 12), [0, 9, 21], "after the last space in the line's last third");
+assert.deepEqual(wrapCode("call(firstarg,second)", 16), [0, 14], "after a comma");
+assert.deepEqual(wrapCode("a bbbbbbbbbbbbbbbbbbbbbbb", 12), [0, 12, 24], "a space early in the line does not make a short line");
+assert.equal(wrapCode("x".repeat(1000), 10, 5).length, 5, "at most max visual lines");
+assert.deepEqual(wrapCode("", 80), [0]);
+assert.equal(wrapHeight([0], 22), 22);
+assert.equal(wrapHeight([0, 40, 80], 22), 66, "three visual lines, three rows high");
+assert.equal(codeCols(122 + 12 + 780, 122, 7.8), 100);
+assert.equal(codeCols(10, 122, 7.8), 8, "never below 8 columns");
+const sp = [{ start: 0, end: 5, kind: "kw" }, { start: 6, end: 14, kind: "fn", ref: true }, { start: 20, end: 22, kind: "str" }];
+assert.deepEqual(sliceSpans(sp, 0, 10), [{ start: 0, end: 5, kind: "kw" }, { start: 6, end: 10, kind: "fn", ref: true }], "a span over the break is split");
+assert.deepEqual(sliceSpans(sp, 10, 20), [{ start: 0, end: 4, kind: "fn", ref: true }], "its second half starts the next line");
+assert.deepEqual(sliceSpans(sp, 14, 20), [], "nothing between spans");

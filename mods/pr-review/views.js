@@ -319,3 +319,27 @@ export function pairRows(rows) {
   }
   return out;
 }
+
+// ---- long code lines wrap (review.js pushRows: one list item per visual line, so a click knows its line by its key)
+
+// Where a code line breaks to fit `cols` columns: the offset each visual line starts at ([0] when it fits). A break
+// goes after the last space or , ; ( [ { in the line's last third, else at `cols` exactly. At most `max` lines; the
+// last one is cut as before.
+export const WRAP_MAX = 40;
+const WRAP_AFTER = /[\s,;([{]/;
+export function wrapCode(text, cols, max = WRAP_MAX) {
+  const s = String(text ?? ""), c = Math.max(8, Math.floor(cols)), out = [0];
+  for (let a = 0; s.length - a > c && out.length < max;) {
+    let e = a + c;
+    for (let j = e; j > a + Math.ceil((2 * c) / 3); j--) if (WRAP_AFTER.test(s[j - 1])) { e = j; break; }
+    out.push(e);
+    a = e;
+  }
+  return out;
+}
+// The height a code line takes: one row per visual line.
+export const wrapHeight = (starts, row) => row * Math.max(1, starts.length);
+// The code columns of a diff row `width` px wide whose code starts `gutter` px from its left (12 px right of it).
+export const codeCols = (width, gutter, charW) => Math.max(8, Math.floor((width - gutter - 12) / (charW || 7.8)));
+// The syntax spans of text[a, b), shifted to the slice: a wrapped line keeps its colors on every visual line.
+export const sliceSpans = (spans, a, b) => spans.filter((s) => s.end > a && s.start < b).map((s) => ({ ...s, start: Math.max(s.start, a) - a, end: Math.min(s.end, b) - a }));

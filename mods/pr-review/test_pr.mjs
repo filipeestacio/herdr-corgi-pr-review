@@ -269,6 +269,8 @@ const k1 = itemKeys(base), withDef = [...base.slice(0, 3), { t: "def", d: { key:
 assert.equal(new Set(k1).size, k1.length);
 assert.deepEqual(k2.filter((k) => !k.startsWith("d|")), k1);
 assert.deepEqual(itemKeys([base[2], base[2]]), [k1[2], `${k1[2]}#1`]); // a hunk in two steps
+// A wrapped line's visual lines: each its own key, the first the line's key as before.
+assert.deepEqual(itemKeys([0, 1, 2].map((part) => ({ ...base[2], part }))), [k1[2], `${k1[2]}~1`, `${k1[2]}~2`]);
 // Click → token → position: tabs expand to the next stop of 4, the character is the UTF-16 offset in the original
 // line, the line is the row's new line (old line on a removed row).
 assert.equal(expandTabs("\tx\ty"), "    x   y");

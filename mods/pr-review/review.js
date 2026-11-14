@@ -26,6 +26,7 @@ import { orderDiffers, worst, byUrgency } from "./views.js";
 import { archView, archModel, archLegend, visualsCard, visualCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
 import { visualPlan } from "./stack.js";
 import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCALE } from "./views.js";
+import { wrapCode, codeCols, sliceSpans } from "./views.js"; // long lines wrap
 import { plainText } from "./pr.js";
 import { hasSources, archLayout, archBands } from "./arch.js";
 import * as TH from "./threads.js";
@@ -43,6 +44,7 @@ const FOLD_MARGIN = 1500 * 22; // px: open the files around the view again this 
 const SPLIT = 6, ROW = 22, GUTTER = 4 + 48 + 48 + 22, GAP_SEG = 110, BTN = 110, BTN_GAP = 8, ACT = 44;
 const FILE_CHEV = 30, FILE_SEEN = 100, FILE_WHOLE = 124;
 const MORE = 20; // lines per ↑/↓ click
+const ONE_LINE = [0]; // a code line that fits: one visual line from its start (wrapsOf)
 const KEYS_POP = { width: 340, height: 330 }; // the "?" popup: sized to its rows and the last line
 const COMPOSE = 168; // the composer row: header + a fixed-height textarea (the list needs every row's height up front)
 const progressFile = () => `${appHome()}/pr-data/review-progress.json`; // per PR: progress and where you were (bounded)
@@ -1021,9 +1023,9 @@ export const ReviewMode = {
 
   lspRoot() { return this.exMode ? this.ex?.root ?? null : this.worktree?.path ?? (this.prSel?.space ? this.root : null); },
 
-  define(it, r, cx) {
-    const spans = this.spanMap?.get(it.src)?.spans?.[it.ri] ?? [];
-    const tok = tokenAt(r, spans, this.press.x, GUTTER, this.charW ?? 7.8);
+  define(it, r, cx, x = this.press.x, left = GUTTER, ri = it.ri) {
+    const spans = this.spanMap?.get(it.src)?.spans?.[ri] ?? [];
+    const tok = tokenAt(r, spans, x, left, this.charW ?? 7.8);
     if (!tok) { this.note = "⌘-click a name for its definition"; return cx.notify(); }
     this.lookupDef(it.path, r, tok, cx);
   },
@@ -1209,11 +1211,12 @@ export const ReviewMode = {
     const ths = this.threads().filter((x) => x.file === path), notes = codePins(this.pins(), path);
     const show = this.show();
     const thread = { gh, editId: this.composing ? this.editing?.id ?? null : null, composeKey: range && at.compose === undefined ? lineKey(rows[range[1]]) : null };
+    const cols = codeCols(this.listW ?? 900, GUTTER, this.codeCharW()); // a longer line wraps: one item per visual line (part)
     rows.forEach((r, ri) => {
       if (r.kind === "gap") { items.push({ t: "gap", path, r }); return; }
       const hunk = hunkOf(r);
       if (hunk && at[hunk] === undefined) at[hunk] = items.length;
-      items.push({ t: "row", path, src: rows, ri, hunk });
+      for (let part = 0, n = this.wrapsOf(rows, ri, cols).length; part < n; part++) items.push({ t: "row", path, src: rows, ri, hunk, part, cols });
       if (r.number === undefined) return;
       if (this.defAt && this.defAt.key === `${path}:${lineKey(r)}`) items.push({ t: "def", d: this.defAt });
       // The Show switch: a kind switched off folds away here, never silently ("n hidden").
@@ -1302,9 +1305,21 @@ export const ReviewMode = {
   foldH(path, rows) {
     const o = this.openH?.get(path);
     if (o?.rows === rows) return o.h;
-    const memo = (this.rowsH ??= new WeakMap());
-    if (!memo.has(rows)) memo.set(rows, rows.reduce((h, r) => h + (r.kind === "@" || r.kind === "gap" ? 30 : ROW), 0));
-    return memo.get(rows);
+    const memo = (this.rowsH ??= new WeakMap()), cols = codeCols(this.listW ?? 900, GUTTER, this.codeCharW());
+    if (memo.get(rows)?.cols !== cols) memo.set(rows, { cols, h: rows.reduce((h, r, ri) => h + (r.kind === "@" || r.kind === "gap" ? 30 : ROW * this.wrapsOf(rows, ri, cols).length), 0) });
+    return memo.get(rows).h;
+  },
+  // A code character's width in the list's px: the probe measures it zoomed, listW is not (renderReview).
+  codeCharW() { return (this.charW ?? 7.8 * (settings().zoom || 1)) / (settings().zoom || 1); },
+  // A row's visual lines at `cols` columns of code (views.js wrapCode): the offset each starts at in its tab-expanded
+  // text, kept per row array and width (rows are memoized across renders, memoRows).
+  wrapsOf(src, ri, cols) {
+    const r = src[ri];
+    if (r?.number === undefined || (r.text.length <= cols && !r.text.includes("\t"))) return ONE_LINE;
+    const m = (this.wraps ??= new WeakMap());
+    if (!m.has(src)) m.set(src, {});
+    const at = (m.get(src)[cols] ??= []);
+    return (at[ri] ??= wrapCode(expandTabs(r.text), cols));
   },
   // Scrolled near a folded file in another file than the room was given around: give it around this one, keeping
   // the item at the top of the view where it is (renderReview: anchor).
@@ -1329,11 +1344,14 @@ export const ReviewMode = {
       if (it.hunk) this.visit(it.hunk, cx);
       const r = it.src[it.ri];
       if (r.number === undefined) return;
-      if (this.press.cmd) return this.define(it, r, cx); // ⌘-click a name: its definition
+      // A wrapped line's next visual line: its code starts that many columns into the line.
+      const starts = this.wrapsOf(it.src, it.ri, it.cols), a = starts[it.part ?? 0] ?? 0, lastPart = (it.part ?? 0) === starts.length - 1;
+      if (this.press.cmd) return this.define(it, r, cx, x < GUTTER ? x : x + a * (this.charW ?? 7.8)); // ⌘-click a name: its definition
       // Selections are (file, line keys), not row indexes: rows are rebuilt on every render.
       // A line number (GitHub's gutter "+") opens the composer there; shift-click makes it a range.
       const k = lineKey(r), f = this.fsel;
-      const d = rowClick({ x, w: this.press.w, shift, gutterW: GUTTER, composing: this.composing, editing: Boolean(this.editing), sel: f, path: it.path, k,
+      // The selection's chips sit on a wrapped line's last visual line: as far right on the others is code.
+      const d = rowClick({ x: lastPart ? x : Math.min(x, this.press.w - 21 - CHIP_W - ASK_W), w: this.press.w, shift, gutterW: GUTTER, composing: this.composing, editing: Boolean(this.editing), sel: f, path: it.path, k,
         rangeOk: Boolean(f && f.path === it.path && rangeOf(this.rowsFor(it.path), f.a, k)) });
       if (d.focus) return this.draft.focus(); // the open composer keeps its line
       if (d.ask) { this.setDrawer("open", cx, null); return cx.notify(); }
@@ -3552,27 +3570,7 @@ export const ReviewMode = {
         return mono(h_flex()).h(30).w_full().pl(GUTTER - 4).pr(12).gap(10).items_center().bg(t.accent + "14").border_t(1).border_b(1).border_color(t.border).text_size(12.5)
           .child(div().flex_none().text_color(t.muted).child(m[1])).child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(m[2]));
       }
-      const on = Boolean(this.selKeys && this.fsel?.path === it.path && this.selKeys.has(lineKey(r)));
-      const tone = r.kind === "+" ? t.ansi2 : r.kind === "-" ? t.ansi1 : null, focus = it.hunk && it.hunk === this.focusHunk;
-      const num = (n) => div().w(48).h_full().flex_none().pr(8).flex().items_center().justify_end().text_color(t.muted).child(n === undefined ? "" : String(n));
-      return mono(h_flex()).h(ROW).w_full().text_size(13).cursor_pointer()
-        .when(Boolean(tone), (e) => e.bg(tint(r.kind) + "1a")).when(on, (e) => e.bg(t.selection))
-        .child(div().w(4).h_full().flex_none().when(on, (e) => e.bg(t.accent)).when(!on && Boolean(focus), (e) => e.bg(t.accent + "55"))
-          .when(!on && !focus && Boolean(this.pinMarks?.has(`${it.path}:${r.n}`)), (e) => e.bg(t.ansi5))
-          .when(!on && r.kind !== "-" && Boolean(this.fmarks?.get(it.path)?.get(r.n)), (e) => e.bg(t[this.fmarks.get(it.path).get(r.n)]))) // the lines of an open finding
-        .child(h_flex().h_full().flex_none().relative().when(Boolean(tone), (e) => e.bg(tint(r.kind) + "40")).child(num(r.o)).child(num(r.n))
-          // GitHub's "+" on hover: the line numbers are the comment button (onItem: x inside the gutter).
-          .child(h_flex().absolute().inset_0().justify_end().items_center().text_color("#00000000").hover((s) => s.text_color(t.accent_foreground).bg(t.accent + "26"))
-            .child(div().w(18).h(18).mr(2).rounded(4).flex().items_center().justify_center().font_semibold().hover((s) => s.bg(t.accent)).child("+"))))
-        .child(div().w(22).flex_none().text_center().font_semibold().text_color(tone ?? t.muted).child(r.kind === " " ? "" : r.kind === "-" ? "−" : "+"))
-        .child(div().flex_1().min_w(0).pr(12).truncate().text_color(t.foreground).child(this.code(r, it)))
-        .when(Boolean(this.traces?.get(`${it.path}:${r.n}`)) && r.kind !== "-", (e) => e.child(div().id("rv-trace").tooltip("Example values from the flow trace; Values in the top bar switches them").flex_none().max_w(460).mr(12).px(8).h(18).flex().items_center()
-          .rounded(9).bg(t.accent + "1f").italic().text_size(12).text_color(t.muted).truncate().child(this.traces.get(`${it.path}:${r.n}`))))
-        // The selection's last row: "+ Comment (c)" at its right end (onItem places the click by x, rowClick).
-        .when(on && !this.composing && this.fsel?.b === lineKey(r), (e) => e.child(div().w(ASK_W).h(18).mr(8).flex_none().flex().items_center().justify_center()
-          .rounded(9).border_1().border_color(t.accent).text_size(12).text_color(t.accent).child("Ask").id("rv-sel-ask").tooltip("Ask one model question about the selected lines")))
-        .when(on && !this.composing && this.fsel?.b === lineKey(r), (e) => e.child(div().w(CHIP_W).h(18).mr(12).flex_none().flex().items_center().justify_center()
-          .rounded(9).bg(t.accent).text_size(12).font_semibold().text_color(t.accent_foreground).child("+ Comment (c)").id("rv-sel-comment").tooltip("Comment on the selected lines (c)")));
+      return this.lineView(it, t, it.ri, null).w_full();
     }
     if (it.t === "gap") {
       const h = it.r.hidden, seg = (label) => div().w(GAP_SEG).flex_none().child(label);
@@ -3704,9 +3702,39 @@ export const ReviewMode = {
     cx.notify();
   },
   // A row's code, highlighted (syntax.js); spans per row array are computed once per render (spanMap).
-  code(r, it) {
-    const m = this.spanMap?.get(it.src);
-    return h_flex().overflow_hidden().children(renderLine(div, m?.shown[it.ri]?.text ?? r.text, m?.spans[it.ri] ?? [], this.syn));
+  // a, b: one visual line of a wrapped line (its columns a..b of the tab-expanded text, b undefined: to the end).
+  code(r, it, ri = it.ri, a = 0, b = undefined) {
+    const m = this.spanMap?.get(it.src), text = m?.shown[ri]?.text ?? r.text, spans = m?.spans[ri] ?? [];
+    if (!a && b === undefined) return h_flex().overflow_hidden().children(renderLine(div, text, spans, this.syn));
+    return h_flex().overflow_hidden().children(renderLine(div, text.slice(a, b), sliceSpans(spans, a, b ?? text.length), this.syn));
+  },
+  // One visual line of a diff line (it.part; a wrapped line takes one list item per visual line, rows of ROW px): the
+  // marks bar, line numbers and sign on its first, a muted "↪" and no number on the next ones; the example values and
+  // the selection's chips on its last. side: null in the unified view, else the half ("l" old, "r" new) it draws.
+  lineView(it, t, ri, side) {
+    const r = it.src[ri], starts = this.wrapsOf(it.src, ri, it.cols), part = it.part ?? 0, first = part === 0, last = part === starts.length - 1;
+    const on = Boolean(this.selKeys && this.fsel?.path === it.path && this.selKeys.has(lineKey(r)) && (!side || !this.fsel.side || this.fsel.side === side));
+    const tone = r.kind === "+" ? t.ansi2 : r.kind === "-" ? t.ansi1 : null, focus = it.hunk && it.hunk === this.focusHunk, newSide = side !== "l";
+    const num = (n) => div().w(48).h_full().flex_none().pr(8).flex().items_center().justify_end().text_color(t.muted).child(n === undefined || !first ? "" : String(n));
+    const sel = on && !this.composing && this.fsel?.b === lineKey(r) && last, trace = last && newSide && r.kind !== "-" && this.traces?.get(`${it.path}:${r.n}`);
+    return h_flex().h(ROW).font_family(settings().font_family ?? "JetBrains Mono").text_size(13).cursor_pointer()
+      .when(Boolean(tone), (e) => e.bg(tint(r.kind) + "1a")).when(on, (e) => e.bg(t.selection))
+      .child(div().w(4).h_full().flex_none().when(on, (e) => e.bg(t.accent)).when(!on && Boolean(focus), (e) => e.bg(t.accent + "55"))
+        .when(!on && !focus && newSide && Boolean(this.pinMarks?.has(`${it.path}:${r.n}`)), (e) => e.bg(t.ansi5))
+        .when(!on && newSide && r.kind !== "-" && Boolean(this.fmarks?.get(it.path)?.get(r.n)), (e) => e.bg(t[this.fmarks.get(it.path).get(r.n)]))) // the lines of an open finding
+      .child(h_flex().h_full().flex_none().relative().when(Boolean(tone), (e) => e.bg(tint(r.kind) + "40")).children(side === "l" ? [num(r.o)] : side === "r" ? [num(r.n)] : [num(r.o), num(r.n)])
+        // GitHub's "+" on hover: the line numbers are the comment button (onItem: x inside the gutter).
+        .when(first, (e) => e.child(h_flex().absolute().inset_0().justify_end().items_center().text_color("#00000000").hover((s) => s.text_color(t.accent_foreground).bg(t.accent + "26"))
+          .child(div().w(18).h(18).mr(2).rounded(4).flex().items_center().justify_center().font_semibold().hover((s) => s.bg(t.accent)).child("+")))))
+      .child(div().w(22).flex_none().text_center().font_semibold().text_color(first ? tone ?? t.muted : t.muted).when(!first, (e) => e.text_size(11)).child(!first ? "↪" : r.kind === " " ? "" : r.kind === "-" ? "−" : "+"))
+      .child(div().flex_1().min_w(0).pr(12).truncate().text_color(t.foreground).child(this.code(r, it, ri, starts[part], starts[part + 1])))
+      .when(Boolean(trace), (e) => e.child(div().id("rv-trace").tooltip("Example values from the flow trace; Values in the top bar switches them").flex_none().max_w(460).mr(12).px(8).h(18).flex().items_center()
+        .rounded(9).bg(t.accent + "1f").italic().text_size(12).text_color(t.muted).truncate().child(trace)))
+      // The selection's last row: "+ Comment (c)" at its right end (onItem places the click by x, rowClick).
+      .when(sel, (e) => e.child(div().w(ASK_W).h(18).mr(8).flex_none().flex().items_center().justify_center()
+        .rounded(9).border_1().border_color(t.accent).text_size(12).text_color(t.accent).child("Ask").id("rv-sel-ask").tooltip("Ask one model question about the selected lines")))
+      .when(sel, (e) => e.child(div().w(CHIP_W).h(18).mr(12).flex_none().flex().items_center().justify_center()
+        .rounded(9).bg(t.accent).text_size(12).font_semibold().text_color(t.accent_foreground).child("+ Comment (c)").id("rv-sel-comment").tooltip("Comment on the selected lines (c)")));
   },
 
   // The left column's width: while dragging the pointer's, else the kept one (default 560, 340 to 65% of the window).
