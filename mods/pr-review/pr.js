@@ -290,9 +290,12 @@ export function mapReview(answer, hunks) {
     arch: answer.architecture?.nodes?.length ? answer.architecture : null, visuals: visualsOf(answer), blast: answer.blast_radius?.units?.length ? answer.blast_radius : null,
     asks: (answer.asks ?? []).map((a, k) => {
       const coverage = ["seen", "partly", "absent", "extra"].includes(a.coverage) ? a.coverage : "absent";
-      return { id: String(a.id ?? `c${k + 1}`), text: a.text ?? "", short: a.short ? String(a.short) : "", coverage, state: ASK_STATES.includes(a.state) ? a.state : STATE_OF[coverage], why: a.why ?? "",
-        acceptance: typeof a.acceptance === "boolean" ? a.acceptance : null, findings: (a.findings ?? []).map(String), hunks: ids(a.hunks), elements: (a.elements ?? []).map(String) };
+      return { id: String(a.id ?? `c${k + 1}`), text: a.text ?? "", coverage, state: ASK_STATES.includes(a.state) ? a.state : STATE_OF[coverage], why: a.why ?? "",
+        acceptance: typeof a.acceptance === "boolean" ? a.acceptance : null, findings: (a.findings ?? []).map(String), hunks: ids(a.hunks), elements: (a.elements ?? []).map(String),
+        short: String(a.short ?? "") }; // short: the criterion's name in at most eight words ("": an older analysis)
     }),
+    // whatChanged: {adds, changes, runtime}, each up to three short sentences; null for an older analysis.
+    whatChanged: answer.what_changed ? Object.fromEntries(["adds", "changes", "runtime"].map((k) => [k, (answer.what_changed[k] ?? []).map(String).slice(0, 3)])) : null,
     unlinked: (answer.unlinked ?? []).map(String), components: answer.components ?? [], componentCounts: answer.component_counts ?? null, access: answer.access ?? [] };
 }
 
@@ -326,7 +329,12 @@ export const EFFORTS = ["quick", "moderate", "heavy"];
 export const findingFacts = (f) => ({ impact: f.impact ?? null, effect: String(f.effect ?? ""), preconditions: (f.preconditions ?? []).map(String),
   certainty: ["confirmed", "derived", "assumed"].includes(f.certainty) ? f.certainty : null, criteria: (f.criteria ?? []).map(String), breaks: f.breaks ?? null,
   effort: EFFORTS.includes(f.effort) ? f.effort : null,
-  reachable_from: (f.reachable_from ?? []).map(String), reachability: ["public", "authenticated", "internal_only", "unknown"].includes(f.reachability) ? f.reachability : null });
+  reachable_from: (f.reachable_from ?? []).map(String), reachability: ["public", "authenticated", "internal_only", "unknown"].includes(f.reachability) ? f.reachability : null,
+  // introduced_here: the flaw is in what this PR adds or changes (false: it was there before; null: not said, an older
+  // analysis). path_certainty / path_why: for a security finding, how sure the way from outside to it is, apart from
+  // certainty (the flaw in the code).
+  introduced_here: typeof f.introduced_here === "boolean" ? f.introduced_here : null,
+  path_certainty: ["confirmed", "derived", "assumed"].includes(f.path_certainty) ? f.path_certainty : null, path_why: String(f.path_why ?? "") });
 
 // A suspicious line taken over as a pending review comment (rows: its hunk's or file's rows); null when not shown there.
 export function suspectComment(s, rows, id) {
@@ -732,7 +740,8 @@ export function preMergeChecks({ title, rules = [], ctx = null }) {
 }
 
 // What stands between the PR and a merge, most severe first: conflicts, failing CI, failed rules, high/critical
-// unresolved findings (sent(f): a fix is out for it, which does not resolve it), fixes not verified on this head,
+// unresolved findings that this PR brings in (introduced_here not false; one that was there before is in alreadyThere),
+// (sent(f): a fix is out for it, which does not resolve it), fixes not verified on this head,
 // overlapping open PRs (not the one this PR is stacked on: that is its base, the merge order is given).
 export function mergeBlockers({ checks = [], findings = [], unverified = 0, related = null, sent = () => false }) {
   const out = [];
@@ -740,7 +749,7 @@ export function mergeBlockers({ checks = [], findings = [], unverified = 0, rela
   const ci = checks.filter((c) => c.ci && c.ok === false);
   if (ci.length) out.push({ severity: "high", title: `${ci.length} CI ${ci.length === 1 ? "check is" : "checks are"} failing`, why: ci.map((c) => c.name.replace(/^CI: /, "")).join(", ") });
   for (const c of checks.filter((x) => (x.rule || x.name === "Conventional Commit title") && x.ok === false)) out.push({ severity: "medium", title: `Rule not met: ${c.name}`, why: c.why ?? "", where: c.where });
-  for (const f of findings.filter((x) => x.severity === "high" || x.severity === "critical")) out.push({ severity: "high", title: f.title, why: `${f.file}:${f.line} · unresolved ${f.severity} finding${sent(f) ? " · fix sent, not verified" : ""}`, finding: f.id });
+  for (const f of findings.filter((x) => (x.severity === "high" || x.severity === "critical") && x.introduced_here !== false)) out.push({ severity: "high", title: f.title, why: `${f.file}:${f.line} · unresolved ${f.severity} finding${sent(f) ? " · fix sent, not verified" : ""}`, finding: f.id });
   if (unverified) out.push({ severity: "medium", title: `${unverified} ${unverified === 1 ? "fix is" : "fixes are"} not verified`, why: "Sent to Fix before the last push: verify them on the new head." });
   for (const p of related?.open ?? []) if (p.overlap > 0 && !p.stacked) out.push({ severity: "low", title: `Overlaps with open PR #${p.number}`, why: `Both change ${p.overlap} ${p.overlap === 1 ? "file" : "files"} (${(p.files ?? []).slice(0, 3).join(", ")}): agree on the merge order.`, url: p.url });
   return out;
@@ -1008,4 +1017,12 @@ export function securityStart({ trigger = null, trusted = false, head = null, ct
   const reasons = (trigger?.reasons ?? []).map((x) => String(x?.text ?? "")).filter(Boolean);
   const due = Boolean(trigger?.run) && known && Boolean(head) && ctxHead === head && run?.head !== head && run?.state !== "running";
   return { start: due && trusted && ready, offer: due && !trusted, reasons };
+}
+
+// The group "Already there before this PR": unresolved findings whose flaw this PR did not bring in (introduced_here
+// false). They are no merge blocker (mergeBlockers leaves them out); most severe first, then file and line.
+export function alreadyThere(findings = []) {
+  const rank = { critical: 0, high: 1, medium: 2, low: 3 };
+  return findings.filter((f) => f.introduced_here === false).sort((a, b) => (rank[a.severity] ?? 9) - (rank[b.severity] ?? 9) || String(a.file).localeCompare(String(b.file)) || a.line - b.line)
+    .map((f) => ({ severity: f.severity, title: f.title, why: `${f.file}:${f.line} · ${f.severity} finding, already there before this PR`, finding: f.id }));
 }
