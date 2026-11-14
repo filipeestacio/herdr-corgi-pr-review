@@ -2703,7 +2703,7 @@ export const ReviewMode = {
     const of = (b) => (b.finding ? this.findingById(b.finding) : null);
     return byUrgency(this.blockersNow(), (b) => Boolean(of(b)?.security)).map((b) => {
       const f = of(b);
-      return { severity: b.severity, label: b.title, why: b.why ?? "", security: Boolean(f?.security), finding: Boolean(f), sent: Boolean(f) && this.fstatus(f) === "progress", at: f ? `${f.file.split("/").pop()}:${f.line}` : "",
+      return { severity: b.severity, label: b.title, why: b.why ?? "", security: Boolean(f?.security), certainty: f?.certainty ?? null, finding: Boolean(f), sent: Boolean(f) && this.fstatus(f) === "progress", at: f ? `${f.file.split("/").pop()}:${f.line}` : "",
         go: (cx) => { if (f) this.openFinding(f); else if (b.where) this.jumpTo(b.where, cx); else this.page = "overview"; } };
     });
   },
@@ -2722,6 +2722,7 @@ export const ReviewMode = {
         .on_click((_e, cx) => { a.go(cx); cx.notify(); })
         .child(badge(t, a.severity, t[SEV[a.severity]] ?? t.ansi1))
         .when(a.security, (x) => x.child(div().flex_none().text_size(13).text_color(t.ansi1).child("⛨")))
+        .children([certaintyWord(t, a, `rv-att-c-${k}`)].filter(Boolean))
         .child(div().flex_1().min_w(0).truncate().text_size(13).child(a.label))
         .when(a.sent, (x) => x.child(div().flex_none().text_size(11.5).text_color(t[FSTATUS.progress[1]]).child(FSTATUS.progress[0])))
         .when(Boolean(a.at), (x) => x.child(div().flex_none().text_size(11.5).text_color(t.muted).child(a.at)))))
@@ -3978,6 +3979,7 @@ export const ReviewMode = {
           .child(badge(t, x.severity, col))
           .when(Boolean(x.effort), (e) => e.child(div().id(`rv-fef-${x.id}`).tooltip("How much work the fix is, as the analysis sees it: quick, moderate or heavy").flex_none().pt(1).text_size(12).text_color(t.muted).child(x.effort)))
           .when(Boolean(x.security), (e) => e.child(badge(t, "⛨ Security", t.ansi1).bg(t.ansi1 + "26")))
+          .children([certaintyWord(t, x, `rv-fcert-${x.id}`)].filter(Boolean))
           .child(div().flex_1().min_w(0).font_semibold().text_color(settled ? t.dim : t.foreground).when(!wide, (e) => e.truncate()).when(wide, (e) => e.whitespace_normal()).child(x.title))
           .child(div().flex_none().text_size(12).text_color(t.muted).child(`${x.file.split("/").pop()}:${x.line}${this.findRow(x) < 0 ? " · outside the diff" : ""}`))
           .child(div().flex_none().text_size(12).font_semibold().text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(FSTATUS[st]?.[0] ?? st)))
@@ -4163,7 +4165,7 @@ export const ReviewMode = {
       const sources = div().id(`rv-lfr-${f.id}`).tooltip("Where this finding comes from, each source with its own severity").min_w(0).truncate().text_size(12).font_semibold().text_color(t.muted).child(this.sourcesOf(f));
       if (!open) return div().id(`rv-lf-${f.id}`).tooltip("Open this finding: what it claims, its text, its suggestion and its actions").w_full().h(FIND_FOLDED).pl(GUTTER).pr(16).pt(6).pb(2).cursor_pointer()
         .child(head(card(h_flex())).size_full().px(12).gap(8).items_center().border_t(1).border_b(1).text_size(13.5)
-          .child(div().flex_1().min_w(0).truncate().child(f.title)).child(div().flex_none().max_w(300).child(sources)).child(state));
+          .children([certaintyWord(t, f, `rv-lfc-${f.id}`)].filter(Boolean)).child(div().flex_1().min_w(0).truncate().child(f.title)).child(div().flex_none().max_w(300).child(sources)).child(state));
       return div().w_full().h(this.sizeOf(it)).pl(GUTTER).pr(16).pt(6).cursor_pointer().child(card(v_flex()).size_full().px(12).pt(8).gap(4).border_t(1).text_size(13.5).overflow_hidden()
         .child(head(h_flex().h(18).flex_none().gap(8).items_center()).child(sources).child(state).child(div().flex_1())
           .child(div().id(`rv-lfo-${f.id}`).tooltip("Open this finding in the Findings tab").w(FIND_LINK - 12).flex_none().text_right().text_size(12).text_color(t.accent).child("Open in Findings ↗")))
@@ -4542,4 +4544,11 @@ const PUBLIC_TIP = "This comes from a security finding: once posted, its text is
 function tabTip(id, t, tip, label) {
   return HoverCard.new(`${id}-tip`).anchor("top_center").open_delay(700).trigger(label)
     .content(div().max_w(280).px(10).py(6).rounded(6).border_1().border_color(t.border).bg(t.popover).text_size(12.5).text_color(t.foreground).whitespace_normal().child(tip));
+}
+
+// The Findings tab and the diff's finding cards (package F): how sure a security finding is, as one word in a line
+// that is folded (derived, assumed, confirmed; the open card says it in full).
+const CERT_TIP = { confirmed: "Confirmed: something that ran shows it", derived: "Derived: it follows from the code that was read; check it yourself", assumed: "Assumed: it rests on something the reviewer could not check" };
+function certaintyWord(t, f, id) {
+  return f?.security && CERT_TIP[f.certainty] ? div().id(id).tooltip(CERT_TIP[f.certainty]).flex_none().text_size(12).text_color(t.muted).child(f.certainty) : null;
 }
