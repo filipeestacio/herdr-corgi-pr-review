@@ -840,10 +840,11 @@ export function verdictParts(l, c, { failed = 0, toVerify = 0 } = {}) {
 }
 
 // How sure a finding is and what it hangs on, instead of telling its effect as a fact: "Assumed, not checked · only
-// if FRONT_DESK_TOKEN is not set (and 1 more)" (a sentence's capital goes, a name's stays). "" for a finding from before
-// the analysis said so.
+// if FRONT_DESK_TOKEN is not set and the HttpApi route has no authorizer": every precondition, they are rarely more
+// than two (a sentence's capital and end go, a name's capital stays). "" for a finding from before the analysis said so.
 export const CERTAINTY = { confirmed: "Confirmed by a run", derived: "Derived from the code", assumed: "Assumed, not checked" };
-export const certaintyLine = (f) => [CERTAINTY[f.certainty], f.preconditions?.length ? `only if ${f.preconditions[0].replace(/^[A-Z](?=[a-z])/, (c) => c.toLowerCase())}${f.preconditions.length > 1 ? ` (and ${f.preconditions.length - 1} more)` : ""}` : null].filter(Boolean).join(" · ");
+const clause = (p) => String(p).trim().replace(/\.$/, "").replace(/^[A-Z](?=[a-z])/, (c) => c.toLowerCase());
+export const certaintyLine = (f) => [CERTAINTY[f.certainty], f.preconditions?.length ? `only if ${f.preconditions.map(clause).join(" and ")}` : null].filter(Boolean).join(" · ");
 // What a severity follows from (the analysis' impact scale), for the tooltip of a severity chip.
 export const SEVERITY_SCALE = { high: "it breaks a requirement, leaves a dead path, allows unauthorized access, exposes data or loses data",
   medium: "an edge case, degraded operation, a fragile structure or untested code", low: "maintainability, or work the task did not ask for" };

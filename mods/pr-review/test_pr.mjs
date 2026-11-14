@@ -475,7 +475,7 @@ console.log("ok");
   assert.deepEqual(verdictParts(taskList(asks, [f("a", "high", { security: true }), f("b", "low", { security: true })], [], statusOf), { unresolved: 2, high: 1, low: 1, security: 2 })[0].text, "2 security findings, 1 high");
   assert.deepEqual(verdictParts(taskList([asks[2]], [], [], statusOf), { unresolved: 0, security: 0 }).map((p) => [p.text, p.tone]), [["1 of 1 criteria met", "ok"], ["No unresolved findings", "ok"]]);
   assert.deepEqual(verdictParts(list, counts, { failed: 1, toVerify: 2 }).slice(3).map((p) => [p.key, p.text, p.tone]), [["checks", "1 check failed", "high"], ["verify", "2 fixes to verify", "medium"]]);
-  assert.equal(certaintyLine(all[0]), "Assumed, not checked · only if no token set (and 1 more)");
+  assert.equal(certaintyLine(all[0]), "Assumed, not checked · only if no token set and no authorizer");
   assert.equal(certaintyLine(f("x", "low", { certainty: "derived" })), "Derived from the code");
   assert.deepEqual([["The caller passes auth"], ["SQS redelivery"]].map((preconditions) => certaintyLine(f("x", "low", { preconditions }))), ["only if the caller passes auth", "only if SQS redelivery"]);
   assert.equal(certaintyLine(f("x", "low")), "", "an older finding says nothing about it");
