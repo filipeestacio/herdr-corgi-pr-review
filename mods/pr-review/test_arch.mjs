@@ -559,3 +559,19 @@ console.log("ok");
   assert.equal(archLayout(one, "diff", () => 0, false, { labels: true }).hops.length, 0);
   console.log("ok long lines cross less");
 }
+
+// Two long lines from one column nest instead of crossing: the one that ends further right starts lower and runs on
+// the lower channel (PR #2's reminders and handler, rebuilt with other names). Where no order helps, one crossing stays
+// with its hop.
+{
+  const N = (id, group, label) => ({ id, group, label, description: "d", type: "service", status: "new" });
+  const arch = { groups: [{ id: "g", label: "Lambda", kind: "lambda" }, { id: "h", label: "Middle", kind: "x" }, { id: "k", label: "Far", kind: "x" }],
+    nodes: [N("a", "g", "far caller"), N("b", "g", "near caller"), N("c", "g", "other"), N("m1", "h", "first"), N("t2", "h", "near target"), N("t3", "k", "far target")],
+    edges: [{ from: "a", to: "t3", label: "to the far one" }, { from: "b", to: "t2", label: "to the near one" }, { from: "c", to: "m1", label: "x" }, { from: "m1", to: "t2", label: "x" }, { from: "t2", to: "t3", label: "y" }] };
+  for (const fit of [false, true]) {
+    const L = archLayout(arch, "diff", () => 0, fit, { labels: true }), y = (id) => L.nodes.find((n) => n.id === id).y;
+    assert.deepEqual([L.paths.filter((p) => p.kind === "long").length, L.hops.length], [2, 0]);
+    assert.ok(y("a") > y("b"), "the line that ends further right starts lower");
+  }
+  console.log("ok long lines nest");
+}
