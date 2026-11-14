@@ -260,12 +260,19 @@ export default class PrReview extends View {
     if (seen && Date.now() - seen.at < PR_INFO_MS) return;
     this.heads.set(pr.url, { at: Date.now(), sha: seen?.sha ?? pr.headSha });
     cx.spawn(async (cx) => {
-      const v = await exec("gh", ["pr", "view", pr.url, "--json", "headRefOid"], { timeout: 30000 }).catch(() => null);
-      const sha = v?.code === 0 ? JSON.parse(v.stdout).headRefOid : null;
+      const sha = await this.headOf(pr.url);
       if (!sha) return;
       this.heads.set(pr.url, { at: Date.now(), sha });
       if (this.prSel?.url === pr.url && sha !== this.prSel.headSha) { this.prSel = { ...this.prSel, headSha: sha }; this.refresh(cx, true); }
     });
+  }
+
+  // A PR's head from GitHub (gh pr view), null when gh can't say; asked once at a time per PR (a second ask shares it).
+  headOf(url) {
+    const busy = (this.headIn ??= new Map());
+    if (!busy.has(url)) busy.set(url, exec("gh", ["pr", "view", url, "--json", "headRefOid"], { timeout: 30000 })
+      .then((v) => (v.code === 0 ? JSON.parse(v.stdout).headRefOid ?? null : null)).catch(() => null).finally(() => busy.delete(url)));
+    return busy.get(url);
   }
 
   choose(pr, cx) {
@@ -658,10 +665,13 @@ export default class PrReview extends View {
       if (!key) { this.srcLists.repo = { key: null, prs: [] }; this.loadTriage(cx); return cx.notify(); } // no GitHub repo here: the list says what to do
       const before = await readTextFile(sourcesFile()).catch(() => null), doc = JSON.parse(before ?? "{}");
       if (!force && doc[key] && Date.now() - doc[key].at < SOURCE_MS) { this.srcLists[now] = { key, ...doc[key] }; this.loadTriage(cx); return cx.notify(); }
+      if (this.srcIn === key) return; // this list is being fetched: that answer serves this ask too
+      this.srcIn = key;
       this.srcLists[now] = { key, prs: doc[key]?.prs ?? [], at: doc[key]?.at, loading: true }; cx.notify();
       const args = now === "repo" ? ["pr", "list", "-R", sr.slug, "--state", "open", "--limit", "50", "--json", GH_FIELDS]
         : ["search", "prs", "--review-requested=@me", "--state", "open", "--limit", "50", "--json", "repository,number,title,author,updatedAt,url,isDraft"];
       const r = await exec("gh", args, { timeout: 60000 }).catch((e) => ({ code: 1, stderr: String(e) }));
+      this.srcIn = null;
       if (r.code !== 0) { this.srcLists[now] = { ...this.srcLists[now], loading: false, error: `gh: ${r.stderr.trim().slice(0, 160)}` }; return cx.notify(); }
       const spaceC = spaceCtx(location().space);
       const prs = JSON.parse(r.stdout).map((p) => {
