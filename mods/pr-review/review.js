@@ -23,7 +23,7 @@ import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview,
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible, pastTop } from "./views.js";
 import { archView, archModel, archLegend, visualsCard, visualCard, statCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
 import { visualPlan } from "./stack.js";
-import { factRows, findingAnchor, wrapCount, SEVERITY_SCALE } from "./views.js";
+import { factRows, findingAnchor, rangeMarks, wrapCount, SEVERITY_SCALE } from "./views.js";
 import { hasSources, archLayout, archBands } from "./arch.js";
 import * as TH from "./threads.js";
 import { leftWidth, rowClick, CHIP_W, ASK_W, keyRoute, scopeLine, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf, rangeLabel, pinAnchor, pinAdd, pinDrop, pinsOf, pinsOn, codePins, drillPush, drillTo, crumbs, drillKey, cachePut, mapDrill, exploreId, exploreIndex, exploreAi, pathOf, lineOf, repoOfRemote, exploreTrust, layersForNode } from "./explore.js";
@@ -1186,7 +1186,7 @@ export const ReviewMode = {
     const finds = this.findings().filter((f) => f.file === path && OPEN_ST.includes(this.fstatus(f))); // a fix sent stays here until it is verified
     // A card sits under the first code line of its finding's range; an open one marks the range in the gutter.
     const under = new Map(finds.map((f) => [f, findingAnchor(rows, f.line, f.end)]));
-    (this.fmarks ??= new Map()).set(path, new Map(finds.filter((f) => this.findOpen(f)).flatMap((f) => Array.from({ length: Math.max(f.end ?? f.line, under.get(f)) - f.line + 1 }, (_x, k) => [f.line + k, SEV[f.severity]]))));
+    (this.fmarks ??= new Map()).set(path, rangeMarks(rows, finds.filter((f) => this.findOpen(f)).map((f) => ({ line: f.line, end: Math.max(f.end ?? f.line, under.get(f)), mark: SEV[f.severity] }))));
     const own = this.ghOwn(), gh = this.ghNow().list.filter((g) => g.path === path && !own(g)), ghUsed = new Set(), f = this.fsel, range = this.composing && f?.path === path && rangeOf(rows, f.a, f.b);
     const ths = this.threads().filter((x) => x.file === path), notes = codePins(this.pins(), path);
     const show = this.show();

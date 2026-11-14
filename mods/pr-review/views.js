@@ -195,6 +195,20 @@ export function findingAnchor(rows, line, end = line) {
   return r && r.number <= Math.max(line, end ?? line) + 3 ? r.number : line;
 }
 
+// The gutter marks of ranges of lines: Map(new-side line number -> mark) for the rows that are really shown. A
+// range's line and end come from a model's answer, so the work goes over the rows, never over the range (an end of
+// 1e9 costs nothing); a range whose line or end is not a whole number, or that ends before it starts, marks nothing.
+// ranges: [{line, end, mark}]; the first range that holds a row marks it.
+export function rangeMarks(rows, ranges) {
+  const ok = ranges.filter((x) => Number.isInteger(x.line) && Number.isInteger(x.end) && x.end >= x.line), out = new Map();
+  if (ok.length) for (const r of rows) {
+    if (r.kind === "-" || !Number.isInteger(r.number)) continue;
+    const hit = ok.find((x) => r.number >= x.line && r.number <= x.end);
+    if (hit) out.set(r.number, hit.mark);
+  }
+  return out;
+}
+
 // How many lines a text takes when it wraps at words in `width` px of the UI font (13.5 px unless `size` says
 // otherwise): the virtual list needs every row's height before it draws. Character widths by class, measured on
 // screenshots (within 2 %) and taken 4 % wider, so a card is never a line short.

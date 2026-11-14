@@ -219,6 +219,9 @@ assert.equal(findingStatus(fb, { b: { s: "dismissed" } }, reps, "h2", "y(1)"), "
   // The source that already has a status keeps the id, so a fix sent for it and its report stay with the finding.
   assert.equal(mergeFindings(list, sugs, { a1: { s: "progress", fixHead: "h1", at: "2" } }).findings[2].id, "a1");
   assert.equal(mergeFindings([{ ...sec, line: 0 }, { ...sec, id: "sec2", line: 0 }]).findings.length, 2, "findings without a line never merge");
+  // line and end come from a model: whole numbers with line <= end for every caller, whatever it wrote (0: no line).
+  assert.deepEqual(mergeFindings([{ ...sec, end: 3 }, { ...sec, id: "s2", file: "b", line: 4, end: 1e9 }, { ...sec, id: "s3", file: "c", line: 2.5, end: "9" }, { ...sec, id: "s4", file: "d", line: 5, end: 7.5 }])
+    .findings.map((f) => [f.file, f.line, f.end]), [["b", 4, 1e9], ["c", 0, 0], ["d", 5, 5], ["t.yaml", 18, 18]]);
   // One count for every view: the severities add up to the unresolved ones; a fix sent is still unresolved.
   const st = { sec1: "progress", a2: "open", a3: "dismissed" };
   const c = findingCounts(m.findings, (f) => st[f.id] ?? (f.line === 40 ? "fixed" : "recheck"));

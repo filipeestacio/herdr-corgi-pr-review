@@ -237,3 +237,10 @@ assert.deepEqual(sq.calls.map((c) => c.y), [0, 1, 2, 3].map((k) => SEQ.HEAD + SE
 assert.equal(sq.height, SEQ.HEAD + 2 * SEQ.PAD + 4 * SEQ.ROW);
 assert.equal(seqLayout({ nodes: [{ id: "a" }, { id: "b" }] }, 100).width, 2 * SEQ.MIN); // never narrower than SEQ.MIN a column
 assert.equal(seqLayout(null, 500).calls.length, 0);
+
+// The gutter marks of a finding's lines go over the rows that are shown: a range to line 1e9 (a model wrote it) marks
+// three rows and allocates nothing; a range that is no range marks nothing.
+import { rangeMarks } from "./views.js";
+const mr = [{ kind: " ", number: 7 }, { kind: "-", number: 8 }, { kind: "+", number: 8 }, { kind: "gap" }, { kind: "+", number: 30 }];
+assert.deepEqual([...rangeMarks(mr, [{ line: 8, end: 1e9, mark: "a" }, { line: 7, end: 7, mark: "b" }])], [[7, "b"], [8, "a"], [30, "a"]]);
+assert.equal(rangeMarks(mr, [{ line: 7.5, end: 9, mark: "x" }, { line: 9, end: 7, mark: "x" }, { line: 7, end: Infinity, mark: "x" }, { line: "7", end: 8, mark: "x" }, { line: 7, end: undefined, mark: "x" }]).size, 0);

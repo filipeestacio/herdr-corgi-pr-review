@@ -451,7 +451,9 @@ export function mergeFindings(findings, suspects = [], status = {}) {
     const lead = [...g].sort((a, b) => rank(a) - rank(b))[0], coded = g.find((x) => x.head), all = [lead, ...g].map(findingFacts);
     const has = (v) => (Array.isArray(v) ? v.length > 0 : v !== null && v !== ""), fact = (k) => (all.find((x) => has(x[k])) ?? all[0])[k];
     const held = g.filter((x) => status[x.id]).sort((a, b) => String(status[b.id].at ?? "").localeCompare(String(status[a.id].at ?? "")))[0];
-    return { ...lead, id: (held ?? lead).id, ids: g.map((x) => x.id), end: Math.max(...g.map((x) => x.end ?? x.line ?? 0)), step: g.find((x) => x.step)?.step ?? null,
+    // line and end come from a model's or a reviewer's answer: whole numbers with line <= end for every caller (0: no line).
+    const whole = (n) => (Number.isInteger(n) && n > 0 ? n : 0), line = whole(lead.line);
+    return { ...lead, line, id: (held ?? lead).id, ids: g.map((x) => x.id), end: Math.max(line, ...g.map((x) => whole(x.end))), step: g.find((x) => x.step)?.step ?? null,
       suggestion: lead.suggestion || g.find((x) => x.suggestion)?.suggestion || "", ...(coded ? { head: coded.head, code: coded.code } : {}),
       ...Object.fromEntries(Object.keys(all[0]).map((k) => [k, fact(k)])),
       security: g.some((x) => x.reviewer === "security" || x.category === "security"),
