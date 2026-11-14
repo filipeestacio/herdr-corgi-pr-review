@@ -794,3 +794,27 @@ console.log("ok");
   assert.deepEqual(alreadyThere(m).map((b) => [b.finding, b.why]), [["a1", "library/api.py:4 · high finding, already there before this PR"]]);
   console.log("ok round 4 fields");
 }
+
+
+// One path rule for every jump: the same path first, else the one path that ends in it.
+{
+  const { diffPath } = await import("./pr.js");
+  const paths = ["library/handler.py", "handler.py", "a/b/consumer.py", "c/consumer.py"];
+  assert.deepEqual([diffPath(paths, "handler.py"), diffPath(paths, "b/consumer.py"), diffPath(paths, "consumer.py"), diffPath(paths, "x.py"), diffPath(paths, ""), diffPath(new Set(paths), "library/handler.py")],
+    ["handler.py", "a/b/consumer.py", null, null, null, "library/handler.py"]);
+  console.log("ok diff path");
+}
+
+// ⛨ only for real security, by the effect (PR #2): the token gap is security; the store, the SQS publisher and the
+// double mail are not, not even when the security reviewer reports one (about availability or correctness).
+{
+  const { mergeFindings, isSecurity } = await import("./pr.js");
+  const F = (id, reviewer, line, category, impact, title) => ({ id, reviewer, file: "f.py", line, end: line, severity: "high", category, impact, title, detail: "" });
+  const m = mergeFindings([F("tok", "security", 8, "security", "unauthorized_access", "Front desk auth falls back to an empty token"),
+    F("store", "claude", 20, "bug", "dead_path", "Consumer reads from an in-memory store"), F("sqs", "claude", 40, "requirement", "dead_path", "No SQS publisher"),
+    F("mail", "analysis", 60, "requirement", "breaks_requirement", "Reminder is mailed inline and again"), F("remind", "security", 80, "security", "edge_case", "/remind skips the state machine")]).findings;
+  assert.deepEqual(Object.fromEntries(m.map((f) => [f.id, f.security])), { tok: true, store: false, sqs: false, mail: false, remind: false });
+  assert.deepEqual([isSecurity({ impact: "data_exposure" }), isSecurity({ impact: "data_loss", category: "availability" }), isSecurity({ impact: "data_loss", category: "security" }),
+    isSecurity({ reviewer: "security" }), isSecurity({ reviewer: "ai", category: "security" }), isSecurity({ reviewer: "claude", category: "bug" })], [true, false, true, true, true, false]);
+  console.log("ok security mark");
+}

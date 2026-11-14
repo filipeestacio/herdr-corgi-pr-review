@@ -16,7 +16,7 @@ import { parseReports, findingStatus, mergeFindings, findingCounts, countLine, r
 import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig } from "./setup-view.js";
 import { taskList, taskHead, verdictParts, reviewState, certaintyLine, severityTip, componentLine, doesList, checkGroups, costLine, alreadyThere, criteriaGroups, beforeMerge, verdictAction, notChecked, surfaceLine, realRules } from "./pr.js"; // the Overview page
-import { findingSteps, funnel, funnelLine, ownerOf, quickFirst, hasEffort, publicFiles, funnelShort } from "./pr.js"; // the Findings tab
+import { findingSteps, funnel, funnelLine, ownerOf, quickFirst, hasEffort, publicFiles, funnelShort, diffPath } from "./pr.js"; // the Findings tab
 import { withProof, PROOF_WORDS } from "./pr.js"; // Verify with an agent
 import { overviewMd, findingMd, findingsMd, layerMd, architectureMd, securityMd, verifyContextMd } from "./markdown.js"; // Copy this page as Markdown
 import { highlightJob, highlightStep, highlightLines, langOf, colors, renderLine, refAt } from "./syntax.js";
@@ -1233,8 +1233,9 @@ export const ReviewMode = {
   // Jump to a definition: in the diff, its line; else the file at that line in a read-only view (Back or Esc returns).
   // Files beyond 6000 lines (system headers) show 6000 lines around it.
   goDef(def, cx) {
-    const inDiff = def.inRoot && this.fileHunks?.has(def.path) && this.rowsFor(def.path).some((r) => atLine(r, def.line, false));
-    if (inDiff) { this.defAt = null; return this.jumpTo(`${def.path}:${def.line}`, cx, true); } // true: no way back here
+    const at = def.inRoot ? diffPath(this.fileHunks?.keys() ?? [], def.path) : null;
+    const inDiff = at && this.rowsFor(at).some((r) => atLine(r, def.line, false));
+    if (inDiff) { this.defAt = null; return this.jumpTo(`${at}:${def.line}`, cx, { fromDef: true }); } // fromDef: never back here
     const root = this.lspRoot();
     cx.spawn(async (cx) => {
       const text = def.inRoot ? await readTextFile(`${root}/${def.path}`).catch(() => null) : await contents(root, def.uri).catch(() => null);
@@ -1321,14 +1322,14 @@ export const ReviewMode = {
   // A flow's "path:line" to the hunk that holds it (in the AI list, else the Files view). A line outside the diff (a
   // finding on unchanged code) opens its file read-only at that line, as a definition outside the diff does; what a
   // jump could not do is said until the next jump.
-  jumpTo(at, cx, fromDef = false) { // fromDef: called by goDef, so a miss never goes back to it (no loop)
+  jumpTo(at, cx, { fromDef = false } = {}) {
     if (this.note && this.note === this.jumpNote) this.note = null;
     if (this.exMode) return this.openExploreFile(pathOf(at), lineOf(at) ?? 1, cx); // no diff: the file itself
     const [, path, line] = /^(.*?):(\d+)/.exec(at ?? "") ?? [];
-    const file = (this.hunks ?? []).find((x) => path && (x.path === path || x.path.endsWith(`/${path}`)));
+    const fp = diffPath(new Set((this.hunks ?? []).map((x) => x.path)), path), file = fp ? this.hunks.find((x) => x.path === fp) : null;
     const h = (this.hunks ?? []).find((x) => file && x.path === file.path && x.rows.some((r) => r.n === Number(line)))
       ?? (file && (!line || this.rowsFor(file.path, true).some((r) => atLine(r, Number(line), false))) ? file : null); // or context opened around a hunk
-    if (!h && line && !fromDef && this.lspRoot()) return this.goDef({ path: file?.path ?? path, line: Number(line), inRoot: true }, cx);
+    if (!h && line && this.lspRoot() && !fromDef) return this.goDef({ path: fp ?? path, line: Number(line), inRoot: true }, cx);
     if (!h) { this.note = this.jumpNote = `Could not find ${at} in the diff`; return cx.notify(); }
     this.visit(h.id, cx); this.page = null; this.defFile = null; // from a Layers page or a file outside the diff: show the diff
     const view = this.tab === "steps" && this.itemsOf("steps").at[h.id] !== undefined ? "steps" : "files";
