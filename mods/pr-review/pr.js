@@ -1296,7 +1296,9 @@ export function reachOf(path, arch) {
     const m = /^(.+?):(\d+)$/.exec(String(s));
     if (!m) continue;
     const mine = nodes.map((n) => ({ id: n.id, at: /^(.+?):(\d+)/.exec(String(n.at ?? "")) })).filter((x) => x.at && same(x.at[1], m[1]));
-    const card = mine.filter((x) => Number(x.at[2]) <= Number(m[2])).sort((a, b) => Number(b.at[2]) - Number(a.at[2]))[0] ?? mine[0];
+    const card = mine.filter((x) => Number(x.at[2]) <= Number(m[2])).sort((a, b) => Number(b.at[2]) - Number(a.at[2]))[0] ?? mine[0]
+      // a card without a place (the unchanged mailer) by its file's name: library/mailer.py → mailer
+      ?? nodes.find((n) => !n.at && n.id === m[1].split("/").pop().replace(/\.[^.]+$/, ""));
     if (card) out.add(card.id);
   }
   return out;

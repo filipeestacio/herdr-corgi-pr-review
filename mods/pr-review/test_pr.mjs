@@ -918,6 +918,7 @@ console.log("ok");
   const bound = [{ ...deps[0], edge: null, node: "consumer", at: "template.yaml:32" }, { ...deps[1], node: "mailer" }];
   const q1 = P("p1", "retry", ["e0", "library/consumer.py:21"], "finding", ["no_dlq"]), q6 = P("p6", "state", ["library/consumer.py:19", "library/api.py:15"], "finding", []);
   assert.deepEqual([[...reachOf(q1, map)], [...reachOf(q6, map)]], [["queue", "consumer"], ["consumer"]]);
+  assert.deepEqual([...reachOf(P("p", "timeout", ["library/mailer.py:20"], "finding", []), { nodes: [{ id: "mailer" }] })], ["mailer"], "a card without a place by its file's name");
   assert.equal(ladderOf({ ...q1, reach: reachOf(q1, map) }, bound).text, "10 × without limit until the message expires (4 days)", "the trigger by its consumer node; no mailer ×3");
   assert.equal(ladderOf({ ...q6, reach: reachOf(q6, map) }, bound).factors.some((f) => f.label.startsWith("mailer")), false, "p6 has no mailer ladder");
   assert.equal(ladderOf(P("p", "retry", ["library/consumer.py:21"], "finding", []), bound), null, "without the map a line alone finds no call");
