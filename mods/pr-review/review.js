@@ -3405,8 +3405,9 @@ export const ReviewMode = {
       .child(div().flex_1().min_h(0).relative()
         .child(v_flex().id("rv-tree").absolute().inset_0().overflow_y_scroll().p(6)
           .children(fileTree(files.map((f) => f.path), this.closedDirs).map((n) => {
-            const f = byPath.get(n.path), cm = f ? this.comments.filter((c) => c.file === f.path).length : 0, sg = f ? open.filter((x) => x.file === f.path).length : 0;
-            return h_flex().id(`rv-t-${n.dir ? "d" : "f"}-${n.path}`).tooltip((n.dir ? "Fold or unfold this folder" : "Show this file's diff")).h(28).flex_none().pl(8 + 14 * n.depth).pr(8).gap(8).items_center().rounded(6).text_size(13).cursor_pointer()
+            // A file's unresolved findings in words, in the colour of the highest severity; security with its own mark.
+            const f = byPath.get(n.path), cm = f ? this.comments.filter((c) => c.file === f.path).length : 0, w = f ? worst(open.filter((x) => x.file === f.path)) : null;
+            return h_flex().id(`rv-t-${n.dir ? "d" : "f"}-${n.path}`).tooltip((n.dir ? "Fold or unfold this folder" : "Show this file's diff")).h(28).flex_none().pl(8 + 14 * n.depth).pr(n.dir ? 8 : 0).gap(8).items_center().rounded(6).text_size(13).cursor_pointer()
               .when(!n.dir && this.fileFocus === n.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover))
               .on_click((_e, cx) => {
                 if (n.dir) { if (this.closedDirs.has(n.path)) this.closedDirs.delete(n.path); else this.closedDirs.add(n.path); }
@@ -3416,12 +3417,14 @@ export const ReviewMode = {
               .child(div().w(12).flex_none().text_color(t.muted).child(n.dir ? (this.closedDirs.has(n.path) ? "▸" : "▾") : ""))
               .when(!n.dir, (e) => e.child(div().id(`rv-tst-${n.path}`).tooltip(`File ${f.status}`).w(14).flex_none().text_size(11.5).font_semibold().text_color(t[STATUS[f.status][1]]).child(STATUS[f.status][0])))
               .child(div().flex_1().min_w(0).truncate().text_color(n.dir ? t.muted : this.prog.seen.has(n.path) ? t.muted : t.foreground).child(n.dir ? `${n.name}/` : n.name))
-              .when(sg > 0, (e) => e.child(div().id(`rv-tsg-${n.path}`).tooltip(`${sg} unresolved ${sg === 1 ? "finding" : "findings"} in this file`).text_size(11.5).text_color(t.ansi3).child(`⚑ ${sg}`)))
-              .when(cm > 0, (e) => e.child(div().id(`rv-tcm-${n.path}`).tooltip(`${cm} pending comments in this file`).text_size(11.5).text_color(t.accent).child(`● ${cm}`)))
+              .when(Boolean(w?.security), (e) => e.child(div().id(`rv-tsec-${n.path}`).tooltip(`${w.security} of them ${w.security === 1 ? "is a security finding" : "are security findings"}`).flex_none().text_color(t.ansi1).child("⛨")))
+              .when(Boolean(w), (e) => e.child(div().id(`rv-tsg-${n.path}`).tooltip(`${w.total} unresolved ${w.total === 1 ? "finding" : "findings"} in this file: ${w.words}`).flex_none().text_size(11.5).font_semibold().text_color(t[SEV[w.severity]] ?? t.ansi1).child(w.label)))
+              .when(cm > 0, (e) => e.child(div().id(`rv-tcm-${n.path}`).tooltip(`${cm} pending ${cm === 1 ? "comment" : "comments"} of yours in this file`).flex_none().text_size(11.5).text_color(t.accent).child(`${cm} ${cm === 1 ? "comment" : "comments"}`)))
               .when(!n.dir && f.add > 0, (e) => e.child(div().id(`rv-tad-${n.path}`).tooltip(`${f.add} lines added`).text_size(11.5).text_color(t.ansi2).child(`+${f.add}`)))
               .when(!n.dir && f.del > 0, (e) => e.child(div().id(`rv-tdl-${n.path}`).tooltip(`${f.del} lines removed`).text_size(11.5).text_color(t.ansi1).child(`−${f.del}`)))
-              .when(!n.dir, (e) => e.child(div().id(`rv-seen-${n.path}`).tooltip("Mark this file as viewed; it collapses in the diff").accessibility_label("Viewed").w(16).flex_none().text_color(this.prog.seen.has(n.path) ? t.ansi2 : t.muted)
-                .on_click((_e, cx) => { this.toggleSeen(n.path, cx); cx.stop_propagation(); cx.notify(); }).child(this.prog.seen.has(n.path) ? "☑" : "☐")));
+              // The tick: a 16 px box, and the whole right end of the row takes the click.
+              .when(!n.dir, (e) => e.child(div().id(`rv-seen-${n.path}`).tooltip("Mark this file as viewed; it collapses in the diff").accessibility_label("Viewed").w(36).h(28).flex_none().flex().items_center().justify_center()
+                .on_click((_e, cx) => { this.toggleSeen(n.path, cx); cx.stop_propagation(); cx.notify(); }).child(viewedBox(t, this.prog.seen.has(n.path)))));
           })))
         .child(Scrollbar.vertical("rv-tree").absolute().inset_0()));
   },
