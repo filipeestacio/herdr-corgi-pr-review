@@ -17,6 +17,7 @@ import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig } from "./setup-view.js";
 import { taskList, taskHead, verdictParts, reviewState, certaintyLine, severityTip, componentLine } from "./pr.js"; // the Overview page
 import { findingSteps, funnel, funnelLine, ownerOf, quickFirst, hasEffort } from "./pr.js"; // the Findings tab
+import { overviewMd, findingMd, findingsMd, layerMd, architectureMd, securityMd, verifyContextMd } from "./markdown.js"; // Copy this page as Markdown
 import { highlightJob, highlightStep, highlightLines, langOf, colors, renderLine, refAt } from "./syntax.js";
 import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js";
 import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf, priceOf, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch } from "./pr.js";
@@ -310,7 +311,7 @@ export const ReviewMode = {
     // Handles are made here only: creating one later (in a task) throws, which broke the definition view.
     this.lists = { steps: VirtualListScrollHandle.new(), files: VirtualListScrollHandle.new(), def: VirtualListScrollHandle.new() };
     this.leftScroll = ScrollHandle.new(); // the Layers tab's left column
-    this.pageScroll = ScrollHandle.new(); this.pageAnchors = {}; this.askOpen = new Set(); // the right pane's pages (pageView) and the open rows of the task check
+    this.pageScrolls = Object.fromEntries(PAGES.map(([k]) => [k, ScrollHandle.new()])); // the right pane's pages (page-part:<name>)
     this.order = "reading"; this.flowSel = null;
     this.page = "overview"; this.archMode = "diff"; this.fold = { summary: true, blockers: true, checks: false }; this.blastOpen = false;
     this.ctx = null; this.since = null; this.sinceOn = false; this.lastReviewed = null; this.verifyBusy = false;
@@ -426,10 +427,8 @@ export const ReviewMode = {
     }
     else if (name === "copy-link") copyText(this.prSel?.url ?? "");
     else if (name === "copy-state") this.copyState();
-    // For scripts: what the wheel does in the right pane's page (scroll:top | bottom | <a section of the page>), and a
-    // click on a row of the task check (ask:<ask id>, ask:other).
-    else if (name === "scroll") this.scrollPage(arg, cx);
-    else if (name === "ask") this.toggleAsk(arg);
+    else if (name === "copy-md") this.copyMd(arg); // copy-md: this page; copy-md:verify: the context for an agent that checks the open finding, or the unresolved security findings
+    else if (name === "criterion") this.toggleAsk(arg); // criterion:<ask id> | other: a click on a row of the Overview's task check
     else if (name === "open-gh") { if (this.prSel?.url) openUrl(this.prSel.url); }
     else if (name === "model") { if (arg) setShared("review.model", arg); }
     // For keys and scripted demos: a card's panel on the Architecture page (card:<node id>), the layers' order
@@ -2466,7 +2465,7 @@ export const ReviewMode = {
       !ai?.mergeRisk && top && link("rv-mr", h_flex().gap(4).child("Risk from findings:").child(div().text_color(t[SEVERITY_COLOR[top]] ?? t.muted).child(cap(top))).child(`(${fc[top]} ${top}, no analysis)`),
         (_e, cx) => { this.tab = "findings"; cx.notify(); }).tooltip("No analysis has rated the merge risk; this is the highest severity among the unresolved findings. Click for the Findings tab"),
       ck && link("rv-ck", h_flex().gap(4).children(ck.parts.map(([text, bad]) => div().when(bad, (e) => e.text_color(t.ansi1)).child(text))),
-        (_e, cx) => { this.tab = "steps"; this.page = "overview"; this.scrollPage("checks", cx); cx.notify(); }).tooltip(ck.tip),
+        (_e, cx) => { this.tab = "steps"; this.page = "overview"; this.pagePart("checks", cx); cx.notify(); }).tooltip(ck.tip),
     ].filter(Boolean);
     const modelText = this.aiBusy ? `${modelLabel(this.aiBusy.model)} analyzing…` : `${modelLabel(m)}${ai?.cost != null && ai.model === m ? ` · $${Number(ai.cost).toFixed(2)}` : ""}`;
     return h_flex().id("rv-meta").flex_none().flex_wrap().min_h(40).px(16).py(6).gap(10).items_center().border_b(1).border_color(t.border).bg(t.chrome).text_size(12.5).text_color(t.muted)
@@ -2480,7 +2479,7 @@ export const ReviewMode = {
       .child(sep())
       .child(link("rv-values", div().text_color(valuesOn() ? t.foreground : t.muted).child(`Example values ${valuesOn() ? "on" : "off"}`), () => setShared("review.values", !valuesOn())).tooltip("Example values from the flow traces, shown inline in the diff: click to switch"))
       .child(link("rv-keys", div().child("?"), () => openOverlay({ mod: "pr-review", props: { part: "keys" }, kind: "popup", ...KEYS_POP })).tooltip("Keyboard shortcuts").accessibility_label("Keyboard shortcuts"))
-      .child(link("rv-more", div().child("⋯"), menu("more", [["Explore a topic…", false, "explore"], ["Mark done", false, "done"], ["Copy link", false, "copy-link"], ["Copy review state", false, "copy-state"], ...(this.prSel?.url?.startsWith("https://github.com") ? [["Open on GitHub", false, "open-gh"]] : [])])).tooltip("Explore a topic, mark done, copy the link or the review's state as text, open on GitHub").accessibility_label("More actions"));
+      .child(link("rv-more", div().child("⋯"), menu("more", [["Explore a topic…", false, "explore"], ["Mark done", false, "done"], ["Copy link", false, "copy-link"], ["Copy review state", false, "copy-state"], ["Copy this page as Markdown", false, "copy-md"], ...(this.checkList().length ? [["Copy context to check findings", false, "copy-md:verify"]] : []), ...(this.prSel?.url?.startsWith("https://github.com") ? [["Open on GitHub", false, "open-gh"]] : [])])).tooltip("Explore a topic, mark done, copy the link, the review's state, this page or the context to check findings as text, open on GitHub").accessibility_label("More actions"));
   },
 
   // ---- render: the left column
@@ -2685,13 +2684,14 @@ export const ReviewMode = {
       .when(Boolean(e), (x) => x.child(badge(t, `Review effort ${e.score}/5`, e.score >= 4 ? t.ansi3 : t.muted).id(`${id}-eff`).tooltip(e.why || "")));
   },
 
-  // The page beside the Layers nav (instead of the diff).
+  // The page beside the Layers nav (instead of the diff). A page made of named parts (Architecture, Security) has
+  // them as the scroll area's own children, so page-part:<name> can scroll to one.
   pageView(t) {
-    const body = { overview: () => this.overviewPage(t), arch: () => this.archPage(t), blast: () => this.blastPage(t) }[this.page];
-    const kids = [].concat(body ? body() : div()); // a page may return its sections: scrollPage reaches each
-    this.pageLen = kids.length;
+    const body = { overview: () => this.overviewPage(t), arch: () => this.archPage(t, true), blast: () => this.blastPage(t) }[this.page];
+    const parts = [].concat(body ? body() : div()), named = Array.isArray(parts[0]);
+    this.pageParts = named ? parts.map(([k]) => k) : [];
     return div().flex_1().min_h(0).relative()
-      .child(v_flex().id(`rv-page-${this.page}`).absolute().inset_0().overflow_y_scroll().track_scroll(this.pageScroll).px(24).py(18).gap(14).children(kids))
+      .child(v_flex().id(`rv-page-${this.page}`).absolute().inset_0().overflow_y_scroll().when(Boolean(this.pageScrolls[this.page]), (e) => e.track_scroll(this.pageScrolls[this.page])).px(24).py(18).gap(named ? 12 : 14).children(named ? parts.map(([, el]) => el) : parts))
       .child(Scrollbar.vertical(`rv-page-${this.page}`).absolute().inset_0());
   },
 
@@ -2715,7 +2715,7 @@ export const ReviewMode = {
   // The Overview, top to bottom: the title, the verdict in the title's size (security first), what this PR sits on and
   // adds, the task check as one list (asksPane), what changed and the behavior as running text of about 85 characters
   // a line, the rules and checks by name, related PRs. Each fact once: the PR's state and the merge risk are in the
-  // bar. It returns its sections, so scrollPage reaches each by name (pageAnchors).
+  // bar. It returns its parts by name ([[name, element]]: top, task, changed, checks, related) for pageView.
   overviewPage(t) {
     const pr = this.prSel ?? {}, ai = this.ai, task = ai?.task ?? {}, ctx = this.ctx, fc = this.counts(), list = this.taskNow(), W = 560;
     const checks = this.checksNow(), TONE = { high: t.ansi1, medium: t.ansi3, low: t.ansi4, ok: t.ansi2 };
@@ -2725,7 +2725,7 @@ export const ReviewMode = {
     const go = { security: [(_e, cx) => { this.page = "blast"; cx.notify(); }, "Unresolved security findings: click for the Security page"],
       criteria: [null, "How many of the task's criteria this PR meets: the list is below"],
       findings: [(_e, cx) => { this.tab = "findings"; cx.notify(); }, "Unresolved findings of the highest severity there is: click for the Findings tab"],
-      checks: [(_e, cx) => this.scrollPage("checks", cx), "Rules or checks that failed: click for the list"],
+      checks: [(_e, cx) => this.pagePart("checks", cx), "Rules or checks that failed: click for the list"],
       verify: [(_e, cx) => { this.tab = "findings"; cx.notify(); }, "Fixes sent before the last push, not verified on the new head: click for the Findings tab"] };
     const part = (p) => div().id(`rv-vd-${p.key}`).tooltip(go[p.key][1]).text_color(TONE[p.tone]).when(Boolean(go[p.key][0]), (e) => e.cursor_pointer().hover((s) => s.underline()).on_click(go[p.key][0]))
       .child(p.key === "security" ? `⛨ ${p.text}` : p.text);
@@ -2776,8 +2776,7 @@ export const ReviewMode = {
         .child(div().flex_1().min_w(0).truncate().text_size(13.5).child(p.title))
         .child(div().id(`rv-relf-${p.number}`).flex_none().text_size(12).text_color(t.muted).tooltip((p.files ?? []).join("\n") || "-").child(p.stacked ? "this PR builds on it" : `${p.overlap} ${p.overlap === 1 ? "file" : "files"} overlap`))));
     const out = [["top", head], (ai || fc.total > 0) && ["task", this.asksPane(t, list, W)], ai && ["changed", changed()], rows.length > 0 && ["checks", checksEl()], ["related", relatedEl]].filter(Boolean);
-    this.pageAnchors = Object.fromEntries(out.map(([k], i) => [k, i]));
-    return out.map(([, el]) => el);
+    return out;
   },
 
   // A related PR in the review layout (the resume contract): prs.json's entry, else one built from gh pr view on this
@@ -3526,7 +3525,7 @@ export const ReviewMode = {
           .child(div().text_size(12).text_color(t.muted).whitespace_normal().child([nested && f.security && "⛨ Security", `${f.file}:${f.line}`, certaintyLine(f), st !== "open" && FSTATUS[st]?.[0]].filter(Boolean).join(" · "))));
     };
     const ask = (r) => {
-      const a = r.ask, [sym, word, col, tip] = STATE[a.state], open = this.askOpen.has(a.id), fs = r.findings, hunk = a.hunks.find((x) => this.byId.has(x));
+      const a = r.ask, [sym, word, col, tip] = STATE[a.state], open = this.askOpen?.has(a.id), fs = r.findings, hunk = a.hunks.find((x) => this.byId.has(x));
       return h_flex().id(`rv-ask-${a.id}`).gap(10).items_start().px(6).py(5).rounded(6)
         .when(fs.length > 0 || Boolean(hunk), (e) => e.cursor_pointer().hover((s) => s.bg(t.hover))
           .tooltip(fs.length ? (open ? "Hide the findings" : "Show the findings that break this, each with its file and line") : "No finding is linked to this: show the code it is about in the diff")
@@ -3543,7 +3542,7 @@ export const ReviewMode = {
         .child(div().w(96).flex_none().pt(2).text_size(12).text_color(t.muted).child(fs.length ? `${n(fs.length, "finding")} ${open ? "▾" : "▸"}` : hunk ? "Show in diff ↗" : ""));
     };
     const marked = list.rows.filter((r) => list.marked && r.ask.acceptance), rest = list.rows.filter((r) => !marked.includes(r)), hasTask = list.rows.length + list.extra.length > 0;
-    const otherOpen = this.askOpen.has("other") || !hasTask; // no task to fold them under: the findings are the list
+    const otherOpen = this.askOpen?.has("other") || !hasTask; // no task to fold them under: the findings are the list
     const sev = ["high", "medium", "low"].map((k) => [k, list.other.filter((f) => f.severity === k).length]).filter(([, c]) => c).map(([k, c]) => `${c} ${k}`).join(", ");
     return v_flex().flex_none().gap(2).max_w(W + 240).text_size(13.5)
       .child(h_flex().flex_wrap().gap(10).items_center().px(6)
@@ -4040,7 +4039,7 @@ export const ReviewMode = {
   // ---- the Overview page's helpers
 
   taskNow() { return taskList(this.ai?.asks ?? [], this.findings(), this.ai?.unlinked ?? [], (f) => this.fstatus(f)); },
-  toggleAsk(id) { if (!this.askOpen.delete(id)) this.askOpen.add(id); },
+  toggleAsk(id) { if (!(this.askOpen ??= new Set()).delete(id)) this.askOpen.add(id); }, // the open rows of the task check
 
   // The bar's "Repo rules 2/2": the rules this PR is checked against (the title's form and the analysis' repo rules)
   // by name in the tooltip; CI and conflicts only when GitHub reports some. null: nothing to say yet.
@@ -4053,14 +4052,9 @@ export const ReviewMode = {
     return { parts, tip: `${rules.length ? `Rules this PR is checked against: ${rules.map((c) => `${c.name} (${c.ok ? "met" : "not met"})`).join(", ")}. ` : ""}${this.ctx && !ci.length ? "GitHub reports no CI checks for this PR. " : ""}Click for the list on the Overview page.` };
   },
 
-  // The right pane's page to its top, its bottom or one of its sections (pageAnchors: name → child), as the wheel
-  // would. A plain scroll area only reveals a child at its near edge, so the bottom first, then the section: it is
-  // above the view then and lands at the top.
-  scrollPage(key, cx) {
-    cx.timer.after(30, (cx) => { // after the render that shows the page
-      this.pageScroll.scroll_to_item((this.pageLen ?? 1) - 1); cx.notify();
-      if (key !== "bottom") cx.timer.after(60, (cx) => { const i = key === "top" ? 0 : this.pageAnchors[key]; if (i !== undefined) this.pageScroll.scroll_to_item(i); cx.notify(); });
-    });
+  // A click that leads to a part of the right pane's page (pageView's names): shown after the render that has it.
+  pagePart(name, cx) {
+    cx.timer.after(30, (cx) => { const k = (this.pageParts ?? []).indexOf(name); if (k >= 0) this.pageScrolls[this.page]?.scroll_to_item(k); cx.notify(); });
   },
 
   // "Copy review state" (the ⋯ menu): the verdict, the task check and the findings by state as text for a colleague.
@@ -4071,6 +4065,37 @@ export const ReviewMode = {
       progress: `Reviewer's progress: ${p.filesViewed} of ${p.files} files viewed, ${p.comments} pending ${p.comments === 1 ? "comment" : "comments"}.` });
     copyText(text);
     this.note = `Review state copied as text (${text.trim().split("\n").length} lines), nothing was posted.${this.findings().some((f) => f.security) ? " Security findings are in it with their title only." : ""}`;
+  },
+
+  // "Copy this page as Markdown" (the ⋯ menu): what the right side shows, as text to hand to an agent (markdown.js):
+  // the Overview, the open layer, the Architecture or the Security page; on the Findings tab the open finding, else
+  // all unresolved ones; on Files and Comments the Overview. Pictures are Mermaid. Security findings are in it in
+  // full: it goes to the clipboard only.
+  copyMd(kind = "") {
+    if (!this.prSel) return;
+    const ai = this.ai, findings = this.findings(), statusOf = (f) => this.fstatus(f), base = { pr: this.prSel, head: this.headNow() ?? "" }, asks = ai?.asks ?? [];
+    if (kind === "verify") {
+      const list = this.checkList(), text = verifyContextMd(list, { ...base, ai, statusOf, threats: ai?.threats ?? this.find.runs?.security?.threats ?? null });
+      if (!list.length) return;
+      copyText(text);
+      this.note = `The context to check ${list.length === 1 ? "the open finding" : `${list.length} unresolved security findings`} is on the clipboard as Markdown (${text.trim().split("\n").length} lines), nothing was posted.`;
+      return;
+    }
+    const layer = this.tab === "steps" && !this.page ? this.steps()[this.cur] : null, one = this.tab === "findings" && this.ffocus ? this.findingById(this.ffocus) : null;
+    const [what, text] = one ? ["The open finding is", findingMd(one, { ...base, status: statusOf(one), asks })]
+      : this.tab === "findings" ? ["The unresolved findings are", findingsMd(findings, { ...base, statusOf, asks })]
+      : layer && !layer.pseudo ? [`The layer "${plain(layer.title)}" is`, layerMd(layer, { ...base, n: this.cur + 1, files: this.filesOf(layer), findings: this.layerFindings(layer), statusOf })]
+      : this.tab === "steps" && this.page === "arch" ? ["The architecture is", architectureMd({ ...base, ai, findings, statusOf })]
+      : this.tab === "steps" && this.page === "blast" ? ["The Security page is", securityMd({ ...base, ai, findings, statusOf, runs: this.find.runs })]
+      : ["The Overview is", overviewMd({ ...base, ai, findings, statusOf, checks: this.checksNow(), related: this.ctx })];
+    copyText(text);
+    this.note = `${what} on the clipboard as Markdown (${text.trim().split("\n").length} lines), nothing was posted.`;
+  },
+  // What "Copy context to check findings" is about: the finding open in the Findings tab, else on the Security page
+  // the unresolved security findings; [] elsewhere (the menu leaves the entry out).
+  checkList() {
+    const one = this.tab === "findings" && this.ffocus ? this.findingById(this.ffocus) : null;
+    return one ? [one] : this.tab === "steps" && this.page === "blast" ? this.findings().filter((f) => f.security && OPEN_ST.includes(this.fstatus(f))) : [];
   },
 
   // Progress that could not be saved: what that means, and the one thing to do about it.
