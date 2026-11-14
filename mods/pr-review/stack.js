@@ -325,9 +325,10 @@ export function visualCard(v, t, id, onJump, wrapX = null, wide = null, opts = {
   if (v.kind === "sequence" && P) {
     body = seqView(P.Q, t, `${id}-sq`, onJump);
   } else if (v.kind === "sequence") {
-    // The same diagram as over a layer's code (seqLayout), in one row that scrolls sideways when wider than its room;
+    // The same diagram as over a layer's code (seqLayout), spread over the room it has (wrapX.room: the scroller's
+    // measured width, 0 before the first frame), scrolling sideways only when the columns do not fit at SEQ.MIN;
     // the numbered calls under it folded to one line.
-    const Q = seqLayout(v, 200 * v.nodes.length), open = openLists.has(id);
+    const room = wrapX?.room?.(`${id}-sq`) || 0, Q = seqLayout(v, room || 200 * v.nodes.length), open = openLists.has(id);
     body = v_flex().gap(6).child((wrapX ?? nativeX)(`${id}-sq`, Q.width, Q.height, seqView(Q, t, `${id}-sv`, onJump)))
       .child(h_flex().id(`${id}-calls`).gap(6).cursor_pointer().text_size(11.5).text_color(t.muted).hover((x) => x.text_color(t.foreground))
         .tooltip(open ? "Fold the list of calls" : "Show every call with its whole text").on_click((_e, cx) => { if (open) openLists.delete(id); else openLists.add(id); cx.stop_propagation(); cx.notify(); })
@@ -361,25 +362,26 @@ export function visualCard(v, t, id, onJump, wrapX = null, wide = null, opts = {
     .child(body);
 }
 
-// A sequence diagram at seqLayout's positions: the participants in a row, a lifeline under each, and one row per
-// call in order: its number and text above an arrow from the caller's lifeline to the callee's (a loop beside the
-// lifeline for a call to itself). A text longer than its arrow runs on to the right, over the other lifelines.
+// A sequence diagram at seqLayout's positions: the participants in a row (a long name on two lines), a lifeline under
+// each, solid and darker than the grid behind it, and one row per call in order: its number and text above an arrow
+// from the caller's lifeline to the callee's, the head at the callee (a loop beside the lifeline for a call to
+// itself). A text longer than its arrow runs on over the other lifelines, ending inside the picture (seqLayout tx).
 function seqView(Q, t, id, onJump = null) {
   const jump = (el, place) => el.when(Boolean(place && onJump), (x) => x.cursor_pointer().hover((s) => s.border_color(t.accent)).on_click((_e, cx) => { onJump(place, cx); cx.stop_propagation(); }));
   const col = (e) => (e.changed && e.source !== "existing" ? t.accent : t.muted);
   const heads = Q.cols.flatMap((n, k) => [
-    div().id(`${id}-l${k}`).absolute().left(n.x).top(SEQ.HEAD).w(0).h(Q.height - SEQ.HEAD).border_l(1).border_dashed().border_color(t.border),
-    jump(div().id(`${id}-p${k}`).absolute().left(n.x - n.w / 2).top(0).w(n.w).h(SEQ.HEAD - 4).px(6).flex().items_center().justify_center().rounded(6).border_1()
+    div().id(`${id}-l${k}`).absolute().left(n.x).top(Q.head).w(0).h(Q.height - Q.head).border_l(1.5).border_color(t.muted + "99"),
+    jump(div().id(`${id}-p${k}`).absolute().left(n.x - n.w / 2).top(0).w(n.w).h(Q.head - 4).px(6).flex().items_center().justify_center().rounded(6).border_1()
       .border_color(n.changed && n.source !== "existing" ? t.accent : t.border).when(n.source === "spec", (e) => e.border_dashed()).bg(t.background).text_size(12).font_semibold()
-      .text_color(n.source === "existing" ? t.muted : t.foreground).tooltip([n.label ?? n.id, n.note, n.source === "spec" ? SPEC_TIP : ""].filter(Boolean).join("\n")).child(div().truncate().child(n.label ?? n.id)), n.at ?? n.evidence)]);
+      .text_color(n.source === "existing" ? t.muted : t.foreground).tooltip([n.label ?? n.id, n.note, n.source === "spec" ? SPEC_TIP : ""].filter(Boolean).join("\n"))
+      .child(Q.head > SEQ.HEAD ? div().max_h(Q.head - 8).overflow_hidden().whitespace_normal().text_center().line_height(1.25).child(n.label ?? n.id) : div().truncate().child(n.label ?? n.id)), n.at ?? n.evidence)]);
   const calls = Q.calls.flatMap((e, k) => {
-    const c = col(e), lo = Math.min(e.x1, e.x2), y = e.y + SEQ.ROW - 12, self = e.x1 === e.x2, left = self || e.x2 < e.x1;
-    const text = /^\d+[.)]/.test(e.text) ? e.text : `${e.n}. ${e.text}`; // some analyses number the calls themselves
+    const c = col(e), lo = Math.min(e.x1, e.x2), y = e.y + SEQ.ROW - 12, self = e.x1 === e.x2, left = self || e.x2 < e.x1, text = e.caption;
     return [
       self ? div().id(`${id}-c${k}`).absolute().left(lo).top(y - 12).w(22).h(12).border_t(1.5).border_r(1.5).border_b(1.5).rounded_r(6).border_color(c)
         : div().id(`${id}-c${k}`).absolute().left(lo).top(y).w(Math.abs(e.x2 - e.x1)).h(0).border_t(1.5).border_color(c).when(Boolean(e.dashed) || e.source === "spec", (x) => x.border_dashed()),
       div().id(`${id}-a${k}`).absolute().left(left ? e.x2 : e.x2 - 9).top(y - 8).text_size(11).text_color(c).child(left ? "◀" : "▶"),
-      jump(div().id(`${id}-t${k}`).absolute().left(lo + (self ? 28 : 8)).top(e.y + (self ? 12 : 4)).max_w(Q.width - lo - (self ? 32 : 12)).h(17).px(3).bg(t.surface).text_size(11.5)
+      jump(div().id(`${id}-t${k}`).absolute().left(e.tx).top(e.y + (self ? 12 : 4)).max_w(e.tw).h(17).px(3).bg(t.surface).text_size(11.5)
         .text_color(e.changed && e.source !== "existing" ? t.foreground : t.muted).tooltip([text, e.evidence].filter(Boolean).join("\n")).child(div().truncate().child(text)), e.at ?? e.evidence)];
   });
   return div().id(id).relative().flex_none().w(Q.width).h(Q.height).children([gridBg(t, Q.width, Q.height), ...heads, ...calls]);

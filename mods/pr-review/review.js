@@ -1349,6 +1349,7 @@ export const ReviewMode = {
   // finding on unchanged code) opens its file read-only at that line, as a definition outside the diff does; what a
   // jump could not do is said until the next jump.
   jumpTo(at, cx, { fromDef = false } = {}) {
+    this.hsDrag = null; // a click in a picture lands here, and its mouse-up never reached the root (see hsMove)
     if (this.note && this.note === this.jumpNote) this.note = null;
     if (this.exMode) return this.openExploreFile(pathOf(at), lineOf(at) ?? 1, cx); // no diff: the file itself
     const [, path, line] = /^(.*?):(\d+)/.exec(at ?? "") ?? [];
@@ -3025,8 +3026,9 @@ export const ReviewMode = {
   archOpts(k) {
     const set = (name, v, cx) => { if (this[name] !== v) { this[name] = v; cx.notify(); } };
     return { hl: this[`${k}Hl`] ?? (k === "arch" ? this.askHl : null), focus: this[`${k}Focus`] ?? null, hover: this[`${k}Hover`] ?? null,
+      // A click on a card or a call ends a drag its press began (see hsMove).
       onHl: (v, cx) => set(`${k}Hl`, v, cx), onHover: (v, cx) => set(`${k}Hover`, v, cx),
-      onFocus: (v, cx) => { this.fh.focus(); set(`${k}Focus`, v, cx); }, onJump: (at, cx) => this.jumpTo(at, cx),
+      onFocus: (v, cx) => { this.hsDrag = null; this.fh.focus(); set(`${k}Focus`, v, cx); }, onJump: (at, cx) => this.jumpTo(at, cx),
       onFinding: (f, cx) => { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); cx.notify(); } }; // a mark's click: its finding, open in the Findings tab and at its line
   },
 
@@ -3069,7 +3071,7 @@ export const ReviewMode = {
           .child(this.fold.archCalls ? "▾" : "▸").child(`Calls without their whole text in the picture · ${L.paths.filter((p) => !p.text || p.text.cut).length}`))
         .when(Boolean(this.fold.archCalls), (e) => e.child(archLegend(L, t, "rv-arch-edges", "Calls without their whole text in the picture", opts)))]] : []),
       ...((this.ai.components ?? []).length ? [["components", this.componentsTable(t, a)]] : []),
-      ...(this.ai?.visuals?.length > 0 ? [["views", v_flex().gap(12).child(div().pt(6).text_size(13).font_semibold().text_color(t.muted).child("More views")).child(div().max_w(760).child(more()))]] : [])]);
+      ...(this.ai?.visuals?.length > 0 ? [["views", v_flex().gap(12).child(div().pt(6).text_size(13).font_semibold().text_color(t.muted).child("More views")).child(div().w_full().child(more()))]] : [])]);
   },
 
   // The picture: wider than the view and Wrap on (archWrapOn, off by default), in bands stacked top to bottom (arch.js
@@ -3263,7 +3265,11 @@ export const ReviewMode = {
   // gesture, so page and picture never move together; shift+wheel sideways), drag to pan, a thumb bar when wider than
   // the view. Per id in this.hs: {x, viewW, maxX, contentW}; one gesture (this.gesture) and one drag (this.hsDrag).
   hsOf(id) { const m = (this.hs ??= new Map()); if (!m.has(id)) m.set(id, { x: 0, viewW: 0, maxX: 0, contentW: 0 }); return m.get(id); },
-  wrapX() { return (this.wrapXFn ??= (id, w, h, el) => this.hscroll(id, w, h, el)); }, // stack.js visualsCard's wrapX
+  // stack.js visualsCard's wrapX; room(id): the width that scroller shows, in the picture's px (0: not measured yet).
+  wrapX() {
+    if (!this.wrapXFn) { this.wrapXFn = (id, w, h, el) => this.hscroll(id, w, h, el); this.wrapXFn.room = (id) => { const s = this.hs?.get(id); return s?.viewW ? Math.floor(hsVisible(s.viewW / (settings().zoom || 1), this.drawerCover())) : 0; }; }
+    return this.wrapXFn;
+  },
   hscroll(id, contentW, h, content, t = theme()) {
     // viewW: what shows of the picture, the part under the Ask drawer (drawerCover) left out. The view is measured in
     // logical px, the picture is drawn in the person's zoom: its width in the picture's px.
@@ -3280,6 +3286,7 @@ export const ReviewMode = {
           .on_mouse_down("left", (ev, cx) => { this.hsDrag = { id, x0: ev.position.x, from: x, thumb: true }; cx.stop_propagation(); }))));
   },
   hsWheel(id, e, cx) {
+    this.hsDrag = null; // a wheel is never a drag: a press left over from a click must not pull the picture back
     const s = this.hsOf(id), r = wheelStep(this.gesture, { dx: e.delta?.x ?? 0, dy: e.delta?.y ?? 0, t: Date.now(), phase: e.touch_phase, shift: Boolean(e.modifiers?.shift) }, s.x, s.maxX);
     this.gesture = r.g;
     if (!r.used) return;
@@ -3288,6 +3295,10 @@ export const ReviewMode = {
     if (!this.hsFlush) { this.hsFlush = true; cx.timer.after(16, (cx) => { this.hsFlush = false; cx.notify(); }); }
   },
   // A drag on a picture (pan) or its thumb, from the root's mouse move; the root's mouse up ends it.
+  // A press on a picture starts a drag that the root's mouse-up ends. A click on a card, a call or a mark inside the
+  // picture stops its mouse-up from reaching the root (cx.stop_propagation in its on_click), so the drag would stay
+  // and every later mouse move would pull the picture back to where it was clicked: jumpTo, secCard and the wheel
+  // end it.
   hsMove(e, cx) {
     const p = this.hsDrag, s = p && this.hs?.get(p.id);
     if (!s) return;
@@ -3939,7 +3950,7 @@ export const ReviewMode = {
   },
   // A card of the picture lit (null: none), and its first row below brought into view.
   secCard(id, cx) {
-    this.blastFocus = id;
+    this.blastFocus = id; this.hsDrag = null; // as in jumpTo
     const k = id ? (this.pageParts ?? []).indexOf(this.secPart?.(id)) : -1;
     if (k >= 0) this.pageScrolls.blast.scroll_to_item(k);
     cx.notify();
