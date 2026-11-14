@@ -137,4 +137,33 @@ os.symlink(outside, other / probe.PROBE_DIR)
 r = subprocess.run([sys.executable, ME, str(other), "evil"], capture_output=True, text=True)
 assert r.returncode == 2 and "plain folder" in r.stderr, r.stderr
 assert subprocess.run([sys.executable, ME, "--barrier"], capture_output=True, text=True).stdout.strip() == probe.barrier()
+# The fence per machine, with stubs for the platform and the tools: sandbox-exec on macOS; on Linux bwrap only when
+# it is there and may make its namespaces; a bare unshare (network only) is no fence.
+import types  # noqa: E402
+def fence(platform, tools, works=True):
+    saved = (probe.sys, probe.shutil.which, probe.subprocess.run)
+    probe.sys = types.SimpleNamespace(platform=platform)
+    probe.shutil.which = lambda name: f"/usr/bin/{name}" if name in tools else None
+    calls = []
+    probe.subprocess.run = lambda args, **k: calls.append(args) or types.SimpleNamespace(returncode=0 if works else 1)
+    try:
+        return probe.barrier(), calls
+    finally:
+        probe.sys, probe.shutil.which, probe.subprocess.run = saved
+assert fence("darwin", {"sandbox-exec"})[0] == "sandbox-exec"
+assert fence("darwin", set())[0] == "none"
+how, calls = fence("linux", {"bwrap", "unshare"})
+assert how == "bwrap" and calls[0][:3] == ["bwrap", "--unshare-all", "--die-with-parent"], calls
+assert fence("linux", {"bwrap"}, works=False)[0] == "none", "bwrap that may not make namespaces"
+assert fence("linux", {"unshare"})[0] == "none", "a network namespace alone is no fence"
+assert fence("win32", {"bwrap"})[0] == "none"
+# The bwrap call: nothing shared, read-only system, the home hidden (the interpreter bound again if it lives there),
+# only the probe's own folder writable, a new session, death with the runner.
+args = probe.bwrap_args("/tmp/pr-review-probe-x", ["/srv/secret"])
+home = probe.user_home()
+for i, x in enumerate(["bwrap", "--unshare-all", "--die-with-parent", "--new-session", "--ro-bind", "/", "/"]):
+    assert args[i] == x, (i, args)
+assert ["--tmpfs", home] == args[args.index(home) - 1:args.index(home) + 1] and ["--tmpfs", "/srv/secret"] == args[args.index("/srv/secret") - 1:args.index("/srv/secret") + 1]
+assert args[-7:] == ["--bind", "/tmp/pr-review-probe-x", "/tmp/pr-review-probe-x", "--dev", "/dev", "--proc", "/proc"] and "--share-net" not in args
+assert args.index("--bind") > max(i for i, x in enumerate(args) if x == "--tmpfs"), "the writable folder is mounted after the hidden ones"
 print("ok")

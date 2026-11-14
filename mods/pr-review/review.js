@@ -5287,7 +5287,7 @@ export const ReviewMode = {
   // (probe.py) and through a verify agent of the kind "probe" (threads.js probeArgs) in its own worktree at the PR head.
   // State per probe in deep.json (`probes["<PR url>|<id>"]`): running {job, path, branch, base, head, terminal, at},
   // then done (threads.js probeOutcome). Before it starts it asks, as a state of the probe (probeAsk), not as a popup:
-  // for someone else's PR, and for every PR when this machine has no network barrier.
+  // for someone else's PR, and for every PR when this machine has no sandbox (probe.py barrier: none).
 
   probeKey(id) { return `${this.deepKey()}|${id}`; },
   probeRunner() { return `${appHome()}/mods/pr-review/probe.py`; },
@@ -5295,7 +5295,7 @@ export const ReviewMode = {
   probeList() { return this.ai?.resilience?.probes ?? this.find?.resilience?.probes ?? []; },
   // Why a probe asks before it starts, or null: someone else's PR, or no network barrier on this machine.
   probeNeeds() {
-    if (this.probeBarrier === "none") return "Runs code from this PR on your machine for at most 30 s. This machine has no network barrier for it, so the code could reach the network.";
+    if (this.probeBarrier === "none") return "Runs code from this PR on your machine for at most 30 s. This machine has no sandbox for it (sandbox-exec on macOS, bwrap on Linux), so the code could reach the network and your files.";
     return this.trustedPr() ? null : "Runs code from this PR on your machine, without network, for at most 30 s.";
   },
   // A probe as the view reads it: the run's entry with status proposed | confirm | running | done, and when done the
