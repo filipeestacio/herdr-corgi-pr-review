@@ -616,7 +616,7 @@ console.log("ok");
   const both = withSecurity(mapReview(zonesAnswer, []), { head, zones: [{ id: "a", trust: "public", nodes: ["store"] }], crossing: [], access: [], threats: [] }, null, head);
   assert.deepEqual([both.arch.zones.map((z) => z.id), both.arch.nodes.map((n) => n.zone ?? null), both.arch.edges[0].crosses, both.access], [["a"], [null, null, "a"], undefined, []]);
   // reachable_from, reachability and effort come through on the merged finding from the security run's source.
-  const m = mergeFindings([{ id: "aX", reviewer: "analysis", file: "library/handler.py", line: 9, severity: "high", title: "t", effort: "moderate" },
+  const m = mergeFindings([{ id: "aX", reviewer: "analysis", file: "library/handler.py", line: 9, severity: "high", title: "Empty token passes", effort: "moderate" }, // same claim, so one finding
     { id: "e3cec57be283", reviewer: "security", file: "library/handler.py", line: 9, severity: "high", title: "Empty token", reachable_from: ["acc1"], reachability: "public", effort: "quick" }]).findings[0];
   assert.deepEqual([m.reachable_from, m.reachability, m.effort], [["acc1"], "public", "moderate"]);
   console.log("ok security view");
