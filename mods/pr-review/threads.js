@@ -163,6 +163,38 @@ export function fixCommit(job, replies = {}, reports = {}) {
   return null;
 }
 
+// ---- a fix checked on its own branch, before it is in the PR (verify.py)
+
+// The findings whose fix can be checked there: the newest job is a live sub-agent one (its worktree is still there)
+// and the agent's report names a commit that was not checked yet. Settled findings are left alone.
+export function branchChecks(findings, fixes, status, reports, statusOf) {
+  return findings.flatMap((f) => {
+    const job = [...fixes].reverse().find((j) => j.items.some((x) => (f.ids ?? [f.id]).includes(x.id)));
+    const r = reports[f.id], commit = r?.status === "fixed" && r.commit ? String(r.commit) : null;
+    if (!commit || job?.state !== "running" || job.target !== "sub" || !job.path || !job.head) return [];
+    return status[f.id]?.verify?.head === commit || ["fixed", "dismissed"].includes(statusOf(f)) ? [] : [{ f, job, commit }];
+  });
+}
+// verify.py's verdicts for those: kept next to the finding as {verify: {result, reason, head: the commit, branch, at}}
+// and never as its state. "Fixed" stays with a passed check on the PR head (pr.js applyVerification).
+export function applyBranchChecks(status, results, checks, now) {
+  const out = { ...status }, at = new Date(now).toISOString();
+  for (const r of results ?? []) {
+    const c = checks.find((x) => x.f.id === r.id);
+    if (c) out[r.id] = { ...status[r.id], verify: { result: r.verdict, reason: r.reason ?? "", head: c.commit, branch: c.job.branch, at } };
+  }
+  return out;
+}
+// A finding's check in words (v: its status' verify, or none): on the PR head, or on the fix branch, which never
+// reads "fixed" because the PR does not have the fix yet. short: for one line in a card.
+export function checkText(v, short = false) {
+  if (!v) return short ? "not verified" : "Not verified. Verify checks a reported commit on its fix branch, and the PR head once the fix is pushed there.";
+  const word = String(v.result).replace("_", " "), at = String(v.head ?? "").slice(0, 7), why = v.reason ? `: ${v.reason}` : ".";
+  if (!v.branch) return short ? `verified: ${word}` : `Verified at ${at}: ${word}${v.reason ? `, ${v.reason}` : ""}`;
+  const head = { fixed: "Verified on the fix branch, not in the PR yet", not_fixed: "Not fixed on the fix branch" }[v.result] ?? "Unclear on the fix branch";
+  return short ? head[0].toLowerCase() + head.slice(1) : `${head} (${v.branch} at ${at})${why}`;
+}
+
 // What the sub-agent is told on top of the comments or findings: its worktree, its branch, commit there, never push
 // (main: the PR's agent takes the fix over, see handoffNote; without one the reviewer applies it).
 export const worktreeNote = (branch, path, main = null) => `You work in your own git worktree ${path} on branch ${branch}, started from the PR head. ` +

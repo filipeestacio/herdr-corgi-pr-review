@@ -119,6 +119,29 @@ assert.equal(TH.fixStart({ prHead: null, checkoutHead: "here" }), "here", "no PR
 const off = TH.applyPlan({ status: "", head: "abcdef0123", branch: "fix/7-c1", onHead: false, where: "feat/other" });
 assert.equal(off.ok, false); assert.equal(off.off, true);
 assert.match(off.reason, /on feat\/other.*abcdef0.*git cherry-pick abcdef0\.\.fix\/7-c1/);
+// A fix is checked on its own branch once the agent reports a commit; the verdict stays next to the finding and never
+// makes it "fixed", which needs the fix in the PR head.
+{
+  const fjob = { id: "j9", branch: "fix/7-f1", path: "/w", head: "abc", items: [{ kind: "finding", id: "f1" }], target: "sub", state: "running" };
+  const fs = [{ id: "f1", ids: ["f1", "s1"] }, { id: "f2", ids: ["f2"] }], st = { f1: { s: "progress", fixHead: "abc" } }, open = () => "progress";
+  assert.deepEqual(TH.branchChecks(fs, [fjob], st, {}, open), [], "no report yet");
+  assert.deepEqual(TH.branchChecks(fs, [fjob], st, { f1: { status: "wontfix", note: "no" } }, open), [], "declined");
+  const checks = TH.branchChecks(fs, [fjob], st, { f1: { status: "fixed", commit: "cafe1234" } }, open);
+  assert.deepEqual(checks.map((c) => [c.f.id, c.job.id, c.commit]), [["f1", "j9", "cafe1234"]]);
+  assert.deepEqual(TH.branchChecks(fs, [{ ...fjob, state: "applied" }], st, { f1: { status: "fixed", commit: "cafe1234" } }, open), [], "applied: the PR head is checked instead");
+  assert.deepEqual(TH.branchChecks(fs, [{ ...fjob, target: "main", path: undefined }], st, { f1: { status: "fixed", commit: "cafe1234" } }, open), [], "the main agent has no fix branch");
+  const after = TH.applyBranchChecks(st, [{ id: "f1", verdict: "fixed", reason: "the guard is there" }, { id: "zz", verdict: "fixed" }], checks, 0);
+  assert.equal(after.f1.s, "progress", "still Fix sent");
+  assert.deepEqual(after.f1.verify, { result: "fixed", reason: "the guard is there", head: "cafe1234", branch: "fix/7-f1", at: "1970-01-01T00:00:00.000Z" });
+  assert.equal(after.zz, undefined);
+  assert.deepEqual(TH.branchChecks(fs, [fjob], after, { f1: { status: "fixed", commit: "cafe1234" } }, open), [], "checked at this commit already");
+  assert.equal(TH.branchChecks(fs, [fjob], after, { f1: { status: "fixed", commit: "beef5678" } }, open).length, 1, "a newer commit is checked again");
+  assert.equal(TH.checkText(after.f1.verify), "Verified on the fix branch, not in the PR yet (fix/7-f1 at cafe123): the guard is there");
+  assert.equal(TH.checkText(after.f1.verify, true), "verified on the fix branch, not in the PR yet");
+  assert.equal(TH.checkText({ result: "not_fixed", reason: "", head: "cafe1234", branch: "fix/7-f1" }), "Not fixed on the fix branch (fix/7-f1 at cafe123).");
+  assert.equal(TH.checkText({ result: "fixed", reason: "ok", head: "0123456789" }), "Verified at 0123456: fixed, ok", "on the PR head, as before");
+  assert.equal(TH.checkText(null, true), "not verified");
+}
 // A fix agent cannot push: deny rules before the permission mode, the task last.
 assert.deepEqual(args.slice(args.indexOf("claude") + 1, args.indexOf("--permission-mode")), ["--disallowedTools", ...TH.NO_PUSH]);
 assert.ok(TH.NO_PUSH.includes("Bash(git push *)") && untrusted.includes("Bash(git push *)") && untrusted.at(-1) === "x");

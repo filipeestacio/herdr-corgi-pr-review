@@ -835,8 +835,7 @@ export const ReviewMode = {
       job?.branch && ["Branch", job.branch],
       ["Commit", r?.commit ? String(r.commit).slice(0, 8) : "none reported yet"],
       r && ["Report", `${r.status === "fixed" ? "The agent reports it fixed" : "The agent declined"}${r.note ? `: ${r.note}` : "."}`],
-      ["Check", v ? `Verified at ${String(v.head).slice(0, 7)}: ${String(v.result).replace("_", " ")}${v.reason ? `, ${v.reason}` : ""}`
-        : "Not verified. Verify reads the PR head, so the fix has to be applied and pushed first."],
+      ["Check", TH.checkText(v)],
     ].filter(Boolean);
   },
   // The same in one line, for a card in the diff: "sub-agent t12 · fix/2-x · commit 22e31c88 · agent reports fixed · not verified".
@@ -844,7 +843,7 @@ export const ReviewMode = {
     const st = this.find.status[f.id] ?? {}, r = this.find.reports[f.id], job = this.fixJob(f), v = st.verify;
     if (!st.fixHead && !r) return "";
     return [job && `${job.target === "main" ? "PR agent" : "sub-agent"}${job.terminal ? ` ${job.terminal}` : ""}`, job?.branch, r?.commit && `commit ${String(r.commit).slice(0, 8)}`,
-      r && (r.status === "fixed" ? "agent reports fixed" : "agent declined"), v ? `verified: ${String(v.result).replace("_", " ")}` : "not verified"].filter(Boolean).join(" · ");
+      r && (r.status === "fixed" ? "agent reports fixed" : "agent declined"), TH.checkText(v, true)].filter(Boolean).join(" · ");
   },
 
   async loadFindings(cx) {
@@ -908,24 +907,36 @@ export const ReviewMode = {
   headNow() { return this.worktree?.head ?? this.head; },
   verifyList() { return verifyCandidates(this.findings(), this.find.status, this.headNow(), (f) => this.fstatus(f)); },
 
+  // Fixes that can be checked on their own branch, before they are in the PR (threads.js branchChecks); a finding
+  // whose PR head moved is checked there instead.
+  branchVerifyList() {
+    const onHead = new Set(this.verifyList().map((f) => f.id));
+    return TH.branchChecks(this.findings(), this.fixes(), this.find.status, this.find.reports, (f) => this.fstatus(f)).filter((c) => !onHead.has(c.f.id));
+  },
+
   // "Verify fixes (N)" (a click): one call (verify.py, "PR fix verification") in the PR's context with the review's
-  // model; fixed → ✓, not fixed → open again with the reason, unclear → as it was with the note.
+  // model. On the PR head: fixed → ✓, not fixed → open again with the reason, unclear → as it was with the note. On a
+  // fix branch the verdict only stands next to the finding: it stays "Fix sent" until the fix is in the PR head.
   runVerify(cx) {
-    const list = this.verifyList(), head = this.headNow(), w = this.worktree, url = this.prSel?.url;
-    if (!list.length || this.verifyBusy) return;
+    const list = this.verifyList(), onBranch = this.branchVerifyList(), head = this.headNow(), w = this.worktree, url = this.prSel?.url;
+    if (this.verifyBusy) return;
+    if (!list.length && !onBranch.length) { this.note = "Nothing to verify: no fix agent has reported a commit yet, and the PR head has not moved since the fixes were sent."; return cx.notify(); }
     if (!w) { this.note = "Could not verify: the PR head is not checked out yet"; return cx.notify(); }
-    this.verifyBusy = { started: Date.now(), n: list.length };
+    this.verifyBusy = { started: Date.now(), n: list.length + onBranch.length };
+    const item = (f) => ({ id: f.id, file: f.file, line: f.line, title: f.title, detail: f.detail, suggestion: f.suggestion });
     const req = { context: this.ctxReq(), model: model(), worktree: w.path, head,
-      items: list.map((f) => ({ id: f.id, file: f.file, line: f.line, title: f.title, detail: f.detail, suggestion: f.suggestion, since: this.find.status[f.id].fixHead })) };
+      items: [...list.map((f) => ({ ...item(f), since: this.find.status[f.id].fixHead })),
+        ...onBranch.map((c) => ({ ...item(c.f), since: c.job.head, head: c.commit, worktree: c.job.path, branch: c.job.branch }))] };
     cx.spawn(async (cx) => {
       const r = await exec("python3", [`${appHome()}/mods/pr-review/verify.py`, JSON.stringify(req)], { timeout: 600000 }).catch((e) => ({ code: 1, stderr: String(e) }));
       this.verifyBusy = false;
       if (this.prSel?.url !== url) return;
       if (r.code !== 0) { this.note = `Could not verify: ${r.stderr.trim().slice(0, 200)}`; return cx.notify(); }
       const { results, cost } = JSON.parse(r.stdout);
-      this.writeStatus(cx, (st) => applyVerification(st, results, head, Date.now()));
-      const n = (v) => results.filter((x) => x.verdict === v).length;
-      this.note = `Verified ${results.length}: ${n("fixed")} fixed, ${n("not_fixed")} not fixed, ${n("unclear")} unclear${cost != null ? ` · $${Number(cost).toFixed(3)}` : ""}`;
+      const there = new Set(onBranch.map((c) => c.f.id)), pr = results.filter((x) => !there.has(x.id)), br = results.filter((x) => there.has(x.id));
+      this.writeStatus(cx, (st) => TH.applyBranchChecks(applyVerification(st, pr, head, Date.now()), br, onBranch, Date.now()));
+      const say = (rs, fixed) => `${rs.filter((x) => x.verdict === "fixed").length} ${fixed}, ${rs.filter((x) => x.verdict === "not_fixed").length} not fixed, ${rs.filter((x) => x.verdict === "unclear").length} unclear`;
+      this.note = [pr.length && `On the PR head: ${say(pr, "fixed")}`, br.length && `On a fix branch, not in the PR yet: ${say(br, "verified")}`].filter(Boolean).join(". ") + (cost != null ? ` · $${Number(cost).toFixed(3)}` : "");
       cx.notify();
     });
     cx.notify();
@@ -3282,7 +3293,7 @@ export const ReviewMode = {
   // ones with a fix sent (what is known about each fix, and Verify) and without, Fixed, Dismissed, then the AI notes. A click opens a finding in
   // place and shows its line in the diff. It has no filters of its own: the bar's Show switch is the one filter.
   findingsPane(t) {
-    const all = this.findings(), c = this.counts(), runs = this.find.runs, toVerify = this.verifyList(), notes = this.openSugs(), m = model();
+    const all = this.findings(), c = this.counts(), runs = this.find.runs, toVerify = [...this.verifyList(), ...this.branchVerifyList()], notes = this.openSugs(), m = model();
     const by = (...st) => all.filter((x) => st.includes(this.fstatus(x)));
     const unresolved = by("open", "recheck"), sent = by("progress");
     const name = (k) => REVIEWERS[k]?.[0] ?? k;
@@ -3331,12 +3342,12 @@ export const ReviewMode = {
       .child(h_flex().pt(10).pb(2).px(6).gap(8).items_center().child(div().flex_1().text_size(11.5).font_semibold().text_color(t.muted).child(`${title} · ${list.length}`)).children([right].filter(Boolean)))
       .when(Boolean(hint), (e) => e.child(div().px(6).pb(2).text_size(12.5).line_height(1.5).text_color(t.muted).whitespace_normal().child(hint)))
       .children(list.map(row));
-    const verify = div().id("rv-verify").tooltip("One model call checks on the PR head whether the findings sent to Fix are fixed now").px(9).h(26).flex().items_center().gap(6).rounded(6).border_1().text_size(12.5)
+    const verify = div().id("rv-verify").tooltip("One model call checks the fixes sent: a reported commit on its fix branch, or the PR head once it moved").px(9).h(26).flex().items_center().gap(6).rounded(6).border_1().text_size(12.5)
       .border_color(toVerify.length && !this.verifyBusy ? t.foreground : t.border).text_color(toVerify.length && !this.verifyBusy ? t.foreground : t.dim)
       .when(toVerify.length > 0 && !this.verifyBusy, (e) => e.cursor_pointer().hover((h) => h.bg(t.hover)).on_click((_e, cx) => this.runVerify(cx)))
       .child(this.verifyBusy ? `Verifying ${this.verifyBusy.n}…` : `Verify fixes (${toVerify.length})`);
     const sentHint = !sent.length ? "No fix is out. A finding sent to Fix stays unresolved and shows here until it is verified."
-      : `A fix sent does not resolve a finding. Verify is one ${modelLabel(m)} call that reads the PR head and says fixed, not fixed or unclear; only fixed moves a finding to Fixed.${toVerify.length ? "" : " Nothing to verify yet: the PR head has not moved since these fixes were sent."}`;
+      : `A fix sent does not resolve a finding. Verify is one ${modelLabel(m)} call: it checks a reported commit on its fix branch, and the PR head once the fix is pushed. Only a passed check on the PR head moves a finding to Fixed.${toVerify.length ? "" : " Nothing to verify yet."}`;
     return v_flex().flex_1().min_h(0)
       .child(v_flex().flex_none().px(14).py(10).gap(8).border_b(1).border_color(t.border)
         .child(div().id("rv-fcount").tooltip("Unresolved findings by severity; a finding with a fix sent stays unresolved until it is verified").text_size(13.5).font_semibold().child(countLine(c)))
