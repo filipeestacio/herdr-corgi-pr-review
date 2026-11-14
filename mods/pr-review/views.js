@@ -1161,3 +1161,15 @@ export function runLabel(run, price = null, age = "", short = false) {
   if (run?.state === "done") return short ? `Re-run${p}` : `Re-run${p} · last run${age ? ` ${age}` : ""}${run.head ? ` on ${String(run.head).slice(0, 7)}` : ""}`;
   return `${run?.state === "failed" ? "Run again" : "Run"}${p}`;
 }
+
+// "Before merge" by cause: a row whose finding is a later finding of one cause (pr.js same_cause) while that cause's
+// first finding is still open goes; the first row gets its place in `also` ("same cause at template.yaml:14").
+// open: the unresolved findings.
+export function byCause(rows, open = []) {
+  const firstOf = (f) => (f?.same_cause ? open.find((g) => g !== f && (g.id === f.same_cause || (g.ids ?? []).includes(f.same_cause))) ?? null : null);
+  const later = rows.filter((r) => firstOf(r.finding));
+  return rows.filter((r) => !later.includes(r)).map((r) => {
+    const also = later.filter((x) => firstOf(x.finding) === r.finding).map((x) => x.where).filter(Boolean);
+    return also.length ? { ...r, also } : r;
+  });
+}

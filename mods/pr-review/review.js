@@ -26,7 +26,7 @@ import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf,
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState, codeOf, isStale } from "./pr.js";
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible, pastTop } from "./views.js";
-import { worst, byFocus, layerAccess, analysisAge, stateHints, noteRule, mergeGroups, mergeFirst, runLabel } from "./views.js";
+import { worst, byFocus, layerAccess, analysisAge, stateHints, noteRule, mergeGroups, mergeFirst, runLabel, byCause } from "./views.js";
 import { archView, archLegend, visualsCard, visualCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR, bulletChart } from "./stack.js";
 import { visualPlan } from "./stack.js";
 import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCALE } from "./views.js";
@@ -4524,7 +4524,7 @@ export const ReviewMode = {
     const mergeRow = (r, k) => {
       const f = r.finding, id = `rv-bm-${k}`, [sym, col] = SYM[r.kind] ?? ["·", t.muted], breaks = r.asks.map((a) => a.short || plain(a.text));
       const click = (_e, cx) => { this.goMergeRow(r, cx); cx.notify(); };
-      return h_flex().id(id).tooltip([r.title, r.why, breaks.length && `Breaks: ${breaks.join("; ")}`, f && certaintyLine(f)].filter(Boolean).join("\n")).gap(8).items_center().pl(10).pr(6).py(3).rounded(4).border_l(3)
+      return h_flex().id(id).tooltip([r.title, r.why, breaks.length && `Breaks: ${breaks.join("; ")}`, f && certaintyLine(f), r.also && `Same cause also at ${r.also.join(", ")}`].filter(Boolean).join("\n")).gap(8).items_center().pl(10).pr(6).py(3).rounded(4).border_l(3)
         .border_color(f ? t[SEV[f.severity]] ?? t.muted : t.border).cursor_pointer().hover((s) => s.bg(t.hover)).on_click(click)
         .child(div().w(16).flex_none().font_semibold().text_color(col).child(sym))
         .child(div().flex_1().min_w(0).truncate().child(r.kind === "ask" ? `${r.title}: ${r.ask.state === "not_done" ? "not done" : r.ask.state}` : r.title))
@@ -5173,7 +5173,8 @@ export const ReviewMode = {
     const cur = this.resNow(), lineOf = (p) => [p.blocker.at, ...(p.steps ?? [])].find((s) => /:\d+$/.test(String(s ?? ""))) ?? null;
     const res = [...(cur?.paths ?? []).filter((p) => p.blocker).map((p) => ({ kind: "resilience", title: resSentence(p), why: `Blocker: ${p.blocker.reason ?? p.blocker.why}`, path: p.id, where: lineOf(p), asks: [] })),
       ...(cur ? resWatch(cur, this.ai?.arch).before : []).map((b) => ({ kind: "resilience", title: b.text, why: "Not observable after the merge: no alarm, log line or metric shows it", path: null, where: b.at ?? null, asks: [] }))];
-    const rows = beforeMerge({ list: this.taskNow(), findings: this.findings(), statusOf: (f) => this.fstatus(f), blockers: this.blockersNow() }), sec = rows.filter((r) => r.kind === "security").length;
+    // One row per cause: a later finding of a cause whose first is still open stands at that first row (views.js byCause).
+    const rows = byCause(beforeMerge({ list: this.taskNow(), findings: this.findings(), statusOf: (f) => this.fstatus(f), blockers: this.blockersNow() }), this.openFindings()), sec = rows.filter((r) => r.kind === "security").length;
     return [...rows.slice(0, sec), ...res, ...rows.slice(sec)]; // after the security rows: a way a failure grows without limit is as urgent
   },
   // What the AI runs on this PR cost, summed (pr.js costLine): the analysis, the reviewers, Look inside and Ask.

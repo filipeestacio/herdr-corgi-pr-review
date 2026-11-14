@@ -249,6 +249,12 @@ assert.equal(pendingText([{ file: "a.py" }, { file: "a.py" }, { file: "b.py" }])
   assert.deepEqual(mergeFirst(bm.slice(2), 5).map((r) => bm.slice(2).indexOf(r)), [0, 3, 4, 7, 8]);
   assert.deepEqual(mergeFirst(bm.slice(0, 3), 5).length, 3);
   assert.deepEqual(mergeGroups(bm.slice(7), [bm[6]]).map((g) => g.text), ["1 criterion", "1 check", "2 high", "1 fix to verify"], "the criteria a shown row breaks are not counted again");
+  // By cause: the later finding of a cause goes while the first is open, and the first row names its place.
+  const { byCause } = await import("./views.js");
+  const tok = { id: "a1", ids: ["a1"] }, tpl = { id: "a2", ids: ["a2"], same_cause: "a1" }, other = { id: "a3", ids: ["a3"] };
+  const cr = [{ kind: "security", finding: tok, where: "handler.py:9" }, { kind: "finding", finding: tpl, where: "template.yaml:14" }, { kind: "finding", finding: other, where: "x.py:1" }];
+  assert.deepEqual(byCause(cr, [tok, tpl, other]).map((r) => [r.where, r.also ?? null]), [["handler.py:9", ["template.yaml:14"]], ["x.py:1", null]]);
+  assert.equal(byCause(cr, [tpl, other]).length, 3, "the first one fixed: the later one stands for the cause again");
   // A finished run is offered as Re-run with its age and head, not as a first Run.
   const { runLabel } = await import("./views.js");
   assert.equal(runLabel(null, "about $0.27, 1 min"), "Run (about $0.27, 1 min)");
