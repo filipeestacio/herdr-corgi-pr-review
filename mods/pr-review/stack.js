@@ -161,7 +161,8 @@ const flowMemo = new Map();
 function flowModel(v, fit = true) {
   const key = `${fit}|${JSON.stringify(v)}`;
   if (!flowMemo.has(key)) {
-    flowMemo.set(key, archLayout(flowArch(v), "diff", () => 0, fit));
+    // labels: a call's text on its line, once archLayout takes that option (until then it is ignored, and every text is in the legend).
+    flowMemo.set(key, archLayout(flowArch(v), "diff", () => 0, fit, { labels: true }));
     if (flowMemo.size > 12) flowMemo.delete(flowMemo.keys().next().value);
   }
   return flowMemo.get(key);
@@ -239,7 +240,8 @@ export function visualPlan(v, wide) {
     P = { h: rowsH(v.nodes.map((n) => n.note ?? ""), 150, 10.5, 15, 34) + 20 };
   } else {
     const usual = flowModel(v, false), L = usual.width + 4 <= inner ? usual : flowModel(v), over = L.width + 4 > inner, name = new Map(L.nodes.map((n) => [n.id, n.label ?? n.id]));
-    const legend = L.paths.length ? 46 + rowsH(L.paths.map((p) => `${p.from.map((f) => name.get(f)).join(", ")} → ${name.get(p.to)}${p.label ? `: ${p.label}` : ""}`), inner - 62, 12, 17, 8) : 0;
+    const listed = L.paths.filter((p) => !p.text || p.text.cut); // archLegend lists the calls whose text is not, or not whole, on the line
+    const legend = listed.length ? 46 + rowsH(listed.map((p) => `${p.from.map((f) => name.get(f)).join(", ")} → ${name.get(p.to)}${p.label ? `: ${p.label}` : ""}`), inner - 62, 12, 17, 8) : 0;
     P = { L, over, h: L.height + 10 + (over ? 22 : 0) + 6 + legend };
   }
   P.h += 52; // the card's own frame: margin, padding, title row, gap
