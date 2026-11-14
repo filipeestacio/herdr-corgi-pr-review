@@ -693,7 +693,7 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   const { resMarksOn } = await import("./views.js");
   const arch = { nodes: [{ id: "q", at: "template.yaml:11" }, { id: "c", at: "library/consumer.py:11" }], edges: [{ from: "q", to: "c" }] };
   const m = resMarksOn([{ at: "e0", mark: "no DLQ" }, { at: "e0", mark: "⏱ 10 s" }, { at: "library/consumer.py:19", mark: "✕ silent" }, { at: "x.py:1", mark: "×3" }, { node: "q", text: "batch 10" }], arch);
-  assert.deepEqual([...m], [["c", "no DLQ · ⏱ 10 s · ✕ silent"], ["q", "batch 10"]]);
+  assert.deepEqual([...m], [["q", "no DLQ · batch 10"], ["c", "⏱ 10 s · ✕ silent"]], "a queue's mark at the queue");
 }
 
 // ---- panel round 3: right and call folded, defects, operator, ways, zones passed on
@@ -763,4 +763,14 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.ok(readableFade("#1f2328", "#ffffff") >= 0.6 && readableFade("#eeeeef", "#17191d", 0.55) === 0.55 && readableFade("hsl(0,0%,90%)", "#000") === 0.6);
   assert.equal(resPicture({ kind: "timeout", ladder: [{}] }), null, "a timeout without its budget shows no ladder of another path");
   assert.equal(resPicture({ kind: "silent", ladder: [{}] }), "ladder", "a kind without a picture of its own takes what there is");
+}
+
+// ---- wave R2: a queue's mark at the queue, the other marks of a call on the call
+{
+  const { resMarksOn, resEdgeMarks } = await import("./views.js");
+  const arch = { nodes: [{ id: "q", at: "template.yaml:11" }, { id: "c", at: "library/consumer.py:11" }], edges: [{ from: "q", to: "c" }] };
+  const marks = [{ at: "e0", mark: "no DLQ" }, { at: "e0", mark: "⏱ 10 s" }, { at: "library/consumer.py:19", mark: "✕ silent" }];
+  assert.deepEqual([...resMarksOn(marks, arch, true)], [["q", "no DLQ"], ["c", "✕ silent"]]);
+  const p = { marks, ladder: [{ name: "batch", factor: "×10", at: "template.yaml:37" }, { name: "until it expires", factor: "no limit", at: "template.yaml:32" }] };
+  assert.deepEqual([...resEdgeMarks(p, [{ edge: "e0", at: "template.yaml:32" }])], [[0, "⏱ 10 s · ↻ no limit"]]);
 }

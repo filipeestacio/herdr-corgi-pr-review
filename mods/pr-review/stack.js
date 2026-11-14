@@ -187,7 +187,16 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
       .child(div().flex_1().min_w(0).truncate().text_color(s.source === "spec" || s.source === "existing" ? t.muted : t.foreground).child(s.name))
       .when(s.source === "spec", (e) => e.child(specTag(t, `${id}-s${i}-${k}-sp`)))
       .when(Boolean(s.calls), (e) => e.child(div().flex_none().text_color(t.muted).child("→"))))), dimN(n), Math.max(textFade, 0.6))]));
-  return div().id(id).relative().flex_none().w(L.width + 4).h(L.height + 4).children([gridBg(t, L.width + 4, L.height + 4), ...groups, ...els, ...crossings, ...bypasses, ...nodes, ...states, ...texts, ...badges, ...chips]);
+  // opts.edgeNotes: Map(edge index -> text), a path's marks on a call itself (the Resilience map: ⏱ 10 s, ↻ no limit),
+  // just above the call's text, else above its number.
+  const notes = !opts.edgeNotes ? [] : L.paths.flatMap((p, i) => {
+    const text = [...new Set((p.edges ?? []).filter((k) => opts.edgeNotes.has(k)).map((k) => opts.edgeNotes.get(k)))].join(" · ");
+    if (!text || !p.badge) return [];
+    const x = p.text ? p.text.x : p.badge.x + ARCH.BADGE / 2 + 4, y = (p.text ? p.text.y : p.badge.y - ARCH.BADGE / 2) - LB.LH - 6;
+    return [div().id(`${id}-en${i}`).absolute().left(x).top(y).h(LB.LH + 4).px(3).flex().items_center().rounded(4).bg(t.background).whitespace_nowrap()
+      .text_size(LB.px).font_semibold().text_color(/no limit|✕|no /.test(text) ? t.ansi1 : t.foreground).child(text)];
+  });
+  return div().id(id).relative().flex_none().w(L.width + 4).h(L.height + 4).children([gridBg(t, L.width + 4, L.height + 4), ...groups, ...els, ...crossings, ...bypasses, ...nodes, ...states, ...texts, ...badges, ...chips, ...notes]);
 }
 const FLOW_FITS = 380;
 // A layer's flow laid out by archLayout, memoized like archModel. fit: its narrow cards (the layer column is about

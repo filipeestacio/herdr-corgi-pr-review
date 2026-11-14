@@ -38,7 +38,7 @@ import { pollDue, pollAfter, windowActive } from "./pr.js"; // background fetche
 import { hasSources, archLayout, archBands } from "./arch.js";
 import { archMarks, transitionText } from "./arch.js";
 import { resStartOf, resOrder, resPicture, budgetBar, resPathView, resCardOf, resSentence, resMarksOn } from "./views.js";
-import { resWord, resToolText, resVerdict, resWatch, resTwice, PROBE_TYPICAL } from "./views.js"; // wave R2: words, verdict, watch, doubled ways
+import { resWord, resToolText, resVerdict, resWatch, resTwice, PROBE_TYPICAL, resEdgeMarks } from "./views.js"; // wave R2: words, verdict, watch, doubled ways
 import { withResilience, resilienceStart, RUN_TYPICAL } from "./pr.js"; // the Resilience run's data // the Resilience page
 import { wayOf, wayText, passZones, runsIn } from "./views.js"; // panel round 3: ways through every gate, zones passed on
 import { transitionMarks, effectiveFrom, inProcess, mapArch, crossingsOf, crossingChanged, secSentence, TRUST_ORDER } from "./views.js";
@@ -4098,9 +4098,11 @@ export const ReviewMode = {
     const L = this.archL(this.archFitOn(), 13), on = new Set(p ? (p.steps ?? []).map((s) => resCardOf(s, a)).filter(Boolean) : start); // places light the card of their file
     for (const id of resTwice(p, this.resNow(), a)) on.add(id); // an effect done twice: every way to it lit (views.js resTwice)
     const fs = p ? this.openFindings().filter((f) => (p.findings ?? []).some((id) => (f.ids ?? [f.id]).includes(id))) : [];
-    const marks = archMarks(a, fs, this.ai?.access, this.ai?.threats ?? []), byNode = resMarksOn(p?.marks, a); // R-D marksOf: a call's mark on the card it calls
+    // R-D marksOf: a call's marks on the call (resEdgeMarks), a queue's at the queue, a place's on the card of its file.
+    const marks = archMarks(a, fs, this.ai?.access, this.ai?.threats ?? []), byNode = resMarksOn(p?.marks, a, true), byEdge = p ? resEdgeMarks(p, this.resNow()?.deps) : new Map();
     for (const id of byNode.keys()) on.add(id); // a card with a mark of the path is part of it (the mailer's ×3)
-    const opts = { ...this.archOpts("res"), marks, keep: on.size ? on : null, zoom: settings().zoom || 1 };
+    for (const k of byEdge.keys()) for (const id of [a.edges?.[k]?.from, a.edges?.[k]?.to]) if (id) on.add(id); // and both ends of a marked call
+    const opts = { ...this.archOpts("res"), marks, keep: on.size ? on : null, zoom: settings().zoom || 1, edgeNotes: byEdge.size ? byEdge : null };
     // A path chosen anew: the picture scrolls so that its cards are in view; when they do not fit, so that its end is
     // (Wrap shows it all anyway). Done once the scroller has measured its width.
     const key = p?.id ?? "start", s = this.hsOf("rv-res-canvas");

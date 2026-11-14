@@ -970,10 +970,14 @@ export function resCardOf(step, arch) {
 export const resSentence = (p) => `${p.trigger}: ${/^(The|A|An|One|Every|Each|Both|No|Nothing|It|Its|Batch|Mail|Mails)\b/.test(p.end ?? "") ? p.end[0].toLowerCase() + p.end.slice(1) : p.end ?? ""}`;
 // A path's marks per card of the map: R-D's {at (node, "e<k>" or file:line), mark} or this view's {node, text}; a call's
 // mark on the card it calls, a place's on the card of its file; several on one card joined. Map(node id -> text).
-export function resMarksOn(marks, arch) {
+// A queue's mark (DLQ, no DLQ) on a call goes to the card the call starts at, the queue (wave R2); with onEdges the
+// other marks of a call stay on the call itself (views.js resEdgeMarks) and are left out here.
+export function resMarksOn(marks, arch, onEdges = false) {
   const out = new Map();
   for (const m of marks ?? []) {
-    const e = /^e(\d+)$/.exec(String(m.at ?? "")), id = m.node ?? (e ? arch?.edges?.[Number(e[1])]?.to : resCardOf(m.at, arch)), text = m.text ?? m.mark;
+    const e = /^e(\d+)$/.exec(String(m.at ?? "")), text = m.text ?? m.mark, dlq = /DLQ/.test(text ?? "");
+    if (e && onEdges && !dlq) continue;
+    const id = m.node ?? (e ? arch?.edges?.[Number(e[1])]?.[dlq ? "from" : "to"] : resCardOf(m.at, arch));
     if (id && text) out.set(id, out.has(id) ? `${out.get(id)} · ${text}` : text);
   }
   return out;
@@ -1092,3 +1096,13 @@ export function readableFade(fg, bg, from = 0.25, min = 4.5) {
 // What a probe typically costs and takes, on the Run probe button: one Sonnet probe of the review round on PR #2 cost
 // $0.11; the agent writes the script in under a minute and the page reads the result after a minute at the earliest.
 export const PROBE_TYPICAL = { usd: 0.11, min: "1–2" };
+// A path's marks on its calls: Map(edge index -> text). A call's own marks (⏱ 10 s, ×3 on an edge e<k>, not DLQ, which
+// stands at the queue), and "↻ no limit" on the call that redelivers without a limit (the ladder's open factor, by
+// the line of its call in deps). p: views.js resPathView's shape.
+export function resEdgeMarks(p, deps) {
+  const out = new Map(), add = (k, text) => { if (k !== null && !(out.get(k) ?? "").split(" · ").includes(text)) out.set(k, out.has(k) ? `${out.get(k)} · ${text}` : text); };
+  const idx = (at) => { const e = /^e(\d+)$/.exec(String(at ?? "")); return e ? Number(e[1]) : null; };
+  for (const m of p?.marks ?? []) if (!/DLQ/.test(m.mark ?? m.text ?? "")) add(idx(m.at), m.mark ?? m.text);
+  for (const f of p?.ladder ?? []) if (f.factor === "no limit") add(idx((deps ?? []).find((d) => d.edge && d.at === f.at)?.edge), "↻ no limit");
+  return out;
+}
