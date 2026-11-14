@@ -150,6 +150,16 @@ for (const n of [0, 3, 310]) {
     ok("the Findings tab: a step's details open, an owner, sorted by effort", () => v.render(cx));
     v.command("finding-step:sent", cx); assert.equal(v.fstep, null, "the step's click again folds it");
     v.command("findings-sort:", cx); assert.equal(v.fsort, false);
+    // A click in a picture ends the drag its press began: later mouse moves no longer pull the picture back to the
+    // place that was clicked (its mouse-up never reaches the root, the card's on_click stops it).
+    { const s = v.hsOf("rv-arch-canvas"); Object.assign(s, { x: 300, maxX: 900, contentW: 1800, visW: 900 });
+      const press = () => { v.hsDrag = { id: "rv-arch-canvas", x0: 100, from: s.x }; };
+      for (const click of [() => v.archOpts("arch").onFocus("n1", cx), () => v.jumpTo("src/f0.ts:1", cx), () => v.secCard(null, cx)]) {
+        press(); click(); s.x = 40; v.hsMove({ position: { x: 600 } }, cx); assert.equal(s.x, 40, "a click left no drag behind");
+      }
+      press(); v.hsMove({ position: { x: 60 } }, cx); assert.equal(s.x, 80, "a real drag still pans: 40 px to the left moves it 40 to the right");
+      press(); v.hsWheel("rv-arch-canvas", { delta: { x: -10, y: 0 }, modifiers: {} }, cx); assert.equal(v.hsDrag, null, "a wheel is never a drag");
+      v.hsDrag = null; v.archFocus = null; s.x = 0; }
     // A finding outside the diff opens its file read-only (as a definition does); a jump that failed says so until the next one.
     { const calls = [], go = v.goDef, wt = v.worktree, ps = v.prSel; v.goDef = (d) => calls.push([d.path, d.line]); v.worktree = { ...wt, path: "/checkout" };
       v.jumpTo("library/loans.py:41", cx); v.jumpTo("src/f0.ts:1", cx); v.worktree = null; v.prSel = { ...v.prSel, space: false }; v.jumpTo("nowhere.py:3", cx);

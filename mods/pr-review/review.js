@@ -1344,6 +1344,7 @@ export const ReviewMode = {
   // finding on unchanged code) opens its file read-only at that line, as a definition outside the diff does; what a
   // jump could not do is said until the next jump.
   jumpTo(at, cx, { fromDef = false } = {}) {
+    this.hsDrag = null; // a click in a picture lands here, and its mouse-up never reached the root (see hsMove)
     if (this.note && this.note === this.jumpNote) this.note = null;
     if (this.exMode) return this.openExploreFile(pathOf(at), lineOf(at) ?? 1, cx); // no diff: the file itself
     const [, path, line] = /^(.*?):(\d+)/.exec(at ?? "") ?? [];
@@ -3019,8 +3020,9 @@ export const ReviewMode = {
   archOpts(k) {
     const set = (name, v, cx) => { if (this[name] !== v) { this[name] = v; cx.notify(); } };
     return { hl: this[`${k}Hl`] ?? (k === "arch" ? this.askHl : null), focus: this[`${k}Focus`] ?? null, hover: this[`${k}Hover`] ?? null,
+      // A click on a card or a call ends a drag its press began (see hsMove).
       onHl: (v, cx) => set(`${k}Hl`, v, cx), onHover: (v, cx) => set(`${k}Hover`, v, cx),
-      onFocus: (v, cx) => { this.fh.focus(); set(`${k}Focus`, v, cx); }, onJump: (at, cx) => this.jumpTo(at, cx),
+      onFocus: (v, cx) => { this.hsDrag = null; this.fh.focus(); set(`${k}Focus`, v, cx); }, onJump: (at, cx) => this.jumpTo(at, cx),
       onFinding: (f, cx) => { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); cx.notify(); } }; // a mark's click: its finding, open in the Findings tab and at its line
   },
 
@@ -3271,6 +3273,7 @@ export const ReviewMode = {
           .on_mouse_down("left", (ev, cx) => { this.hsDrag = { id, x0: ev.position.x, from: x, thumb: true }; cx.stop_propagation(); }))));
   },
   hsWheel(id, e, cx) {
+    this.hsDrag = null; // a wheel is never a drag: a press left over from a click must not pull the picture back
     const s = this.hsOf(id), r = wheelStep(this.gesture, { dx: e.delta?.x ?? 0, dy: e.delta?.y ?? 0, t: Date.now(), phase: e.touch_phase, shift: Boolean(e.modifiers?.shift) }, s.x, s.maxX);
     this.gesture = r.g;
     if (!r.used) return;
@@ -3279,6 +3282,10 @@ export const ReviewMode = {
     if (!this.hsFlush) { this.hsFlush = true; cx.timer.after(16, (cx) => { this.hsFlush = false; cx.notify(); }); }
   },
   // A drag on a picture (pan) or its thumb, from the root's mouse move; the root's mouse up ends it.
+  // A press on a picture starts a drag that the root's mouse-up ends. A click on a card, a call or a mark inside the
+  // picture stops its mouse-up from reaching the root (cx.stop_propagation in its on_click), so the drag would stay
+  // and every later mouse move would pull the picture back to where it was clicked: jumpTo, secCard and the wheel
+  // end it.
   hsMove(e, cx) {
     const p = this.hsDrag, s = p && this.hs?.get(p.id);
     if (!s) return;
@@ -3926,7 +3933,7 @@ export const ReviewMode = {
   },
   // A card of the picture lit (null: none), and its first row below brought into view.
   secCard(id, cx) {
-    this.blastFocus = id;
+    this.blastFocus = id; this.hsDrag = null; // as in jumpTo
     const k = id ? (this.pageParts ?? []).indexOf(this.secPart?.(id)) : -1;
     if (k >= 0) this.pageScrolls.blast.scroll_to_item(k);
     cx.notify();
