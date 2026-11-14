@@ -168,6 +168,12 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   const w = v2.resNow() && resWatch(v2.resNow(), v2.ai?.arch);
   assert.equal(w.before.length, 1, "a blind spot without any signal goes before the merge");
   assert.ok(!v2.mergeRows().some((r) => /Bash was denied/.test(r.title)) && v2.verdictNow().some((p) => p.key === "resilience"), "the Overview names the resilience blockers");
+  // A real run with the R2 schema (deps bound to the map, signal, unseen and watch, same cause, an unclear blocker,
+  // state with its rule, a race not possible today), a probe done with its base verdict.
+  const r3 = JSON.parse(fx("resilience-r2.json")), v3 = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify({ ...doc, resilience: r3 }) });
+  v3.deep = { ...v3.deep, probes: { [v3.probeKey("r1")]: { state: "done", status: "reproduced", line: "handled=1, no mail", ms: 1100, head: "ccddf95", base: { status: "script_failed", verdict: "new_in_pr", line: "ImportError" }, pre_existing: false, network_barrier: true, sandbox: "sandbox-exec" } } };
+  assert.ok((v3.resNow()?.unseen ?? []).length > 0 && v3.resNow().paths.some((p) => p.same_cause), "unseen and one cause blocking once come from the data");
+  await tour(v3, "PR #2, a real resilience run with the R2 schema");
 }
 // Someone else's PR with reasons for a security review: the offers instead of a start.
 {

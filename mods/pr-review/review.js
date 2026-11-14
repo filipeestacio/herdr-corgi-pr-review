@@ -38,7 +38,7 @@ import { pollDue, pollAfter, windowActive } from "./pr.js"; // background fetche
 import { hasSources, archLayout, archBands } from "./arch.js";
 import { archMarks, transitionText } from "./arch.js";
 import { resStartOf, resOrder, resPicture, budgetBar, resPathView, resCardOf, resSentence, resMarksOn } from "./views.js";
-import { resWord, resToolText, resVerdict, resWatch, resTwice, PROBE_TYPICAL, resEdgeMarks } from "./views.js"; // wave R2: words, verdict, watch, doubled ways
+import { resWord, resToolText, resVerdict, resWatch, resTwice, PROBE_TYPICAL, resEdgeMarks, resByProbe } from "./views.js"; // wave R2: words, verdict, watch, doubled ways
 import { withResilience, resilienceStart, RUN_TYPICAL } from "./pr.js"; // the Resilience run's data // the Resilience page
 import { wayOf, wayText, passZones, runsIn } from "./views.js"; // panel round 3: ways through every gate, zones passed on
 import { transitionMarks, effectiveFrom, inProcess, mapArch, crossingsOf, crossingChanged, secSentence, TRUST_ORDER } from "./views.js";
@@ -4032,7 +4032,8 @@ export const ReviewMode = {
   // each, at most 5 open, the first blocker unfolded with its one picture, the action and its probe), then other checks,
   // not checkable and what to watch after the merge. A head the run did not read greys it out with Re-run.
   // The data: this.ai.resilience (op-analysis' withResilience), else the findings file's raw block.
-  resNow() { return this.ai?.resilience ?? this.find?.resilience ?? null; },
+  // An unclear blocker takes the word of its probe on the base (views.js resByProbe), here, so every count agrees.
+  resNow() { const res = this.ai?.resilience ?? this.find?.resilience ?? null; return res?.paths && typeof this.probesNow === "function" ? { ...res, paths: resByProbe(res.paths, this.probesNow()) } : res; },
   // The run in a few words, for the Overview: not run, running, failed, or its paths and blockers.
   resLine() {
     const res = this.resNow(), r = this.find.runs?.resilience, n = (res?.paths ?? []).length, b = (res?.paths ?? []).filter((p) => p.blocker).length;
@@ -4066,9 +4067,12 @@ export const ReviewMode = {
     head.when(stale, (e) => e.child(h_flex().gap(8).items_center().text_size(12.5).child(div().text_color(t.ansi3).child(`Analysis of ${short(res.head)}; the PR is at ${short(now)}.`))
       .child(pill("rv-res-rerun", t, `Re-run (${this.runPrice("resilience", this.runTier("resilience").chosen ?? this.runTier("resilience").tier)})`, (_e, cx) => this.runReviewer("resilience", cx, null, this.runTier("resilience").chosen ?? this.runTier("resilience").tier)))));
     const shown = this.resAll ? paths : paths.slice(0, 5);
+    this.resNums = new Map(paths.map((p, k) => [p.id, k + 1])); // "same cause as path 2" by the number shown
     return [["head", head], ["top", top], ...(a ? [["map", this.resMap(t, a, cur, [])]] : []),
       ["paths", v_flex().id("rv-res-paths").gap(6).when(stale, (e) => e.opacity(0.55))
         .child(h_flex().gap(8).items_center().child(title(`Paths · ${paths.length}${blockers.length ? "" : ", all limited"}`)).child(div().flex_1()).child(div().text_size(12).text_color(t.muted).child("blockers first")))
+        // pr.js edgeNote: a run from before the picture had edge ids; its ladders may sit one call off.
+        .when(Boolean(res.edgeNote), (e) => e.child(div().id("rv-res-edgenote").text_size(12.5).text_color(t.muted).whitespace_normal().child("This run is older than the numbered calls of the picture, so a ladder or a mark may sit one call off. A new run fixes that.")))
         .children(shown.map((p, k) => this.resPath(t, res, p, k, p === cur)))
         .when(shown.length < paths.length, (e) => e.child(div().id("rv-res-more").text_size(12.5).text_color(t.muted).cursor_pointer().hover((x) => x.text_color(t.foreground))
           .on_click((_e, cx) => { this.resAll = true; cx.notify(); }).child(`${paths.length - shown.length} more ▸`)))],
@@ -4080,8 +4084,9 @@ export const ReviewMode = {
     const adds = res.additions ?? [], open = Boolean(this.resAddOpen), WORD = { justified: ["✓ justified", t.ansi2], questionable: ["? questionable", t.ansi3], unjustified: ["✗ solves nothing here", t.foreground] };
     const line = res.additionsLine || `This PR adds ${adds.length} ${adds.length === 1 ? "part" : "parts"}.`;
     // A part as a short list, a line each: what it is, what it solves (and how likely that is), each cost, the simpler way.
-    const lines = (x) => [x.solves && `Solves: ${x.solves}${x.likelihood ? ` (${resWord(x.likelihood)})` : ""}.`,
-      ...Object.entries(x.cost ?? {}).filter(([, v]) => v).map(([k, v]) => `Costs ${resWord(k)}: ${v}.`), x.simpler && `Simpler: ${x.simpler}`].filter(Boolean).map((l) => l.replace(/\.\.$/, "."));
+    // R2: purpose (what it is for) first, next (what to do, a sentence with a verb) last.
+    const lines = (x) => [x.purpose && `For: ${x.purpose}`, x.solves && `Solves: ${x.solves}${x.likelihood ? ` (${resWord(x.likelihood)})` : ""}.`,
+      ...Object.entries(x.cost ?? {}).filter(([, v]) => v).map(([k, v]) => `Costs ${resWord(k)}: ${v}.`), x.simpler && `Simpler: ${x.simpler}`, x.next && `Next: ${x.next}`].filter(Boolean).map((l) => l.replace(/\.(\)?)\.$/, ".$1").replace(/\.\.$/, "."));
     return v_flex().id("rv-res-add").gap(4).pt(2)
       .child(h_flex().id("rv-res-add-h").gap(6).cursor_pointer().text_size(13).hover((x) => x.text_color(t.foreground)).tooltip(open ? "Fold the parts" : "For each part: what it solves here, what it costs, and the simpler way")
         .on_click((_e, cx) => { this.resAddOpen = !open; cx.notify(); }).child(line).child(div().text_color(t.muted).child(open ? "▾" : "▸")))
@@ -4096,7 +4101,7 @@ export const ReviewMode = {
   // The map, the Architecture page's own: with a path chosen, its cards and calls lit and the rest dimmed, its marks
   // (⏱ timeout, ×n, DLQ, ✕ silent …) on its cards; before the run, ○ on the cards where the run would start.
   resMap(t, a, p, start) {
-    const L = this.archL(this.archFitOn(), 13), on = new Set(p ? (p.steps ?? []).map((s) => resCardOf(s, a)).filter(Boolean) : start); // places light the card of their file
+    const L = this.archL(this.archFitOn(), 13), on = new Set(p ? (Array.isArray(p.reach) ? p.reach : (p.steps ?? []).map((s) => resCardOf(s, a)).filter(Boolean)) : start); // pr.js reachOf, else places light the card of their file
     for (const id of resTwice(p, this.resNow(), a)) on.add(id); // an effect done twice: every way to it lit (views.js resTwice)
     const fs = p ? this.openFindings().filter((f) => (p.findings ?? []).some((id) => (f.ids ?? [f.id]).includes(id))) : [];
     // R-D marksOf: a call's marks on the call (resEdgeMarks), a queue's at the queue, a place's on the card of its file.
@@ -4128,8 +4133,11 @@ export const ReviewMode = {
     const ev = notRun ? ["·", "probe not run", t.muted] : probe?.status === "done" ? { reproduced: ["✓", "reproduced", t.foreground], not_reproduced: ["✗", "not reproduced", t.muted], script_failed: ["!", "script failed", t.ansi3], unknown: ["?", "unknown", t.muted] }[probe.result] ?? ["·", resWord(probe.result), t.muted]
       : p.budget ? ["=", "computed", t.muted] : ["·", probe ? "probe proposed" : "no probe", t.muted];
     // A blocker whose base was not comparable (pre_existing "unknown") says so at its reason; "✓ limited" only with a guard.
-    const word = p.blocker ? `${p.pre_existing === "unknown" ? "Blocker? old or new unclear" : "Blocker"}: ${p.blocker.reason}` : p.result === "mitigated" ? (p.limited_by ? `✓ limited at ${p.limited_by}` : "limited, no guard named")
-      : p.result === "not_assessed" ? "not assessed" : "finding";
+    // same_cause: another path's blocker (one cause blocks once); byProbe: the probe dated an unclear blocker on the base.
+    const num = (id) => (this.resNums?.get(id) ?? id), dated = p.byProbe ? ` (${TH.BASE_WORDS[p.byProbe] ?? resWord(p.byProbe)}, from the probe on the base)` : "";
+    const word = p.blocker ? `${p.blocker.unclear ? "Blocker? old or new unclear" : "Blocker"}: ${p.blocker.reason}${dated}` : p.same_cause ? `same cause as path ${num(p.same_cause)}`
+      : p.pre_existing === true ? `finding, already on the base${dated}` : p.result === "mitigated" ? (p.limited_by ? `✓ limited at ${p.limited_by}` : "limited, no guard named")
+        : p.result === "not_assessed" ? "not assessed" : "finding";
     const name = (s) => { if (/^e\d+$/.test(s)) return null; const c = resCardOf(s, this.ai?.arch); return c ? this.ai.arch.nodes.find((n) => n.id === c)?.label ?? c : s; };
     const way = [...new Set((p.steps ?? []).map(name).filter(Boolean))].join(" → ");
     const fs = this.findings().filter((f) => (p.findings ?? []).some((id) => (f.ids ?? [f.id]).includes(id)));
@@ -4168,20 +4176,32 @@ export const ReviewMode = {
     if (kind === "budget") return box(v_flex().gap(6).child(bulletChart(t, `rv-res-b-${p.id}`, budgetBar(p.budget), `worst case ${p.budget.value_s} s`, `the ${p.budget.limit_s} s timeout`))
       .child(h_flex().gap(8).text_color(t.muted).child(div().min_w(0).whitespace_normal().child(p.budget.note ?? "")).child(at(p.budget.at, `rv-res-b-at-${p.id}`))));
     if (kind === "race") {
-      // The lane "what on-call sees" only with the run's words for it (races[].oncall); never an invented "nothing".
-      const r = p.race, [A, B] = r.actors ?? ["A", "B"], cell = (w, el, col = t.foreground) => div().w(w).flex_none().text_color(col).whitespace_normal().child(el), oc = (r.oncall ?? []).some(Boolean);
+      // Columns: the first actor, the shared state, the others (a step's actor matched by its name's start: the run
+      // says "send_reminders" for the actor "send_reminders run"). What on-call sees: a lane with a text per step (an
+      // older run), a sentence under the timeline (races[].oncall), else nothing, never an invented "nothing". A race
+      // that cannot happen today (possible_today false) says so first, in grey.
+      const r = p.race, actors = (r.actors ?? ["A", "B"]).slice(0, 3), cell = (w, el, col = t.foreground) => div().w(w).flex_none().text_color(col).whitespace_normal().child(el);
+      const is = (a, who) => a === who || String(a).startsWith(`${who} `) || String(who).startsWith(`${a} `), lane = Array.isArray(r.oncall) && r.oncall.some(Boolean);
+      const row = (f, mid) => [f(actors[0]), mid, ...actors.slice(1).map(f)];
       return box(v_flex().gap(4)
-        .child(h_flex().gap(12).font_semibold().text_color(t.muted).child(cell(200, A, t.muted)).child(cell(140, r.shared ?? "state", t.muted)).child(cell(200, B, t.muted)).when(oc, (e) => e.child(cell(180, "what on-call sees", t.muted))))
+        .when(r.possible_today === false, (e) => e.child(div().id(`rv-res-r-${p.id}-today`).text_color(t.muted).whitespace_normal().child(r.note || "Not possible today.")))
+        .child(h_flex().gap(12).font_semibold().text_color(t.muted).children(row((a) => cell(180, a, t.muted), cell(140, r.shared ?? "state", t.muted))).when(lane, (e) => e.child(cell(180, "what on-call sees", t.muted))))
         .children(r.steps.slice(0, 6).map(([who, text], k) => {
-          const breaks = k === r.breaks_at, mine = (x) => (who === x ? `${breaks ? "✗ " : ""}${text}` : "");
-          return h_flex().id(`rv-res-r-${p.id}-${k}`).gap(12).py(2).border_t(1).border_color(t.border).child(cell(200, mine(A), breaks && who === A ? t.ansi1 : t.foreground))
-            .child(cell(140, breaks ? "breaks here" : "│", breaks ? t.ansi1 : t.dim)).child(cell(200, mine(B), breaks && who === B ? t.ansi1 : t.foreground)).when(oc, (e) => e.child(cell(180, r.oncall?.[k] ?? "", t.muted)));
-        })));
+          const breaks = k === r.breaks_at, mine = (a) => cell(180, is(a, who) ? `${breaks ? "✗ " : ""}${text}` : "", breaks && is(a, who) ? t.ansi1 : t.foreground);
+          return h_flex().id(`rv-res-r-${p.id}-${k}`).gap(12).py(2).border_t(1).border_color(t.border).children(row(mine, cell(140, breaks ? "breaks here" : "│", breaks ? t.ansi1 : t.dim)))
+            .when(lane, (e) => e.child(cell(180, r.oncall[k] ?? "", t.muted)));
+        }))
+        .when(typeof r.oncall === "string" && r.oncall.trim() !== "", (e) => e.child(div().pt(4).text_color(t.muted).whitespace_normal().child(`What on-call sees: ${r.oncall}`))));
     }
+    // The writers of a shared state: the rule they keep (state[].invariant) on top, each writer with its guard and line,
+    // in red the ones without a guard or that break the rule (writers[].breaks).
     if (kind === "writers") return box(v_flex().gap(4)
-      .child(h_flex().gap(12).font_semibold().text_color(t.muted).child(div().w(200).child(p.state ?? "state")).child(div().w(60).child("")).child(div().w(120).child("guard")))
-      .children(p.writers.map((w, k) => h_flex().gap(12).items_center().child(div().w(200).child(this.ai?.arch?.nodes.find((n) => n.id === w.node)?.label ?? w.node))
-        .child(div().w(60).font_semibold().text_color(w.kind === "W" && (!w.guard || w.guard === "none") ? t.ansi1 : t.foreground).child(w.kind)).child(div().w(120).text_color(t.muted).child(w.kind === "W" ? w.guard || "none" : "")).child(at(w.at, `rv-res-w-${p.id}-${k}`)))));
+      .when(Boolean(p.invariant), (e) => e.child(div().pb(2).whitespace_normal().child(`Rule: ${p.invariant}`)))
+      .child(h_flex().gap(12).font_semibold().text_color(t.muted).child(div().w(200).child(p.state ?? "state")).child(div().w(60).child("")).child(div().w(200).child("guard")))
+      .children(p.writers.map((w, k) => h_flex().gap(12).items_center().child(div().w(200).child(this.ai?.arch?.nodes.find((n) => n.id === w.node)?.label ?? w.node ?? String(w.at ?? "").split("/").pop()))
+        .child(div().w(60).font_semibold().text_color(w.kind === "W" && (!w.guard || w.guard === "none" || w.breaks) ? t.ansi1 : t.foreground).child(w.kind))
+        .child(div().w(200).text_color(t.muted).whitespace_normal().child(w.kind === "W" ? w.guard || "none" : "")).child(at(w.at, `rv-res-w-${p.id}-${k}`))
+        .when(Boolean(w.breaks), (e) => e.child(div().text_color(t.ansi1).child("breaks the rule"))))));
     // No picture of the path's kind: a grey line says which data is missing, never another path's picture.
     const NONE = { retry: "the run named no retry or redelivery on this path's calls", timeout: "the run named no batch size, time per record and timeout for this path",
       race: "the run named no steps of this race", state: "the run named no writers for this state" };

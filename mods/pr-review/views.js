@@ -944,18 +944,18 @@ export function budgetBar({ value_s, limit_s }, width = 320) {
 export function resPathView(p, res = {}) {
   const lad = Array.isArray(p.ladder) ? p.ladder : (p.ladder?.factors ?? []).map((f) => ({ name: f.label, factor: f.n === null || f.n === undefined ? "no limit" : `×${f.n}`, at: f.at }));
   const race = p.race ?? (res.races ?? []).find((r) => (r.findings ?? []).some((id) => (p.findings ?? []).includes(id))) ?? (p.kind === "race" ? (res.races ?? [])[0] : null) ?? null;
-  const st = p.writers ? null : (res.state ?? []).find((x) => (x.writers ?? []).length >= 2 && x.writers.some((w) => (p.steps ?? []).includes(w.node)));
+  const st = p.writers ? null : (res.state ?? []).find((x) => (x.writers ?? []).length >= 2 && x.writers.some((w) => [...(p.reach ?? []), ...(p.steps ?? [])].includes(w.node)));
   const writers = p.writers ?? (st ? [...st.writers.map((w) => ({ ...w, kind: "W", guard: w.guard ?? "none" })), ...(st.readers ?? []).map((r) => ({ ...r, kind: "R", guard: "" }))] : undefined);
   const budget = p.budget ? { ...p.budget, note: p.budget.note ?? p.budget.text } : null;
   return { ...p, ladder: lad, product: p.product ?? (Array.isArray(p.ladder) ? null : p.ladder?.text) ?? null, budget, race, writers, state: p.state ?? st?.what ?? st?.id,
-    blocker: p.blocker ? { reason: p.blocker.reason ?? p.blocker.why ?? "" } : null };
+    invariant: p.invariant ?? st?.invariant ?? null, blocker: p.blocker ? { reason: p.blocker.reason ?? p.blocker.why ?? "", unclear: Boolean(p.blocker.unclear) } : null };
 }
 // A path's step as a card of the map: a card id, or a place ("file:line") on the card of that file (the last card
 // that starts at or above the line, else the file's first); an edge id or an unknown place: null.
 export function resCardOf(step, arch) {
   const nodes = arch?.nodes ?? [], s = String(step ?? "");
   if (nodes.some((n) => n.id === s)) return s;
-  const m = /^(.+?):(\d+)$/.exec(s);
+  const m = /^(.+?):(\d+)(?:-\d+)?$/.exec(s); // a range (mailer.py:14-20) by its first line
   if (!m) return null;
   const same = (a, b) => a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`);
   const mine = nodes.map((n) => ({ id: n.id, at: /^(.+?):(\d+)/.exec(String(n.at ?? n.evidence ?? "")) })).filter((x) => x.at && same(x.at[1], m[1]));
@@ -1039,7 +1039,8 @@ const RES_WORDS = { poison_message: "a message that always fails", no_dlq: "no d
   removed_signal: "the PR removes a signal", no_jitter: "no jitter", no_breaker: "no circuit breaker", no_trace: "no trace context", high_cardinality: "high metric cardinality",
   cannot_happen: "cannot happen here", possible: "possible", likely: "likely", unlikely: "unlikely",
   alarm: "an alarm", log: "a log line", metric: "a metric", dlq: "the dead-letter queue", platform_only: "the platform's own metrics only", none: "nothing",
-  mental: "to understand", ops: "to run", money: "in money" };
+  mental: "to understand", ops: "to run", money: "in money", dishonest_response: "the route answers success while the work is lost", no_throttle: "no throttle",
+  stale_cache: "a stale cache", clock: "a clock assumption", request: "request" };
 export const resWord = (k) => RES_WORDS[k] ?? String(k ?? "").replace(/_/g, " ");
 // A model's text about its own tools ("nothing was executed, because Bash was denied") is no finding about the code.
 export const resToolText = (s) => /\b(bash|tool|permission|sandbox)\b[^.]*\b(denied|refused|not allowed|blocked)\b/i.test(String(s ?? ""));
@@ -1057,6 +1058,14 @@ export function resVerdict(paths) {
 // {before: [{text, at}], watch: [{text, at}]}.
 export function resWatch(res, arch) {
   const before = [], watch = [], seen = new Set(), card = (at) => resCardOf(at, arch) ?? at, name = (id) => arch?.nodes?.find((n) => n.id === id)?.label ?? id;
+  // R2 data (pr.js withResilience: unseen[], watch[] as "<failure> (<at>): <what>"): taken as they are, the place as a
+  // link, an edge id by the card it starts at (the queue), a signal in words.
+  if (Array.isArray(res?.unseen)) {
+    const words = (x) => x.replace(/\bat e(\d+)\b/g, (all, k) => (arch?.edges?.[Number(k)] ? `in ${name(arch.edges[Number(k)].from)}` : all)).replace(/seen as (\w+)/, (_all, w) => `seen as ${resWord(w)}`);
+    const cap = (x) => x.charAt(0).toUpperCase() + x.slice(1);
+    const parse = (x) => { const m = /^(.*) \(([^()]*)\): (.*)$/.exec(String(x ?? "")); return m ? { text: cap(words(`${m[1]}: ${m[3]}`)), at: m[2] } : { text: cap(words(String(x ?? ""))) }; };
+    return { before: res.unseen.map(parse), watch: (res.watch ?? []).map(parse) };
+  }
   for (const b of res?.blind_spots ?? []) {
     if (b.signal === "none") before.push({ text: `${b.failure}: nothing shows it after the merge, so add a log line or an alarm first`, at: b.at });
     else if (!b.alarm || b.alarm === "none" || b.alarm === "unknown") { watch.push({ text: `${b.failure}; it shows in ${resWord(b.signal ?? "platform_only")}${/alarm/i.test(b.failure ?? "") ? "" : ", no alarm"}`, at: b.at }); seen.add(card(b.at)); }
@@ -1105,4 +1114,16 @@ export function resEdgeMarks(p, deps) {
   for (const m of p?.marks ?? []) if (!/DLQ/.test(m.mark ?? m.text ?? "")) add(idx(m.at), m.mark ?? m.text);
   for (const f of p?.ladder ?? []) if (f.factor === "no limit") add(idx((deps ?? []).find((d) => d.edge && d.at === f.at)?.edge), "↻ no limit");
   return out;
+}
+// A blocker the run could not date (pre_existing "unknown", blocker.unclear) takes the word of its probe, which ran on
+// the base: already there → no blocker of this PR; new in it (or not on the base) → a blocker. byProbe: the verdict.
+// probes: review.js probesNow (status done, base.verdict). Pure; other paths as they are.
+export function resByProbe(paths, probes) {
+  return (paths ?? []).map((p) => {
+    if (!(p.blocker?.unclear || p.pre_existing === "unknown")) return p;
+    const v = (probes ?? []).find((x) => (x.id === p.probe || x.of === p.id) && x.status === "done" && x.base?.verdict)?.base.verdict;
+    if (v === "already_on_base") return { ...p, blocker: null, pre_existing: true, byProbe: v };
+    if (v === "new_in_pr" || v === "not_on_base") return { ...p, pre_existing: false, blocker: p.blocker ? { ...p.blocker, unclear: false } : p.blocker, byProbe: v };
+    return p;
+  });
 }

@@ -774,3 +774,17 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   const p = { marks, ladder: [{ name: "batch", factor: "×10", at: "template.yaml:37" }, { name: "until it expires", factor: "no limit", at: "template.yaml:32" }] };
   assert.deepEqual([...resEdgeMarks(p, [{ edge: "e0", at: "template.yaml:32" }])], [[0, "⏱ 10 s · ↻ no limit"]]);
 }
+
+// ---- wave R2: the run's own unseen and watch lists, and a probe that dates an unclear blocker
+{
+  const { resWatch, resByProbe, resCardOf } = await import("./views.js");
+  const arch = { nodes: [{ id: "queue", label: "LoanEvents (SQS)", at: "template.yaml:11" }, { id: "consumer", at: "library/consumer.py:11" }, { id: "mailer", label: "Mailer (mailer.py)" }], edges: [{ from: "queue", to: "consumer" }] };
+  const w = resWatch({ unseen: ["A mail is dropped (library/mailer.py:14): nothing shows it"], watch: ["Consumer failures (library/consumer.py:11): seen as platform_only, but nothing alarms on it", "the age of the oldest message at e0"] }, arch);
+  assert.deepEqual(w.before, [{ text: "A mail is dropped: nothing shows it", at: "library/mailer.py:14" }]);
+  assert.deepEqual(w.watch.map((x) => x.text), ["Consumer failures: seen as the platform's own metrics only, but nothing alarms on it", "The age of the oldest message in LoanEvents (SQS)"]);
+  assert.equal(resCardOf("library/mailer.py:14-20", arch), "mailer", "a range of lines");
+  const paths = [{ id: "p9", probe: "r1", pre_existing: "unknown", blocker: { why: "lost", unclear: true } }, { id: "p2", blocker: { why: "x" } }];
+  const done = (verdict) => [{ id: "r1", status: "done", base: { verdict } }];
+  assert.equal(resByProbe(paths, done("already_on_base"))[0].blocker, null);
+  assert.deepEqual([resByProbe(paths, done("new_in_pr"))[0].blocker.unclear, resByProbe(paths, done("unknown"))[0].blocker.unclear, resByProbe(paths, [])[1]], [false, true, paths[1]]);
+}
