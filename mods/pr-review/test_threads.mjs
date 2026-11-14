@@ -102,14 +102,26 @@ assert.deepEqual(args.slice(0, 2), ["run", "--bg"]);
 assert.ok(args.includes("--no-notify"), "nothing typed into the parent");
 assert.equal(args[args.indexOf("--parent") + 1], "t3", "a sub-agent of the PR's agent");
 assert.equal(args[args.indexOf("--cwd") + 1], "/w", "in its own worktree");
-assert.deepEqual(args.slice(args.indexOf("--") + 1), ["env", "CLAUDE_CONFIG_DIR=/c", "claude", "--permission-mode", "auto", "Fix it"], "on the PR's context, in auto mode");
+assert.deepEqual(args.slice(args.indexOf("--") + 1, args.indexOf("claude") + 1), ["env", "CLAUDE_CONFIG_DIR=/c", "claude"], "on the PR's context");
+assert.deepEqual(args.slice(args.indexOf("--permission-mode")), ["--permission-mode", "auto", "Fix it"], "in auto mode");
 assert.ok(TH.subAgentArgs({ parent: null, cwd: "/w", name: "n", task: "x", job: "j" }).includes("--no-parent"));
 const untrusted = TH.subAgentArgs({ parent: null, cwd: "/w", name: "n", task: "x", job: "j" });
-assert.deepEqual(untrusted.slice(untrusted.indexOf("claude") + 1), ["--permission-mode", "manual", "--setting-sources", "user", "x"], "an untrusted PR: manual, said outright, without the checkout's settings");
+assert.deepEqual(untrusted.slice(untrusted.indexOf("--permission-mode")), ["--permission-mode", "manual", "--setting-sources", "user", "x"], "an untrusted PR: manual, said outright, without the checkout's settings");
 assert.equal(TH.applyPlan({ status: " M src/a.ts\n?? x", head: "abc", branch: "fix/7-c1" }).ok, false, "a dirty checkout: refused");
 assert.match(TH.applyPlan({ status: " M a\n", head: "abc", branch: "b" }).reason, /1 uncommitted change/);
 assert.deepEqual(TH.applyPlan({ status: "", head: "abc", branch: "fix/7-c1" }), { ok: true, args: ["cherry-pick", "abc..fix/7-c1"] });
 assert.ok(TH.applyPrompt(job).includes("git cherry-pick abc..fix/7-c1"));
+// The fix branch starts at the PR head, also when the local clone has another branch checked out; a space's own branch
+// diff starts at its checkout. Apply refuses a checkout that does not contain that start.
+assert.equal(TH.fixStart({ prHead: "pr1", checkoutHead: "other" }), "pr1", "the PR head, not the clone's HEAD");
+assert.equal(TH.fixStart({ local: true, prHead: "pushed", checkoutHead: "here" }), "here", "a branch diff: its checkout");
+assert.equal(TH.fixStart({ prHead: null, checkoutHead: "here" }), "here", "no PR head known: the checkout");
+const off = TH.applyPlan({ status: "", head: "abcdef0123", branch: "fix/7-c1", onHead: false, where: "feat/other" });
+assert.equal(off.ok, false); assert.equal(off.off, true);
+assert.match(off.reason, /on feat\/other.*abcdef0.*git cherry-pick abcdef0\.\.fix\/7-c1/);
+// A fix agent cannot push: deny rules before the permission mode, the task last.
+assert.deepEqual(args.slice(args.indexOf("claude") + 1, args.indexOf("--permission-mode")), ["--disallowedTools", ...TH.NO_PUSH]);
+assert.ok(TH.NO_PUSH.includes("Bash(git push *)") && untrusted.includes("Bash(git push *)") && untrusted.at(-1) === "x");
 // The target choice: the sub-agent's text names its worktree, the main agent's doesn't; the preview sends that text.
 const sub = TH.fixCommentsPrompt({ pr: { number: 7, title: "T" }, comments: [{ id: "c1", file: "a.py", start: 3, end: 3, text: "Warum?" }], file: "/r.jsonl", branch: "fix/7-c1", path: "/w" });
 const main = TH.fixCommentsPrompt({ pr: { number: 7, title: "T" }, comments: [{ id: "c1", file: "a.py", start: 3, end: 3, text: "Warum?" }], file: "/r.jsonl" });

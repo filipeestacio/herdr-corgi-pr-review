@@ -150,6 +150,10 @@ export const fixBranch = (number, ids) => `fix/${number ?? "pr"}-${String(ids[0]
 // Where its worktree goes (Herdr's convention for worktrees): ~/.herdr/worktrees/<repo>/<branch with - for />.
 export const fixPath = (home, repo, branch) => `${home}/.herdr/worktrees/${String(repo ?? "repo").split("/").pop()}/${branch.replace(/\//g, "-")}`;
 
+// Where a fix branch starts: at the PR's head (the commit the review shows), not at whatever the local clone has
+// checked out, which may be another branch. A space's own branch diff has no head apart from its checkout.
+export const fixStart = ({ local = false, prHead = null, checkoutHead = null }) => (local ? checkoutHead : prHead) || checkoutHead || null;
+
 // The commit a job's items report (a comment's reply or a finding's report with status fixed); null while none.
 export function fixCommit(job, replies = {}, reports = {}) {
   for (const it of job.items) {
@@ -192,8 +196,12 @@ export function fixCommentsPrompt({ pr, comments, file, lang, branch = null, pat
 // (env: the context's command prefix), no notes typed into the parent.
 export function subAgentArgs({ parent, cwd, name, env = [], task, job, auto = false }) {
   return ["run", "--bg", "--json", "--no-notify", "--name", name, "--cwd", cwd, ...(parent ? ["--parent", parent] : ["--no-parent"]),
-    "--label", `pr-review.fix=${job}`, "--", ...env, "claude", ...permissionArgs(auto), task];
+    "--label", `pr-review.fix=${job}`, "--", ...env, "claude", "--disallowedTools", ...NO_PUSH, ...permissionArgs(auto), task];
 }
+// A fix agent never pushes and never opens a PR: the task says so, and these deny rules refuse the commands in any
+// permission mode. The list takes any number of rules, so an option with one value has to follow it (permissionArgs).
+// ponytail: a guard for the plain commands, not a sandbox (a push wrapped in a script gets past it).
+export const NO_PUSH = ["Bash(git push)", "Bash(git push *)", "Bash(gh pr create *)", "Bash(gh pr merge *)"];
 // A trusted PR: auto (the classifier approves the harmless commands, reads, edits, commit, tests, and asks about risky
 // ones). An untrusted one: the task quotes its text and findings, which may carry injected instructions, and its
 // checkout's .claude/settings.json could allow anything or run hooks, so: manual, said outright (not left to the
@@ -203,7 +211,11 @@ export function permissionArgs(trusted) {
 }
 
 // Apply to PR: a cherry-pick of the branch's commits onto the PR's checkout, only when that checkout is clean.
-export function applyPlan({ status, head, branch }) {
+// onHead: false when that checkout does not contain the commit the fix started from (it is on another branch than the
+// PR's): a cherry-pick there would put the fix on the wrong branch.
+export function applyPlan({ status, head, branch, onHead = true, where = null }) {
+  if (!onHead) return { ok: false, off: true, reason: `The local checkout is on ${where || "another branch"}, which does not contain the PR head ${String(head).slice(0, 7)} the fix starts from. ` +
+    `Check out the PR's branch there and apply again, or run git cherry-pick ${String(head).slice(0, 7)}..${branch} on the PR's branch yourself. The fix branch stays.` };
   const dirty = String(status ?? "").split("\n").filter((l) => l.trim());
   if (dirty.length) return { ok: false, reason: `The PR's checkout has ${dirty.length} uncommitted ${dirty.length === 1 ? "change" : "changes"}: Apply needs a clean checkout.` };
   return { ok: true, args: ["cherry-pick", `${head}..${branch}`] };

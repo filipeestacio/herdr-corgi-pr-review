@@ -1519,7 +1519,8 @@ export const ReviewMode = {
   toggleSel(id, cx) { const key = this.threadKey(); this.updateThreads(cx, (d) => TH.toggleSelected(d, key, id)); },
   fixes() { return TH.fixesOf(this.threadDoc, this.threadKey()); },
   fixOf(id) { return TH.fixFor(this.threadDoc, this.threadKey(), id); },
-  // The PR's own checkout the fix branch starts from and is applied to: the session's folder, the branch's repo, else
+  // The local checkout a fix branch is made in and applied to: the session's folder or the clone the PR was picked in
+  // (which may be on another branch: the fix still starts at the PR head, threads.js fixStart), the branch's repo, else
   // the review's checkout of the PR head.
   fixBase() { return this.prSel?.cwd ?? (this.prSel?.space ? this.root : null) ?? this.worktree?.path ?? null; },
   // A job's state for its rows: running (with its agent's status), ready (a fixed report with a commit), handed (ready
@@ -1555,7 +1556,8 @@ export const ReviewMode = {
   previewFix(cx, { what, own, items, labels, prompt, sent }) {
     const ids = items.map((x) => x.id), branch = TH.fixBranch(this.prSel?.number, ids), path = TH.fixPath(home(), this.prSel?.repo, branch), base = this.fixBase();
     cx.spawn(async (cx) => {
-      const head = base ? (await exec("git", ["-C", base, "rev-parse", "HEAD"], { timeout: 20000 }).catch(() => null))?.stdout?.trim() || null : null;
+      const at = base ? (await exec("git", ["-C", base, "rev-parse", "HEAD"], { timeout: 20000 }).catch(() => null))?.stdout?.trim() || null : null;
+      const head = TH.fixStart({ local: Boolean(this.worktree?.local), prHead: this.headNow(), checkoutHead: at });
       const { agent, label } = this.sendAgent(), sub = { branch, path, head, main: agent?.address ?? null };
       this.previewSend(cx, { what, own, prompt: prompt(sub), onSent: (cx) => {
         const job = { id: `${Date.now().toString(36)}`, items, target: "main", at: Date.now(), state: "running" };
@@ -1583,6 +1585,8 @@ export const ReviewMode = {
         const git = (args) => exec("git", ["-C", base, ...args], { timeout: 60000 });
         const head = f.head ?? (await git(["rev-parse", "HEAD"])).stdout.trim();
         if (!head) throw new Error(`${base} is not a git checkout`);
+        // The PR head may not be in this clone yet (the review's checkout can live in another one): fetch it.
+        if ((await git(["cat-file", "-e", `${head}^{commit}`])).code !== 0 && this.prSel?.number) await git(["fetch", "--quiet", "origin", `pull/${this.prSel.number}/head`]);
         await exec("mkdir", ["-p", f.path.replace(/\/[^/]+$/, "")]).catch(() => null);
         const w = await git(["worktree", "add", "-b", f.branch, f.path, head]);
         if (w.code !== 0) throw new Error(w.stderr.trim().slice(0, 200));
@@ -1605,9 +1609,10 @@ export const ReviewMode = {
   applyFix(job, cx) {
     const key = this.threadKey(), git = (args) => exec("git", ["-C", job.base, ...args], { timeout: 120000 });
     cx.spawn(async (cx) => {
-      const plan = TH.applyPlan({ status: (await git(["status", "--porcelain"])).stdout, head: job.head, branch: job.branch });
+      const plan = TH.applyPlan({ status: (await git(["status", "--porcelain"])).stdout, head: job.head, branch: job.branch,
+        onHead: (await git(["merge-base", "--is-ancestor", job.head, "HEAD"])).code === 0, where: (await git(["rev-parse", "--abbrev-ref", "HEAD"])).stdout.trim() });
       if (!plan.ok) {
-        this.note = `${plan.reason} Hand the cherry-pick to the main agent instead (Hand over…).`; this.applyBlocked = job;
+        this.note = plan.off ? plan.reason : `${plan.reason} Hand the cherry-pick to the main agent instead (Hand over…).`; this.applyBlocked = plan.off ? null : job;
         return cx.notify();
       }
       const r = await git(plan.args);
