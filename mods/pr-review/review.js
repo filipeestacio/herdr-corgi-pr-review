@@ -34,7 +34,7 @@ import { plainText } from "./pr.js";
 import { hasSources, archLayout, archBands } from "./arch.js";
 import { archMarks, zoneArch } from "./arch.js";
 import { trustLegend, hasTrust } from "./stack.js";
-import { scopeTable, runSummary, AREA_NAME, surfaceOf, EXPOSURE, reachLevel, secOrder, extraWays, zoneRights, blastLine } from "./views.js";
+import { scopeTable, runSummary, AREA_NAME, areaFindings, surfaceOf, EXPOSURE, reachLevel, secOrder, extraWays, zoneRights, blastLine } from "./views.js";
 import * as TH from "./threads.js";
 import { leftWidth, rowClick, CHIP_W, ASK_W, keyRoute, scopeLine, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf, rangeLabel, pinAnchor, pinAdd, pinDrop, pinsOf, pinsOn, codePins, drillPush, drillTo, crumbs, drillKey, cachePut, mapDrill, exploreId, exploreIndex, exploreAi, pathOf, lineOf, repoOfRemote, exploreTrust, layersForNode } from "./explore.js";
 
@@ -462,6 +462,7 @@ export const ReviewMode = {
     else if (name === "arch-fit") { this.archFit = !this.archFitOn(); this.hsOf("rv-arch-canvas").x = 0; }
     else if (name === "arch-wrap") this.setArchWrap(!this.archWrapOn());
     else if (name === "sec-card") { this.page = "blast"; this.tab = "steps"; this.secCard(arg || null, cx); } // a click on a card of the Security page's picture ("": unlight)
+    else if (name === "scope-row") { this.page = "blast"; this.scopeRow = this.scopeRow === arg ? null : arg || null; } // a click on a row of "What each run checked" (<area> or run:<kind>)
     else if (name === "page-part") { const k = (this.pageParts ?? []).indexOf(arg); if (k >= 0) this.pageScrolls[this.page]?.scroll_to_item(k); }
     // The same model calls as their buttons (a click each, never by themselves): Refresh diagrams, and a card's
     // Look inside / Explain (inside:<node id>).
@@ -3822,20 +3823,36 @@ export const ReviewMode = {
     const from = (k) => all.filter((f) => f.sources.some((x) => x.reviewer === k)).length;
     const lines = [["analysis", "Analysis", this.aiBusy ? { state: "running" } : this.ai ? { state: "done" } : null, null], ...reviewersNow().map(([k, [label]]) => [k, label, runs[k] ?? null, runs[k]?.scope ?? null])];
     const RESULT = { finding: ["Finding", t.ansi1], clean: ["Clean", t.ansi2], not_checked: ["Not checked", t.ansi3] };
-    const cell = (c) => (!c ? div().text_color(t.dim).child("–") : h_flex().gap(6).items_start()
-      .child(chip(t, RESULT[c.result][0], RESULT[c.result][1], c.result !== "clean")).child(div().flex_1().min_w(0).whitespace_normal().text_color(t.muted).child(c.note)));
+    // A row is one line each (its notes cut); a click on it shows the whole texts and, under a "Finding", that run's
+    // findings for the area (views.js areaFindings), each a link to the finding. "Clean" names what the run read.
+    const read = (k) => (k === "analysis" ? this.ai?.scope?.detailed ?? this.ai?.scope?.files ?? [] : runs[k]?.scope?.read ?? []);
+    const open = (area) => this.scopeRow === area, toggle = (area) => (_e, cx) => { this.scopeRow = open(area) ? null : area; cx.notify(); };
+    const cell = (c, area, k) => {
+      if (!c) return div().text_color(t.dim).child("–");
+      const found = c.result === "finding" ? areaFindings(area, k, all) : [], files = read(k);
+      return v_flex().id(`rv-sec-sc-${area}-${k}`).gap(4).cursor_pointer().on_click(toggle(area))
+        .tooltip(c.result === "clean" ? (files.length ? `Clean, as this run reports it. It read:\n${files.join("\n")}` : "Clean, as this run reports it; it names no file it read.") : open(area) ? "Fold this row" : "Show the whole text and the findings behind it")
+        .child(h_flex().gap(6).items_start().child(chip(t, RESULT[c.result][0], RESULT[c.result][1], c.result !== "clean"))
+          .child(div().flex_1().min_w(0).text_color(t.muted).when(!open(area), (e) => e.truncate()).when(open(area), (e) => e.whitespace_normal()).child(c.note))
+          .when(found.length > 0 && !open(area), (e) => e.child(div().flex_none().text_color(t.muted).child(`${found.length} ▸`))))
+        .when(open(area) && c.result === "finding", (e) => e.children(found.length ? found.map((f) => h_flex().id(`rv-sec-sc-f-${area}-${k}-${f.id}`).gap(6).items_start().px(4).rounded(4).hover((x) => x.bg(t.hover))
+          .tooltip("Open this finding and show its line in the diff").on_click((_e, cx) => { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); cx.stop_propagation(); cx.notify(); })
+          .child(badge(t, f.severity, t[SEV[f.severity]] ?? t.accent)).child(div().flex_1().min_w(0).whitespace_normal().child(plain(f.title))))
+          : [div().text_color(t.muted).whitespace_normal().child("None of this run's findings names this area in its words; see the Findings tab.")]));
+    };
     return v_flex().id("rv-sec-scope").gap(8).p(12).rounded(10).border_1().border_color(t.border).bg(t.surface)
       .child(title("What each run checked"))
       .child(div().text_size(12.5).text_color(t.muted).whitespace_normal().child("Each model run reports this about itself. It says where the run looked, not that the code is safe; “–” means the area was not part of that run."))
       .child(v_flex().gap(3).children(lines.map(([k, label, r, scope]) => {
         const failed = r?.state === "failed";
-        return h_flex().id(`rv-sec-run-${k}`).gap(8).items_start().text_size(12.5).line_height(1.5)
+        const whole = this.scopeRow === `run:${k}`;
+        return h_flex().id(`rv-sec-run-${k}`).gap(8).items_start().text_size(12.5).line_height(1.5).cursor_pointer().on_click(toggle(`run:${k}`)).tooltip(whole ? "Fold this line" : "Show the whole line")
           .child(div().w(150).flex_none().font_semibold().child(label))
-          .child(div().flex_1().min_w(0).whitespace_normal().text_color(failed ? t.ansi1 : r?.state ? t.foreground : t.muted)
+          .child(div().flex_1().min_w(0).when(whole, (e) => e.whitespace_normal()).when(!whole, (e) => e.truncate()).text_color(failed ? t.ansi1 : r?.state ? t.foreground : t.muted)
             .child([runSummary(r, from(k)), scope?.read?.length ? `read: ${scope.read.join(", ")}` : null, scope?.skipped?.length ? `left out: ${scope.skipped.join("; ")}` : null,
               r?.state === "done" && k !== "analysis" && !scope ? "it reported no scope" : null].filter(Boolean).join(" · ")));
       })))
-      .child(tab.rows.length ? this.table(t, "rv-sec-scope-t", [["Area", 130], ...tab.cols.map((k) => [REVIEWERS[k]?.[0] ?? k, null])], tab.rows.map((r) => [AREA_NAME[r.area] ?? r.area, ...tab.cols.map((k) => cell(r.cells[k]))]))
+      .child(tab.rows.length ? this.table(t, "rv-sec-scope-t", [["Area", 130], ...tab.cols.map((k) => [REVIEWERS[k]?.[0] ?? k, null])], tab.rows.map((r) => [AREA_NAME[r.area] ?? r.area, ...tab.cols.map((k) => cell(r.cells[k], r.area, k))]))
         : div().text_size(12.5).text_color(t.muted).whitespace_normal().child("No run has reported what it checked: the analysis is older than this report, or nothing has run yet."));
   },
   // The rights granted inside the cloud account (the access rows that are no way in): who may do what on which

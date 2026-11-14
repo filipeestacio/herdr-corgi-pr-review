@@ -459,3 +459,19 @@ export function solidOver(base, over) {
   const a = o[3] / 255, hex = (v) => Math.round(v).toString(16).padStart(2, "0");
   return "#" + [0, 1, 2].map((k) => hex(o[k] * a + b[k] * (1 - a))).join("");
 }
+
+// ---- "What each run checked": the findings behind an area's "Finding"
+// ponytail: an area is matched by its words in a finding's title, effect and detail (findings name no area); a run
+// that reports areas per finding would make this exact.
+const AREA_WORDS = { authentication: /authenticat|\btoken|bearer|login|credential|session/i, authorization: /authori[sz]|access control|\brole|allowed to|any (?:caller|member|loan)/i,
+  input_validation: /input|validat|inject|saniti[sz]|unvalidated|request body/i, secrets: /secret|\btoken|api key|password|credential/i, permissions: /\biam\b|policy|permission|grant|least privilege/i,
+  personal_data: /personal|\bpii\b|e-?mail address|member'?s? (?:name|mail|data)|names and/i, dependencies: /dependenc|package|library version|requirements|lockfile/i,
+  error_handling: /error|exception|raises?\b|retr(?:y|ies)|fails?\b|failure/i, concurrency: /concurren|race|idempoten|redeliver|at[- ]least[- ]once|twice|duplicate|dedup/i,
+  state: /\bstate\b|status|transition/i, contracts: /contract|interface|schema|signature|requirement|acceptance/i };
+const AREA_CATEGORY = { correctness: ["bug"], tests: ["test"], contracts: ["requirement"] };
+// The findings of run `k` ("analysis" or a reviewer) that fall under `area`: by category where one fits, else by words.
+export function areaFindings(area, k, findings) {
+  const mine = (findings ?? []).filter((f) => (f.sources ?? [{ reviewer: f.reviewer }]).some((s) => s.reviewer === k));
+  const words = AREA_WORDS[area], cats = AREA_CATEGORY[area] ?? [];
+  return mine.filter((f) => cats.includes(f.category) || (words && words.test([f.title, f.effect, f.detail].filter(Boolean).join(" "))));
+}

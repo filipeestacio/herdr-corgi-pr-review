@@ -418,3 +418,19 @@ assert.equal(oneSided(rowsOf("-+")), false, "a line changed");
     assert.equal(solidOver("rgb(0,0,0)", "#ffffff80"), "#ffffff80", "an unknown base: unchanged");
   }
 }
+
+// ---- the findings behind an area's "Finding" in "What each run checked"
+{
+  const { areaFindings } = await import("./views.js");
+  const src = (k) => [{ reviewer: k }];
+  const list = [{ id: "t", title: "Front desk token defaults to empty", category: "security", sources: src("security") },
+    { id: "q", title: "Queue.publish never sends to SQS", category: "bug", sources: src("security") },
+    { id: "m", title: "Reminder mailed twice", category: "bug", sources: src("claude") },
+    { id: "n", title: "New behavior is untested", category: "test", sources: src("claude") }];
+  assert.deepEqual(areaFindings("authentication", "security", list).map((f) => f.id), ["t"]);
+  assert.deepEqual(areaFindings("authentication", "claude", list), [], "only that run's findings");
+  assert.deepEqual(areaFindings("correctness", "claude", list).map((f) => f.id), ["m"]);
+  assert.deepEqual(areaFindings("concurrency", "claude", list).map((f) => f.id), ["m"]);
+  assert.deepEqual(areaFindings("tests", "claude", list).map((f) => f.id), ["n"]);
+  assert.deepEqual(areaFindings("dependencies", "security", list), []);
+}
