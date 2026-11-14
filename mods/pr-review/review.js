@@ -3960,7 +3960,7 @@ export const ReviewMode = {
     const conflicts = scopeConflicts(tab, this.openFindings());
     // What a reviewer run was allowed to do: the run's own list (runs[kind].allowed, when reviewers.py writes it), else
     // what reviewers.py PERMISSIONS grants every Claude reviewer today. The analysis and Codex: not said.
-    const allowedOf = (k, r) => (!r?.state || k === "analysis" || k === "codex" ? null : Array.isArray(r.allowed) && r.allowed.length ? `allowed: ${r.allowed.join(", ")}`
+    const allowedOf = (k, r) => (!r?.state || k === "analysis" || k === "codex" ? null : Array.isArray(r.allowed) && r.allowed.length ? `allowed: ${r.allowed.map((x) => String(x).replace(/(?:\/[^\s/()]+)+\/([^\s/()]+)/g, "$1")).join(", ")}` // a helper's path by its file name
       : "allowed: read files in the checkout and its git history; no network, no writes");
     const lines = [["analysis", "Analysis", this.aiBusy ? { state: "running" } : this.ai ? { state: "done" } : null, null], ...reviewersNow().map(([k, [label]]) => [k, label, runs[k] ?? null, runs[k]?.scope ?? null])];
     const RESULT = { finding: ["Finding", t.ansi1], clean: ["Clean", t.ansi2], not_checked: ["Not checked", t.ansi3] };
