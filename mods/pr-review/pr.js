@@ -454,12 +454,18 @@ export function sameClaim(a, b) {
   const x = words(a), y = words(b), both = [...x].filter((w) => y.has(w)).length;
   return both > 0 && both / (x.size + y.size - both) >= 0.35;
 }
+// ⛨ only for real security: a source whose effect is access without permission or exposed data (or lost data, when
+// its category says security). A security reviewer's finding about availability or correctness is a finding with its
+// source, without ⛨. A source without an impact (an older cache, an AI suggestion) keeps the rule from before: the
+// security reviewer found it or its category says security.
+const SEC_IMPACT = new Set(["unauthorized_access", "data_exposure"]);
+export const isSecurity = (x) => (x.impact ? SEC_IMPACT.has(x.impact) || (x.impact === "data_loss" && x.category === "security") : x.reviewer === "security" || x.category === "security");
 const NEAR = 3; // lines between two findings of one defect at most (PR #2: 19/20, 21/23, 33/35)
 
 // Findings (the reviewers' and the analysis') in one file, at most NEAR lines apart (the same line too) and with
 // titles that make the same claim (sameClaim), are one finding: the highest severity leads (its title and text show),
-// every source stays in `sources` with its own severity, and `security` is true when any source says so (the security
-// reviewer, or a category). Being on the same line or in the same function is not enough: on PR #2 consumer.py 20
+// every source stays in `sources` with its own severity, and `security` (⛨) is true when a source is about security
+// (isSecurity: its effect is access, data or rights, not who found it). Being on the same line or in the same function is not enough: on PR #2 consumer.py 20
 // and 23, in one function, say different things. An AI suggestion joins a finding on its own line (it is worded as a
 // fix, so no word measure tells its claim: on PR #2 the same and the different ones both score 0 to 0.38). A
 // suggestion without one is a note (not a finding, not counted), unless it is high, about security or availability,
@@ -496,7 +502,7 @@ export function mergeFindings(findings, suspects = [], status = {}, publicFiles 
     return { ...lead, line, id: (held ?? lead).id, ids: g.map((x) => x.id), end: Math.max(line, ...lines, ...g.map((x) => whole(x.end))), step: g.find((x) => x.step)?.step ?? null,
       suggestion: lead.suggestion || g.find((x) => x.suggestion)?.suggestion || "", ...(coded ? { head: coded.head, code: coded.code } : {}),
       ...Object.fromEntries(Object.keys(all[0]).map((k) => [k, fact(k)])), criteria: [...new Set(all.flatMap((x) => x.criteria))],
-      security: g.some((x) => x.reviewer === "security" || x.category === "security"),
+      security: g.some(isSecurity),
       sources: g.map((x) => ({ id: x.id, reviewer: x.reviewer, severity: x.severity, title: x.title, detail: x.detail ?? "", suggestion: x.suggestion ?? "" })) };
   });
   return { findings: out.sort((a, b) => rank(a) - rank(b) || a.file.localeCompare(b.file) || a.line - b.line), notes };
