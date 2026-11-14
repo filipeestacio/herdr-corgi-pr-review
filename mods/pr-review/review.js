@@ -29,7 +29,7 @@ import { archView, archLegend, visualsCard, visualCard, segBar, foldCard, chip, 
 import { visualPlan } from "./stack.js";
 import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCALE } from "./views.js";
 import { wrapCode, codeCols, sliceSpans } from "./views.js"; // long lines wrap
-import { pairRows, pairSide, HALF_GUTTER, diffModeOf, oneSided } from "./views.js"; // side by side
+import { pairRows, pairSide, HALF_GUTTER, diffModeOf, oneSided, stackOf } from "./views.js"; // side by side; the bar's stack
 import { plainText } from "./pr.js";
 import { hasSources, archLayout, archBands } from "./arch.js";
 import { archMarks, zoneArch } from "./arch.js";
@@ -447,6 +447,7 @@ export const ReviewMode = {
     // "+ Comment" chip. The same handler as the click (onItem).
     else if (name === "line") this.pressLine(arg, cx);
     else if (name === "code-x") { const c = this.hsOf("rv-code"); c.x = Math.max(0, Math.min(c.maxX, arg === "end" ? c.maxX : Number(arg) || 0)); } // code-x:<px> | end: the long lines' scroll bar, as a drag
+    else if (name === "stack") { if (arg) this.openRelated({ url: arg }, cx); } // stack:<url>: a click on a PR of the bar's "Stack: #1 → #2"
     else if (name === "wrap") setShared("review.wrap", arg === "on"); // wrap:on | off, the top bar's "Wrap" switch
     else if (name === "diff") setShared("review.diff", arg === "split" || arg === "unified" ? arg : null); // diff:split | unified (the top bar's switch), diff:auto: what fits
     else if (name === "copy-link") copyText(this.prSel?.url ?? "");
@@ -871,6 +872,7 @@ export const ReviewMode = {
       shown: a ? { model: a.model, model_id: a.model_id, cost: a.cost, exact: a.exact, mergeRisk: a.mergeRisk, effort: a.effort } : null,
       checks: this.prSel ? this.checksNow().reduce((n, c) => ({ ok: n.ok + (c.ok === true), fail: n.fail + (c.ok === false) }), { ok: 0, fail: 0 }) : null,
       // For the bar's "Dry run" chip and the "Run review" popup (findings: all, and the analysis' own).
+      stack: this.prSel ? stackOf(this.ctx, this.prSel.number) : null, // the bar's "Stack: #1 → #2" (views.js stackOf)
       dry: Boolean(this.cfg?.dryRun), securityOffer: this.secOfferText(), findings: this.prSel ? { total: this.findings().length, analysis: this.findings().filter((f) => f.sources.some((y) => y.reviewer === "analysis")).length } : null });
   },
 
@@ -2565,6 +2567,12 @@ export const ReviewMode = {
       .when(Boolean(pr), (e) => e.child(pill("rv-min", t, "▁ Minimize", () => minimize()).flex_none()
         .tooltip("Go back to your chats and keep this review as one entry at the top; open it from there where you left it")))
       .child(div().id("rv-title").flex_1().min_w(0).truncate().font_semibold().text_size(14).tooltip(title).child(title))
+      // A stacked PR: "Stack: #1 → #2", this one in bold, a click on another opens its review (pr-review.stack:<url>).
+      .when(Boolean(pr && meta.url === pr.url && meta.stack), (e) => e.child(h_flex().id("rv-bar-stack").flex_none().gap(4).items_center().text_size(12.5).text_color(t.muted)
+        .tooltip("PRs stacked on each other: each one's base is the branch of the one before it, so they merge in this order").child("Stack:")
+        .children(meta.stack.flatMap((p, k) => [...(k ? [div().child("→")] : []), p.self ? div().font_semibold().text_color(t.foreground).child(`#${p.number}`)
+          : div().id(`rv-bar-stack-${p.number}`).tooltip(`Open #${p.number}${p.title ? ` ${p.title}` : ""} in its own review`).text_color(t.accent).cursor_pointer().hover((s) => s.underline())
+            .on_mouse_down("left", stop).on_click(() => run(`pr-review.stack:${p.url}`)).child(`#${p.number}`)]))))
       .when(Boolean(pr), (e) => e.child(div().id("rv-bar-repo").tooltip("Repository and PR number").flex_none().text_size(12).text_color(t.muted).child(`${pr.repo ?? ""}#${pr.number ?? ""}`))
         .child(badge(t, `PR ${pr.state ?? "?"}`, t[{ open: "ansi2", draft: "dim", merged: "ansi5", closed: "ansi1" }[pr.state]] ?? t.dim).id("rv-bar-state").tooltip("The PR's state on GitHub"))
         .when(C.tagged(ctxDoc()), (e) => e.child(badge(t, C.labelOf(ctxDoc(), prCtx(pr)), C.colorOf(ctxDoc(), prCtx(pr), t)).id("rv-bar-ctx").tooltip("The context this PR belongs to"))))

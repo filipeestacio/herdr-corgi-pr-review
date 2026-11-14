@@ -425,3 +425,10 @@ assert.deepEqual(rowMarks({ top: "high", security: true }, { priority: 1, type: 
 assert.deepEqual(rowMarks({ top: "medium", security: false }, null).map((m) => [m.text, m.security]), [["medium", false]]);
 assert.deepEqual(rowMarks(null, { priority: 3, type: "Docs" }).map((m) => m.text), ["P3", "Docs"]);
 assert.equal(rowMarks({ top: "low" }, { priority: 2, type: "Fix" }).length, 3);
+
+// ---- the stack in the review's bar
+import { stackOf } from "./views.js";
+assert.deepEqual(stackOf({ stacked_on: { number: 1, url: "u1" } }, 2).map((p) => [p.number, Boolean(p.self)]), [[1, false], [2, true]], "PR #2 on top of #1");
+assert.deepEqual(stackOf({ stacked_above: [{ number: 2, url: "u2" }] }, 1).map((p) => [p.number, Boolean(p.self)]), [[1, true], [2, false]], "PR #1 under #2");
+assert.equal(stackOf({ stacked_on: null, stacked_above: [] }, 3), null);
+assert.equal(stackOf(null, 3), null, "no context yet");

@@ -467,3 +467,10 @@ export function rowMarks(risk, tri) {
   return [risk?.top && { text: `${risk.security ? "⛨ " : ""}${risk.top}`, security: Boolean(risk.security), kind: "risk" },
     tri && { text: `P${tri.priority}`, kind: "priority" }, tri?.type && { text: tri.type, kind: "type" }].filter(Boolean).slice(0, 3);
 }
+
+// A stack of PRs around this one (related.py stacked_on, stacked_above), bottom first: [{number, title, url, self}];
+// null when this PR is in no stack. The review's bar shows it as "Stack: #1 → #2".
+export function stackOf(ctx, number) {
+  const below = ctx?.stacked_on ?? null, above = ctx?.stacked_above ?? [];
+  return below || above.length ? [...(below ? [below] : []), { number, self: true }, ...above] : null;
+}
