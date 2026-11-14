@@ -547,25 +547,41 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.equal(effectiveZones(arch, [{ public: false, auth_kind: "code", node: "h" }]).size, 0); assert.equal(effectiveZones(null, null).size, 0);
 }
 
-// ---- the Security page as a boundary map: crossings and the sentence over it
+// ---- the Security page as a boundary map: crossings and the sentence over it (panel check, wave 5)
 {
-  const { crossingsOf, crossingChanged, secSentence } = await import("./views.js");
-  const arch = { zones: [{ id: "z1", name: "Internet", trust: "public" }, { id: "z2", name: "Front desk", trust: "authenticated" }, { id: "z3", name: "Queue", trust: "data" }],
-    nodes: [{ id: "h", label: "handler", zone: "z2" }, { id: "q", label: "queue", zone: "z3" }, { id: "s", label: "status", zone: "z2" }],
-    edges: [{ from: "h", to: "s", label: "inside" }, { from: "h", to: "q", label: "publish", crosses: true, status: "new", gate: { check: "IAM role", at: "template.yaml:20", holds_if: "the role stays scoped" } }, { from: "q", to: "h", status: "unchanged", crosses: true }] };
-  const access = [{ id: "acc1", resource: "Api", public: true, principal: "anyone", auth: "bearer token in handler.py", auth_kind: "code", node: "h", opened_by_pr: true },
-    { id: "acc2", resource: "Send policy", public: false, principal: "Front desk", actions: ["sqs:SendMessage"], node: "q", opened_by_pr: true },
-    { id: "acc3", resource: "Inner", public: false, principal: "Front desk", node: "s" }];
-  const threats = [{ where: { access: "acc2" }, result: "checked_clean", stride: "E" }, { where: { edge: "e1" }, result: "finding", findings: ["f9"], goal: "any event in the queue" }];
-  const findings = [{ id: "f1", ids: ["f1"], reachable_from: ["acc1"] }, { id: "f9", ids: ["f9"] }];
-  const rows = crossingsOf({ arch, access, threats, findings });
-  assert.deepEqual(rows.map((r) => [r.kind, r.from.name, r.to.name, r.change, r.result]),
-    [["entry", "anyone", "Front desk", "added", "finding"], ["right", "Front desk", "Queue", "added", "mitigated"], ["call", "Front desk", "Queue", "added", "finding"], ["call", "Queue", "Front desk", "unchanged", "not_assessed"]],
-    "a right inside one zone and a call inside one zone are no crossing; a threat or a finding gives the result, else not assessed");
-  assert.deepEqual([rows[0].findings.map((f) => f.id), rows[2].findings.map((f) => f.id), rows[2].goal, rows[1].stride, rows[2].check, rows[2].holds_if], [["f1"], ["f9"], "any event in the queue", "E", "IAM role", "the role stays scoped"]);
-  assert.deepEqual(rows.map(crossingChanged), [true, true, true, false]);
-  assert.equal(secSentence(rows, 2), "This PR opens 1 way in from the public side (Api, checked in the code), grants 1 right into another zone and adds or changes 1 call over a trust boundary. Of these 3 crossings, 2 have findings, 1 is mitigated. 2 security findings are unresolved.");
-  assert.equal(secSentence([], 0), "This PR opens, widens or adds no way in, right or call over a trust boundary that the data names. No security finding is unresolved.");
+  const { crossingsOf, crossingChanged, secSentence, inProcess } = await import("./views.js");
+  // PR #2 in small: a public route into the front desk, the front desk's right on the queue, the route calling the
+  // consumer in-process, the consumer reading the store, a bug on that call.
+  const arch = { zones: [{ id: "z1", name: "Internet / API", trust: "public" }, { id: "z2", name: "Lambdas", trust: "internal" }, { id: "z3", name: "Store", trust: "data" }],
+    groups: [{ id: "g_fd", label: "Front desk Lambda" }, { id: "g_lib", label: "Shared library" }, { id: "g_c", label: "Consumer Lambda" }, { id: "g_aws", label: "AWS" }],
+    nodes: [{ id: "fd", label: "handler", group: "g_fd", zone: "z1" }, { id: "c", label: "consumer", group: "g_c", zone: "z2" }, { id: "q", label: "queue", group: "g_aws", zone: "z2" },
+      { id: "st", label: "store", group: "g_lib", zone: "z3" }, { id: "m", label: "mailer", group: "g_lib", zone: "z2", runs_in: "c" }],
+    edges: [{ from: "fd", to: "c", label: "POST /remind calls consumer.handle in-process", crosses: true, status: "new" }, { from: "q", to: "c", label: "SQS event source" },
+      { from: "c", to: "st", crosses: true, status: "new" }, { from: "c", to: "m", label: "mailer.send" }] };
+  const access = [{ id: "acc1", resource: "Api", public: true, principal: "anyone on the internet", auth: "bearer token", node: "fd", change: "added" },
+    { id: "acc2", resource: "Send policy", public: false, principal: "FrontDesk function", actions: ["sqs:SendMessage"], node: "q", change: "added", used: false }];
+  const gates = [{ where: { access: "acc1" }, principal: "bearer token holder", check: "token", source: "code", at: "handler.py:16", holds_if: "FRONT_DESK_TOKEN is set", carries: ["body.id"] }];
+  const threats = [{ id: "t1", where: { access: "acc1" }, result: "finding", findings: ["tok"], goal: "mail any member", path: ["fd", "c", "m"] },
+    { id: "t3", where: { access: "acc2" }, result: "not_assessed", derived: true, threat: "No threat was named for this crossing." }];
+  const findings = [{ id: "tok", ids: ["tok"], security: true, severity: "high", impact: "unauthorized_access", title: "Token never set", reachable_from: ["acc2"] },
+    { id: "bug", ids: ["bug"], security: false, severity: "high", title: "Store is in memory", breaks: { edge: "e2" } }];
+  const rows = crossingsOf({ arch, access, threats, gates, findings });
+  assert.deepEqual(rows.map((r) => [r.kind, r.from.name, r.to.name, r.identity, r.result]), [
+    ["entry", "anyone on the internet", "Internet / API", "anyone on the internet", "finding"],
+    ["right", "Internet / API", "Lambdas", "FrontDesk function", "not_assessed"],
+    ["bypass", "Internet / API", "Lambdas", "handler", "not_assessed"],
+    ["call", "Lambdas", "Store", "consumer", "not_assessed"],
+    ["operator", "Operator (deploy)", "Internet / API", "whoever deploys", "not_assessed"]],
+    "who arrives is the access row's principal; a bug on a call is no assessment; an in-process call bypasses the consumer's boundary; a secret in a condition is an operator's way");
+  assert.deepEqual([rows[0].expects, rows[0].findings.map((f) => f.id), rows[0].path, rows[0].goal], ["bearer token holder", ["tok"], ["fd", "c", "m"], "mail any member"]);
+  assert.deepEqual([rows[1].ends.from, rows[1].unmapped, rows[1].unused, rows[1].findings], ["fd", false, true, []], "the right's principal is the front desk's frame: its first card, no ghost card");
+  assert.deepEqual(rows[0].conflicts.map((c) => [c.f.id, c.finding, c.threat]), [["tok", ["acc2"], ["acc1"]]], "the finding says acc2, its threat acc1: marked, the outer one counts");
+  assert.deepEqual([rows[1].reason, rows[3].reason], ["No threat was named for this crossing.", "No threat names this crossing."]);
+  assert.equal(crossingsOf({ arch, access: [{ ...access[1], principal: "Somebody else" }] })[0].unmapped, true);
+  assert.deepEqual([inProcess({ label: "calls x in-process" }), inProcess({ label: "SQS event source" }), inProcess({ label: "imports x", in_process: false })], [true, false, false]);
+  assert.ok(rows.every(crossingChanged));
+  assert.equal(secSentence(rows, 1), "The way in is Api, open to anyone on the internet; its check (token, in the code) holds only if FRONT_DESK_TOKEN is set, and an unresolved high finding says it does not: Token never set. Behind it: mail any member. It also adds or changes 1 right into another zone, 1 call over a trust boundary, 1 call that bypasses a boundary and 1 operator way. 1 of 5 crossings is assessed, 4 not assessed. 1 security finding is unresolved.");
+  assert.equal(secSentence([], 0), "This PR opens no way in from the public side that the data names. No security finding is unresolved.");
   assert.deepEqual(crossingsOf({}), []);
 }
 
@@ -581,4 +597,17 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.deepEqual(rows[0].carries, ["body.id"]);
   const e = effectiveFrom([{ node: "fd", drawn: "authenticated", effective: "public", where: "library/handler.py:16" }, { node: "st", drawn: "data", effective: "data" }], arch);
   assert.deepEqual([...e.keys()], ["fd"]); assert.equal(e.get("fd").why, "its first check is at library/handler.py:16"); assert.equal(effectiveFrom(null, arch).size, 0);
+}
+
+// ---- the architecture map with the boundary as it really runs
+{
+  const { mapArch } = await import("./views.js");
+  const arch = { groups: [{ id: "g_fd", label: "Front desk Lambda" }, { id: "g_lib", label: "Shared library code" }, { id: "g_c", label: "Consumer Lambda" }, { id: "g_aws", label: "AWS" }],
+    nodes: [{ id: "fd", group: "g_fd", zone: "z1" }, { id: "m", group: "g_lib", zone: "z2" }, { id: "st", group: "g_lib", zone: "z2", runs_in: "fd" }, { id: "c", group: "g_c", zone: "z2" }, { id: "q", group: "g_aws", zone: "z2" }],
+    edges: [{ from: "fd", to: "c", label: "calls consumer.handle in-process", crosses: true }, { from: "q", to: "c", label: "SQS" }, { from: "c", to: "m", label: "send" }] };
+  const m = mapArch(arch, [{ public: true, principal: "anyone on the internet", node: "fd", resource: "Api", change: "added" }, { public: false, node: "q" }]);
+  assert.deepEqual(m.nodes.map((n) => [n.id, n.zone ?? null]), [["\0in", null], ["fd", "z1"], ["m", null], ["st", "z1"], ["c", "z2"], ["q", "z2"]], "shared code has no zone of its own; with runs_in it takes that zone");
+  assert.deepEqual(m.edges.map((e) => [e.from, e.to, Boolean(e.crosses), Boolean(e.bypass)]), [["fd", "c", false, true], ["q", "c", false, false], ["c", "m", false, false], ["\0in", "fd", true, false]]);
+  assert.equal(m.nodes[0].description, "anyone on the internet"); assert.equal(m.groups[0].id, "\0outside"); assert.equal(m.edges[3].status, "new");
+  assert.equal(mapArch(arch, []).nodes.length, arch.nodes.length, "no public way in: no Internet card"); assert.equal(mapArch(null), null);
 }

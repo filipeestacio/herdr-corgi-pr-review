@@ -291,6 +291,7 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
     if (!p.from.includes(e.from)) p.from.push(e.from);
     p.edges.push(e.i);
     if (e.crosses) p.crosses = e.crosses; // the call goes over a trust boundary (an analysis that names zones)
+    if (e.bypass) p.bypass = true; // a call in one process that bypasses a boundary (views.js mapArch)
     if (e.anchor !== undefined) {
       anchorOf.set(`${key}:${e.from}`, [...(anchorOf.get(`${key}:${e.from}`) ?? []), e.anchor].sort((a, b) => a - b));
       if (e.label && !p.label.split(", ").includes(e.label)) p.label = p.label ? `${p.label}, ${e.label}` : e.label;
@@ -495,7 +496,10 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
 const SEV_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 const placeOf = (at) => { const m = /^(.*?):(\d+)/.exec(String(at ?? "")); return { path: m?.[1] ?? (at ? String(at) : null), line: Number(m?.[2] ?? 0) }; };
 const sameFile = (a, b) => a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`);
-export function archMarks(arch, findings, access = []) {
+// threats (the security run's, `derived` ones aside): a finding a threat names at a way in or a call goes there before
+// its own reachable_from (a missing token in the template belongs to the gate it opens; when the two disagree the
+// threat's place is the one the Security page counts).
+export function archMarks(arch, findings, access = [], threats = []) {
   const nodes = new Map(), edges = new Map(), all = arch?.nodes ?? [], calls = arch?.edges ?? [];
   const put = (m, k, f, breaks) => {
     const x = m.get(k) ?? { findings: [], n: 0, breaks: 0, severity: f.severity };
@@ -509,6 +513,10 @@ export function archMarks(arch, findings, access = []) {
     const e = named && calls[Number(named[1])] ? Number(named[1]) : b.from && b.to ? calls.findIndex((x) => x.from === b.from && x.to === b.to) : -1;
     if (e >= 0) { put(edges, e, f, true); continue; }
     if (b.node && all.some((n) => n.id === b.node)) { put(nodes, b.node, f, true); continue; }
+    const t = (threats ?? []).find((x) => !x.derived && (x.findings ?? []).some((i) => (f.ids ?? [f.id]).includes(i)) && (x.where?.access || x.where?.edge));
+    const tEdge = /^e(\d+)$/.exec(String(t?.where?.edge ?? "")), tNode = t?.where?.access ? (access ?? []).find((x) => x.id === t.where.access)?.node : null;
+    if (tEdge && calls[Number(tEdge[1])]) { put(edges, Number(tEdge[1]), f, false); continue; }
+    if (tNode && all.some((n) => n.id === tNode)) { put(nodes, tNode, f, false); continue; }
     const way = (f.reachable_from ?? []).map((id) => (access ?? []).find((x) => x.id === id)?.node).find((id) => all.some((n) => n.id === id));
     if (way) { put(nodes, way, f, false); continue; }
     const mine = places.filter((x) => f.file && sameFile(x.path, f.file));

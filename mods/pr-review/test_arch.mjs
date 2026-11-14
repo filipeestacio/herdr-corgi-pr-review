@@ -515,3 +515,15 @@ console.log("ok");
   assert.equal(markLine({ n: 1, findings: [f("`Queue.publish` never sends", "high")] }).text, "Queue.publish never sends");
   assert.deepEqual(markLine(null), { text: "", top: null });
 }
+
+// ---- a finding a threat names sits at that threat's way in, not at its own (wrong) one or its file
+{
+  const { archMarks } = await import("./arch.js");
+  const arch = { nodes: [{ id: "fd", at: "handler.py:1" }, { id: "q", at: "template.yaml:10" }], edges: [{ from: "fd", to: "q" }] };
+  const tok = { id: "tok", severity: "high", file: "template.yaml", line: 14, reachable_from: ["acc2"] };
+  const access = [{ id: "acc1", node: "fd" }, { id: "acc2", node: "q" }];
+  assert.deepEqual([...archMarks(arch, [tok], access).nodes.keys()], ["q"], "without threats: its own way in");
+  assert.deepEqual([...archMarks(arch, [tok], access, [{ where: { access: "acc1" }, findings: ["tok"] }]).nodes.keys()], ["fd"]);
+  assert.deepEqual([...archMarks(arch, [tok], access, [{ where: { access: "acc1" }, findings: ["tok"], derived: true }]).nodes.keys()], ["q"], "a placeholder names nothing");
+  assert.deepEqual([...archMarks(arch, [tok], access, [{ where: { edge: "e0" }, findings: ["tok"] }]).edges.keys()], [0]);
+}
