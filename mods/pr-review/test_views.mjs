@@ -325,8 +325,8 @@ assert.equal(seqLayout(null, 500).calls.length, 0);
   }
   const self = wide.calls[5], back = wide.calls[6];
   assert.deepEqual([self.x1 === self.x2, self.caption.startsWith("6. "), back.x2 < back.x1], [true, true, true]);
-  // The call to itself on the last column: its text moves left to stay inside instead of running off the edge.
-  assert.ok(narrow.calls[5].tx < narrow.calls[5].x1 + 28);
+  // The call to itself on the last column: its text goes left of the lifeline, never over its loop (x1 .. x1 + 22).
+  for (const Q of [wide, narrow]) { const c = Q.calls[5]; assert.ok(c.tx + c.tw <= c.x1 - 6 && c.tx >= 4, `${c.tx} ${c.tw} ${c.x1}`); }
   assert.equal(seqLayout({ nodes: nodes.slice(0, 2).map((n) => ({ ...n, label: "A" })), edges: [] }, 600).head, SEQ.HEAD);
 }
 

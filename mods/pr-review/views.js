@@ -273,9 +273,10 @@ export function seqLayout(v, width) {
   const head = nodes.some((n) => textWidth(n.label ?? n.id, 12) * 1.05 > col - 28) ? SEQ.HEAD2 : SEQ.HEAD; // semibold: a little wider
   const calls = [...(v?.edges ?? []), ...(v?.transitions ?? [])].filter((e) => x.has(e.from) && x.has(e.to)).map((e, k) => {
     const text = transitionText(e), caption = /^\d+[.)]/.test(text) ? text : `${k + 1}. ${text}`; // some analyses number the calls themselves
-    const x1 = x.get(e.from), x2 = x.get(e.to), start = Math.min(x1, x2) + (x1 === x2 ? 28 : 8), want = textWidth(caption, 11.5) + 8;
-    const tx = Math.max(4, Math.min(start, W - 4 - want));
-    return { ...e, n: k + 1, text, caption, x1, x2, y: head + SEQ.PAD + k * SEQ.ROW, tx, tw: W - tx - 4 };
+    const x1 = x.get(e.from), x2 = x.get(e.to), self = x1 === x2, start = Math.min(x1, x2) + (self ? 28 : 8), want = textWidth(caption, 11.5) + 8;
+    // A call to itself whose text does not fit right of its loop puts it left of the lifeline, so it never covers the loop.
+    const tx = self && start + want > W - 4 ? Math.max(4, x1 - 6 - want) : Math.max(4, Math.min(start, W - 4 - want));
+    return { ...e, n: k + 1, text, caption, x1, x2, y: head + SEQ.PAD + k * SEQ.ROW, tx, tw: self && tx < x1 ? x1 - 6 - tx : W - tx - 4 };
   });
   return { cols: nodes.map((n) => ({ ...n, x: x.get(n.id), w: col - 16 })), calls, head, width: W, height: head + 2 * SEQ.PAD + calls.length * SEQ.ROW };
 }
