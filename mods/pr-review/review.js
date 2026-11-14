@@ -16,6 +16,7 @@ import { parseReports, findingStatus, mergeFindings, findingCounts, countLine, r
 import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig } from "./setup-view.js";
 import { taskList, taskHead, verdictParts, reviewState, certaintyLine, severityTip, componentLine } from "./pr.js"; // the Overview page
+import { overviewMd, findingMd, findingsMd, layerMd, architectureMd, securityMd, verifyContextMd } from "./markdown.js"; // Copy this page as Markdown
 import { highlightJob, highlightStep, highlightLines, langOf, colors, renderLine, refAt } from "./syntax.js";
 import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js";
 import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf, priceOf, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch } from "./pr.js";
@@ -378,6 +379,7 @@ export const ReviewMode = {
     }
     else if (name === "copy-link") copyText(this.prSel?.url ?? "");
     else if (name === "copy-state") this.copyState();
+    else if (name === "copy-md") this.copyMd(arg); // copy-md: this page; copy-md:verify: the context for an agent that checks the open finding, or the unresolved security findings
     else if (name === "criterion") this.toggleAsk(arg); // criterion:<ask id> | other: a click on a row of the Overview's task check
     else if (name === "open-gh") { if (this.prSel?.url) openUrl(this.prSel.url); }
     else if (name === "model") { if (arg) setShared("review.model", arg); }
@@ -2275,7 +2277,7 @@ export const ReviewMode = {
       .child(sep())
       .child(link("rv-values", div().text_color(valuesOn() ? t.foreground : t.muted).child(`Example values ${valuesOn() ? "on" : "off"}`), () => setShared("review.values", !valuesOn())).tooltip("Example values from the flow traces, shown inline in the diff: click to switch"))
       .child(link("rv-keys", div().child("?"), () => openOverlay({ mod: "pr-review", props: { part: "keys" }, kind: "popup", ...KEYS_POP })).tooltip("Keyboard shortcuts").accessibility_label("Keyboard shortcuts"))
-      .child(link("rv-more", div().child("⋯"), menu("more", [["Explore a topic…", false, "explore"], ["Mark done", false, "done"], ["Copy link", false, "copy-link"], ["Copy review state", false, "copy-state"], ...(this.prSel?.url?.startsWith("https://github.com") ? [["Open on GitHub", false, "open-gh"]] : [])])).tooltip("Explore a topic, mark done, copy the link or the review's state as text, open on GitHub").accessibility_label("More actions"));
+      .child(link("rv-more", div().child("⋯"), menu("more", [["Explore a topic…", false, "explore"], ["Mark done", false, "done"], ["Copy link", false, "copy-link"], ["Copy review state", false, "copy-state"], ["Copy this page as Markdown", false, "copy-md"], ...(this.checkList().length ? [["Copy context to check findings", false, "copy-md:verify"]] : []), ...(this.prSel?.url?.startsWith("https://github.com") ? [["Open on GitHub", false, "open-gh"]] : [])])).tooltip("Explore a topic, mark done, copy the link, the review's state, this page or the context to check findings as text, open on GitHub").accessibility_label("More actions"));
   },
 
   // ---- render: the left column
@@ -3837,6 +3839,37 @@ export const ReviewMode = {
       progress: `Reviewer's progress: ${p.filesViewed} of ${p.files} files viewed, ${p.comments} pending ${p.comments === 1 ? "comment" : "comments"}.` });
     copyText(text);
     this.note = `Review state copied as text (${text.trim().split("\n").length} lines), nothing was posted.${this.findings().some((f) => f.security) ? " Security findings are in it with their title only." : ""}`;
+  },
+
+  // "Copy this page as Markdown" (the ⋯ menu): what the right side shows, as text to hand to an agent (markdown.js):
+  // the Overview, the open layer, the Architecture or the Security page; on the Findings tab the open finding, else
+  // all unresolved ones; on Files and Comments the Overview. Pictures are Mermaid. Security findings are in it in
+  // full: it goes to the clipboard only.
+  copyMd(kind = "") {
+    if (!this.prSel) return;
+    const ai = this.ai, findings = this.findings(), statusOf = (f) => this.fstatus(f), base = { pr: this.prSel, head: this.headNow() ?? "" }, asks = ai?.asks ?? [];
+    if (kind === "verify") {
+      const list = this.checkList(), text = verifyContextMd(list, { ...base, ai, statusOf, threats: ai?.threats ?? this.find.runs?.security?.threats ?? null });
+      if (!list.length) return;
+      copyText(text);
+      this.note = `The context to check ${list.length === 1 ? "the open finding" : `${list.length} unresolved security findings`} is on the clipboard as Markdown (${text.trim().split("\n").length} lines), nothing was posted.`;
+      return;
+    }
+    const layer = this.tab === "steps" && !this.page ? this.steps()[this.cur] : null, one = this.tab === "findings" && this.ffocus ? this.findingById(this.ffocus) : null;
+    const [what, text] = one ? ["The open finding is", findingMd(one, { ...base, status: statusOf(one), asks })]
+      : this.tab === "findings" ? ["The unresolved findings are", findingsMd(findings, { ...base, statusOf, asks })]
+      : layer && !layer.pseudo ? [`The layer "${plain(layer.title)}" is`, layerMd(layer, { ...base, n: this.cur + 1, files: this.filesOf(layer), findings: this.layerFindings(layer), statusOf })]
+      : this.tab === "steps" && this.page === "arch" ? ["The architecture is", architectureMd({ ...base, ai, findings, statusOf })]
+      : this.tab === "steps" && this.page === "blast" ? ["The Security page is", securityMd({ ...base, ai, findings, statusOf, runs: this.find.runs })]
+      : ["The Overview is", overviewMd({ ...base, ai, findings, statusOf, checks: this.checksNow(), related: this.ctx })];
+    copyText(text);
+    this.note = `${what} on the clipboard as Markdown (${text.trim().split("\n").length} lines), nothing was posted.`;
+  },
+  // What "Copy context to check findings" is about: the finding open in the Findings tab, else on the Security page
+  // the unresolved security findings; [] elsewhere (the menu leaves the entry out).
+  checkList() {
+    const one = this.tab === "findings" && this.ffocus ? this.findingById(this.ffocus) : null;
+    return one ? [one] : this.tab === "steps" && this.page === "blast" ? this.findings().filter((f) => f.security && OPEN_ST.includes(this.fstatus(f))) : [];
   },
 
   // Progress that could not be saved: what that means, and the one thing to do about it.
