@@ -23,7 +23,7 @@ export const chip = (t, label, color, solid = false, id = null, tip = null) => d
   .when(Boolean(id && tip), (e) => e.id(id).tooltip(tip)).when(solid, (e) => e.bg(color + "26")).text_size(11).font_semibold().text_color(color).child(label);
 
 // What a triage chip (pr.js triageOf) means, for its tooltip.
-const TRIAGE_TIP = { "High security risk": "Open high-severity security findings, or a high merge risk", "Security risk": "Open security findings on this PR",
+const TRIAGE_TIP = { "High security risk": "Unresolved high-severity security findings, or a high merge risk", "Security risk": "Unresolved security findings on this PR",
   "Deep review": "Size or risk suggests reading this closely", "Quick look": "Small and low risk: a quick look should do",
   "Low effort": "Estimated review effort: low", "Medium effort": "Estimated review effort: medium", "High effort": "Estimated review effort: high" };
 export const triageTip = (c) => TRIAGE_TIP[c] ?? "Kind of change, from the PR title prefix";
@@ -65,7 +65,7 @@ export function archModel(arch, view = "diff", extra = () => 0) {
 // title (2 lines), description (3 lines; the whole text as tooltip), states (an orchestrator's lane), type and status;
 // each path on its own lane with an arrow, a hop where it crosses another, and its numbered badge; a stub with its
 // chip naming the target. Labels are in archLegend.
-// onNode(node, event, cx) opens a card's place (its "Open ↗" link, for cards with at or file); decorate(node) adds lines
+// onNode(node, event, cx) opens a card's place (its "Show in diff ↗" link, for cards with at or file); decorate(node) adds lines
 // to a card (findings); opts {hl: path num to highlight, onHl(num | null, cx), focus: node id, hover: node id,
 // onFocus(id | null, cx), onHover(id | null, cx)}. A focused node (clicked) keeps its paths and neighbours and dims
 // the rest to 25%; a hovered one dims them to 55%. Clicking a chip focuses its target.
@@ -141,7 +141,7 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
       .child(h_flex().gap(6).items_center().text_size(10.5)
         .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(n.type ?? ""))
         .when(open && Boolean(opts.onFocus), (e) => e.child(div().id(`${id}-o${i}`).flex_none().px(4).rounded(4).text_color(t.accent).cursor_pointer().hover((s) => s.bg(t.hover))
-          .tooltip("Open this place in the code").child("Open ↗").on_click((ev, cx) => { onNode(n, ev, cx); cx.stop_propagation(); })))
+          .tooltip("Show this place in the diff").child("Show in diff ↗").on_click((ev, cx) => { onNode(n, ev, cx); cx.stop_propagation(); })))
         .when(Boolean(n.status), (e) => e.child(chip(t, n.status === "new" ? "ADDED" : n.status.toUpperCase(), c, false, `${id}-st${i}`, `Status in this PR: ${n.status === "new" ? "added" : n.status}`)))), dimN(n));
   });
   // An orchestrator's states: a lane down the card, one row each; a state that calls a component ends in "→" where its

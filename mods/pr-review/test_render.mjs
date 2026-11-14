@@ -164,7 +164,7 @@ for (const n of [0, 3, 310]) {
   assert.ok(items.some((it) => it.t === "gh" && it.loose && it.g.id === 5), "the outdated comment shows loose");
   assert.ok(items.some((it) => it.t === "gh" && !it.loose && it.g.id === 1), "a resolved thread under its line once shown");
 }
-// The minimized review: nothing without one, an entry with Open and ✕ with one.
+// The minimized review: nothing without one, an entry with Resume and ✕ with one.
 globalThis.__rv.store.set("review.minimized", null);
 renderMini();
 globalThis.__rv.store.set("review.minimized", { target: { url: "https://github.com/o/r/pull/7", number: 7, title: "feat: x", repo: "o/r" }, at: 1 });
