@@ -22,6 +22,8 @@ import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVer
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState, codeOf, isStale } from "./pr.js";
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible, pastTop } from "./views.js";
 import { archView, archModel, archLegend, visualsCard, visualCard, statCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
+import { visualPlan } from "./stack.js";
+import { factRows, findingAnchor, wrapCount, SEVERITY_SCALE } from "./views.js";
 import { hasSources, archLayout, archBands } from "./arch.js";
 import * as TH from "./threads.js";
 import { leftWidth, rowClick, CHIP_W, ASK_W, keyRoute, scopeLine, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf, rangeLabel, pinAnchor, pinAdd, pinDrop, pinsOf, pinsOn, codePins, drillPush, drillTo, crumbs, drillKey, cachePut, mapDrill, exploreId, exploreIndex, exploreAi, pathOf, lineOf, repoOfRemote, exploreTrust, layersForNode } from "./explore.js";
@@ -105,6 +107,10 @@ const THREAD_COLOR = { fixed: "ansi2", answered: "accent", wontfix: "muted", que
 const PROBE = "0".repeat(40);
 const CTX_MS = 10 * 60000; // related PRs, CI checks, mergeability (related.py): asked again after this while the review is open
 const OPEN_ST = ["open", "progress", "recheck"];
+// A finding's card in the diff: its height folded, the label column of an open one, the link at its head's right end.
+const FIND_FOLDED = 34, FIND_LABEL = 112, FIND_LINK = 150;
+// A layer's head over its code: its texts wrap at about 95 characters instead of running across the whole column.
+const LAYER_TEXT = 640;
 // The Layers tab's pages (left nav); null: the diff of the current layer.
 const PAGES = [["overview", "Overview"], ["blast", "Security blast radius"], ["arch", "Architecture impact"]]; // measures the mono font's character width, for clicks on tokens inside the virtual list
 
@@ -1207,7 +1213,7 @@ export const ReviewMode = {
     const items = [], at = {};
     steps.forEach((s, i) => {
       at[`s${i}`] = items.length;
-      items.push({ t: "step", s, i });
+      items.push({ t: "step", s, i }, ...(s.visuals ?? []).map((v, k) => ({ t: "vis", v, i, text: `vis|${i}|${k}` })));
       const present = this.present(s);
       if (s.stale) items.push({ t: "note", text: "Outdated: these hunks are no longer in the diff." });
       for (const id of present) {
@@ -2299,17 +2305,13 @@ export const ReviewMode = {
       ;
   },
 
-  // A layer's explanation, check questions and pictures, as the Layers view shows them; a card's "In the layer
-  // analysis" shows the same. p, n: keep the ids unique per place; tab: the key of the shown picture in this.visTab;
-  // bar: drawn above the pictures.
+  // A layer's explanation, findings and pictures; a card's "In the layer analysis" shows them. The Layers view (p
+  // "rv") has the pictures, like the check questions, once: over the layer's code (item: "step" and "vis").
+  // p, n: keep the ids unique per place; tab: the key of the shown picture in this.visTab; bar: drawn above the pictures.
   layerParts(s, t, p, n, tab, bar = null) {
+    const pics = p !== "rv" && s.visuals?.length > 0;
     return [
       Boolean(s.text) && div().text_size(13.5).line_height(1.5).text_color(t.foreground).child(TextView.markdown(`${p}-ex-${stepKey(s)}`, s.text)),
-      s.questions?.length > 0 && v_flex().pt(2).gap(8)
-        .child(div().text_size(11.5).font_semibold().text_color(t.muted).child("CHECK"))
-        .children(s.questions.map((q, k) => h_flex().id(`${p}-q-${n}-${k}`).tooltip("A question to check while you read this layer").gap(8).items_start().text_size(13.5).line_height(1.5)
-          .child(div().flex_none().text_color(t.accent).child("?"))
-          .child(div().flex_1().min_w(0).child(TextView.markdown(`${p}-q-${stepKey(s)}-${k}`, this.asked(s, q)))))),
       // Every finding in this layer's files, whoever found it: one line each with its source and state.
       this.layerFindings(s).length > 0 && v_flex().pt(2).gap(6)
         .child(div().text_size(11.5).font_semibold().text_color(t.muted).child("FINDINGS"))
@@ -2322,8 +2324,8 @@ export const ReviewMode = {
             .child(div().flex_none().text_size(11.5).text_color(t.muted).child(f.sources.length === 1 ? this.sourcesOf(f) : `${f.sources.length} sources`))
             .when(st !== "open", (e) => e.child(div().flex_none().text_size(11.5).text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(FSTATUS[st]?.[0] ?? st)));
         })),
-      bar,
-      s.visuals?.length > 0 && visualsCard(s.visuals, t, `${p}-vis-${n}`, (at, cx) => this.jumpTo(at, cx),
+      pics && bar,
+      pics && visualsCard(s.visuals, t, `${p}-vis-${n}`, (at, cx) => this.jumpTo(at, cx),
         this.visTab?.[tab] ?? 0, (k, cx) => { this.visTab = { ...this.visTab, [tab]: k }; cx.notify(); }, this.wrapX()),
     ].filter(Boolean);
   },
@@ -2358,8 +2360,9 @@ export const ReviewMode = {
       security: this.openFindings().filter((f) => f.security), related: this.ctx });
   },
   filesOf(s) { return [...new Set(this.present(s).map((id) => this.byId.get(id).path))]; },
-  // "file.ts — question": a check question with the file it is about.
-  asked(s, q) { const f = this.filesOf(s)[0]; return f ? `${f.split("/").pop()} — ${q}` : q; },
+  // "file.ts — question": a check question with the file it is about (the analysis names it; none when the question
+  // is about several files, or in an analysis from before it did).
+  asked(s, q, k) { const f = s.questionFiles?.[k]; return f ? `${f.split("/").pop()} — ${q}` : q; },
 
   // What to look at first: high-risk layers not checked yet, failed repo rules, fixes to verify, high merge blockers.
   attention() {
@@ -3391,12 +3394,13 @@ export const ReviewMode = {
 
   // ---- render: the diff list (inside the virtual list: no handlers, onItem places clicks by x)
 
-  // Lines a wrapped text takes in a card of the diff column (UI font ≈ 7.4 px per char at 13.5 px).
-  lines(text) { return Math.max(1, Math.ceil(String(text).length / Math.max(30, ((this.listW ?? 900) - GUTTER - 60) / 7.4))) + (String(text).match(/\n/g)?.length ?? 0); },
+  // Lines a wrapped text takes in a card of the diff column (views.js wrapCount); less: what a label column takes.
+  lines(text, less = 0) { return wrapCount(text, (this.listW ?? 900) - GUTTER - 45 - less); },
 
   sizeOf(it) {
     if (it.t === "row") return it.src[it.ri].kind === "@" ? 30 : ROW;
-    if (it.t === "step") return 66 + 24 * it.s.questions.length;
+    if (it.t === "step") { const w = Math.min(LAYER_TEXT, (this.listW ?? 900) - 32), qs = it.s.questions; return 48 + 21 * wrapCount(plain(it.s.why), w) + (qs.length ? 26 + qs.reduce((n, q, k) => n + 4 + 21 * wrapCount(plain(this.asked(it.s, q, k)), w - 20), 0) : 0); }
+    if (it.t === "vis") return visualPlan(it.v, (this.listW ?? 900) - 32).h + 8;
     if (it.t === "sug") return this.sug === it.s.key ? 56 + 21 * this.lines(it.s.reason) : 26;
     if (it.t === "pad") return 60;
     if (it.t === "fold") return it.h;
@@ -3529,16 +3533,21 @@ export const ReviewMode = {
         .when(n > 0, (e) => e.child(div().id(`rv-fh-cm-${f.path}`).tooltip(`${n} pending comments in this file`).px(8).text_size(12).text_color(t.accent).child(`● ${n}`)))
         .child(div().id(`rv-fh-ad-${f.path}`).tooltip(`${f.add} lines added`).px(4).text_size(12.5).text_color(t.ansi2).child(`+${f.add}`)).child(div().id(`rv-fh-dl-${f.path}`).tooltip(`${f.del} lines removed`).pl(2).pr(16).text_size(12.5).text_color(t.ansi1).child(`−${f.del}`));
     }
+    // A layer's head over its code: title, why, and the check questions, once and whole, each with the file the
+    // analysis names for it. Its pictures follow as rows of their own, as wide as the column.
     if (it.t === "step") {
       const s = it.s, on = it.i === this.cur;
       return v_flex().w_full().h(this.sizeOf(it)).px(16).pt(10).gap(4).bg(on ? t.selected : t.raised).border_t(1).border_color(t.border).cursor_pointer()
-        .child(h_flex().h(24).gap(10).items_center()
+        .child(h_flex().h(24).flex_none().gap(10).items_center()
           .child(div().id(`rv-lstep-${it.i}`).tooltip(this.done(s) ? "You checked this layer" : "Layer number").text_size(14).font_semibold().text_color(this.done(s) ? t.ansi2 : t.muted).child(this.done(s) ? "✓" : `${it.i + 1}`))
           .child(div().flex_1().min_w(0).truncate().text_size(15).font_semibold().child(plain(s.title)))
           .when(!s.pseudo, (e) => e.child(riskBadge(t, s).id(`rv-lrb-${it.i}`).tooltip(focusTip(s)))))
-        .child(div().h(22).truncate().text_size(13.5).text_color(t.foreground).child(plain(s.why)))
-        .children(s.questions.map((q) => div().h(24).truncate().text_size(13.5).text_color(t.muted).child(`?  ${plain(this.asked(s, q))}`)));
+        .child(div().flex_none().max_w(LAYER_TEXT).line_height(1.55).whitespace_normal().text_size(13.5).text_color(t.foreground).child(plain(s.why)))
+        .when(s.questions.length > 0, (e) => e.child(div().id(`rv-lq-${it.i}`).tooltip("Questions to check while you read this layer's code").h(18).flex_none().mt(4).text_size(11.5).font_semibold().text_color(t.muted).child("CHECK"))
+          .children(s.questions.map((q, k) => h_flex().flex_none().max_w(LAYER_TEXT).gap(8).items_start().text_size(13.5).line_height(1.55)
+            .child(div().w(12).flex_none().text_color(t.accent).child("?")).child(div().flex_1().min_w(0).whitespace_normal().child(plain(this.asked(s, q, k)))))));
     }
+    if (it.t === "vis") return div().w_full().h(this.sizeOf(it)).px(16).pb(8).bg(it.i === this.cur ? t.selected : t.raised).child(visualCard(it.v, t, `rv-lvis-${it.i}-${it.text}`, null, null, (this.listW ?? 900) - 32));
     if (it.t === "def") return this.defItem(it, t);
     if (it.t === "fold") return div().h(it.h).w_full().pl(GUTTER).pt(8).text_size(12.5).text_color(t.muted).cursor_pointer().child(`${it.n} lines folded to keep the list fast · they open as you scroll here, or click`);
     if (it.t === "path") return mono(h_flex()).h(30).w_full().px(16).items_center().text_size(12.5).text_color(t.muted).truncate().child(it.h.path);
@@ -3613,7 +3622,9 @@ export const ReviewMode = {
     }
     if (this.hunks && model() !== this.aiModel && !this.aiBusy) this.loadAi(cx, "cache");
     if (this.prSel) this.loadModels(cx);
-    if (this.winW) this.listW = this.winW - this.leftW() - SPLIT - (this.drawerSqueezes() ? 380 : 0); // the diff column's width: card heights wrap to it
+    // The diff column's width: card heights wrap to it. on_size_change reports the window in logical px; the column and
+    // its rows are laid out in px scaled by the person's zoom (as in settleTop).
+    if (this.winW) this.listW = this.winW / (settings().zoom || 1) - this.leftW() - SPLIT - (this.drawerSqueezes() ? 380 : 0);
     // Lines a pinned answer cites: marked in the diff's gutter (memoized on the pins).
     if (this.pinMarksOf !== this.pins()) { this.pinMarksOf = this.pins(); this.pinMarks = new Set(this.pinMarksOf.flatMap((p) => (p.evidence ? [p.evidence.replace(/^(.*?):(\d+).*$/, "$1:$2")] : []))); }
     const other = target && !C.shown(ctxDoc(), prCtx(target), shared);

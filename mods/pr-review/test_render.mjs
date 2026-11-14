@@ -105,6 +105,9 @@ for (const n of [0, 3, 310]) {
   ok(`${n} files: Architecture page, the layer closed (its highlight still shows)`, () => v.render(cx));
   v.archFocus = null; v.page = null; v.cur = 1;
   ok(`${n} files: the same layer open in the Layers view`, () => v.render(cx));
+  // Its picture is a row of the diff list, right after the layer's head; a question names the file the analysis gives.
+  assert.deepEqual(v.items.slice(v.at.s1, v.at.s1 + 2).map((it) => it.t), ["step", "vis"], "a layer's picture sits over its code");
+  assert.deepEqual([v.asked({ questionFiles: ["src/a.ts", ""] }, "q?", 0), v.asked({ questionFiles: ["src/a.ts", ""] }, "q?", 1), v.asked({}, "q?", 0)], ["a.ts — q?", "q?", "q?"]);
   // Its analysis finding: in the layer above, and in the Findings tab (read live from the analysis, linked to its layer).
   assert.deepEqual(v.findings().map((f) => f.id), ["a1"]); assert.equal(v.layerOf(v.findings()[0]), 1);
   v.tab = "findings";

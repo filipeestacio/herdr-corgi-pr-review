@@ -161,3 +161,68 @@ export function pastTop(sizes, i, viewH) {
   for (let j = i; j < sizes.length; j++) { if (y + sizes[j] / 2 > want) return j; y += sizes[j]; }
   return sizes.length - 1; // less than a view below it: the list's end, which is as high as it gets
 }
+
+// ---- what a finding claims (an open card in the diff; any other place that names the same facts)
+
+// The scale behind a severity: the analysis names a finding's impact, and the impact fixes the severity.
+export const IMPACT = {
+  breaks_requirement: ["high", "it breaks a requirement of the task"], dead_path: ["high", "it leaves the new path without effect"],
+  unauthorized_access: ["high", "it allows access without permission"], data_exposure: ["high", "it exposes data"], data_loss: ["high", "it loses data"],
+  edge_case: ["medium", "it fails in an edge case"], degraded_operation: ["medium", "it makes the system harder to operate"],
+  fragile_structure: ["medium", "it makes the structure fragile"], untested: ["medium", "it is not covered by a test"],
+  maintainability: ["low", "it makes the code harder to maintain"], unrequested: ["low", "the task did not ask for it"],
+};
+export const CERTAINTY = { confirmed: "Confirmed: something that ran shows it.", derived: "Derived: it follows from the code that was read.",
+  assumed: "Assumed: it depends on something that could not be checked." };
+
+// The help text of a severity chip: the whole scale, one line per severity.
+export const SEVERITY_SCALE = ["high", "medium", "low"].map((s) => `${s}: ${Object.values(IMPACT).filter(([sev]) => sev === s).map(([, why]) => why).join(", ")}.`).join("\n");
+
+// A finding's facts as [label, text] rows: why it has its severity, its effect, how sure the claim is, and what has
+// to hold for it to happen. A finding from an older analysis has none of these fields and gives no rows.
+export function factRows(f) {
+  const why = IMPACT[f?.impact]?.[1], known = Boolean(f?.effect || f?.certainty);
+  return [why && ["Severity", `${f.severity ?? IMPACT[f.impact][0]}, because ${why}.`], f?.effect && ["Effect", f.effect],
+    CERTAINTY[f?.certainty] && ["Certainty", CERTAINTY[f.certainty]],
+    f?.preconditions?.length ? ["Preconditions", f.preconditions.join("; ")] : known && ["Preconditions", "None: it always happens."]].filter(Boolean);
+}
+
+// The line a finding's card sits under: the first line with code from its own line on (new side), so the card never
+// hangs under an empty line. Its own line when the next code is more than three lines past its range (line..end) or
+// not shown. rows: a file's rows ({kind, number, text}).
+export function findingAnchor(rows, line, end = line) {
+  const r = rows.find((x) => x.kind !== "-" && x.number >= line && String(x.text ?? "").trim());
+  return r && r.number <= Math.max(line, end ?? line) + 3 ? r.number : line;
+}
+
+// How many lines a text takes when it wraps at words in `width` px of the UI font (13.5 px unless `size` says
+// otherwise): the virtual list needs every row's height before it draws. Character widths by class, measured on
+// screenshots (within 2 %) and taken 4 % wider, so a card is never a line short.
+const CH_W = (ch) => (ch === " " || "iljtfI.,:;'|!()[]{}-/`\"".includes(ch) ? 4 : ch > "\u2e7f" ? 13.5 : /[A-Zmw_@%&]/.test(ch) ? 8.5 : /\d/.test(ch) ? 8 : 7.3);
+export function wrapCount(text, width, size = 13.5) {
+  const k = (size / 13.5) * 1.04, room = Math.max(40, width);
+  let n = 0;
+  for (const para of String(text ?? "").split("\n")) {
+    let x = 0;
+    n++;
+    for (const word of para.split(" ")) {
+      const w = [...word].reduce((sum, ch) => sum + CH_W(ch), 0) * k;
+      if (x > 0 && x + 4 * k + w > room) { n++; x = 0; }
+      x += (x > 0 ? 4 * k : 0) + w;
+      if (x > room) { n += Math.floor(x / room); x %= room; } // a word longer than a line breaks inside
+    }
+  }
+  return n;
+}
+
+// A sequence visual as a sequence diagram: one column per participant with its lifeline at x, one row per call in
+// the given order, from the caller's lifeline (x1) to the callee's (x2; the same for a call to itself). The columns
+// share `width`, each between SEQ.MIN and SEQ.MAX px. Returns {cols, calls, width, height}.
+export const SEQ = { MIN: 130, MAX: 280, HEAD: 30, ROW: 38, PAD: 6 };
+export function seqLayout(v, width) {
+  const nodes = (v?.nodes ?? []).filter((n) => n?.id), col = Math.max(SEQ.MIN, Math.min(SEQ.MAX, Math.floor(width / Math.max(1, nodes.length))));
+  const x = new Map(nodes.map((n, k) => [n.id, Math.round(col * (k + 0.5))]));
+  const calls = [...(v?.edges ?? []), ...(v?.transitions ?? [])].filter((e) => x.has(e.from) && x.has(e.to))
+    .map((e, k) => ({ ...e, n: k + 1, text: transitionText(e), x1: x.get(e.from), x2: x.get(e.to), y: SEQ.HEAD + SEQ.PAD + k * SEQ.ROW }));
+  return { cols: nodes.map((n) => ({ ...n, x: x.get(n.id), w: col - 16 })), calls, width: col * nodes.length, height: SEQ.HEAD + 2 * SEQ.PAD + calls.length * SEQ.ROW };
+}
