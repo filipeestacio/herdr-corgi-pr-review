@@ -4,14 +4,16 @@ failure, run in a sandbox. The agent may call nothing but
 
     python3 <this file> <checkout> <id> [--base <rev>]
 
-(`python3 <this file> --barrier` prints the fence this machine has: sandbox-exec, unshare or none.)
+(`python3 <this file> --barrier` prints the fence this machine has: sandbox-exec, bwrap or none.)
 <checkout> is the agent's worktree at the PR head (absolute), <id> names its script <checkout>/.pr-review-probe/<id>.py.
 For the head (and the base, when given) the runner:
 - exports the commit with `git archive` into a new, empty folder (only what git tracks: no .env, no build output);
 - copies the script there and runs it as `python3 -I <script> <export>` from that folder, with `env -i` (PATH, a
   temporary HOME and TMPDIR, nothing else: no AWS_*, GH_TOKEN, context variables);
 - on macOS under `sandbox-exec`: no network, writes only in its own temporary folder, nothing read from the user's home,
-  no new processes; on Linux under `unshare -rn` (no network); without either it still runs and says so
+  no new processes; on Linux under bubblewrap (`bwrap`: no network, the whole file system read-only, the user's home an
+  empty tmpfs, only its own temporary folder writable, its own PID namespace that dies with the runner); without
+  either it still runs and says so
   (`network_barrier: false`: the review then asks before every probe);
 - stops it after 30 s, keeps at most 4 KB of its output and blacks out e-mail addresses and token patterns.
 The script ends with a line `reproduced <what it shows>` or `not_reproduced <what it saw>` (exit 0 or 1), optionally
@@ -95,12 +97,25 @@ def user_home():
 
 
 def barrier():
-    """How the script is fenced in here: sandbox-exec (macOS), unshare (Linux) or none."""
+    """How the script is fenced in here: sandbox-exec (macOS), bwrap (Linux, when it is installed and may make its
+    namespaces) or none. A network namespace alone (unshare -rn) is not enough: it leaves the files readable and
+    writable, so it counts as none and the review asks before every probe."""
     if sys.platform == "darwin" and shutil.which("sandbox-exec"):
         return "sandbox-exec"
-    if sys.platform.startswith("linux") and shutil.which("unshare") and subprocess.run(["unshare", "-rn", "true"], capture_output=True).returncode == 0:
-        return "unshare"
+    if sys.platform.startswith("linux") and shutil.which("bwrap") and subprocess.run(["bwrap", "--unshare-all", "--die-with-parent", "--ro-bind", "/", "/", "true"], capture_output=True).returncode == 0:
+        return "bwrap"
     return "none"
+
+
+def bwrap_args(root, extra_deny=()):
+    """Linux: no namespace shared (network, PID, IPC, UTS, user), the file system read-only, the user's home (and the
+    extra folders) hidden behind an empty tmpfs, only root writable, the interpreter's own files readable again when
+    they sit in the home; the script dies with the runner and gets its own session (no terminal to inject into)."""
+    hidden = [user_home(), *[os.path.realpath(d) for d in extra_deny]]
+    py = [os.path.realpath(x) for x in (sys.base_prefix, sys.prefix)]
+    again = [x for x in dict.fromkeys(py) if any(x == h or x.startswith(h + os.sep) for h in hidden)]
+    return ["bwrap", "--unshare-all", "--die-with-parent", "--new-session", "--ro-bind", "/", "/", *[a for h in hidden for a in ("--tmpfs", h)],
+            *[a for x in again for a in ("--ro-bind", x, x)], "--bind", root, root, "--dev", "/dev", "--proc", "/proc"]
 
 
 def profile(root, extra_deny=()):
@@ -123,8 +138,8 @@ def run_one(script, export_dir, root, how, limit):
     extra = [p for p in os.environ.get("PROBE_EXTRA_DENY", "").split(os.pathsep) if p]  # tests: more folders it may not read
     if how == "sandbox-exec":
         cmd = ["sandbox-exec", "-p", profile(root, extra), *cmd]
-    elif how == "unshare":
-        cmd = ["unshare", "-rn", *cmd]
+    elif how == "bwrap":
+        cmd = [*bwrap_args(root, extra), *cmd]
     started, chunks, size = time.monotonic(), [], [0]
     p = subprocess.Popen(cmd, cwd=export_dir, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
 
