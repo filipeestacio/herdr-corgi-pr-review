@@ -212,3 +212,19 @@ const all = [f("m1", "medium", { breaks: { node: "c" } }), sec, f("l1", "low"), 
   assert.match(verifyContextMd([inner], { ...base, ai }), /- T t2 is assumed: [^\n]*\n- How far T t2 can be reached \(internal only\) is the analysis' word only: it names no way in\.\n/);
   console.log("ok zones and the context for a checking agent");
 }
+
+// ---- Resilience: paths, ladder, budget, the race as a sequence diagram
+{
+  const { resilienceMd } = await import("./markdown.js");
+  const res = { head: "ccddf95aa", summary: "2 paths stand before the merge.", paths: [
+    { id: "p2", trigger: "A race", end: "both mail", result: "mitigated", limited_by: "consumer.py:19", steps: ["queue"], race: { actors: ["delivery A", "delivery B"], steps: [["delivery A", "reads: empty"], ["delivery B", "mails; sets x"]], breaks_at: 1 } },
+    { id: "p1", trigger: "One record raises", end: "the batch comes back", result: "finding", blocker: { reason: "no limit" }, steps: ["queue", "e6", "consumer"], visible: false,
+      ladder: [{ name: "batch", factor: "up to 10", at: "template.yaml:37" }], product: "up to 30 mails", budget: { value_s: 70, limit_s: 10 }, action: "Decouple: add a DLQ", probe: "pr1" }],
+    probes: [{ id: "pr1", status: "done", result: "reproduced", number: "19 calls for 10 records", head: "ccddf95aa" }], checks: [{ check: "cors", result: "clean", why: "no browser" }], not_checked: ["SMTP timeout"], watch: ["queue age"] };
+  const md = resilienceMd({ pr: { repo: "o/r", number: 2, title: "t" }, head: "ccddf95aa", res, names: new Map([["queue", "LoanEvents"], ["consumer", "consumer"]]) });
+  assert.match(md, /## 1\. One record raises: the batch comes back\n\n- Verdict: Blocker: no limit\n- Way: LoanEvents → consumer\n- Seen: no, silent\n- batch: up to 10 \(template\.yaml:37\)/);
+  assert.match(md, /- Budget: worst case 70 s against 10 s/); assert.match(md, /- Probe: reproduced, 19 calls for 10 records at ccddf95/);
+  assert.match(md, /sequenceDiagram\n  participant A0 as delivery A\n  participant A1 as delivery B\n  Note over A0: reads#58; empty\n  Note over A1: breaks here#58; mails#59; sets x/);
+  assert.match(md, /## Not checkable\n\n- SMTP timeout/); assert.match(resilienceMd({ pr: {}, head: "" }), /has not run/);
+  console.log("ok resilience md");
+}

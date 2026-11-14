@@ -1,7 +1,7 @@
 // The review layout's "change stack" pieces drawn natively (no libraries): the architecture picture, a layer's
 // picture (flow, sequence, state machine, steps), stat cards, segmented bars, collapsible cards, the PR triage card.
 // Pure layout lives in arch.js (archLayout) and pr.js (levels); these only draw. UI text is English.
-import { div, PathBuilder } from "gpui-kit";
+import { div, PathBuilder, Background } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { levels } from "./pr.js";
 import { markLine } from "./arch.js";
@@ -480,3 +480,17 @@ export function gridBg(t, w, h) {
   return globalThis.window.paint_path(p.build(), t.foreground + "12").absolute().top(0).left(0).w(w).h(h);
 }
 
+
+// A budget as a bullet chart (Resilience): the value's bar, the limit as a line, the part over it hatched in the
+// severity red with its word; the numbers as text beside it. b: views.js budgetBar's px.
+export function bulletChart(t, id, b, valueText, limitText, width = 320) {
+  const rect = () => PathBuilder.fill().move_to("0%", "0%").line_to("100%", "0%").line_to("100%", "100%").line_to("0%", "100%").close().build();
+  return h_flex().id(id).gap(12).items_center()
+    .child(div().relative().flex_none().w(width).h(18).rounded(3).bg(t.surface).border_1().border_color(t.border)
+      .child(div().absolute().left(0).top(4).h(8).w(Math.min(b.value, b.limit)).bg(t.muted))
+      .when(b.over > 0, (e) => e.child(div().absolute().left(b.limit).top(2).h(12).w(b.over).border_1().border_color(t.ansi1)
+        .child(globalThis.window.paint_path(rect(), Background.pattern_slash(t.ansi1, 1.5, 6)).absolute().top(0).left(0).size_full())))
+      .child(div().absolute().left(b.limit).top(-3).w(2).h(22).bg(t.foreground)))
+    .child(div().text_size(12.5).child(`${valueText} against ${limitText}`))
+    .when(b.over > 0, (e) => e.child(div().text_size(12.5).font_semibold().text_color(t.ansi1).child(`✗ ${b.overS} s over`)));
+}
