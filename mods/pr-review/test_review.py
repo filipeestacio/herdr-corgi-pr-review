@@ -205,6 +205,10 @@ assert [review.SCALE[k] for k in ("breaks_requirement", "dead_path", "unauthoriz
 assert review.judge({"impact": "dead_path", "severity": "low"})["severity"] == "high", "the impact sets the severity"
 assert review.judge({"impact": "nonsense", "severity": "low", "category": "x"}) == {"severity": "low"}, "no impact: its own severity; unknown values go"
 assert review.judge({"impact": "edge_case"}, True) == {"impact": "breaks_requirement", "severity": "high"}
+assert review.judge({"impact": "edge_case", "effort": "heavy"})["effort"] == "heavy" and "effort" not in review.judge({"impact": "edge_case", "effort": "huge"})
+deps = review.finish({"steps": [{"title": "Model", "depends_on": []}, {"title": "API", "depends_on": ["Model", "Model", "API", "Nowhere"]}, {"title": "Old"}]})["steps"]
+assert deps[1]["depends_on"] == ["Model"] and "depends_on" not in deps[2], "only other layers; a cached layer without it stays without"
+assert "effort (what the fix takes" in review.prompt([], [], None, True) and "depends_on (the titles" in review.prompt([], [], None, True)
 assert review.judge({"impact": "breaks_requirement", "category": "test"}, True)["severity"] == "medium", "a test gap leaves a requirement unguarded, it does not break it"
 wt = pathlib.Path(tempfile.mkdtemp())
 (wt / ".github").mkdir(); (wt / ".github/CODEOWNERS").write_text("# owners\n*.yaml @ops\n/library/ @lib-team @lead\nlibrary/tests/ \n")
@@ -219,7 +223,6 @@ ans = review.finish({
     "components": [{"name": "LoanEvents", "kind": "queue", "status": "new", "at": "template.yaml:11", "node": "gone", "operate": ["no dead-letter queue"]},
                    {"name": "transition()", "kind": "function", "status": "changed", "at": "library/status.py:43", "node": "status", "operate": []},
                    {"name": "tests", "kind": "module", "status": "new", "at": "library/tests/test_x.py:1", "operate": []}],
-    "access": [{"resource": "LoanEvents", "kind": "queue", "principal": "FrontDesk", "actions": ["sqs:SendMessage"], "public": False, "auth": "IAM", "used": False, "at": "template.yaml:22", "node": "nope"}],
     "steps": [{"check_questions": ["q1", "q2", "q3"], "question_files": ["./library/loans.py", "library/s.py", "made/up.py"], "findings": [
         fin(title="Status set outside transition()", criteria=["c1", "c2", "c1"]),
         fin(title="Mailed twice", criteria=["c2"], impact="breaks_requirement", breaks={"from": "reminders", "to": "mailer"}),
@@ -239,7 +242,7 @@ assert f2["breaks"] == {"from": "reminders", "to": "mailer", "edge": "e1"} and f
 assert ans["steps"][0]["question_files"] == ["library/loans.py", "library/s.py", ""], ans["steps"][0]["question_files"]
 assert [c["owner"] for c in ans["components"]] == ["@ops", "@lib-team @lead", None], [c["owner"] for c in ans["components"]]
 assert ans["component_counts"] == {"new": 2, "changed": 1, "no_owner": 1, "codeowners": True}
-assert "node" not in ans["components"][0] and ans["components"][1]["node"] == "status" and "node" not in ans["access"][0]
+assert "node" not in ans["components"][0] and ans["components"][1]["node"] == "status"
 assert review.code_owners(None) is None and review.owner_of("a/b.py", [("docs/", "@d"), ("*.py", "@py")]) == "@py"
 assert review.checked([{"area": "secrets", "result": "clean", "note": "none in the diff"}, {"area": "tests", "result": "bogus"}], ["secrets", "tests", "state"]) == \
     [{"area": "secrets", "result": "clean", "note": "none in the diff"}, {"area": "tests", "result": "not_checked", "note": ""}, {"area": "state", "result": "not_checked", "note": ""}]
@@ -255,8 +258,15 @@ assert old["steps"][0]["findings"][0]["severity"] == "medium" and old["steps"][0
 p = review.prompt([], [], "PR: x", True)
 for part in ("state (met:", "not_done", "acceptance (true", "criteria (the ids", "is named by at least one finding", "breaks (where it breaks", "question_files", "category (as for findings)",
              "breaks_requirement (breaks an acceptance criterion", "certainty (confirmed", "preconditions (what must hold", "test: changed behavior",
-             "titled \"Tests\"", "one finding per defect", "with impact untested", "components: the inventory", "access: who may do what", "checked: your own report", "without an authorizer"):
+             "titled \"Tests\"", "one finding per defect", "with impact untested", "components: the inventory", "checked: your own report"):
     assert part in p, part
+# The security view is the security reviewer's (reviewers.py): the analysis asks for none of it and reports only the
+# code areas of its scope; its security findings it still reports.
+for part in ("zones", "access:", "auth_kind", "reachability", "without an authorizer", "authentication"):
+    assert part not in p and part not in review.picture_guide("English"), part
+assert "security: exposure, auth, secrets, permissions" in p
+assert "zones" not in review.ARCHITECTURE["properties"] and "access" not in review.SCHEMA["properties"] and "reachability" not in review.FINDING["properties"]
+assert review.SCHEMA["properties"]["checked"]["items"]["properties"]["area"]["enum"] == review.AREAS_CODE
 assert "Texts: detail, suggestion, effect, why" in p and "title (one line, plain text)" in p and "fenced code block" in p and "short bullet list" in p
 assert "Texts:" not in review.picture_guide("English"), "pictures carry no prose rules"
 assert "This one is not optional" in p and "This one is not optional" in review.picture_guide("English")
@@ -278,3 +288,4 @@ stays = review.finish({"visuals": [{"kind": "state_machine", "title": "No eviden
 assert [v["title"] for v in stays["visuals"]] == ["No evidence"], "nothing to go by: it stays where it is"
 assert "except for the state diagram" in p and "a state diagram goes into the layer" in p
 print("ok finish")
+

@@ -11,7 +11,8 @@ why it matters, an explanation, reading order, check questions, suggestions on l
 and out of changed functions, with a trace of values per line). Also behavior, merge risk, review effort, repo rule checks (rules
 from the checkout's CLAUDE.md/AGENTS.md/CONTRIBUTING.md/.github instructions/ADRs plus the configured global rules), an
 architecture picture, the blast radius (upstream candidates from git grep), an optional picture per layer, the inventory of
-what the PR adds (components, with owners from CODEOWNERS) and who may do what on its resources (access). finish() links
+what the PR adds (components, with owners from CODEOWNERS). Security: the findings it sees; zones, access and the threat
+model are the security reviewer's (reviewers.py). finish() links
 requirements, findings and the picture and sets each finding's severity from the fixed scale. Writes {source, model, model_id, hunks, answer, cut,
 cost, usage ({input, output, cache_read, cache_write} tokens of all passes), ms, budget, task, generated} to `out` and `latest`; `status` holds {busy, pid, started} while it runs, then
 {done} or {error}. Every call goes to the optional usage ledger (llm.py). Texts are in the configured language. Exit 1 with the reason on stderr.
@@ -71,6 +72,8 @@ VISUAL = {"type": "object", "required": ["kind", "title", "nodes", "edges"], "pr
     "transitions": {"type": "array", "maxItems": 16, "items": TRANSITION}}}
 VISUALS = {"type": "array", "maxItems": 3, "items": VISUAL}
 STATUS = {"enum": ["new", "changed", "unchanged", "removed"]}
+# Trust zones, who may do what (access) and from where a finding is reachable are the security reviewer's
+# (reviewers.py), drawn over this picture; an analysis cached before that has them here and still loads.
 ARCHITECTURE = {"type": "object", "required": ["groups", "nodes", "edges"], "properties": {
     "groups": {"type": "array", "maxItems": 5, "items": {"type": "object", "required": ["id", "label", "kind"], "properties": {"id": S, "label": S, "kind": S}}},
     "nodes": {"type": "array", "maxItems": 12, "items": {"type": "object", "required": ["id", "group", "label", "description", "type", "status"], "properties": {
@@ -104,13 +107,16 @@ SCALE_TEXT = "; ".join(f"{level}: " + ", ".join(f"{k} ({v[1]})" for k, v in IMPA
 # How sure a finding is: confirmed (something that ran shows it), derived (it follows from the code that was read),
 # assumed (it needs something that could not be checked; the preconditions name it).
 CERTAINTY = ["confirmed", "derived", "assumed"]
-JUDGED = {"category": {"enum": CATEGORIES}, "impact": {"enum": list(SCALE)}, "effect": S, "preconditions": STRINGS, "certainty": {"enum": CERTAINTY}}
+EFFORT = ["quick", "moderate", "heavy"]  # what the fix takes
+JUDGED = {"category": {"enum": CATEGORIES}, "impact": {"enum": list(SCALE)}, "effect": S, "preconditions": STRINGS, "certainty": {"enum": CERTAINTY},
+          "effort": {"enum": EFFORT}}
 JUDGED_TEXT = ("impact (the gravest that applies; it sets the severity. " + SCALE_TEXT + "), effect (one sentence: what happens to "
                "whom when it occurs), preconditions (what must hold for it to occur, each one checkable, e.g. \"API_TOKEN is "
                "unset in the deployment\"; empty when it always occurs), certainty (confirmed: something that ran shows it, e.g. a "
                "test in the repo or a command's output; derived: it follows from the code you read, every step is in the files; "
                "assumed: it needs something you could not check, such as deployment settings or how a gateway or library "
-               "behaves, and preconditions names it)")
+               "behaves, and preconditions names it), effort (what the fix takes: quick: a few lines in one place; moderate: "
+               "several places or a new test; heavy: a design change, a migration or a change other teams must agree to)")
 # How the texts a person reads are written: markdown where it shortens the reading, never longer than prose. The UI
 # renders it in findings and comments; a title stands in one-line lists and stays plain.
 TEXTS = ("Texts: detail, suggestion, effect, why and a suggestion's text are markdown. Identifiers, paths and calls are "
@@ -150,7 +156,7 @@ FINDING = {"type": "object", "required": ["file", "line", "title", "detail", "su
     "criteria": STRINGS, "breaks": {"type": "object", "properties": {"node": S, "from": S, "to": S}}}}
 ASK_STATES = ["met", "partly", "broken", "not_done", "extra"]
 SCHEMA = {"type": "object", "required": ["title", "summary", "behavior", "merge_risk", "effort", "rule_checks", "architecture", "blast_radius", "steps", "asks",
-                                        "components", "access", "checked"], "properties": {
+                                        "components", "checked"], "properties": {
     "title": S, "summary": S, "behavior": S,
     "merge_risk": {"type": "object", "required": ["level", "why"], "properties": {"level": {"enum": ["minimal", "low", "medium", "high", "critical"]}, "why": S}},
     "effort": {"type": "object", "required": ["score", "why"], "properties": {"score": {"type": "integer", "minimum": 1, "maximum": 5}, "why": S}},
@@ -162,11 +168,9 @@ SCHEMA = {"type": "object", "required": ["title", "summary", "behavior", "merge_
         "id": S, "text": S, "acceptance": {"type": "boolean"}, "state": {"enum": ASK_STATES}, "why": S, "hunks": STRINGS, "elements": STRINGS}}},
     "components": {"type": "array", "maxItems": 16, "items": {"type": "object", "required": ["name", "kind", "status", "at", "operate"], "properties": {
         "name": S, "kind": S, "status": {"enum": ["new", "changed"]}, "at": S, "node": S, "operate": STRINGS}}},
-    "access": {"type": "array", "maxItems": 16, "items": {"type": "object", "required": ["resource", "kind", "principal", "actions", "public", "auth", "at"], "properties": {
-        "resource": S, "kind": S, "principal": S, "actions": STRINGS, "public": {"type": "boolean"}, "auth": S, "used": {"type": "boolean"}, "at": S, "node": S}}},
-    "checked": checked_schema(AREAS_SECURITY + AREAS_CODE),
-    "steps": {"type": "array", "items": {"type": "object", "required": ["title", "risk", "why_it_matters", "explanation", "reading_order", "hunks", "check_questions", "question_files"], "properties": {
-        "title": S, "risk": {"enum": LEVELS + ["skim"]}, "why_it_matters": S, "explanation": S, "reading_order": {"type": "integer"},
+    "checked": checked_schema(AREAS_CODE),
+    "steps": {"type": "array", "items": {"type": "object", "required": ["title", "risk", "why_it_matters", "explanation", "reading_order", "hunks", "check_questions", "question_files", "depends_on"], "properties": {
+        "title": S, "depends_on": STRINGS, "risk": {"enum": LEVELS + ["skim"]}, "why_it_matters": S, "explanation": S, "reading_order": {"type": "integer"},
         "hunks": STRINGS, "check_questions": {**STRINGS, "maxItems": 3}, "question_files": {**STRINGS, "maxItems": 3},
         "suggestions": {"type": "array", "items": {"type": "object", "required": ["hunk", "line", "side", "severity", "category", "text"], "properties": {
             "hunk": S, "line": {"type": "integer"}, "side": {"enum": ["new", "old"]}, "severity": {"enum": LEVELS}, "category": {"enum": CATEGORIES}, "text": S}}},
@@ -335,15 +339,8 @@ INVENTORY_TEXT = (
     "someone has to run or maintain, at most 16: name (as in the code or template), kind (e.g. module, function, endpoint, "
     "queue, lambda, job, table, config), status (new or changed), at (file:line), node (the id of its architecture node, when it "
     "is on the picture), operate (what running it needs that this PR does not bring, each a short phrase, e.g. \"no "
-    "dead-letter queue\"; empty when nothing). access: who may do what on the resources that the PR's infrastructure code "
-    "adds or changes (IAM policies and roles, resource policies, routes and their authorizers, public flags), one row per "
-    "grant or entry point, at most 16: resource (its name in the template), kind (e.g. queue, function, route, bucket, table), "
-    "principal (who gets it: a function, a role, \"anyone on the internet\"), actions (e.g. sqs:SendMessage, \"call GET "
-    "/items\"), public (true when it is reachable without credentials of the cloud account), auth (what checks the caller: "
-    "none, IAM, an authorizer, or e.g. \"bearer token checked in handler.py\"), used (false when nothing in the code uses "
-    "the grant), at (file:line), node (the id of its architecture node, if any); empty list when the PR has no infrastructure "
-    "code. checked: your own report of what you looked at, one row for each of these areas: "
-    + ", ".join(AREAS_SECURITY + AREAS_CODE) + "; each with " + CHECKED_TEXT + ".")
+    "dead-letter queue\"; empty when nothing). checked: your own report of what you looked at, one row for each of these areas: "
+    + ", ".join(AREAS_CODE) + "; each with " + CHECKED_TEXT + ".")
 
 
 def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None, lang="English", index=None, patches=None):
@@ -356,7 +353,8 @@ def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None,
             "low: configuration, small things; skim: renames, formatting, generated code, docs; tests are a layer of their own, titled "
             "\"Tests\", never skim and never part of \"Skimmed (low value)\": read what they cover and give the layer the risk of "
             "what they leave untested); why_it_matters (one sentence); "
-            "explanation (2-4 sentences: what changes and why); reading_order (1, 2, …: the order in which the PR is best "
+            "explanation (2-4 sentences: what changes and why); depends_on (the titles of the other layers whose code this "
+            "layer calls or whose types it uses, empty when none); reading_order (1, 2, …: the order in which the PR is best "
             "understood); hunks (aliases like h1); check_questions (1-3 concrete questions on what to check in exactly these lines; "
             "at most one for skim); question_files (one entry per check question, in the same order: the path of the file the "
             "question is about when that is exactly one file, else \"\"); suggestions (concrete suspicious lines in these hunks: "
@@ -381,9 +379,7 @@ def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None,
             "it shows; two different defects are two findings, also when they sit in the same lines; a line that a finding "
             "already covers is not also a suggestion; "
             "each in the layer whose code it is about; scope and requirement findings point at the line of the unrelated change "
-            "or of the gap (where the missing part belongs); in infrastructure code, a permission the diff grants that no code "
-            "uses and an entry point (a route, a function URL, a public bucket) without an authorizer are security findings at "
-            "their lines; no style nits; empty when nothing is confirmed); flows (at most 3, only where it helps: changed or new functions with "
+            "or of the gap (where the missing part belongs); no style nits; empty when nothing is confirmed); flows (at most 3, only where it helps: changed or new functions with "
             "function, at (file:line in the new version), inputs (name, type, example), output (type, example), side_effects, calls; "
             "examples concrete and realistic, derived from the code (types, structs, JSON bodies, DTOs, SQL rows, events), at most "
             "12 lines, invent nothing; trace: ONE example input followed through the function like in a debugger: per line path, "
@@ -424,7 +420,9 @@ def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None,
             "service, orchestration, status new/changed/unchanged/removed, at: file:line; an orchestrator such as a Step Functions "
             "state machine may list its states in order (name, type task/choice/parallel/map/wait/pass/fail/succeed, calls: the id "
             "of the node a task state invokes, status), each call is then drawn from that state's row), edges (from, to, label: "
-            "what happens, e.g. \"Creates invitation\"; draw them in call direction, caller to callee); at most 12 nodes, empty "
+            "what happens, e.g. \"Creates invitation\"; draw them in call direction, caller to callee); "
+            "when the code or the template opens a way in from outside (a route, a function URL, a public bucket), the caller "
+            "and the entry are nodes too (type external and gateway), so the way in is on the picture; at most 12 nodes, empty "
             "lists when the PR touches no architecture. visuals (optional, at most 3): pictures of the whole PR the architecture "
             "doesn't show, same form as a layer's (e.g. a sequence across several layers; a state diagram goes into the layer "
             "that changes the state machine, not here). blast_radius: units (the changed "
@@ -439,7 +437,7 @@ def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None,
              "sentence). The PR title is in the task.\n\nRules:\n" + (rules or "(none)"))
     if previous:
         text += ("\n\nThis is a FOLLOW-UP ANALYSIS: the diff below holds only the changes since the last review (aliases n1, n2, …). "
-                 "steps only for these new changes; summary: what changed since the last review; asks, components, access: empty lists. "
+                 "steps only for these new changes; summary: what changed since the last review; asks, components: empty lists. "
                  "The analysis so far:\n" + previous)
     if task_text and not previous:
         text += ("\n\nasks: Break the task below into its requirements. Per requirement: id (c1, c2, …), text (short), "
@@ -594,7 +592,7 @@ def judge(f, breaks_requirement=False):
     """A finding's severity by the fixed scale: from its impact (a finding that breaks a requirement is high; a gap in
     the tests leaves it unguarded, which is "untested"). One without an impact (an older analysis, a review turned
     from text) keeps its own. Unknown enum values go."""
-    for key, allowed in (("impact", SCALE), ("category", CATEGORIES), ("certainty", CERTAINTY)):
+    for key, allowed in (("impact", SCALE), ("category", CATEGORIES), ("certainty", CERTAINTY), ("effort", EFFORT)):
         if f.get(key) not in allowed:
             f.pop(key, None)
     if f.get("category") == "test" and f.get("impact"):
@@ -649,7 +647,7 @@ def place(answer):
             f["breaks"] = {"node": b["node"]}
         elif (b.get("from"), b.get("to")) in edges:
             f["breaks"] = {"from": b["from"], "to": b["to"], "edge": edges[(b["from"], b["to"])]}
-    for row in [*(answer.get("components") or []), *(answer.get("access") or [])]:
+    for row in answer.get("components") or []:
         if row.get("node") not in nodes:
             row.pop("node", None)
 
@@ -679,7 +677,8 @@ def finish(answer, root=None, path_of=None):
     state, for readers of the older field), findings (ids of the findings that break it; a "met" one with findings is
     partly). answer.unlinked: the ids of the requirements that are partly, broken or not_done although no finding names
     them (the model owes one; the UI can say so instead of showing an empty list). Findings: id (the UI's: "a" + fnv(category|file|title)), severity by the scale (judge), criteria only
-    those asks has, breaks only when the picture has it (place). Check questions: question_files as long as the
+    those asks has, breaks only when the picture has it (place). A layer's depends_on: only titles of other layers.
+    Check questions: question_files as long as the
     questions, a path only when it is a file of the diff (path_of: {hunk alias: path}) or the checkout. State diagrams
     sit in the layer of their state machine (seat_state_diagrams). Components: owner from CODEOWNERS (None:
     nobody), and component_counts {new, changed, no_owner, codeowners: the repo has such a file}.
@@ -694,10 +693,13 @@ def finish(answer, root=None, path_of=None):
         a["findings"] = []
     by_id = {a["id"]: a for a in asks}
     root = pathlib.Path(root) if root else None
+    titles = {st.get("title") for st in answer.get("steps") or []}
     for st in answer.get("steps") or []:
         files = [str(x or "").strip().removeprefix("./") for x in st.get("question_files") or []]
         known = lambda f: f in paths or bool(root and f and (root / f).is_file())  # noqa: E731
         st["question_files"] = [files[k] if k < len(files) and known(files[k]) else "" for k in range(len(st.get("check_questions") or []))]
+        if "depends_on" in st:
+            st["depends_on"] = [x for x in dict.fromkeys(st["depends_on"] or []) if x in titles and x != st.get("title")]
         for f in st.get("findings") or []:
             f["criteria"] = [c for c in dict.fromkeys(f.get("criteria") or []) if c in by_id]
             judge(f, any(by_id[c]["state"] != "extra" for c in f["criteria"]))
@@ -993,7 +995,7 @@ def main(req):
         blast["context"] = [c for c in blast.get("context") or [] if (pathlib.Path(wt) / c.get("file", "")).is_file()]
     scope = scope_of(answer, index, passes=len(cohorts) + 1 if cohorts else 1)
     out_hunks = [{"alias": h["alias"], "id": h["id"]} for h in hunks]
-    scope["checked"] = checked(answer.pop("checked", None), AREAS_SECURITY + AREAS_CODE)
+    scope["checked"] = checked(answer.pop("checked", None), AREAS_CODE)
     if prev:
         out_hunks, answer = merge_incremental(prev, answer, hunks, req["full"])
     finish(answer, wt if tools else None, {h["alias"]: h["path"] for h in (req["full"] if prev else hunks)})
@@ -1042,7 +1044,7 @@ def analyze_cohorts(req, cohorts, hunks, index, run, t, candidates, wt, lang, ca
     text = (f"This is the merge pass ({n} of {n}) over a big pull request analyzed in {len(cohorts)} cohorts. The layers below are "
             "final; write the whole-PR parts from them, the index and the code (read patches or the checkout where it helps): "
             "title, summary, behavior, merge_risk, effort, rule_checks, architecture, blast_radius, visuals, intent, "
-            "behavior_points, asks (hunks as aliases), components, access, checked and reading_order (the layer numbers in the "
+            "behavior_points, asks (hunks as aliases), components, checked and reading_order (the layer numbers in the "
             f"order the PR is best read). Write every text field in {lang}.\n\n" + picture_guide(lang) + "\n\n" + INVENTORY_TEXT +
             "\n\nLayers:\n" + digest +
             "\n\nCohort summaries:\n" + "\n".join(f"- {r.get('summary', '')}" for r in results) +
