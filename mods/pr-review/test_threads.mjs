@@ -295,7 +295,8 @@ console.log("threads ok");
   assert.ok(!after.slice(after.indexOf("--allowedTools"), after.indexOf("--disallowedTools")).some((x) => x.startsWith("Bash")), "no command is allowed");
   assert.deepEqual(after.slice(-3), ["--permission-mode", "dontAsk", "TASK"], "the task is the last argument, after an option that ends the deny list");
   // One branch per start: an old branch of the same probe is never met again.
-  assert.equal(TH.probeBranch(2, "race/../x y", "k3f9a"), "probe/2-racexy-k3f9a");
+  assert.equal(TH.probeBranch(2, "race_1", "k3f9a"), "probe/2-race_1-k3f9a");
+  assert.throws(() => TH.probeBranch(2, "race/../x y", "k3f9a"), /Probe refused/, "an id outside the rule is refused, never rewritten");
   assert.notEqual(TH.probeBranch(2, "p1"), TH.probeBranch(2, "p1", "other"));
   // The task: the claim, that the review runs the script (no command for the agent), the rules, the answer line.
   const task = TH.probePrompt({ pr: { number: 2, title: "t" }, head: "abcdef123456789", probe: { id: "p1", claim: "Two mails\nper loan", kind: "idempotency", at: "a.py:3" }, path: "/w/x", context: "CTX" });
@@ -335,4 +336,21 @@ console.log("threads ok");
     assert.equal(TH.probeNeedsText({ barrier: b, trusted: true }), null);
   }
   console.log("probe question ok");
+}
+
+{
+  // A probe id from a model's answer never leaves .pr-review-probe/: anything but 1 to 40 letters, digits, - and _ is
+  // refused before the write rules, the task and the branch name, not rewritten.
+  const bad = ["../x", "a/b", "*", "a b", "", "x".repeat(41), null, 7];
+  for (const id of bad) {
+    assert.throws(() => TH.probeId(id), /Probe refused/, String(id));
+    assert.throws(() => TH.probeArgs({ cwd: "/w/x", name: "n", task: "T", job: "j", id }), /Probe refused/, String(id));
+    assert.throws(() => TH.probePrompt({ probe: { id, claim: "c" }, path: "/w/x" }), /Probe refused/, String(id));
+    assert.throws(() => TH.probeBranch(2, id, "k"), /Probe refused/, String(id));
+  }
+  const ok = "ok_1-" + "y".repeat(35);
+  assert.equal(TH.probeId(ok), ok);
+  assert.equal(TH.probeBranch(2, ok, "k"), `probe/2-${ok}-k`);
+  assert.ok(TH.probeArgs({ cwd: "/w/x", name: "n", task: "T", job: "j", id: ok }).includes(`Write(//w/x/.pr-review-probe/${ok}.py)`));
+  console.log("probe id ok");
 }

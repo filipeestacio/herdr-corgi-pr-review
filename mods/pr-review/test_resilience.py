@@ -59,6 +59,13 @@ assert p[3]["probe"] is None and p[3]["limited_by"] == "library/x.py:4"
 assert [(c["check"], c["result"]) for c in v["checks"]] == [("cors", "clean"), ("rollback", "not_checkable")]
 assert [(x["id"], x["status"]) for x in v["probes"]] == [("r1", "proposed")] and v["not_checked"] == ["load under real traffic"]
 assert "ref" not in new[0], "the ref is the model's, the id stays"
+# A probe id names a file, a branch and a write rule: 1 to 40 letters, digits, - and _. Another one is dropped, and
+# not_checked says so; a path's link to it goes too.
+bad = ["../x", "a/b", "*", "a b", "", "x" * 41]
+w = resilience.view({**answer, "probes": [{"id": b, "claim": "c", "of": "p1", "kind": "race", "strength": "runs_pr_code"} for b in bad] + [{"id": "ok_1-" + "y" * 35, "claim": "c", "of": "p1"}],
+                     "paths": [{**answer["paths"][0], "probe": "../x"}]}, new, pic, ["a1"])
+assert [x["id"] for x in w["probes"]] == ["ok_1-" + "y" * 35], w["probes"]
+assert sum("A probe was dropped" in x for x in w["not_checked"]) == len(bad) and w["paths"][0]["probe"] is None
 # The base rule (wave R2, D5): a new finding is the PR's only in lines the diff adds; one whose lines stand unchanged
 # in the base was there before, also on a path through a new node; without the diff: unknown (None).
 base = [{"id": "m1", "ref": "r_f1", "file": "library/mailer.py", "line": 14, "introduced_here": True},

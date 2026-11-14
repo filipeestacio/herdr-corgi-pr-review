@@ -47,7 +47,7 @@ import threading
 import time
 
 PROBE_DIR = ".pr-review-probe"
-ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
+ID = re.compile(r"[A-Za-z0-9_-]{1,40}")  # as threads.js PROBE_ID and resilience.py PROBE_ID
 REV = re.compile(r"[A-Za-z0-9][A-Za-z0-9_./^~-]{0,199}")
 LIMIT_S, OUT_CAP, READ_CAP = 30, 4096, 65536
 STRENGTHS = ("runs_pr_code", "forced_schedule", "models_env")
@@ -347,7 +347,7 @@ def main(argv):
         return refuse("usage: probe.py <checkout> <id> [--base <rev>]")
     checkout, pid = os.path.realpath(args[0]), args[1]
     if not ID.fullmatch(pid):
-        return refuse("an id is letters, digits, - and _ (at most 64)")
+        return refuse("an id is 1 to 40 letters, digits, - and _")
     t = os.environ.get("PROBE_TIMEOUT", "")  # tests: a shorter limit, never a longer one
     limit = min(LIMIT_S, max(1, int(t))) if t.isdigit() else LIMIT_S
     try:
