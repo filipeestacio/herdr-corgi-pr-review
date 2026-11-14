@@ -772,8 +772,9 @@ export function triageOf({ pr, analysis = null, size = null, security = [], rela
   const why = llm?.why ?? (overlap ? `Review this early: ${overlap} other open ${overlap === 1 ? "PR touches" : "PRs touch"} the same files, so its assumptions shape theirs.`
     : high ? `Review this early: merge risk is ${risk}${analysis.mergeRisk.why ? ` (${analysis.mergeRisk.why})` : ""}.`
     : score !== null && score <= 2 && !sec ? "A quick look should do: small and low risk." : null);
-  const depth = score === null ? null : score >= 3 || high ? "Deep review" : "Quick look";
-  return { priority, why, chips: [sec, type, depth, effort].filter(Boolean) };
+  // ponytail: no "Deep review" / "Quick look" any more: from the same score as the effort, it said "Deep review" beside
+  // "Low effort" whenever the merge risk was high.
+  return { priority, why, type, chips: [sec, type, effort].filter(Boolean) };
 }
 
 // ---- PRs you didn't open (main.js sources "This repo", "Review requested", "Open PR…")
