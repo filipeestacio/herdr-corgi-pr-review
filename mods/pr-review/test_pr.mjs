@@ -502,6 +502,8 @@ console.log("ok");
   const related = { open: [{ number: 1, overlap: 4, files: ["a"], stacked: true }, { number: 5, overlap: 1, files: ["b"] }] };
   assert.deepEqual(mergeBlockers({ related }).map((b) => b.title), ["Overlaps with open PR #5"]);
   assert.equal(triageOf({ pr: { title: "x" }, related: { open: [related.open[0]] } }).priority, 3);
+  // The other way round (related.py stacked_above): PR #1 seen from below, PR #2 builds on it: no blocker either.
+  assert.deepEqual(mergeBlockers({ related: { open: [{ number: 2, overlap: 4, files: ["a"], stacked: true, above: true }] } }), []);
   console.log("ok overview");
 }
 

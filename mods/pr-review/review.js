@@ -646,7 +646,7 @@ export const ReviewMode = {
       if (this.prSel?.url !== url) return;
       if (before) { this.ctx = before; this.securityNow(cx); this.publish(); cx.notify(); }
       if (before && Date.now() - Date.parse(before.at) < CTX_MS) return;
-      const req = { url, head, base: this.prSel.base ?? "main", worktree: this.worktree?.path ?? null, files: (this.patch ?? []).map((f) => f.path).filter((f) => !lowValue(f)), out }; // lockfiles would relate everything
+      const req = { url, head, base: this.prSel.base ?? "main", branch: this.prSel.head ?? null, worktree: this.worktree?.path ?? null, files: (this.patch ?? []).map((f) => f.path).filter((f) => !lowValue(f)), out }; // lockfiles would relate everything
       const r = await exec("python3", [`${appHome()}/mods/pr-review/related.py`, JSON.stringify(req)], { timeout: 400000 }).catch(() => null);
       if (this.prSel?.url !== url || r?.code !== 0) return;
       this.ctx = JSON.parse(r.stdout);
@@ -2922,10 +2922,10 @@ export const ReviewMode = {
       .when(Boolean(ctx) && !related.length, (e) => e.child(div().text_size(12.5).text_color(t.muted).child("No other open PR and no PR merged in the last 90 days touches these files.")))
       .children(related.map((p) => h_flex().id(`rv-rel-${p.number}`).tooltip("Open this related PR in its own review").gap(8).items_center().p(6).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
         .on_click((_e, cx) => this.openRelated(p, cx))
-        .child(chip(t, p.stacked ? "base" : p.state, p.stacked ? t.accent : p.state === "open" ? t.ansi2 : t.ansi5, false, `rv-relst-${p.number}`, p.stacked ? "This PR is stacked on that one: its branch is this PR's base" : "Whether that PR is still open or already merged"))
+        .child(chip(t, p.above ? "on top" : p.stacked ? "base" : p.state, p.stacked ? t.accent : p.state === "open" ? t.ansi2 : t.ansi5, false, `rv-relst-${p.number}`, p.above ? "That PR is stacked on this one: its base is this PR's branch, so it merges after it" : p.stacked ? "This PR is stacked on that one: its branch is this PR's base" : "Whether that PR is still open or already merged"))
         .child(div().flex_none().text_size(13).text_color(t.muted).child(`#${p.number}`))
         .child(div().flex_1().min_w(0).truncate().text_size(13.5).child(p.title))
-        .child(div().id(`rv-relf-${p.number}`).flex_none().text_size(12).text_color(t.muted).tooltip((p.files ?? []).join("\n") || "-").child(p.stacked ? "this PR builds on it" : `${p.overlap} ${p.overlap === 1 ? "file" : "files"} overlap`))));
+        .child(div().id(`rv-relf-${p.number}`).flex_none().text_size(12).text_color(t.muted).tooltip((p.files ?? []).join("\n") || "-").child(p.above ? "it builds on this PR" : p.stacked ? "this PR builds on it" : `${p.overlap} ${p.overlap === 1 ? "file" : "files"} overlap`))));
     const out = [["top", head], (ai || fc.total > 0) && ["task", this.asksPane(t, list, W)], ai && ["changed", changed()], rows.length > 0 && ["checks", checksEl()], ["related", relatedEl]].filter(Boolean);
     return out;
   },

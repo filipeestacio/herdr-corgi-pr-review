@@ -6,9 +6,10 @@ Related: the 30 most recently updated other OPEN PRs of the repo that change the
 MERGED into the base in the last 90 days that touched them (git log on the files, PR numbers from merge and squash
 subjects). Checks: `gh pr checks`; mergeability: `gh pr view`. A stacked PR: when the base branch is the head branch of
 another open PR of the same repo, that PR is stacked_on {number, title, url} and its row in `open` has stacked true (the
-merge order is settled, so the overlap is no conflict to agree on). security_trigger says whether the security reviewer
+merge order is settled, so the overlap is no conflict to agree on). The other way round: an open PR whose base is
+this PR's head branch (`branch`) builds on it, is listed in stacked_above and its row in `open` has stacked and above. security_trigger says whether the security reviewer
 should start by itself for this diff, decided from the diff alone: {run, reasons: [{file, line, rule, text}], why_not}.
-Writes {at, head, open, merged, checks, mergeable, merge_state, stacked_on, security_trigger} to `out` (pr-data/cache,
+Writes {at, head, open, merged, checks, mergeable, merge_state, stacked_on, stacked_above, security_trigger} to `out` (pr-data/cache,
 keyed by PR and head; prs.py --prune bounds that folder) and prints it.
 """
 import datetime as dt
@@ -33,6 +34,11 @@ def stacked_on(base, prs):
     """The open PR whose head branch is `base` (prs [{number, title, url, branch, fork}]; a fork's branch of the same
     name is another branch), or None."""
     return next(({k: p[k] for k in ("number", "title", "url")} for p in prs if base and p.get("branch") == base and not p.get("fork")), None)
+
+
+def stacked_above(branch, prs):
+    """The open PRs whose base branch is `branch` (this PR's head branch): they build on this one."""
+    return [{k: p[k] for k in ("number", "title", "url")} for p in prs if branch and p.get("base") == branch]
 
 
 # ---- Should the security reviewer start by itself? Decided from the diff alone, no model: a wrong yes costs one
@@ -144,11 +150,12 @@ def run(cmd, cwd=None, timeout=120):
 def main(req):
     m = re.match(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)", req["url"])
     repo, number, files, wt = m[1], int(m[2]), req.get("files") or [], req.get("worktree")
-    raw = run(["gh", "pr", "list", "--repo", repo, "--state", "open", "--limit", str(OPEN_LIMIT), "--json", "number,title,url,files,headRefName,isCrossRepository"])
+    raw = run(["gh", "pr", "list", "--repo", repo, "--state", "open", "--limit", str(OPEN_LIMIT), "--json", "number,title,url,files,headRefName,baseRefName,isCrossRepository"])
     others = [{"number": p["number"], "title": p["title"], "url": p["url"], "files": [f["path"] for f in p.get("files") or []],
-               "branch": p.get("headRefName"), "fork": bool(p.get("isCrossRepository"))}
+               "branch": p.get("headRefName"), "base": p.get("baseRefName"), "fork": bool(p.get("isCrossRepository"))}
               for p in json.loads(raw or "[]") if p["number"] != number]
-    below = stacked_on(req.get("base"), others)
+    below, above = stacked_on(req.get("base"), others), stacked_above(req.get("branch"), others)
+    on_top = {p["number"] for p in above}
     merged, diff = [], None
     if wt and files and pathlib.Path(wt).is_dir():
         base = req.get("base") or "main"
@@ -158,8 +165,9 @@ def main(req):
         merged = [{**p, "url": f"https://github.com/{repo}/pull/{p['number']}"} for p in overlap(files, merged_from_log(log or "")) if p["number"] != number]
     checks = json.loads(run(["gh", "pr", "checks", req["url"], "--json", "name,bucket,link"]) or "[]")
     view = json.loads(run(["gh", "pr", "view", req["url"], "--json", "mergeable,mergeStateStatus"]) or "{}")
-    result = {"at": dt.datetime.now().astimezone().isoformat(), "head": req.get("head"), "stacked_on": below,
-              "open": [{**p, "stacked": bool(below) and p["number"] == below["number"]} for p in overlap(files, others)], "merged": merged,
+    result = {"at": dt.datetime.now().astimezone().isoformat(), "head": req.get("head"), "stacked_on": below, "stacked_above": above,
+              "open": [{**p, "stacked": (bool(below) and p["number"] == below["number"]) or p["number"] in on_top, "above": p["number"] in on_top}
+                       for p in overlap(files, others)], "merged": merged,
               "checks": [{"name": c["name"], "bucket": c.get("bucket") or "pending", "link": c.get("link")} for c in checks],
               "mergeable": view.get("mergeable"), "merge_state": view.get("mergeStateStatus"),
               "security_trigger": security_trigger(diff_files(diff) if diff else [{"path": f} for f in files])}
