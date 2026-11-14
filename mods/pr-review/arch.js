@@ -194,6 +194,9 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
   const pullRight = () => {
     for (const id of [...ids0].sort((a, b) => col.get(b) - col.get(a))) {
       const out = edges.filter((e) => e.from === id && col.get(e.to) > col.get(id));
+      // A card a group to its left calls (a way in, called from outside) stays next to its caller: pulled right, its
+      // incoming call would be a stub across the group's other columns.
+      if (edges.some((e) => e.to === id && gOf(e.from) !== gOf(id) && col.get(e.from) === col.get(id) - 1)) continue;
       if (out.length) col.set(id, Math.max(col.get(id), Math.min(lastCol(gOf(id)), ...out.map((e) => col.get(e.to) - 1))));
     }
   };
