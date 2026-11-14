@@ -56,8 +56,8 @@ title bar (traffic lights at 12, 16):
   (14 px semibold), `owner/repo#n`, a state badge, a context tag (only with several contexts), merge risk and
   review effort badges, `Pre-merge checks ✓ n ✗ n`, `Mark done`, a round `?` (the keys popup), `Reviews ▾`,
   `Values: On`, the model picker (Sonnet / Opus, never Haiku: it reads and judges code) and the shown analysis' model and cost (it truncates first
-  when the window is narrow), and at the right GitHub's green (`#238636`) `Review changes ▾`, which reads
-  `Finish your review (n) ▾` while n comments are pending.
+  when the window is narrow), and at the right GitHub's green (`#238636`) `Finish your review ▾`, with the
+  count n while n comments are pending.
 - The body (`{part: "review"}`): a 420 px left column with the tabs `Files · n`, `Analysis · n`, `Comments · n`,
   `Findings · n`; a tab's help text opens under the tab row after a short rest.
   Analysis: on top the PR's pages as a small group (Overview, Architecture impact with a plain `Changed`, Security

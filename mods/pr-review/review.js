@@ -2564,10 +2564,11 @@ export const ReviewMode = {
         : div().id("rv-reviews-btn").tooltip("Run Claude or security reviews of this PR, read-only; see each run's status").flex_none().px(14).h(32).flex().items_center().rounded(7).bg(GH_GREEN).text_color("#ffffff").text_size(13).font_semibold()
           .cursor_pointer().on_mouse_down("left", stop).on_click(openRuns).child(runLabel))
       .when(meta.url === pr?.url && Boolean(meta.dry), (e) => e.child(badge(t, "Dry run", t.ansi3).id("rv-bar-dry").tooltip(DRY_TIP)))
-      // GitHub's green "Review changes" / "Finish your review", with the pending count; the review copy draws the popover.
+      // The green "Finish your review", with the pending count (one name for the step, with or without comments); the
+      // review copy draws the popover.
       .child(div().id("rv-finish-btn").tooltip("Preview your pending comments, then post them to GitHub or send them to an agent").flex_none().px(14).h(32).flex().items_center().gap(6).rounded(7).bg(GH_GREEN).text_color("#ffffff").text_size(13).font_semibold()
         .cursor_pointer().on_mouse_down("left", stop).on_click(() => run("pr-review.finish"))
-        .child(pending ? "Finish your review" : "Review changes")
+        .child("Finish your review")
         .when(pending > 0, (e) => e.child(div().px(6).rounded_full().bg("#ffffff").text_color(GH_GREEN).text_size(11.5).child(String(pending))))
         .child("▾"));
   },
