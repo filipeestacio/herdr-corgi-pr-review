@@ -148,8 +148,14 @@ w5 = {"architecture": {"groups": [{"id": "g_fd"}, {"id": "g_c"}],
       "edges": [{"from": "h", "to": "c", "status": "new", "in_process": True}, {"from": "q", "to": "c", "status": "new"}, {"from": "c", "to": "m", "status": "new", "in_process": True},
                 {"from": "h", "to": "lib", "status": "new", "in_process": True}]}}
 w5["architecture"]["nodes"].append({"id": "lib", "status": "unchanged"})
-cfg = pathlib.Path(tempfile.mkdtemp())
+cfg = pathlib.Path(tempfile.mkdtemp()) / "repo"
+cfg.mkdir()
+(cfg.parent / "secret.yaml").write_text("FRONT_DESK_TOKEN: from-outside\n")  # outside the checkout
 (cfg / "template.yaml").write_text("Resources:\n  Fn:\n    Environment:\n      API_KEY: x\n")
+(cfg / "config.yaml").symlink_to(cfg.parent / "secret.yaml")  # a PR can check in a symlink to a file outside
+import subprocess  # noqa: E402
+subprocess.run(["git", "init", "-q"], cwd=cfg, check=True)
+subprocess.run(["git", "add", "template.yaml", "config.yaml"], cwd=cfg, check=True)
 ans5 = {"zones": [{"id": "p", "trust": "public", "nodes": ["h"]}, {"id": "i", "trust": "internal", "nodes": ["g_c", "c", "lib"]}, {"id": "d", "trust": "data", "nodes": ["q"]}],
         "access": [{"resource": "Api", "public": True, "auth_kind": "code", "at": "lib/handler.py:9", "node": "h", "change": "added", "principal": "anyone"},
                    {"resource": "Queue", "public": False, "auth_kind": "iam", "at": "t.yaml:5", "node": "q", "change": "added", "principal": "FrontDesk role", "principal_node": "g_fd"},
@@ -172,6 +178,13 @@ assert tok[0]["reach_conflict"] == {"finding": {"reachable_from": ["acc2"], "rea
 assert (tok[0]["reachability"], tok[0]["reachable_from"]) == ("public", ["acc1", "acc2"]), "the more exposed side wins, the threat's row first"
 ops = [(r["resource"], r["value_from"], r["node"]) for r in v5["access"] if r.get("derived")]
 assert ops == [("FRONT_DESK_TOKEN", None, "h"), ("API_KEY", "template.yaml:4", "h")], "an operator way in per setting, with where the repository sets it"
+assert reviewers.value_from(cfg, "FRONT_DESK_TOKEN") is None, "a tracked symlink to a file outside is never read"
+# The code line of a finding is read only from a regular file inside the checkout, whatever path the model names.
+outside = reviewers.normalize([{"file": "../secret.yaml", "line": 1, "title": "t", "detail": "d"}, {"file": "config.yaml", "line": 1, "title": "t2", "detail": "d"},
+                               {"file": str(cfg.parent / "secret.yaml"), "line": 1, "title": "t3", "detail": "d"}, {"file": "template.yaml", "line": 4, "title": "t4", "detail": "d"}], "claude", cfg)
+assert [x["code"] for x in outside] == ["", "", "", "      API_KEY: x"], [x["code"] for x in outside]
+loop = {"architecture": {"groups": [], "nodes": [{"id": "a", "runs_in": "b"}, {"id": "b", "runs_in": "a"}, {"id": "c", "runs_in": "a"}], "edges": []}}
+assert reviewers.security_view({"zones": [{"id": "z", "trust": "public", "nodes": []}]}, [], loop, None)["zones"][0]["nodes"] == [], "a runs_in cycle ends, nothing inherits"
 agree = [{"id": "ok", "ref": "f1", "file": "lib/handler.py", "line": 9, "impact": "unauthorized_access"}]
 reviewers.security_view(ans5, agree, w5, {"lib/handler.py": {9}}, None)
 assert "reach_conflict" not in agree[0] and agree[0]["reachable_from"] == ["acc1"], "finding and threat at the same row: no conflict"

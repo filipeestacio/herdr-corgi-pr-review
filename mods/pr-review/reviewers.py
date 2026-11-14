@@ -204,12 +204,9 @@ def normalize(raw, reviewer, worktree):
         title = str(f.get("title") or "").strip()
         if not path or not title:
             continue
-        code = ""
-        try:
-            lines = (pathlib.Path(worktree) / path).read_text(errors="replace").splitlines()
-            code = lines[line - 1] if 0 < line <= len(lines) else ""
-        except OSError:
-            pass
+        text = review.read_checkout(worktree, path)  # the model's path: only a regular file inside the checkout
+        lines = text.splitlines() if text else []
+        code = lines[line - 1] if 0 < line <= len(lines) else ""
         fid = hashlib.sha1(f"{reviewer}|{path}|{line}|{title}".encode()).hexdigest()[:12]
         out.append({"id": fid, "reviewer": reviewer, "file": path, "line": line, "end": int(f.get("end") or line),
                     "severity": f["severity"], "title": title, "detail": str(f.get("detail") or ""), "suggestion": str(f.get("suggestion") or ""),
@@ -316,10 +313,11 @@ def security_view(answer, findings, pic, changed, root=None):
             mine = [n for n in dict.fromkeys(z.get("nodes") or []) if n in ids and n not in zone_of]
             zone_of.update((n, z) for n in mine)
             zones.append({"id": str(z["id"]), "name": str(z.get("name") or z["id"]), "trust": z["trust"], "evidence": str(z.get("evidence") or ""), "nodes": mine})
-    for n in ids:  # code without a deployment of its own stands where it runs (two steps at most)
-        host = runs_in.get(n)
-        while n not in zone_of and host and host in runs_in and host not in zone_of:
-            host = runs_in[host] if runs_in[host] != host else None
+    for n in ids:  # code without a deployment of its own stands where it runs (along runs_in; a cycle ends it)
+        host, seen = runs_in.get(n), {n}
+        while n not in zone_of and host in runs_in and host not in zone_of and host not in seen:
+            seen.add(host)
+            host = runs_in[host]
         if n not in zone_of and host in zone_of:
             zone_of[n] = zone_of[host]
     trust = lambda n: (zone_of.get(n) or {}).get("trust")  # noqa: E731
@@ -442,20 +440,22 @@ CONFIG_FILES = re.compile(r"\.(ya?ml|json|toml|tf|tfvars|env|ini|cfg|conf)$|(^|/
 
 
 def value_from(root, name):
-    """Where the checkout's configuration sets `name` (file:line of the first config file that names it), or None."""
-    base = pathlib.Path(root) if root else None
-    if not base or not base.is_dir():
+    """Where the checkout's configuration sets `name` (file:line of the first config file that names it), or None.
+    Only files git tracks as regular files (`ls-files -s`: no symlink, mode 120000, no submodule), each read through
+    review.read_checkout (inside the checkout, at most READ_CAP bytes): a PR can check in `config.yaml -> ~/.ssh/...`."""
+    if not root or not pathlib.Path(root).is_dir():
         return None
-    for f in sorted(base.rglob("*")):
-        rel = f.relative_to(base).as_posix()
-        if rel.startswith(".git/") or not f.is_file() or not CONFIG_FILES.search(rel):
+    try:
+        listed = git("ls-files", "-s", "-z", cwd=root)
+    except (RuntimeError, OSError, subprocess.SubprocessError):
+        return None
+    for entry in listed.split("\0"):
+        meta, _, rel = entry.partition("\t")
+        if not rel or not meta.startswith("100") or not CONFIG_FILES.search(rel):  # 100644/100755: regular files only
             continue
-        try:
-            for k, line in enumerate(f.read_text(errors="replace").splitlines(), 1):
-                if name in line:
-                    return f"{rel}:{k}"
-        except OSError:
-            continue
+        for k, line in enumerate((review.read_checkout(root, rel) or "").splitlines(), 1):
+            if name in line:
+                return f"{rel}:{k}"
     return None
 
 

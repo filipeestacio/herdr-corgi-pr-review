@@ -323,6 +323,42 @@ def adr_digest(text):
     return "\n".join(out).strip()[:800]
 
 
+READ_CAP = 256_000  # bytes read from one file of a checkout at most
+
+
+def checkout_file(root, rel):
+    """rel as a regular file inside the checkout root, or None. A PR is someone else's code: no absolute path, ~ or ..,
+    no symlink anywhere on the way (a PR can check in `config.yaml -> ~/.ssh/id_rsa`), and the resolved file must lie
+    inside root. Paths come from the checkout's own listing or from a model's answer."""
+    if not root or not rel:
+        return None
+    text = str(rel).strip().replace("\\", "/").removeprefix("./")
+    if not text or text.startswith(("/", "~")) or ".." in text.split("/"):
+        return None
+    base, cur = pathlib.Path(root).resolve(), pathlib.Path(root)
+    for part in pathlib.PurePosixPath(text).parts:
+        cur = cur / part
+        if cur.is_symlink():
+            return None
+    try:
+        real = cur.resolve()
+    except OSError:
+        return None
+    return cur if real.is_relative_to(base) and cur.is_file() else None
+
+
+def read_checkout(root, rel, cap=READ_CAP):
+    """The text of a file of the checkout (checkout_file), at most cap bytes; None when it is not one."""
+    f = checkout_file(root, rel)
+    if f is None:
+        return None
+    try:
+        with open(f, "rb") as fh:
+            return fh.read(cap).decode("utf-8", errors="replace")
+    except OSError:
+        return None
+
+
 def repo_rules(root, budget=RULE_BUDGET):
     """The repo's own rules from the checkout: CLAUDE.md, AGENTS.md, CONTRIBUTING.md, .github instructions (each
     capped), then ADR titles and status/decision sections (docs/adr, adr), all within `budget` characters, plus the
@@ -330,13 +366,17 @@ def repo_rules(root, budget=RULE_BUDGET):
     root = pathlib.Path(root) if root else None
     parts = []
     if root and root.is_dir():
-        files = [root / f for f in RULE_FILES] + sorted((root / ".github").glob("**/*instructions*.md"))
-        for f in files:
-            if f.is_file():
-                parts.append(f"### {f.relative_to(root)}\n{f.read_text(errors='replace').strip()[:FILE_BUDGET]}")
+        # Only regular files inside the checkout (read_checkout): a rules file that is a symlink is skipped.
+        files = [*RULE_FILES, *sorted(f.relative_to(root).as_posix() for f in (root / ".github").glob("**/*instructions*.md"))]
+        for rel in files:
+            text = read_checkout(root, rel)
+            if text is not None:
+                parts.append(f"### {rel}\n{text.strip()[:FILE_BUDGET]}")
         for d in ("docs/adr", "adr", "docs/decisions"):
             for f in sorted((root / d).glob("*.md"))[-30:]:  # ponytail: the 30 newest by name; ADRs are numbered
-                parts.append(f"### {f.relative_to(root)}\n{adr_digest(f.read_text(errors='replace'))}")
+                text = read_checkout(root, f.relative_to(root).as_posix())
+                if text is not None:
+                    parts.append(f"### {f.relative_to(root)}\n{adr_digest(text)}")
     g = global_rules()
     out = [f"### Global conventions\n{g}"] if g else []
     used = len(g)
@@ -673,9 +713,9 @@ def checked(rows, areas):
 def code_owners(root):
     """The CODEOWNERS rules of a checkout, in file order: [(pattern, owners)]; None when it has no such file."""
     for name in (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"):
-        f = pathlib.Path(root or "/nonexistent") / name
-        if f.is_file():
-            rows = [line.split("#")[0].split() for line in f.read_text(errors="replace").splitlines()]
+        text = read_checkout(root, name)
+        if text is not None:
+            rows = [line.split("#")[0].split() for line in text.splitlines()]
             return [(r[0], " ".join(r[1:])) for r in rows if r]
     return None
 
@@ -712,6 +752,17 @@ def place(answer):
     groups = {g.get("id") for g in arch.get("groups") or []}
     for n in arch.get("nodes") or []:  # runs_in: a group or another node, else none
         if n.get("runs_in") not in (nodes | groups) - {n.get("id")}:
+            n.pop("runs_in", None)
+    runs = {n.get("id"): n for n in arch.get("nodes") or []}
+    for n in arch.get("nodes") or []:  # and no cycle (a -> b -> a): the node that closes it loses its runs_in
+        seen, cur = {n.get("id")}, n.get("runs_in")
+        while cur in runs and runs[cur].get("runs_in"):
+            if cur in seen:
+                n.pop("runs_in", None)
+                break
+            seen.add(cur)
+            cur = runs[cur]["runs_in"]
+        if cur in seen and n.get("runs_in"):
             n.pop("runs_in", None)
     for e in arch.get("edges") or []:
         if not isinstance(e.get("in_process"), bool):
@@ -797,7 +848,7 @@ def finish(answer, root=None, path_of=None, changed=None):
     titles = {st.get("title") for st in answer.get("steps") or []}
     for st in answer.get("steps") or []:
         files = [str(x or "").strip().removeprefix("./") for x in st.get("question_files") or []]
-        known = lambda f: f in paths or bool(root and f and (root / f).is_file())  # noqa: E731
+        known = lambda f: f in paths or bool(root and f and checkout_file(root, f))  # noqa: E731
         st["question_files"] = [files[k] if k < len(files) and known(files[k]) else "" for k in range(len(st.get("check_questions") or []))]
         if "depends_on" in st:
             st["depends_on"] = [x for x in dict.fromkeys(st["depends_on"] or []) if x in titles and x != st.get("title")]
@@ -1095,7 +1146,7 @@ def main(req):
     account(answer, aliases, index)
     if tools:  # only context files that exist: no invented callers
         blast = answer.get("blast_radius") or {}
-        blast["context"] = [c for c in blast.get("context") or [] if (pathlib.Path(wt) / c.get("file", "")).is_file()]
+        blast["context"] = [c for c in blast.get("context") or [] if checkout_file(wt, c.get("file", ""))]
     scope = scope_of(answer, index, passes=len(cohorts) + 1 if cohorts else 1)
     out_hunks = [{"alias": h["alias"], "id": h["id"]} for h in hunks]
     scope["checked"] = checked(answer.pop("checked", None), AREAS_CODE)
@@ -1103,7 +1154,7 @@ def main(req):
         out_hunks, answer = merge_incremental(prev, answer, hunks, req["full"])
     paths = {h["path"] for h in (req["full"] if prev else hunks)}
     scope["read"] = [p for p in dict.fromkeys(str(x).strip().removeprefix("./") for x in answer.pop("read", None) or [])
-                     if p and p not in paths and (not tools or (pathlib.Path(wt) / p).is_file())]
+                     if p and p not in paths and (not tools or checkout_file(wt, p))]
     finish(answer, wt if tools else None, {h["alias"]: h["path"] for h in (req["full"] if prev else hunks)}, None if prev else changed_lines(hunks))
     cost = sum(m.get("cost") or 0 for m in metas) if any(m.get("cost") is not None for m in metas) else None
     result = {"source": req.get("source") or req.get("pr"), "model": model, "model_id": next((m["model_id"] for m in metas if m.get("model_id")), model),

@@ -246,6 +246,26 @@ rp = {"architecture": {"groups": [{"id": "g_fd"}], "nodes": [{"id": "h", "runs_i
 review.place(rp)
 assert [n.get("runs_in") for n in rp["architecture"]["nodes"]] == ["g_fd", "h", None, None] and [e.get("in_process") for e in rp["architecture"]["edges"]] == [True, None], \
     "runs_in names a group or another node; in_process is a bool"
+cy = {"architecture": {"groups": [], "nodes": [{"id": "a", "runs_in": "b"}, {"id": "b", "runs_in": "a"}, {"id": "c", "runs_in": "a"}, {"id": "d", "runs_in": "c"}], "edges": []}, "steps": []}
+review.place(cy)
+chain = {n["id"]: n.get("runs_in") for n in cy["architecture"]["nodes"]}
+assert sum(1 for k in ("a", "b") if chain[k]) == 1 and chain["c"] == "a" and chain["d"] == "c", ("a cycle loses one link, the rest stays", chain)
+
+# Files of a checkout are read only as regular files inside it: no symlink on the way, no .., no absolute path.
+top = pathlib.Path(tempfile.mkdtemp())
+(top / "outside.md").write_text("SECRET\n")
+co = top / "co"
+(co / "docs").mkdir(parents=True)
+(co / "CONTRIBUTING.md").write_text("Use small PRs.\n")
+(co / "CLAUDE.md").symlink_to(top / "outside.md")
+(co / "linked").symlink_to(top)
+(co / ".github").mkdir()
+(co / ".github" / "CODEOWNERS").symlink_to(top / "outside.md")
+assert review.read_checkout(co, "CONTRIBUTING.md") == "Use small PRs.\n" and review.read_checkout(co, "CONTRIBUTING.md", cap=3) == "Use"
+for bad in ("CLAUDE.md", "linked/outside.md", "../outside.md", str(top / "outside.md"), "~/x", "docs", "nope.md"):
+    assert review.read_checkout(co, bad) is None, bad
+rules = review.repo_rules(co)
+assert "Use small PRs." in rules and "SECRET" not in rules and review.code_owners(co) is None, "symlinked rules and CODEOWNERS are skipped"
 assert ans["steps"][0]["question_files"] == ["library/loans.py", "library/s.py", ""], ans["steps"][0]["question_files"]
 assert [c["owner"] for c in ans["components"]] == ["@ops", "@lib-team @lead", None], [c["owner"] for c in ans["components"]]
 assert ans["component_counts"] == {"new": 2, "changed": 1, "no_owner": 1, "codeowners": True}
