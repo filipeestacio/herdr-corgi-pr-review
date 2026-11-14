@@ -155,6 +155,9 @@ assert.deepEqual([capped.req.hunks.map((h) => h.alias), capped.req.cut], [["h2",
 const { tierOf } = await import("./pr.js");
 assert.deepEqual(["haiku", "claude-haiku-4-5-20251001", "sonnet", "claude-sonnet-5", "opus", "fable", "claude-fable-5-1[1m]", undefined].map(tierOf),
   ["haiku", "haiku", "sonnet", "sonnet", "opus", "opus", "opus", "opus"]);
+// Code is read and judged by at least Sonnet: a stored haiku (an old pick) becomes sonnet.
+assert.deepEqual(["haiku", "claude-haiku-4-5-20251001", undefined, "sonnet", "opus", "claude-fable-5-1"].map((await import("./pr.js")).codeModel),
+  ["sonnet", "sonnet", "sonnet", "sonnet", "opus", "claude-fable-5-1"]);
 MODELS0.haiku.chars = 100;
 const byId = reviewRequest({ url: "u", files: rq, model: "claude-haiku-4-5[1m]", context: { id: "default", env: null }, dir: "/d" });
 MODELS0.haiku.chars = was;
@@ -416,7 +419,8 @@ console.log("ok");
     steps: [{ title: "s", hunks: ["h1"], check_questions: ["", "q1?", "q2?"], question_files: ["x.py", "a.py", ""],
       suggestions: [{ hunk: "h1", line: 2, side: "new", severity: "low", category: "availability", text: "No retry. Add one." }],
       findings: [{ id: "a5587afa0", file: "a.py", line: 9, title: "No id", severity: "high", category: "test", impact: "breaks_requirement", effect: "Repeated mails.", preconditions: ["redelivery"],
-        certainty: "derived", criteria: ["c1"], breaks: { from: "n1", to: "n2", edge: "e5" } }, { file: "a.py", line: 9, title: "x", category: "availability", certainty: "guessed" }] }],
+        certainty: "derived", criteria: ["c1"], breaks: { from: "n1", to: "n2", edge: "e5" }, reachable_from: ["acc1"], reachability: "public" },
+        { file: "a.py", line: 9, title: "x", category: "availability", certainty: "guessed", reachability: "from the moon" }] }],
     asks: [{ id: "c1", text: "one", state: "broken", why: "because", acceptance: true, findings: ["a5587afa0"], coverage: "absent" }, { id: "x1", text: "extra", state: "extra", acceptance: false, coverage: "extra" }] }, hs);
   assert.deepEqual(now.asks.map((a) => [a.id, a.state, a.why, a.acceptance, a.findings, a.coverage]), [["c1", "broken", "because", true, ["a5587afa0"], "absent"], ["x1", "extra", "", false, [], "extra"]]);
   assert.deepEqual([now.unlinked, now.components[0].name, now.componentCounts.codeowners, now.access[0].public], [["c2"], "Queue", false, true]);
@@ -424,6 +428,7 @@ console.log("ok");
   const [nf, nf2] = now.steps[0].findings;
   assert.deepEqual([nf.id, nf.category, nf.impact, nf.effect, nf.preconditions, nf.certainty, nf.criteria, nf.breaks], ["a5587afa0", "test", "breaks_requirement", "Repeated mails.", ["redelivery"], "derived", ["c1"], { from: "n1", to: "n2", edge: "e5" }]);
   assert.deepEqual([nf2.category, nf2.certainty], ["availability", null]);
+  assert.deepEqual([nf.reachable_from, nf.reachability, nf2.reachable_from, nf2.reachability], [["acc1"], "public", [], null], "where a finding can be reached from; an unknown word is dropped");
   assert.equal(now.suspects[0].category, "availability");
   // Merged: a low suggestion about availability is a finding of its own; the facts come from the leading source,
   // and what that one lacks (a reviewer has no criteria and no breaks) from the first source that has it.
@@ -431,7 +436,8 @@ console.log("ok");
   const m = mergeFindings([sec, { ...nf, severity: "medium" }], now.suspects);
   assert.deepEqual(m.findings.map((f) => [f.file, f.line, f.severity, f.reviewer, f.category]), [["a.py", 9, "high", "security", undefined], ["a.py", 2, "low", "ai", "availability"]]);
   assert.deepEqual(m.notes, []);
-  assert.deepEqual(findingFacts(m.findings[0]), { impact: "unauthorized_access", effect: "Anyone reads it.", preconditions: ["redelivery"], certainty: "confirmed", criteria: ["c1"], breaks: { from: "n1", to: "n2", edge: "e5" }, effort: null, reachable_from: [], reachability: null });
+  assert.deepEqual(findingFacts(m.findings[0]), { impact: "unauthorized_access", effect: "Anyone reads it.", preconditions: ["redelivery"], certainty: "confirmed", criteria: ["c1"], breaks: { from: "n1", to: "n2", edge: "e5" }, effort: null,
+    reachable_from: ["acc1"], reachability: "public" }, "a reviewer names no reachability: the merged finding has the analysis's");
   assert.ok(m.findings[0].ids.includes(now.asks[0].findings[0]), "an ask finds its finding through ids");
   assert.deepEqual(findingFacts(m.findings[1]), { impact: null, effect: "", preconditions: [], certainty: null, criteria: [], breaks: null, effort: null, reachable_from: [], reachability: null });
   // Reviewer runs: the state as written, or derived for an entry from before it was.

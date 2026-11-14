@@ -20,16 +20,19 @@ import { findingSteps, funnel, funnelLine, ownerOf, quickFirst, hasEffort } from
 import { overviewMd, findingMd, findingsMd, layerMd, architectureMd, securityMd, verifyContextMd } from "./markdown.js"; // Copy this page as Markdown
 import { highlightJob, highlightStep, highlightLines, langOf, colors, renderLine, refAt } from "./syntax.js";
 import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js";
-import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf, priceOf, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch, withSecurity } from "./pr.js";
+import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf, codeModel, priceOf, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch, withSecurity } from "./pr.js";
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState, codeOf, isStale } from "./pr.js";
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible, pastTop } from "./views.js";
 import { orderDiffers, worst, byUrgency } from "./views.js";
-import { archView, archModel, archLegend, visualsCard, visualCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
+import { archView, archLegend, visualsCard, visualCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
 import { visualPlan } from "./stack.js";
 import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCALE } from "./views.js";
 import { plainText } from "./pr.js";
 import { hasSources, archLayout, archBands } from "./arch.js";
+import { archMarks, zoneArch } from "./arch.js";
+import { trustLegend, hasTrust } from "./stack.js";
+import { scopeTable, runSummary, AREA_NAME, surfaceOf, EXPOSURE, reachLevel, secOrder, extraWays, zoneRights, blastLine } from "./views.js";
 import * as TH from "./threads.js";
 import { leftWidth, rowClick, CHIP_W, ASK_W, keyRoute, scopeLine, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf, rangeLabel, pinAnchor, pinAdd, pinDrop, pinsOf, pinsOn, codePins, drillPush, drillTo, crumbs, drillKey, cachePut, mapDrill, exploreId, exploreIndex, exploreAi, pathOf, lineOf, repoOfRemote, exploreTrust, layersForNode } from "./explore.js";
 
@@ -57,7 +60,8 @@ const openFile = () => `${appHome()}/pr-data/open-reviews.json`;
 // shared("review.registry") is every entry, done ones too, with {at}: for plug-ins that mirror reviews elsewhere
 // (PROVIDERS.md). Written on each registry change, 1.5 s after the last edit.
 // The AI analysis' model: any value the claude CLI offers (models.py), Sonnet until one is picked.
-const model = () => { const m = shared("review.model"); return typeof m === "string" && m ? m : "sonnet"; };
+// At least Sonnet (pr.js codeModel): every use reads or judges code, which Haiku is too weak for.
+const model = () => { const m = shared("review.model"); return codeModel(typeof m === "string" && m ? m : "sonnet"); };
 // The models the CLIs offer per context ({at, claude, codex}, models.py), shared so the Reviews popup sees them too;
 // pr-data/models.json keeps them across restarts.
 const modelsFile = () => `${appHome()}/pr-data/models.json`;
@@ -70,12 +74,13 @@ const codexChoices = () => Object.values(modelsDoc()).map((d) => d?.codex ?? [])
 const resolvedOf = (m) => Object.values(modelsDoc()).flatMap((d) => d?.claude ?? []).find((x) => x.value === m)?.resolved ?? m;
 // "$4 / $20 per MTok": input and output.
 const priceText = (m) => { const [i, o] = priceOf(resolvedOf(m)); return `$${i} / $${o} per MTok`; };
-// The choices for a context: the CLI's aliases (opus, fable, sonnet, haiku: each its family's newest model; older
-// models by full id are left out, unless one is the current pick), or the three classes until the CLI answered.
+// The choices for a context: the CLI's aliases (opus, fable, sonnet: each its family's newest model; older models by
+// full id are left out, unless one is the current pick), or the classes until the CLI answered. Never Haiku: every
+// choice here reads or judges code (codeModel).
 const modelChoices = (ctx) => {
   const list = modelsDoc()[ctx]?.claude ?? [], cur = model();
-  const shown = list.filter((c) => !c.value.startsWith("claude-") || c.value === cur);
-  return shown.length ? shown : Object.entries(MODELS).map(([value, v]) => ({ value, label: v.label, description: "" }));
+  const shown = list.filter((c) => (!c.value.startsWith("claude-") || c.value === cur) && tierOf(c.value) !== "haiku");
+  return shown.length ? shown : Object.entries(MODELS).filter(([k]) => k !== "haiku").map(([value, v]) => ({ value, label: v.label, description: "" }));
 };
 const cacheDir = () => `${appHome()}/pr-data/cache`;
 const valuesOn = () => shared("review.values") !== false; // inline example values (flow traces), on by default
@@ -117,7 +122,7 @@ const FIND_FOLDED = 34, FIND_LABEL = 112, FIND_LINK = 150;
 // A layer's head over its code: its texts wrap at about 95 characters instead of running across the whole column.
 const LAYER_TEXT = 640;
 // The Analysis tab's pages (at its top, above the layers); null: the diff of the current layer.
-const PAGES = [["overview", "Overview"], ["blast", "Security blast radius"], ["arch", "Architecture impact"]]; // measures the mono font's character width, for clicks on tokens inside the virtual list
+const PAGES = [["overview", "Overview"], ["blast", "Security"], ["arch", "Architecture impact"]]; // measures the mono font's character width, for clicks on tokens inside the virtual list
 
 // "Reviews ▾" in the bar opens this popup (props {part: "reviews"}): each reviewer with its last run; Run reaches the
 // review copy through its nextCommand.
@@ -269,8 +274,8 @@ const button = (t, label, border, color) => div().w(BTN).h(28).flex_none().flex(
 // The picker's short form: the CLI's aliases (opus, sonnet, …: each its family's newest), else the three classes.
 export const modelPills = (t, id) => {
   const seen = new Map();
-  for (const c of Object.values(modelsDoc()).flatMap((d) => d?.claude ?? [])) if (!c.value.startsWith("claude-") && !seen.has(c.value)) seen.set(c.value, c.label);
-  const pills = seen.size ? [...seen] : Object.entries(MODELS).map(([k, v]) => [k, v.label]);
+  for (const c of Object.values(modelsDoc()).flatMap((d) => d?.claude ?? [])) if (!c.value.startsWith("claude-") && tierOf(c.value) !== "haiku" && !seen.has(c.value)) seen.set(c.value, c.label);
+  const pills = seen.size ? [...seen] : Object.entries(MODELS).filter(([k]) => k !== "haiku").map(([k, v]) => [k, v.label]);
   return h_flex().gap(4).flex_wrap().children(pills.map(([k, label]) =>
     pill(`${id}-${k}`, t, label, () => setShared("review.model", k), model() === k).tooltip(`Use ${label} for the AI calls`)));
 };
@@ -345,6 +350,11 @@ export const ReviewMode = {
       st.on("blur", (_e, cx) => { if (this.typing === k) this.typing = false; cx.notify(); });
     }
     this.prSel = shared("review.target") ?? null;
+    // An old pick of Haiku: switched to Sonnet once, with the reason.
+    if (tierOf(String(shared("review.model") ?? "sonnet")) === "haiku") {
+      setShared("review.model", "sonnet");
+      this.note = "Switched the model from Haiku to Sonnet: Haiku is fine for text, but too weak to reason about code.";
+    }
     cx.spawn(async (cx) => { this.cfg = await readConfig(); await loadSetup(this, cx); });
     if (!shared("review.models")) cx.spawn(async (cx) => { try { setShared("review.models", JSON.parse(await readTextFile(modelsFile()))); cx.notify(); } catch { /* none yet */ } });
     // Ask about this: one input (the Architecture page's or the shown layer's), threads and drill-downs from deep.json.
@@ -431,10 +441,18 @@ export const ReviewMode = {
     else if (name === "copy-md") this.copyMd(arg); // copy-md: this page; copy-md:verify: the context for an agent that checks the open finding, or the unresolved security findings
     else if (name === "criterion") this.toggleAsk(arg); // criterion:<ask id> | other: a click on a row of the Overview's task check
     else if (name === "open-gh") { if (this.prSel?.url) openUrl(this.prSel.url); }
-    else if (name === "model") { if (arg) setShared("review.model", arg); }
+    else if (name === "model") { if (arg) setShared("review.model", codeModel(arg)); }
     // For keys and scripted demos: a card's panel on the Architecture page (card:<node id>), the layers' order
     // (order:reading | order:risk) and Minimize, the same as their clicks.
     else if (name === "card") { this.page = "arch"; this.tab = "steps"; this.archFocus = arg || null; }
+    // The picture's switches, the same as their clicks: arch-view:diff | before | after, arch-fit and arch-wrap (toggles);
+    // sec-card:<node id> for a card of the Security page's picture.
+    // page-part:<name> scrolls the open page until that part shows (pageView lists the names), as the wheel would.
+    else if (name === "arch-view") { if (["diff", "before", "after"].includes(arg)) this.archMode = arg; }
+    else if (name === "arch-fit") { this.archFit = !this.archFitOn(); this.hsOf("rv-arch-canvas").x = 0; }
+    else if (name === "arch-wrap") { this.archWrap = !this.archWrapOn(); this.hsOf("rv-arch-canvas").x = 0; }
+    else if (name === "sec-card") { this.page = "blast"; this.tab = "steps"; this.secCard(arg || null, cx); } // a click on a card of the Security page's picture ("": unlight)
+    else if (name === "page-part") { const k = (this.pageParts ?? []).indexOf(arg); if (k >= 0) this.pageScrolls[this.page]?.scroll_to_item(k); }
     // The same model calls as their buttons (a click each, never by themselves): Refresh diagrams, and a card's
     // Look inside / Explain (inside:<node id>).
     else if (name === "diagrams") this.refreshDiagrams(cx);
@@ -500,7 +518,7 @@ export const ReviewMode = {
     const back = resumeFields(p.ui);
     if (back) { // resume: where you were
       Object.assign(this, back.fields);
-      if (back.model && back.model !== shared("review.model")) setShared("review.model", back.model);
+      if (back.model && codeModel(back.model) !== shared("review.model")) setShared("review.model", codeModel(back.model));
       if (back.values !== undefined && back.values !== valuesOn()) setShared("review.values", back.values);
       this.pendingScroll = back.scroll;
     }
@@ -1066,7 +1084,7 @@ export const ReviewMode = {
       }
       if (plan.kind === "new" && plan.where) {
         run("tab.new", { space: this.spaceFor(this.ctxId(), origin?.cwd, this.root), folder: plan.where, name: `Ask · PR #${origin?.number ?? ""}`,
-          argv: [...this.ctxEnv(this.ctxId()), "claude", ...(this.trustedPr() ? ["--permission-mode", "manual"] : TH.permissionArgs(false))], task: text });
+          argv: [...this.ctxEnv(this.ctxId()), "claude", "--model", model(), ...(this.trustedPr() ? ["--permission-mode", "manual"] : TH.permissionArgs(false))], task: text });
         this.note = "Started a new agent tab with your question. The finding stays as it is.";
         return cx.notify();
       }
@@ -1726,7 +1744,7 @@ export const ReviewMode = {
         const w = await git(["worktree", "add", "-b", f.branch, f.path, head]);
         if (w.code !== 0) throw new Error(w.stderr.trim().slice(0, 200));
         const id = Date.now().toString(36), { agent } = this.sendAgent();
-        const r = await hc(TH.subAgentArgs({ parent: agent?.address ?? null, cwd: f.path, name: `fix-${id}`, env: this.ctxEnv(this.ctxId()), task: text, job: id, auto: trusted }));
+        const r = await hc(TH.subAgentArgs({ parent: agent?.address ?? null, cwd: f.path, name: `fix-${id}`, env: this.ctxEnv(this.ctxId()), task: text, job: id, auto: trusted, model: model() }));
         if (r.code !== 0) { await git(["worktree", "remove", "--force", f.path]); await git(["branch", "-D", f.branch]); throw new Error((r.stderr || r.stdout).trim().slice(0, 200)); }
         const terminal = JSON.parse(r.stdout).address;
         this.updateThreads(cx, (d) => TH.addFix(d, key, { id, branch: f.branch, path: f.path, base, head, items: f.items, terminal, target: "sub", at: Date.now(), state: "running" }));
@@ -2278,7 +2296,7 @@ export const ReviewMode = {
   sendPopover(t) {
     const p = this.sendP, fix = p.fix, sub = fix?.target === "sub", kind = fix ? fix.target : p.ask?.kind ?? null, short = (x) => (x ? String(x).replace(home(), "~") : null);
     const live = this.sendAgent().agent, name = live ? p.agent.split(" · ")[0] : null;
-    const facts = kind ? TH.sendFacts({ kind, account: accountOf(this.ctxId()), trusted: this.trustedPr(), branch: fix?.branch, name: p.ask?.name ?? name, chat: p.ask?.chat, where: short(p.ask?.where) }) : [];
+    const facts = kind ? TH.sendFacts({ kind, account: accountOf(this.ctxId()), trusted: this.trustedPr(), branch: fix?.branch, name: p.ask?.name ?? name, chat: p.ask?.chat, where: short(p.ask?.where), model: modelLabel(model()) }) : [];
     const picking = Boolean(fix?.pool), n = fix?.items.length ?? 0, some = !picking || n > 0, ready = !this.sending && some, text = this.sendText.value();
     const go = this.sending ? "Sending…" : sub ? (picking && n ? `Start fix agent for ${n} ${n === 1 ? "finding" : "findings"}` : "Start fix agent") : fix ? "Send to main agent"
       : p.ask ? { new: "Start agent", resume: "Resume its session", live: p.ask.chat ? "Draft in chat" : "Paste to agent" }[p.ask.kind] : "Send to agent";
@@ -2823,7 +2841,7 @@ export const ReviewMode = {
   },
 
   // The picture's highlight (hovered badge or legend row), focus (clicked card; Esc or a second click clears it) and
-  // hover (a lighter focus) for the architecture ("arch") or blast radius ("blast") page.
+  // hover (a lighter focus) for the picture of the Architecture page ("arch") or the Security page ("blast").
   archOpts(k) {
     const set = (name, v, cx) => { if (this[name] !== v) { this[name] = v; cx.notify(); } };
     return { hl: this[`${k}Hl`] ?? (k === "arch" ? this.askHl : null), focus: this[`${k}Focus`] ?? null, hover: this[`${k}Hover`] ?? null,
@@ -2831,116 +2849,157 @@ export const ReviewMode = {
       onFocus: (v, cx) => { this.fh.focus(); set(`${k}Focus`, v, cx); }, onJump: (at, cx) => this.jumpTo(at, cx) };
   },
 
-  archPage(t) {
+  // parts: the page as [[name, element]] for pageView (page-part:<name>); else one column (Explore).
+  archPage(t, parts = false) {
     const a = this.ai?.arch;
     const seg = (k, label) => div().id(`rv-av-${k}`).tooltip((k === "diff" ? "What changed in the architecture" : k === "before" ? "The architecture before this PR" : "The architecture after this PR")).px(10).h(24).flex().items_center().rounded(5).cursor_pointer().text_size(12.5)
       .bg(this.archMode === k ? t.selected : t.chrome).text_color(this.archMode === k ? t.foreground : t.muted).on_click((_e, cx) => { this.archMode = k; cx.notify(); }).child(label);
     const more = () => visualsCard(this.ai.visuals, t, "rv-arch-vis", (at, cx) => this.jumpTo(at, cx), this.archVisTab ?? 0, (k, cx) => { this.archVisTab = k; cx.notify(); }, this.wrapX());
-    if (!a) return v_flex().gap(12).child(this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams")).child(div().text_size(13.5).text_color(t.muted).child(this.ai ? "This analysis has no architecture picture (older analysis, or the PR touches no architecture). Re-analyze for one." : "No analysis yet: Analyze in the left column."))
-      .when(this.ai?.visuals?.length > 0, (e) => e.child(div().max_w(760).child(more())));
-    const groups = new Set(a.nodes.map((n) => n.group)).size, L = this.archL(), fit = this.archFitOn();
-    const opts = this.archOpts("arch");
-    return v_flex().gap(12)
-      .child(h_flex().gap(12).items_center().flex_wrap().child(div().text_size(20).font_semibold().child("Architecture impact")).child(this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams"))
-        .when(this.drawerState() !== "open", (e) => e.child(pill("rv-ask-open", t, "Ask", (_e, cx) => this.setDrawer("open", cx, null)).tooltip("Ask one model question about the architecture picture")))
-)
-      .child(h_flex().w_full().gap(12).items_center().flex_wrap() // wraps onto two rows when narrow
+    const out = (list) => (parts ? list : v_flex().gap(12).children(list.map(([, el]) => el)));
+    if (!a) return out([["head", this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams")], ["none", div().text_size(13.5).text_color(t.muted).child(this.ai ? "This analysis has no architecture picture (older analysis, or the PR touches no architecture). Re-analyze for one." : "No analysis yet: Analyze in the left column.")],
+      ...(this.ai?.visuals?.length > 0 ? [["views", div().max_w(760).child(more())]] : [])]);
+    const groups = new Set(a.nodes.map((n) => n.group)).size, L = this.archL(), fit = this.archFitOn(), marks = this.archMarksNow();
+    const opts = { ...this.archOpts("arch"), marks, zoom: settings().zoom || 1 }, count = (...st) => L.nodes.filter((n) => st.includes(n.status)).length; // of the cards shown (Before hides the added ones)
+    return out([
+      ["head", h_flex().gap(12).items_center().flex_wrap().child(div().text_size(20).font_semibold().child("Architecture impact")).child(this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams"))
+        .when(this.drawerState() !== "open", (e) => e.child(pill("rv-ask-open", t, "Ask", (_e, cx) => this.setDrawer("open", cx, null)).tooltip("Ask one model question about the architecture picture")))],
+      ["switches", h_flex().w_full().gap(12).items_center().flex_wrap() // wraps onto two rows when narrow
         .child(div().flex_none().text_size(13).text_color(t.muted).child(`${groups} ${groups === 1 ? "system" : "systems"} | ${(a.edges ?? []).length} edges`))
-        .child(div().flex_none().child(legend(t)))
+        .child(div().flex_none().child(legend(t, { unchanged: count("unchanged"), changed: count("changed"), added: count("new", "added"), removed: count("removed") })))
         .when(hasSources(a) || (this.ai.visuals ?? []).some(hasSources), (e) => e.child(div().flex_none().child(sourceLegend(t))))
+        .when(hasTrust(L), (e) => e.child(div().flex_none().child(trustLegend(L, t))))
         .child(h_flex().flex_none().gap(2).p(2).rounded(7).border_1().border_color(t.border).child(seg("diff", "Structural diff")).child(seg("before", "Before")).child(seg("after", "After")))
         .child(div().id("rv-av-fit").flex_none().px(10).h(28).flex().items_center().rounded(7).border_1().border_color(fit ? t.accent : t.border).cursor_pointer().text_size(12.5)
-          .text_color(fit ? t.foreground : t.muted).tooltip("Narrow cards, so a wide picture fits the view").on_click((_e, cx) => { this.archFit = !fit; this.hsOf("rv-arch-canvas").x = 0; cx.notify(); }).child("Fit"))
+          .text_color(fit ? t.foreground : t.muted).tooltip("Narrow cards with shorter texts, so more of the picture fits a row").on_click((_e, cx) => { this.archFit = !fit; this.hsOf("rv-arch-canvas").x = 0; cx.notify(); }).child("Fit"))
         .child(div().id("rv-av-wrap").flex_none().px(10).h(28).flex().items_center().rounded(7).border_1().border_color(this.archWrapOn() ? t.accent : t.border).cursor_pointer().text_size(12.5)
-          .text_color(this.archWrapOn() ? t.foreground : t.muted).tooltip("On: a picture wider than the view in bands, top to bottom. Off: one row to scroll sideways")
-          .on_click((_e, cx) => { this.archWrap = !this.archWrapOn(); this.hsOf("rv-arch-canvas").x = 0; cx.notify(); }).child("Wrap")))
-      .child(this.archCanvas(t, L, opts))
-      .child(this.archCard(t, a))
-      .when(Boolean(this.archFocus), (e) => e.child(this.drillPanel(t, `arch:${this.archFocus}`)))
-      .child(archLegend(L, t, "rv-arch-edges", "Edges", opts))
-      .when(this.ai?.visuals?.length > 0, (e) => e.child(div().pt(6).text_size(13).font_semibold().text_color(t.muted).child("More views"))
-        .child(div().max_w(760).child(more())));
+          .text_color(this.archWrapOn() ? t.foreground : t.muted).tooltip("On: a picture wider than the view goes on in a second row. Off: one row to scroll sideways")
+          .on_click((_e, cx) => { this.archWrap = !this.archWrapOn(); this.hsOf("rv-arch-canvas").x = 0; cx.notify(); }).child("Wrap"))],
+      ["map", this.archCanvas(t, L, opts)],
+      ["map", this.archCanvas(t, L, opts)],
+      ...(this.archFocus && a.nodes.some((x) => x.id === this.archFocus) ? [["card", this.archCard(t, a, marks)]] : []),
+      ...(this.archFocus && this.drillAt(`arch:${this.archFocus}`) ? [["inside", this.drillPanel(t, `arch:${this.archFocus}`)]] : []),
+      // Only the calls whose text is not on their line in the picture (a fan's, a stub's, a text cut short).
+      ...(L.paths.some((p) => !p.text || p.text.cut) ? [["calls", archLegend(L, t, "rv-arch-edges", "Calls without their whole text in the picture", opts)]] : []),
+      ...((this.ai.components ?? []).length ? [["components", this.componentsTable(t, a)]] : []),
+      ...(this.ai?.visuals?.length > 0 ? [["views", v_flex().gap(12).child(div().pt(6).text_size(13).font_semibold().text_color(t.muted).child("More views")).child(div().max_w(760).child(more()))]] : [])]);
   },
 
-  // The picture: wider than the view and Wrap on (archWrapOn), in bands stacked top to bottom (arch.js archBands: lines run on in the next band
-  // at the same height); else one row in the sideways scroller (40 px of room after the last column).
-  archCanvas(t, L, opts) {
-    const s = this.hsOf("rv-arch-canvas"), B = archBands(L, s.viewW && this.archWrapOn() ? hsVisible(s.viewW, this.drawerCover()) - 4 : 0); // 0: not measured yet or Wrap off, one row
-    const pic = (k) => [archView(L, t, `rv-arch${k ? `-${k}` : ""}`, (n, _e, cx) => this.jumpTo(n.at, cx), null, opts), ...this.pinNotes(t, L)];
-    if (B.length < 2) return this.hscroll("rv-arch-canvas", L.width + 4 + 40, L.height + 4, pic(0), t);
-    return v_flex().id("rv-arch-canvas").w_full().gap(6)
+  // The picture: wider than the view and Wrap on (archWrapOn, the default), in bands stacked top to bottom (arch.js
+  // archBands); else one row in the sideways scroller (40 px of room after the last column). A line that goes on in the
+  // next band ends at the band's right edge in a turn with its number, and starts again at the left edge of the next
+  // one with the same number, at the same height: no line goes on unnamed.
+  // o: {id, pic: the canvas's and the picture's element ids, wrap, decorate: archView's, notes: pinned notes on it}.
+  archCanvas(t, L, opts, o = {}) {
+    const { id = "rv-arch-canvas", pic: pid = "rv-arch", wrap = this.archWrapOn(), decorate = null, notes = true } = o;
+    const s = this.hsOf(id), M = 40; // the room for a turn's mark at a band's edge
+    // The view is measured in logical px, the picture is drawn in the person's zoom: its width in the picture's px.
+    const B = archBands(L, s.viewW && wrap ? hsVisible(s.viewW / (settings().zoom || 1), this.drawerCover()) - 4 - 2 * M : 0); // 0: not measured yet or Wrap off, one row
+    const pic = (k) => [archView(L, t, `${pid}${k ? `-${k}` : ""}`, (n, _e, cx) => this.jumpTo(n.at, cx), decorate, opts), ...(notes ? this.pinNotes(t, L) : [])];
+    if (B.length < 2) return this.hscroll(id, L.width + 4 + 40, L.height + 4, pic(0), t);
+    const num = (n) => div().flex_none().w(18).h(18).flex().items_center().justify_center().rounded_full().border_1().border_color(t.muted).bg(t.background).text_size(11).text_color(t.foreground).child(String(n));
+    const turn = (m, k, end) => h_flex().id(`${pid}-turn${k}-${end}-${m.y}`).absolute().top(m.y - 9).h(18).gap(2).items_center().text_size(13).text_color(t.muted)
+      .tooltip(`Call ${m.nums.join(", ")} ${end === "out" ? (m.back ? "comes in from the row below" : "goes on in the next row, at its left edge") : m.back ? "goes on in the row above, at its right edge" : "comes from the row above"}`)
+      .children(end === "out" ? [...m.nums.slice(0, 1).map(num), div().child(m.back ? "←" : "⤵")] : [div().child(m.back ? "↰" : "↳"), ...m.nums.slice(0, 1).map(num)]);
+    return v_flex().id(id).w_full().gap(6)
       .on_size_change((size, cx) => { if (Math.abs(s.viewW - size.width) > 2) { s.viewW = size.width; cx.notify(); } })
-      .children(B.flatMap((b, k) => [
-        ...(k ? [div().id(`rv-arch-cut${k}`).w_full().h(0).border_t(1).border_dashed().border_color(t.border).tooltip("The picture goes on here: lines leaving the band above on the right come in on the left at the same height")] : []),
-        div().id(`rv-arch-band${k}`).w(b.x1 - b.x0).h(L.height + 4).relative().overflow_hidden()
-          .child(div().absolute().top(0).left(-b.x0).w(L.width).h(L.height + 4).children(pic(k)))]));
+      .children(B.flatMap((b, k) => {
+        const w = b.x1 - b.x0, left = b.in.length ? M : 0;
+        return [
+          ...(k ? [div().id(`${pid}-cut${k}`).w_full().h(0).border_t(1).border_dashed().border_color(t.border).tooltip("The picture goes on here: a line that leaves the row above on the right comes in on the left at the same height, with the same number")] : []),
+          div().id(`${pid}-band${k}`).w(left + w + (b.out.length ? M : 0)).h(b.h + 4).relative()
+            .child(div().absolute().top(0).left(left).w(w).h(b.h + 4).overflow_hidden().child(div().absolute().top(0).left(-b.x0).w(L.width).h(L.height + 4).children(pic(k))))
+            // A frame cut by the band's left edge (a wide trust zone) names itself again there.
+            .children(L.groups.filter((g) => !g.bare && g.label && g.x < b.x0 && g.x + g.w > b.x0 + 40).map((g, j) => div().id(`${pid}-gc${k}-${j}`).absolute().left(left + 10).top(g.y + 5)
+              .text_size(11.5).font_semibold().text_color(t.muted).child(`${g.label}, continued`)))
+            .children(b.in.map((m) => turn(m, k, "in").left(0)))
+            .children(b.out.map((m) => turn(m, k, "out").left(left + w + 2)))];
+      }));
   },
-  // The clicked card, under the picture: its whole description and the analysis's details (what it does overall, what
-  // the PR changes in it). An analysis without details (older ones): Explain, one model call (the drill-down below).
-  // Two tabs keep it short: Overview (the card itself) and Layer analysis (the layers on its code), picked per card.
-  archCard(t, a) {
-    const n = this.archFocus && a.nodes.find((x) => x.id === this.archFocus);
-    if (!n) return div();
+  // Where the unresolved findings sit on the picture (arch.js archMarks): on a card, or on a call they break.
+  archMarksNow() { return archMarks(this.ai?.arch, this.exMode ? [] : this.openFindings(), this.ai?.access); },
+  // What a model call for a card's inside costs, from the ones this review already paid for (deep.json).
+  // ponytail: the mean of the kept results, whatever model they ran on; no result yet: no figure.
+  insidePrice() {
+    const costs = Object.values(this.deep.drills ?? {}).map((d) => d.cost).filter((c) => c > 0);
+    return costs.length ? `about $${(costs.reduce((x, y) => x + y, 0) / costs.length).toFixed(2)}` : `one ${modelLabel(model())} call`;
+  },
+  // The clicked card, under the picture: its unresolved findings first (the ones the picture marks), then what it is
+  // (file, connections, what running it needs, who may reach it), its description and the analysis's details, and
+  // links to the layers that read its code. Look inside: one model call (the drill-down below), its price on the button.
+  archCard(t, a, marks) {
+    const n = a.nodes.find((x) => x.id === this.archFocus);
     const g = (a.groups ?? []).find((x) => x.id === n.group), at = n.at ?? n.evidence;
-    const explain = (_e, cx) => this.showDetails({ id: n.id, label: n.label ?? n.id, group: g?.label, at, kind: "node", description: n.description }, `arch:${n.id}`, cx, false, true);
-    const layers = this.cardLayerList(n);
+    const item = { id: n.id, label: n.label ?? n.id, group: g?.label, at, kind: "node", description: n.description };
+    const paid = Boolean(this.drillResult([item])), price = this.insidePrice();
+    const layers = this.cardLayerList(n), found = this.cardFindings(a, n, marks);
+    const name = (id) => a.nodes.find((x) => x.id === id)?.label ?? id;
     return v_flex().id("rv-arch-card").gap(10).p(12).rounded(10).border_1().border_color(t.border).bg(t.surface)
       .child(h_flex().gap(8).items_center().flex_wrap()
         .child(div().text_size(15).font_semibold().child(n.label ?? n.id))
         .child(div().text_size(12).text_color(t.muted).child([g?.label, n.type, n.status === "new" ? "added" : n.status].filter(Boolean).join(" · ")))
         .child(div().flex_1())
         .when(Boolean(at), (e) => e.child(pill("rv-arch-card-open", t, "Show in diff ↗", (_e, cx) => this.jumpTo(at, cx)).tooltip(`Show ${at} in the diff`)))
-        .child(pill("rv-arch-card-explain", t, n.details ? "Look inside" : "Explain", explain, false, n.details ? null : t.foreground)
-          .tooltip(`One ${modelLabel(model())} call reads the code: what this does overall, what the PR changes in it, and a picture of its inside`))
+        .child(pill("rv-arch-card-explain", t, paid ? "Look inside" : `Look inside (${price})`, (_e, cx) => this.showDetails(item, `arch:${n.id}`, cx, false, true), false, n.details ? null : t.foreground)
+          .tooltip(paid ? "Show what the model found inside this card (already paid for)" : `One ${modelLabel(model())} call reads the code: what this does overall, what the PR changes in it, and a picture of its inside`))
         .when(this.drawerState() !== "open", (e) => e.child(pill("rv-arch-card-ask", t, "Ask", (_e, cx) => this.setDrawer("open", cx, null)).tooltip("Ask one model question about this card")))
         .child(pill("rv-arch-card-x", t, "✕", (_e, cx) => { this.archFocus = null; cx.notify(); }).tooltip("Close (Esc)").accessibility_label("Close card details")))
+      .when(found.length > 0, (e) => e.child(v_flex().gap(2)
+        .child(div().text_size(11.5).font_semibold().text_color(t.muted).child(`UNRESOLVED FINDINGS · ${found.length}`))
+        .children(found.slice(0, 6).map(({ f, edge }) => h_flex().id(`rv-arch-cf-${f.id}`).gap(8).items_start().px(6).py(3).rounded(6).text_size(13).cursor_pointer().hover((x) => x.bg(t.hover))
+          .tooltip("Open this finding and show its line in the diff").on_click((_e, cx) => { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); cx.notify(); })
+          .child(badge(t, f.severity, t[SEV[f.severity]] ?? t.accent))
+          .when(Boolean(f.security), (x) => x.child(chip(t, "⛨ Security", t.ansi1, true)))
+          .child(div().flex_1().min_w(0).whitespace_normal().line_height(1.4).child(plain(f.title)))
+          .when(Boolean(edge) || f.breaks?.node === n.id, (x) => x.child(div().flex_none().text_size(12).text_color(t.muted).child(edge ? `breaks the call ${edge.from === n.id ? `to ${name(edge.to)}` : `from ${name(edge.from)}`}` : "breaks the flow here")))
+          .child(div().flex_none().text_size(12).text_color(t.muted).child(`${f.file.split("/").pop()}:${f.line}`))))
+        .when(found.length > 6, (x) => x.child(div().px(6).text_size(12).text_color(t.muted).child(`and ${found.length - 6} more in the Findings tab`)))))
       .child(this.archCardFacts(t, a, n, at))
       .when(Boolean(n.description), (e) => e.child(div().text_size(13).text_color(t.muted).whitespace_normal().line_height(1.5).child(n.description)))
       .child(n.details ? div().pt(2).text_size(13.5).line_height(1.55).child(TextView.markdown(`rv-arch-det-${this.ai?.generated}-${n.id}`, n.details))
-        : div().text_size(12.5).text_color(t.muted).whitespace_normal().child("No further details for this card in this analysis: Refresh diagrams (above) adds them for every card, Explain reads just this one."))
-      // What the layer analysis found in this card's code, in the same view: no tab to discover.
-      .when(layers.length > 0, (e) => e.child(div().pt(6).text_size(11.5).font_semibold().text_color(t.muted).child("FROM THE LAYER ANALYSIS"))
-        .child(this.archCardLayers(t, n, layers)));
+        : div().text_size(12.5).text_color(t.muted).whitespace_normal().child(`This analysis has no further details for this card. “Look inside” reads its code with one model call (${price}). “↻ Refresh diagrams” at the top adds details to every card, also with one model call.`))
+      // The layers that read this card's code: links, not copies (their text is in the Layers view).
+      .when(layers.length > 0, (e) => e.child(v_flex().gap(2)
+        .child(div().pt(4).text_size(11.5).font_semibold().text_color(t.muted).child("LAYERS ON THIS CODE"))
+        .children(layers.map((s, j) => {
+          const fs = this.layerFindings(s).filter((f) => OPEN_ST.includes(this.fstatus(f))), top = fs[0]?.severity; // findings() sorts by severity
+          return h_flex().id(`rv-acl-${j}`).gap(8).items_center().px(6).py(3).rounded(6).text_size(13).cursor_pointer().hover((x) => x.bg(t.hover)).tooltip("Go to this layer in the Layers view")
+            .on_click((_e, cx) => { this.goStep(this.steps().indexOf(s), cx); cx.notify(); })
+            .child(div().min_w(0).truncate().child(plain(s.title)))
+            .when(fs.length > 0, (x) => x.child(badge(t, `${top[0].toUpperCase()}${top.slice(1)} · ${fs.length}`, t[SEV[top]] ?? t.muted).id(`rv-acl-n${j}`).tooltip(`${fs.length} unresolved ${fs.length === 1 ? "finding" : "findings"} in this layer, the highest is ${top}`)))
+            .child(div().flex_1())
+            .child(div().flex_none().text_size(12.5).text_color(t.accent).child("Open layer →"));
+        }))));
   },
-  // The layers that look at the card's code (explore.js layersForNode). Memoized per analysis and card: filesOf walks
-  // the hunks, and the tab's count needs the list on every render.
+  // The unresolved findings at a card: the ones on the card (archMarks) and the ones that break a call into or out of
+  // it ({f, edge}), most severe first.
+  cardFindings(a, n, marks) {
+    const own = (marks.nodes.get(n.id)?.findings ?? []).map((f) => ({ f, edge: null }));
+    const calls = (a.edges ?? []).flatMap((e, i) => (e.from === n.id || e.to === n.id ? (marks.edges.get(i)?.findings ?? []).map((f) => ({ f, edge: e })) : []));
+    const rank = (x) => ["high", "medium", "low"].indexOf(x.f.severity);
+    return [...own, ...calls].sort((x, y) => rank(x) - rank(y));
+  },
+  // The layers that look at the card's code (explore.js layersForNode), the ones that hold the card's own file first.
+  // Memoized per analysis and card: filesOf walks the hunks.
   cardLayerList(n) {
     const m = this.cardLayers;
-    if (m?.ai !== this.ai || m.byId !== this.byId || m.n !== n) this.cardLayers = { ai: this.ai, byId: this.byId, n, list: layersForNode(this.ai?.steps, n, (s) => this.filesOf(s)) };
+    if (m?.ai !== this.ai || m.byId !== this.byId || m.n !== n) {
+      const path = pathOf(n.at ?? n.evidence), own = (s) => (path && this.filesOf(s).some((p) => p === path || p.endsWith(`/${path}`) || path.endsWith(`/${p}`)) ? 0 : 1);
+      const list = layersForNode(this.ai?.steps, n, (s) => this.filesOf(s));
+      this.cardLayers = { ai: this.ai, byId: this.byId, n, list: list.map((s, i) => [s, i]).sort(([x, i], [y, k]) => own(x) - own(y) || i - k).map(([s]) => s) };
+    }
     return this.cardLayers.list;
   },
-  // The Layer analysis tab: a bordered box per layer; its header opens what the Layers view shows of it, drawn inside
-  // the box so it reads as that layer's, the card's flows one click away. Open layer goes to it in the Layers view.
-  // Riskiest first; the first layer starts open, the rest closed (cardLayersOpen: key -> true/false once toggled). Each
-  // shows its highlight (the analysis' own one-line finding, whatever it is) even closed, with a bar in its risk colour.
-  archCardLayers(t, n, list) {
-    const open = (this.cardLayersOpen ??= new Map()), rank = { high: 0, medium: 1, low: 2, skim: 3 };
-    const sorted = list.map((s, i) => [s, i]).sort(([a, i], [b, k]) => (rank[a.risk] ?? 4) - (rank[b.risk] ?? 4) || i - k).map(([s]) => s);
-    return v_flex().gap(6).children(sorted.map((s, j) => {
-      const key = `${n.id}|${stepKey(s)}`, on = open.get(key) ?? j === 0, id = `rv-acl-${j}`;
-      return v_flex().rounded(8).border_1().border_color(on ? t.accent : t.border)
-        .child(h_flex().id(`${id}-show`).px(10).py(6).gap(8).items_center().rounded(8).cursor_pointer().hover((x) => x.bg(t.hover))
-          .tooltip(on ? "Hide this layer's analysis" : "Show this layer's explanation, check questions and pictures here")
-          .on_click((_e, cx) => { open.set(key, !on); cx.notify(); })
-          .child(div().flex_none().w(12).text_color(t.muted).child(on ? "▾" : "▸"))
-          .child(div().min_w(0).truncate().text_size(13.5).font_semibold().child(plain(s.title)))
-          .when(Boolean(s.risk), (e) => e.child(riskBadge(t, s).id(`${id}-risk`).tooltip(focusTip(s)))))
-        .when(Boolean(s.why), (e) => e.child(div().mx(10).mb(8).pl(10).border_l(3).border_color(focusColor(t, s))
-          .text_size(14).font_semibold().line_height(1.45).child(TextView.markdown(`${id}-why-${stepKey(s)}`, s.why))))
-        .when(on, (e) => e.child(v_flex().pl(30).pr(10).pt(8).pb(10).gap(6).border_t(1).border_color(t.border)
-          .children(this.layerParts(s, t, "rv-acl", j, `arch:${stepKey(s)}`))
-          .child(div().id(`${id}-go`).self_start().text_size(12.5).text_color(t.accent).cursor_pointer().hover((x) => x.underline()).tooltip("Go to this layer in the Layers view")
-            .on_click((_e, cx) => { this.goStep(this.steps().indexOf(s), cx); cx.notify(); }).child("Open layer →"))));
-    }));
-  },
   // What the card is, as key: value rows: its file (path:line, a click opens it; how many changed places of this PR are
-  // in it) and its links to the other cards, incoming first, one line each (a click shows that card).
+  // in it), its links to the other cards, incoming first, one line each (a click shows that card), and from the
+  // analysis' components and access lists what running it needs, who owns it and who may reach it.
   archCardFacts(t, a, n, at) {
     const path = at ? String(at).replace(/:\d+.*$/, "") : null;
     const hs = path ? [...(this.fileHunks ?? new Map())].filter(([p]) => p === path || p.endsWith(`/${path}`) || path.endsWith(`/${p}`)).flatMap(([, h]) => h) : [];
     const name = (id) => a.nodes.find((x) => x.id === id)?.label ?? id;
     const into = (e) => (e.to === n.id ? 0 : 1);
     const links = (a.edges ?? []).map((e, i) => [e, i]).filter(([e]) => e.from === n.id || e.to === n.id).sort(([x], [y]) => into(x) - into(y));
+    const comps = (this.ai?.components ?? []).filter((c) => c.node === n.id), ops = [...new Set(comps.flatMap((c) => c.operate ?? []))], owners = [...new Set(comps.map((c) => c.owner).filter(Boolean))];
+    const access = (this.ai?.access ?? []).filter((x) => x.node === n.id);
     const row = (label, body) => h_flex().gap(8).items_start().child(div().flex_none().w(84).text_color(t.muted).child(label)).child(body.flex_1().min_w(0));
     return v_flex().gap(4).text_size(12.5).line_height(1.5)
       .child(row("File", at ? h_flex().gap(8).flex_wrap()
@@ -2955,21 +3014,53 @@ export const ReviewMode = {
           .child(div().flex_none().text_color(t.muted).child(arrow))
           .child(div().flex_none().font_semibold().child(name(other)))
           .when(Boolean(x.label), (e) => e.child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(x.label)));
-      })))));
+      })))))
+      .when(ops.length > 0, (e) => e.child(row("To operate", div().whitespace_normal().child(ops.join(" · ")))))
+      .when(comps.length > 0 && this.ai?.componentCounts?.codeowners !== false, (e) => e.child(row("Owner", div().when(!owners.length, (x) => x.text_color(t.muted)).child(owners.join(", ") || "no owner named"))))
+      .when(access.length > 0, (e) => e.child(row("Access", v_flex().gap(2).children(access.map((x) => div().whitespace_normal()
+        .child(`${x.principal}: ${(x.actions ?? []).join(", ")}${x.public ? " · public" : ""}${x.used === false ? " · not used by the code" : ""}`))))));
   },
-  // Wrap: only when clicked (by itself the page would jump whenever the room changes).
-  archWrapOn() { return this.archWrap === true; },
-  // The picture shown: its layout with normal or narrow cards (Fit), memoized like stack.js archModel.
-  archFitOn() {
-    if (this.archFit !== undefined) return this.archFit;
-    const a = this.ai?.arch;
-    return Boolean(a) && archModel(a, this.archMode).width > 1.3 * (this.hs?.get("rv-arch-canvas")?.viewW || 1e9); // auto: much wider than the view
+  // Under the picture: what the PR adds or changes as components (the analysis' `components`), where each is, what
+  // running it needs and who owns it. A repo without a CODEOWNERS file gets a sentence instead of an empty column.
+  // A row of the open card is lit; a click on a name shows its card.
+  componentsTable(t, a) {
+    const list = this.ai.components ?? [], c = this.ai.componentCounts ?? {}, owners = c.codeowners !== false;
+    const n = (st) => c[st] ?? list.filter((x) => x.status === st).length, none = c.no_owner ?? list.filter((x) => !x.owner).length;
+    const has = (id) => a.nodes.some((x) => x.id === id);
+    const rows = list.map((x, k) => [
+      has(x.node) ? div().id(`rv-comp-${k}`).font_semibold().cursor_pointer().hover((s) => s.underline()).tooltip("Show this component's card in the picture").on_click((_e, cx) => { this.archFocus = x.node; cx.notify(); }).child(x.name) : div().font_semibold().child(x.name),
+      x.kind ?? "",
+      div().text_color(x.status === "new" ? t.ansi2 : t.accent).child(x.status === "new" ? "Added" : "Changed"),
+      x.at ? div().id(`rv-comp-at-${k}`).text_color(t.accent).cursor_pointer().hover((s) => s.underline()).tooltip("Show this place in the diff").on_click((_e, cx) => this.jumpTo(x.at, cx)).child(x.at) : "",
+      (x.operate ?? []).length ? x.operate.join(" · ") : div().text_color(t.muted).child("nothing named"),
+      ...(owners ? [x.owner ?? div().text_color(t.ansi3).child("no owner")] : [])]);
+    return v_flex().id("rv-arch-comps").flex_none().gap(6).p(12).rounded(10).border_1().border_color(t.border).bg(t.surface)
+      .child(h_flex().gap(10).items_center().flex_wrap()
+        .child(div().text_size(13).font_semibold().child("Components this PR adds or changes"))
+        .child(div().text_size(12.5).text_color(t.muted).child(`${n("new")} added · ${n("changed")} changed${owners ? ` · ${none} without an owner` : ""}`)))
+      .when(!owners, (e) => e.child(div().text_size(12.5).text_color(t.muted).whitespace_normal().child("This repository has no CODEOWNERS file, so no owner can be named.")))
+      .child(this.table(t, "rv-comp-t", [["Component", 190], ["Kind", 76], ["Status", 66], ["Place", 190], ["To operate", null], ...(owners ? [["Owner", 130]] : [])], rows, (k) => Boolean(this.archFocus) && list[k].node === this.archFocus));
   },
+  // A plain table for the pages: cols [[label, width in px, or null for a share of the rest]], rows [[cell]] (a cell:
+  // text or an element; long text wraps), lit(k): a highlighted row.
+  table(t, id, cols, rows, lit = () => false) {
+    const box = ([, w]) => (w ? div().flex_none().w(w) : div().flex_1().min_w(0));
+    const line = (cells) => cells.map((x, k) => box(cols[k]).whitespace_normal().child(x));
+    return v_flex().id(id).w_full().text_size(12.5).line_height(1.45)
+      .child(h_flex().gap(10).px(6).pb(4).text_size(11.5).font_semibold().text_color(t.muted).children(line(cols.map(([label]) => label))))
+      .children(rows.map((r, k) => h_flex().id(`${id}-${k}`).gap(10).px(6).py(5).items_start().border_t(1).border_color(t.border).when(lit(k), (e) => e.bg(t.selected)).children(line(r))));
+  },
+  // Wrap: on unless switched off (a wide picture goes on in a second row instead of being cut off at the right).
+  archWrapOn() { return this.archWrap !== false; },
+  // Fit (narrow cards): only when switched on; the picture wraps instead.
+  archFitOn() { return this.archFit === true; },
+  // The picture shown: its layout with the calls' texts on their lines, a row in a card and above a call for the
+  // findings there, normal or narrow cards (Fit). Memoized: the page renders often.
   archL() {
     const a = this.ai?.arch;
     if (!a) return null;
-    const fit = this.archFitOn(), key = `${fit}|${this.archMode}|${JSON.stringify(a)}`; // per render: memoized, both kinds
-    if (this.fitMemo?.key !== key) this.fitMemo = { key, L: fit ? archLayout(a, this.archMode, () => 0, true) : archModel(a, this.archMode) };
+    const m = this.archMarksNow(), fit = this.archFitOn(), key = `${fit}|${this.archMode}|${[...m.nodes.keys()]}|${[...m.edges.keys()]}|${JSON.stringify(a)}`;
+    if (this.fitMemo?.key !== key) this.fitMemo = { key, L: archLayout(zoneArch(a), this.archMode, (n) => (m.nodes.has(n.id) ? 1 : 0), fit, { labels: true, marked: (es) => es.some((i) => m.edges.has(i)) }) };
     return this.fitMemo.L;
   },
   // ---- sideways scrollers inside the scrolling page (the architecture canvas, the flow, state-machine and blast
@@ -2979,8 +3070,9 @@ export const ReviewMode = {
   hsOf(id) { const m = (this.hs ??= new Map()); if (!m.has(id)) m.set(id, { x: 0, viewW: 0, maxX: 0, contentW: 0 }); return m.get(id); },
   wrapX() { return (this.wrapXFn ??= (id, w, h, el) => this.hscroll(id, w, h, el)); }, // stack.js visualsCard's wrapX
   hscroll(id, contentW, h, content, t = theme()) {
-    // viewW: what shows of the picture, the part under the Ask drawer (drawerCover) left out.
-    const s = this.hsOf(id), viewW = hsVisible(s.viewW || 800, this.drawerCover()), maxX = Math.max(0, contentW - viewW), x = Math.min(s.x, maxX);
+    // viewW: what shows of the picture, the part under the Ask drawer (drawerCover) left out. The view is measured in
+    // logical px, the picture is drawn in the person's zoom: its width in the picture's px.
+    const s = this.hsOf(id), viewW = hsVisible((s.viewW || 800) / (settings().zoom || 1), this.drawerCover()), maxX = Math.max(0, contentW - viewW), x = Math.min(s.x, maxX);
     s.maxX = maxX; s.contentW = contentW; s.visW = viewW; // for the wheel and drag handlers
     return v_flex().w_full().gap(4)
       .child(div().id(id).w_full().h(h).relative().overflow_hidden().when(maxX > 0, (e) => e.cursor_grab())
@@ -3310,8 +3402,8 @@ export const ReviewMode = {
   },
 
   // ---- the Ask drawer, one for every view: open (380 px at the right), folded to a 28 px strip, or closed; kept per
-  // review. Over the Architecture page it lies on top (the picture keeps its width); beside the diff it squeezes the
-  // diff when there is room (from 1100 px), else it lies on top too.
+  // review. Beside the Architecture page it takes its width from the page (the picture wraps anew, its switches stay
+  // in reach); beside the diff it squeezes the diff when there is room (from 1100 px); else it lies on top.
   drawerState() { return this.deep.drawer?.[this.deepKey()] ?? null; },
   setDrawer(state, cx, about) {
     const key = this.deepKey();
@@ -3322,7 +3414,11 @@ export const ReviewMode = {
   },
   // Px of the right column the drawer lies on (not when it squeezes the column): open 380, folded strip 28.
   drawerCover() { const d = this.drawerState(); return d === "open" ? (this.drawerSqueezes() ? 0 : 380) : d === "collapsed" ? 28 : 0; },
-  drawerSqueezes() { return this.drawerState() === "open" && !(this.tab === "steps" && this.page) && (this.winW ?? 0) - this.leftW() - SPLIT >= 1100; },
+  drawerSqueezes() {
+    if (this.drawerState() !== "open" || this.exMode) return false; // Explore draws it on top
+    if (this.tab === "steps" && this.page) return this.page === "arch";
+    return (this.winW ?? 0) - this.leftW() - SPLIT >= 1100;
+  },
 
   askNow(cx) {
     const q = this.askIn.value().trim(), ai = this.ai, key = this.deepKey();
@@ -3456,38 +3552,208 @@ export const ReviewMode = {
       .child(div().id(`rv-pnx-${pin.id}`).tooltip("Remove this note").accessibility_label("Remove note").flex_none().text_color(t.muted).hover((s) => s.text_color(t.foreground)).child("✕").on_click((_e, cx) => { this.unpin(pin.id, cx); cx.stop_propagation(); })));
   },
 
+  // ---- the Security page (key "blast", from its former name). Top to bottom: the architecture picture in a security
+  // view (the ways in, the security findings on their cards, the rest dimmed), the unresolved security findings (each
+  // with what it needs to happen and how sure it is), the attack surface (the ways in), what every run says it checked,
+  // and the rights granted. A card and its rows light each other.
   blastPage(t) {
-    const sec = this.findings().filter((f) => f.security), runs = this.find.runs.security; // security comes from a finding's content, not only from the security run
-    const blast = this.ai?.blast ?? (sec.length ? { units: [...new Set(sec.map((f) => f.file))].map((file, k) => ({ id: `f${k}`, label: file.split("/").pop(), type: "file", status: "changed", files: [file], spots: (this.fileHunks?.get(file) ?? []).length })), context: [] } : null);
-    const header = v_flex().p(12).gap(8).rounded(10).border_1().border_color(t.border).bg(t.surface)
-      .child(h_flex().gap(10).items_center().child(div().flex_1().text_size(20).font_semibold().child("Security blast radius"))
-        .when(Boolean(blast), (e) => e.child(pill("rv-bl-expand", t, this.blastOpen ? "Collapse all" : "Expand all", (_e, cx) => { this.blastOpen = !this.blastOpen; cx.notify(); }).tooltip("Expand or collapse the details of every part")))
-        .child(!sec.length && !runs?.at && !runs?.busy ? div().text_size(12.5).text_color(t.muted).child("No security review yet:") : chip(t, `Security · ${this.counts().security}`, this.counts().security ? t.ansi1 : t.muted, false, "rv-bl-secn", "Unresolved security findings, from every source"))
-        .child(pill("rv-bl-run", t, runs?.busy ? "Security review running…" : runs?.at ? "Run security review again" : "Run security review", (_e, cx) => this.runReviewer("security", cx)).tooltip("Run the security reviewer on the PR head, read-only; findings show here")))
-      .child(div().text_size(13).text_color(t.muted).child("See the risks and the parts of the diff driving them."));
-    if (!blast) return v_flex().gap(12).child(header).child(div().text_size(13.5).text_color(t.muted).child(this.ai ? "No blast radius in this analysis and no security findings yet." : "No analysis yet: Analyze in the left column, or run the security review."));
-    const b = blastArch(blast, sec.filter((f) => OPEN_ST.includes(this.fstatus(f))));
-    const L = archModel(b, "diff", (n) => Math.min(2, n.findings?.length ?? 0));
-    const opts = this.archOpts("blast");
-    const deco = (n) => (n.findings ?? []).slice(0, 2).map((f, j) => h_flex().gap(4).items_center().child(chip(t, f.severity, t[SEVERITY_COLOR[f.severity]] ?? t.muted, true, `rv-deco-${n.id}-${j}`, `A ${f.severity}-severity security finding`))
-      .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.foreground).child(f.title)));
-    const go = (n, _e, cx) => { const h = this.fileHunks?.get(n.file)?.[0]; if (h) this.jumpTo(`${n.file}:${h.rows.find((r) => r.n)?.n ?? ""}`, cx); else if (n.file) { this.note = `${n.file} is not in the diff (related context)`; cx.notify(); } };
-    return v_flex().gap(12)
-      .child(header.child(div().text_size(13).font_semibold().child(`${b.counts.added} Added | ${b.counts.changed} Changed | ${b.counts.up} Upstream | ${b.counts.down} Downstream`)))
-      .child(this.hscroll("rv-blast-scroll", L.width + 4, L.height + 4, archView(L, t, "rv-blast", go, deco, opts), t))
-      .child(archLegend(L, t, "rv-blast-edges", "How the context links to the changes", opts, true))
-      .when(this.blastOpen, (e) => e.children((blast.units ?? []).flatMap((u) => (u.files ?? []).flatMap((file) => (this.fileHunks?.get(file) ?? []).map((h) => this.hunkBlock(h, t, `${u.id}`))))));
+    const sec = this.findings().filter((f) => f.security), open = sec.filter((f) => OPEN_ST.includes(this.fstatus(f))); // security comes from a finding's content, not only from the security run
+    const runs = this.find.runs, sr = runs.security, title = (text) => div().text_size(14).font_semibold().child(text);
+    const a = this.ai?.arch ?? null, marks = archMarks(a, open, this.ai?.access), surface = surfaceOf(this.ai?.access);
+    // The card a finding sits on (a call it breaks: the calling card).
+    const cardOf = new Map([...[...marks.nodes].flatMap(([id, m]) => m.findings.map((f) => [f.id, id])), ...[...marks.edges].flatMap(([i, m]) => m.findings.map((f) => [f.id, a.edges[i].from]))]);
+    // Where a finding can be reached from: the access rows the analysis names for it (stated), else the ways in at
+    // its card or at its line (derived from the map).
+    const rows = [...surface.entries, ...surface.grants];
+    const waysOf = (f) => {
+      const stated = (f.reachable_from ?? []).map((id) => rows.find((x) => x.id === id)).filter(Boolean);
+      return stated.length ? { ways: stated, stated: true } : { ways: surface.entries.filter((x) => (x.node && x.node === cardOf.get(f.id)) || x.at === `${f.file}:${f.line}`), stated: false };
+    };
+    const entriesOf = (f) => waysOf(f).ways;
+    // Their order (views.js secOrder): how far out they can be reached from, whether the way crosses a trust boundary
+    // (a call into the finding's card that crosses one; null when the analysis names no zones), then severity.
+    const zoned = (a?.zones ?? []).length > 0;
+    const order = secOrder(open.map((f) => ({ f, level: reachLevel(f, waysOf(f).ways), crosses: zoned ? (a.edges ?? []).some((e) => e.crosses && e.to === cardOf.get(f.id)) : null })));
+    const ctx = { open, marks, surface, cardOf, entriesOf, waysOf, why: new Map(order.map((r) => [r.f.id, r.why])), focus: this.blastFocus ?? null, name: (id) => a?.nodes.find((n) => n.id === id)?.label ?? id,
+      // A row's link to its card: light it and bring the picture back into view. A row under the pointer lights it lightly.
+      show: (id, cx) => { this.blastFocus = id; this.pageScrolls.blast.scroll_to_item(this.pageParts.indexOf("map")); cx.notify(); },
+      hover: (id) => (on, cx) => { const v = on ? id : null; if ((this.blastHover ?? null) !== v) { this.blastHover = v; cx.notify(); } } };
+    // Where a card's first row is: its first finding, else the attack surface, else the rights (secCard scrolls there).
+    this.secPart = (id) => { const f = order.map((r) => r.f).find((x) => cardOf.get(x.id) === id); return f ? `f:${f.id}` : surface.entries.some((x) => x.node === id) ? "surface" : surface.grants.some((x) => x.node === id) ? "access" : null; };
+    // Nothing to show: no security run has delivered anything (it does not start by itself for every PR), no finding is
+    // about security, and the analysis names no way in, right or trust zone.
+    const empty = !sr?.state && !sec.length && !(this.ai?.access ?? []).length && !(a?.zones ?? []).length;
+    const head = v_flex().gap(6)
+      .on_size_change((_s, cx) => this.loadVisibility(cx)) // once the page is laid out: is the repo public (for "Add as comment")
+      .child(h_flex().gap(10).items_center().flex_wrap().child(div().flex_1().text_size(20).font_semibold().child("Security"))
+        .child(chip(t, `⛨ Security · ${open.length}`, open.length ? t.ansi1 : t.muted, true, "rv-bl-secn", "Unresolved security findings, from every source"))
+        .when(!empty, (e) => e.child(pill("rv-bl-run", t, sr?.state === "running" ? "Security review running…" : sr?.state ? "Run security review again" : "Run security review", (_e, cx) => this.runReviewer("security", cx)).tooltip("Run the security reviewer on the PR head, read-only: one model call; its findings and what it checked show here"))));
+    if (empty) return [["head", head], ["empty", this.secEmpty(t)]];
+    return [["head", head], ...(a ? [["map", this.secMap(t, a, ctx)]] : []), ["findings", this.secIntro(t, sec, open)], ...order.map(({ f }) => [`f:${f.id}`, this.secFinding(t, f, ctx)]),
+      ["surface", this.secSurface(t, title, ctx)], ["scope", this.secScope(t, title)], ...(surface.grants.length ? [["access", this.secAccess(t, title, surface.grants)]] : [])];
   },
-
-  // A hunk drawn plainly (pages: outside the virtual list), at most 60 lines.
-  hunkBlock(h, t, key) {
-    const mono = settings().font_family ?? "JetBrains Mono";
-    return v_flex().id(`rv-hb-${key}-${h.id}`).flex_none().rounded(8).border_1().border_color(t.border).overflow_hidden().font_family(mono).text_size(12)
-      .child(div().px(10).py(4).bg(t.raised).text_color(t.muted).truncate().child(`${h.path}  ${h.rows[0]?.text ?? ""}`))
-      .children(h.rows.slice(1, 61).map((r) => h_flex().h(18).when(r.kind === "+" || r.kind === "-", (e) => e.bg(tint(r.kind) + "1a"))
-        .child(div().w(44).flex_none().pr(6).text_right().text_color(t.muted).child(r.number === undefined ? "" : String(r.number)))
-        .child(div().w(14).flex_none().text_color(r.kind === "+" ? t.ansi2 : r.kind === "-" ? t.ansi1 : t.muted).child(r.kind === " " ? "" : r.kind))
-        .child(div().flex_1().min_w(0).truncate().child(expandTabs(r.text)))));
+  // The picture: the Architecture page's, with narrow cards and no texts on the lines, so it and the first finding
+  // show together; its frames are the trust zones when the analysis names them, and a call over a boundary is marked. A card with an access row says how exposed it is; a card or call with an unresolved security
+  // finding carries its mark; every other card is dimmed, so the way from an entry to a finding stands out. A click on
+  // a card lights it and scrolls to its first row below.
+  secMap(t, a, ctx) {
+    const order = Object.keys(EXPOSURE), exposure = new Map();
+    for (const x of [...ctx.surface.entries, ...ctx.surface.grants]) if (x.node && (!exposure.has(x.node) || order.indexOf(x.exposure) < order.indexOf(exposure.get(x.node)))) exposure.set(x.node, x.exposure);
+    const keep = new Set([...exposure.keys(), ...ctx.marks.nodes.keys(), ...[...ctx.marks.edges.keys()].flatMap((i) => [a.edges[i].from, a.edges[i].to]), ...a.nodes.filter((n) => n.type === "external").map((n) => n.id)]);
+    const key = `${[...exposure]}|${[...ctx.marks.nodes.keys()]}|${[...ctx.marks.edges.keys()]}|${JSON.stringify(a)}`;
+    // With trust zones (a newer analysis) the zones are the frames, cards outside every zone stand free.
+    // A call between two of the cards that matter is a line, never a stub: the way from an entry to a finding.
+    if (this.secMemo?.key !== key) this.secMemo = { key, L: archLayout(zoneArch(a), "diff", (n) => (exposure.has(n.id) ? 1 : 0) + (ctx.marks.nodes.has(n.id) ? 1 : 0), true,
+      { lines: (i) => keep.has(a.edges[i]?.from) && keep.has(a.edges[i]?.to) }) };
+    const L = this.secMemo.L, base = this.archOpts("blast"), color = { open: t.ansi1, public: t.ansi3, internal: t.muted };
+    const mark = (e, id = null) => chip(t, EXPOSURE[e], color[e], e !== "internal", id, e === "open" ? "Reachable without credentials of the cloud account, and nothing checks the caller" : e === "public" ? "Reachable without credentials of the cloud account; something checks the caller" : "Reachable only with a right inside the cloud account");
+    const opts = { ...base, marks: ctx.marks, keep, numbers: false, zoom: settings().zoom || 1, onFocus: (id, cx) => { this.fh.focus(); this.secCard(id, cx); } };
+    const deco = (n) => (exposure.has(n.id) ? [h_flex().flex_none().h(15).child(mark(exposure.get(n.id), `rv-sec-ex-${n.id}`))] : []);
+    return v_flex().id("rv-sec-map").gap(6)
+      .child(h_flex().gap(10).items_center().flex_wrap().text_size(11.5).text_color(t.muted)
+        .children(order.map((e) => mark(e))).child("ways in and rights at a card")
+        .child(chip(t, "High · 1", t.ansi1, true)).child("unresolved security findings at a card or call")
+        .child("Dimmed: neither.").when(hasTrust(L), (e) => e.child(trustLegend(L, t))))
+      .child(this.archCanvas(t, L, opts, { id: "rv-sec-canvas", pic: "rv-sec-pic", wrap: true, decorate: deco, notes: false }));
+  },
+  // A card of the picture lit (null: none), and its first row below brought into view.
+  secCard(id, cx) {
+    this.blastFocus = id;
+    const k = id ? (this.pageParts ?? []).indexOf(this.secPart?.(id)) : -1;
+    if (k >= 0) this.pageScrolls.blast.scroll_to_item(k);
+    cx.notify();
+  },
+  // Above the findings: who will read a finding once it is a comment. Or why there is none.
+  secIntro(t, sec, open) {
+    const sr = this.find.runs.security, settled = sec.length - open.length, vis = this.repoVis?.[this.prSel?.repo];
+    const none = sr?.state === "done" ? "The security review and the other runs left no unresolved security finding." : sr?.state === "failed" ? "No unresolved security finding from the other runs. The security review failed (see below), so it has not looked."
+      : sr?.state === "running" ? "No unresolved security finding so far. The security review is still running." : "No unresolved security finding from the other runs. The security review has not run on this PR.";
+    return v_flex().gap(4)
+      // The text names how the weakness is used: say who will read it, before it is added. Once, above the list.
+      .when(open.length > 0, (e) => e.child(div().id("rv-sec-public").text_size(12.5).text_color(vis === "PUBLIC" ? t.ansi3 : t.muted).whitespace_normal()
+        .child(`“${vis === "PUBLIC" ? "Add as public comment" : "Add as comment"}” puts a finding's text, with the way to use the weakness, into a comment on the PR once you post your review. ${this.secReach()}`)))
+      .when(!open.length, (e) => e.child(div().text_size(13.5).text_color(t.muted).whitespace_normal().child(none)))
+      .when(settled > 0, (e) => e.child(div().text_size(12.5).text_color(t.muted).child(`${settled} more security ${settled === 1 ? "finding is" : "findings are"} fixed or dismissed: see the Findings tab.`)));
+  },
+  secReach() {
+    const repo = this.prSel?.repo ?? "the repository", vis = this.repoVis?.[this.prSel?.repo];
+    return vis === "PUBLIC" ? `This repository (${repo}) is public: anyone can read the comment.` : vis ? `This repository (${repo}) is ${vis.toLowerCase()}: everyone with access to it can read the comment.` : "Everyone who can see the PR can read the comment.";
+  },
+  // One unresolved security finding, whole: nothing to unfold. What it leads to, how sure its source is and what it
+  // needs to happen, the way in it hangs on, and who found it; "Open finding" has the rest (text, fix, dismiss) in the
+  // Findings tab. Lit when its card is the lit one in the picture.
+  secFinding(t, f, ctx) {
+    // ponytail: formatted here until the Diff package's helper for these facts (views.js) is merged; then use that.
+    const CERTAIN = { confirmed: "Confirmed: something that ran shows it.", derived: "Derived from the code that was read; nothing ran.", assumed: "Assumed: it depends on something that could not be checked." };
+    const st = this.fstatus(f), col = t[SEV[f.severity]] ?? t.accent, at = `${f.file}:${f.line}`, card = ctx.cardOf.get(f.id) ?? null, { ways, stated } = ctx.waysOf(f);
+    // Who says so: the analysis named the way in (and how far in the caller has to be), or the finding only sits there.
+    const REACH = { public: "anyone can reach it", authenticated: "an authenticated caller can reach it", internal_only: "it can only be reached from inside", unknown: "the analysis could not tell from where it can be reached" };
+    const level = REACH[f.reachability] ?? null;
+    const reach = ways.length ? `${ways.map((x) => `${x.resource}: ${EXPOSURE[x.exposure].toLowerCase()}, reached by ${x.principal}`).join("; ")}. ${stated ? `Stated by the analysis${level && f.reachability !== "unknown" ? `: ${level}` : ""}.` : "Derived from the map: the finding sits at this way in."}`
+      : level ? `${level[0].toUpperCase()}${level.slice(1)}${f.reachability === "unknown" ? "." : ". Stated by the analysis, which names no way in."}` : null;
+    const facts = [f.effect && ["Effect", plain(f.effect)],
+      f.certainty && ["Certainty", `${CERTAIN[f.certainty]} ${f.preconditions.length ? `It needs: ${f.preconditions.map(plain).join("; ")}.` : "It needs nothing else: it holds as the code stands."}`],
+      reach && ["Reachable from", reach],
+      ["Found by", this.sourcesOf(f)]].filter(Boolean);
+    return v_flex().id(`rv-sec-${f.id}`).gap(8).p(12).rounded(8).border_l(3).border_color(col).bg(card && card === ctx.focus ? t.selected : t.surface)
+      .when(Boolean(card), (e) => e.on_hover(ctx.hover(card)))
+      .when(ctx.why.has(f.id), (e) => e.child(div().id(`rv-sec-why-${f.id}`).text_size(11.5).text_color(t.muted).tooltip("The findings are ordered by how far out they can be reached from, then by whether the way crosses a trust boundary, then by severity").child(ctx.why.get(f.id))))
+      .child(h_flex().gap(8).items_start()
+        .child(badge(t, f.severity, col))
+        .child(div().flex_1().min_w(0).text_size(14).font_semibold().whitespace_normal().line_height(1.4).child(plain(f.title)))
+        .when(Boolean(card), (e) => e.child(div().id(`rv-sec-card-${f.id}`).flex_none().text_size(12).text_color(t.accent).cursor_pointer().hover((x) => x.underline()).tooltip("Show its card in the picture above").on_click((_e, cx) => ctx.show(card, cx)).child(`${ctx.name(card)} ↑`)))
+        .child(div().id(`rv-sec-at-${f.id}`).flex_none().text_size(12).text_color(t.accent).cursor_pointer().hover((x) => x.underline()).tooltip("Show this line in the diff").on_click((_e, cx) => this.jumpTo(at, cx)).child(`${f.file.split("/").pop()}:${f.line} ↗`))
+        .child(div().flex_none().text_size(12).font_semibold().text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(FSTATUS[st]?.[0] ?? st)))
+      .child(v_flex().gap(3).children(facts.map(([label, text]) => h_flex().gap(8).items_start().text_size(12.5).line_height(1.5)
+        .child(div().w(98).flex_none().text_color(t.muted).child(label)).child(div().flex_1().min_w(0).whitespace_normal().child(text)))))
+      .child(h_flex().gap(6).items_center().flex_wrap()
+        .child(pill(`rv-sec-open-${f.id}`, t, "Open finding", (_e, cx) => { this.openFinding(f); this.jumpTo(at, cx); cx.notify(); }).tooltip("Its whole text in the Findings tab, with Fix and Dismiss, and its line in the diff"))
+        .child(pill(`rv-sec-cm-${f.id}`, t, this.repoVis?.[this.prSel?.repo] === "PUBLIC" ? "Add as public comment" : "Add as comment", (_e, cx) => this.findingComment(f, cx)).tooltip(`Add this finding to your pending comments. ${this.secReach()}`)));
+  },
+  // The attack surface: the ways in (public things, routes), most exposed first. Each says who can reach it, what
+  // checks the caller and what it may do, whether this PR adds or changes it (its line is an added one in the diff),
+  // and the unresolved security findings at it (a click goes to the finding above).
+  secSurface(t, title, ctx) {
+    const color = { open: t.ansi1, public: t.ansi3, internal: t.muted }, a = this.ai?.arch;
+    // A way in this PR opens that the task does not ask for (views.js extraWays: an "extra" ask in the same files as
+    // the way in or its card) goes first, with a sentence; only a one-to-one match.
+    const fileOf = (at) => (at ? /^(.*?)(:\d+)?$/.exec(String(at))[1] : null), cardAt = (id) => a?.nodes.find((n) => n.id === id)?.at;
+    const extra = new Map(extraWays((this.ai?.asks ?? []).map((q) => ({ ...q, files: [...(q.hunks ?? []).map((h) => this.byId.get(h)?.path), ...(q.findings ?? []).map((id) => this.findingById(id)?.file)].filter(Boolean) })),
+      ctx.surface.entries.map((x) => ({ ...x, files: [fileOf(x.at), fileOf(cardAt(x.node))].filter(Boolean) }))).map((m) => [m.entry.k, m.ask]));
+    const list = [...ctx.surface.entries].sort((x, y) => Number(extra.has(y.k)) - Number(extra.has(x.k)));
+    const KIND = { none: "Nothing", code: "In the code", gateway: "At the gateway", iam: "IAM" };
+    const added = (at) => { const m = /^(.*?):(\d+)/.exec(String(at ?? "")); return Boolean(m) && this.rowsFor(m[1], true).some((r) => r.kind === "+" && r.number === Number(m[2])); };
+    const at = (x) => ctx.open.filter((f) => ctx.entriesOf(f).includes(x));
+    const rows = list.map((x) => [h_flex().child(chip(t, EXPOSURE[x.exposure], color[x.exposure], x.exposure !== "internal")),
+      v_flex().gap(3).child(div().font_semibold().child(x.resource ?? ""))
+        .when(extra.has(x.k), (e) => e.child(div().id(`rv-sec-extra-${x.k}`).text_color(t.ansi3).whitespace_normal().tooltip(extra.get(x.k).why || "The task check marks this as extra")
+          .child(`The task does not ask for “${extra.get(x.k).text}”, and this PR opens it here.`)))
+        .children(at(x).map((f) => h_flex().id(`rv-sec-sf-${x.k}-${f.id}`).gap(6).items_start().cursor_pointer().hover((e) => e.bg(t.hover)).rounded(4).tooltip("Go to this finding above")
+          .on_click((_e, cx) => { const k = this.pageParts.indexOf(`f:${f.id}`); if (k >= 0) this.pageScrolls.blast.scroll_to_item(k); cx.notify(); })
+          .child(badge(t, f.severity, t[SEV[f.severity]] ?? t.accent)).child(div().flex_1().min_w(0).truncate().child(plain(f.title))))),
+      x.principal ?? "", [KIND[x.auth_kind], x.auth].filter(Boolean).join(": ") || "nothing", (x.actions ?? []).join(", "),
+      (x.opened_by_pr ?? added(x.at)) ? h_flex().child(chip(t, "Adds or changes it", t.ansi2, false, `rv-sec-new-${x.k}`, x.opened_by_pr === undefined ? "Its line is an added line of this PR's diff" : "From the diff: this PR adds or changes this way in")) : div().text_color(t.muted).child("–"),
+      x.at ? div().id(`rv-sec-sf-at-${x.k}`).text_color(t.accent).cursor_pointer().hover((s) => s.underline()).tooltip("Show this place in the diff").on_click((_e, cx) => this.jumpTo(x.at, cx)).child(x.at) : ""]);
+    return v_flex().id("rv-sec-surface").gap(8).p(12).rounded(10).border_1().border_color(t.border).bg(t.surface)
+      .child(h_flex().gap(10).items_center().flex_wrap().child(title("Attack surface")).child(div().text_size(12.5).text_color(t.muted).child("The ways in that this PR's infrastructure code defines, the most exposed first.")))
+      .child(list.length ? this.table(t, "rv-sec-sf-t", [["Exposure", 108], ["Way in, and the unresolved findings at it", null], ["Who can reach it", 140], ["Checks the caller", 230], ["May", 190], ["This PR", 124], ["Place", 120]], rows, (k) => Boolean(ctx.focus) && list[k].node === ctx.focus)
+        : div().text_size(12.5).text_color(t.muted).whitespace_normal().child(!this.ai ? "No analysis yet: Analyze in the left column." : (this.ai.access ?? []).length ? "The analysis names no way in: this PR's infrastructure code defines rights only (below)."
+          : "This analysis names no way in: the PR has no infrastructure code, or the analysis is older than this list."))
+      // What an attacker gets with a component of a zone that has a way in (views.js zoneRights), from its rights.
+      .children(zoneRights(a?.zones, a?.nodes, list, this.ai?.access).map((z, i) => h_flex().id(`rv-sec-blast-${i}`).gap(8).items_start().text_size(12.5).line_height(1.5)
+        .child(div().flex_none().text_color(t.ansi3).child("⚠")).child(div().flex_1().min_w(0).whitespace_normal().child(blastLine(z)))));
+  },
+  // No security data at all: why, and the run that makes it, with its price (the last run's, else the model's name).
+  secEmpty(t) {
+    const c = this.find.runs.security?.cost, price = c > 0 ? `about $${Number(c).toFixed(2)}` : `one ${modelLabel(model())} call`;
+    return v_flex().id("rv-sec-empty").gap(10).p(16).rounded(10).border_1().border_color(t.border).bg(t.surface).max_w(760)
+      .child(div().text_size(13.5).whitespace_normal().line_height(1.5).child("Nothing here yet: the security review has not run on this PR, and it does not start by itself for every PR."))
+      .child(h_flex().child(pill("rv-sec-empty-run", t, `Run security review (${price})`, (_e, cx) => this.runReviewer("security", cx), false, t.foreground)
+        .tooltip(`One ${modelLabel(model())} call reads the PR head, read-only: ways in, trust zones, rights, and security findings with what it checked`)));
+  },
+  // What each run says it checked: a line per run (not run, running, failed with its error, no findings, n findings;
+  // what it read and left out), then a row per area with the run's own word for it. A self-report, and named so.
+  secScope(t, title) {
+    const runs = this.find.runs, all = this.findings(), tab = scopeTable(this.ai?.scope, runs);
+    const from = (k) => all.filter((f) => f.sources.some((x) => x.reviewer === k)).length;
+    const lines = [["analysis", "Analysis", this.aiBusy ? { state: "running" } : this.ai ? { state: "done" } : null, null], ...reviewersNow().map(([k, [label]]) => [k, label, runs[k] ?? null, runs[k]?.scope ?? null])];
+    const RESULT = { finding: ["Finding", t.ansi1], clean: ["Clean", t.ansi2], not_checked: ["Not checked", t.ansi3] };
+    const cell = (c) => (!c ? div().text_color(t.dim).child("–") : h_flex().gap(6).items_start()
+      .child(chip(t, RESULT[c.result][0], RESULT[c.result][1], c.result !== "clean")).child(div().flex_1().min_w(0).whitespace_normal().text_color(t.muted).child(c.note)));
+    return v_flex().id("rv-sec-scope").gap(8).p(12).rounded(10).border_1().border_color(t.border).bg(t.surface)
+      .child(title("What each run checked"))
+      .child(div().text_size(12.5).text_color(t.muted).whitespace_normal().child("Each model run reports this about itself. It says where the run looked, not that the code is safe; “–” means the area was not part of that run."))
+      .child(v_flex().gap(3).children(lines.map(([k, label, r, scope]) => {
+        const failed = r?.state === "failed";
+        return h_flex().id(`rv-sec-run-${k}`).gap(8).items_start().text_size(12.5).line_height(1.5)
+          .child(div().w(150).flex_none().font_semibold().child(label))
+          .child(div().flex_1().min_w(0).whitespace_normal().text_color(failed ? t.ansi1 : r?.state ? t.foreground : t.muted)
+            .child([runSummary(r, from(k)), scope?.read?.length ? `read: ${scope.read.join(", ")}` : null, scope?.skipped?.length ? `left out: ${scope.skipped.join("; ")}` : null,
+              r?.state === "done" && k !== "analysis" && !scope ? "it reported no scope" : null].filter(Boolean).join(" · ")));
+      })))
+      .child(tab.rows.length ? this.table(t, "rv-sec-scope-t", [["Area", 130], ...tab.cols.map((k) => [REVIEWERS[k]?.[0] ?? k, null])], tab.rows.map((r) => [AREA_NAME[r.area] ?? r.area, ...tab.cols.map((k) => cell(r.cells[k]))]))
+        : div().text_size(12.5).text_color(t.muted).whitespace_normal().child("No run has reported what it checked: the analysis is older than this report, or nothing has run yet."));
+  },
+  // The rights granted inside the cloud account (the access rows that are no way in): who may do what on which
+  // resource, what checks it, and a mark on a right the code never uses.
+  secAccess(t, title, grants) {
+    const rows = grants.map((x) => [div().font_semibold().child(x.resource ?? ""), x.principal ?? "", (x.actions ?? []).join(", "), x.auth ?? "",
+      x.used === false ? h_flex().child(chip(t, "Not used", t.ansi3, true, `rv-sec-acc-u${x.k}`, "The code in this PR never uses this right")) : div().text_color(t.muted).child(x.used === true ? "Yes" : "–"),
+      x.at ? div().id(`rv-sec-acc-at-${x.k}`).text_color(t.accent).cursor_pointer().hover((s) => s.underline()).tooltip("Show this place in the diff").on_click((_e, cx) => this.jumpTo(x.at, cx)).child(x.at) : ""]);
+    return v_flex().id("rv-sec-access").gap(8).p(12).rounded(10).border_1().border_color(t.border).bg(t.surface)
+      .child(title("Rights granted"))
+      .child(this.table(t, "rv-sec-acc-t", [["Resource", 230], ["Who", 190], ["May", null], ["Checked by", null], ["Used", 74], ["Place", 130]], rows, (k) => Boolean(this.blastFocus) && grants[k].node === this.blastFocus));
+  },
+  // Whether the PR's repo is public, asked once per repo (gh repo view): the Security page says who can read a comment.
+  loadVisibility(cx) {
+    const repo = this.prSel?.repo;
+    if (!repo || this.repoVis?.[repo] !== undefined) return;
+    this.repoVis = { ...this.repoVis, [repo]: null };
+    const argv = [...this.ctxEnv(this.ctxId()), "gh", "repo", "view", repo, "--json", "visibility", "--jq", ".visibility"];
+    cx.spawn(async (cx) => {
+      const r = await exec(argv[0], argv.slice(1), { timeout: 20000 }).catch(() => null);
+      if (r?.code === 0 && r.stdout.trim()) { this.repoVis = { ...this.repoVis, [repo]: r.stdout.trim() }; cx.notify(); }
+    });
   },
 
   // The CLIs' models for this PR's context (models.py), asked at most once a day per context: Claude lists what that

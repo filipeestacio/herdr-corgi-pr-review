@@ -190,6 +190,9 @@ export function budget(hunks, max = 60000) {
 export const MODELS = { haiku: { label: "Haiku", chars: 60000 }, sonnet: { label: "Sonnet", chars: 150000 }, opus: { label: "Opus", chars: 150000 } };
 // A model's class, as llm.tier: haiku, sonnet, or opus (the bigger ones, and any model not named).
 export const tierOf = (m) => (/haiku/i.test(m ?? "") ? "haiku" : /sonnet/i.test(m ?? "") ? "sonnet" : "opus");
+// The model for anything that reads or judges code: at least Sonnet. Haiku is fine for text (triage, reshaping a
+// reviewer's prose) but too weak to reason about code, so a stored or passed haiku becomes sonnet (llm.code_model).
+export const codeModel = (m) => (!m || tierOf(m) === "haiku" ? "sonnet" : m);
 // Dollars per million input and output tokens, by the longest prefix of the resolved model id. Neither CLI reports
 // prices, so these are Anthropic's list prices (November 2026); a model not listed costs its class's price.
 // ponytail: a hand-kept table; update it when Anthropic's prices change.
@@ -315,15 +318,15 @@ function layerFindings(list, step) {
 
 // What a newer analysis or reviewer says about a finding beyond its text, in one shape whoever found it (an older one
 // has none of it): impact (what the severity follows from), effect (one sentence), preconditions ([]: it always
-// happens), certainty (confirmed | derived | assumed), criteria (ids of the asks it breaks) and breaks ({node} or
+// happens), certainty (confirmed | derived | assumed), criteria (ids of the asks it breaks), breaks ({node} or
 // {from, to, edge} in the architecture picture, else null), effort (how much work the fix is: quick | moderate |
-// heavy, null when the analysis does not say), and from where it can be reached: reachable_from (ids of access rows)
-// and reachability (public | authenticated | internal_only | unknown, null when not said; the security run's).
+// heavy, null when the analysis does not say), and for a security finding reachable_from (ids of the access rows
+// it can be reached through) and reachability (public | authenticated | internal_only | unknown).
 export const EFFORTS = ["quick", "moderate", "heavy"];
 export const findingFacts = (f) => ({ impact: f.impact ?? null, effect: String(f.effect ?? ""), preconditions: (f.preconditions ?? []).map(String),
   certainty: ["confirmed", "derived", "assumed"].includes(f.certainty) ? f.certainty : null, criteria: (f.criteria ?? []).map(String), breaks: f.breaks ?? null,
-  effort: EFFORTS.includes(f.effort) ? f.effort : null, reachable_from: (f.reachable_from ?? []).map(String),
-  reachability: ["public", "authenticated", "internal_only", "unknown"].includes(f.reachability) ? f.reachability : null });
+  effort: EFFORTS.includes(f.effort) ? f.effort : null,
+  reachable_from: (f.reachable_from ?? []).map(String), reachability: ["public", "authenticated", "internal_only", "unknown"].includes(f.reachability) ? f.reachability : null });
 
 // A suspicious line taken over as a pending review comment (rows: its hunk's or file's rows); null when not shown there.
 export function suspectComment(s, rows, id) {

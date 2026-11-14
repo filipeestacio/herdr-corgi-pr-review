@@ -35,7 +35,7 @@ S.vlist = (id, n, sizes, key, render) => {
   return S.el();
 };
 const STUBS = {
-  "gpui-kit": "const S = globalThis.__rv; export class View {} export const div = S.el, svg = S.el, image = S.el;",
+  "gpui-kit": "const S = globalThis.__rv, B = new Proxy({}, { get: () => () => B }); globalThis.window ??= { paint_path: () => S.el() }; export class View {} export const div = S.el, svg = S.el, image = S.el, PathBuilder = { stroke: () => B, fill: () => B };",
   "gpui-base": `const S = globalThis.__rv, f = () => S.el(), n = { new: () => S.handle() };
     export const v_flex = f, h_flex = f, v_virtual_list = S.vlist, Scrollbar = { vertical: f, horizontal: f }, TextView = { markdown: f };
     export const Input = Object.assign(f, { new: f }), Textarea = Object.assign(() => S.el(), { new: f }), Editor = Object.assign(() => S.el(), { new: f });

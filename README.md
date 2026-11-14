@@ -117,7 +117,7 @@ what they call on the right, each with the reason it matters.
   commit and report), Fixed (after a passed verification), Dismissed. Every view shows the same count.
 - Incremental: "since your last review" view and analysis.
 - A resizable layers column (drag the divider, double-click for the default width).
-- Model per review (Haiku, Sonnet, Opus); LLM calls only on click.
+- Model per review (Sonnet or Opus; Haiku only for text: triage and reshaping a reviewer's prose); LLM calls only on click.
 - Restricted Mode for other people's code (see below).
 - Works with other mods: separate setups (accounts, clone folders), the Go to box and the chat bar.
 
@@ -198,7 +198,8 @@ Without touching code:
 
 - **What the AI writes and checks:** `language`, `globalRules` (conventions every PR is checked against) and the
   other keys in `pr-review.config.json` (above).
-- **Which model:** Haiku, Sonnet or Opus, picked per review in the review layout.
+- **Which model:** Sonnet or Opus, picked per review in the review layout. Fix and Ask agents run on it too. Haiku is
+  used only for text (PR triage, turning a reviewer's prose into findings); a stored Haiku pick becomes Sonnet.
 - **The review layout:** `layouts/review.json` is yours once it is written. Move, resize or remove its blocks; the
   mod never overwrites it.
 - **Your own code review:** with a `/code-review` command in your Claude setup, the Claude reviewer uses it.

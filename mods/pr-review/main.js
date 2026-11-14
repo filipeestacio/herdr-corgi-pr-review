@@ -18,7 +18,7 @@ import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, Editor, EditorState, TextView } from "gpui-base";
 import { spaces, panes, focused, agents, exec, hc, run, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, home, layout, props, watchFolder, nextCommand } from "herdr";
 import { diffRows, buildPrompt, splitPatch, selection, nextChange, lineLabel, anchorRow, buildReview, hunksOf, hash, uiLine, reviewRequest, mapReview, triageOf } from "./pr.js";
-import { parsePrRef, ghTarget, pruneSources } from "./pr.js";
+import { parsePrRef, ghTarget, pruneSources, codeModel } from "./pr.js";
 import * as C from "./context.js";
 import { loadDiff, saveDiff } from "./diffcache.js";
 import { setupBanner, renderSetup, loadSetup, runSetup, openUrl, readConfig } from "./setup-view.js";
@@ -37,8 +37,9 @@ const TTL_MS = 10 * 60 * 1000; // a remembered context is shown as is (no exec) 
 const MEMO = 8, WATCHES = 3; // remembered contexts; repos watched at once
 const IGNORED = /\/(node_modules|target|dist|build|\.venv|__pycache__)\/|\/\.git\/(?!HEAD$|index$|refs\/)/; // changes that don't make a diff dirty
 const cacheDir = () => `${appHome()}/pr-data/cache`;
-// The model for walkthroughs and the review analysis: the review layout's picker (shared), Sonnet by default.
-const walkModel = () => { const m = shared("review.model"); return typeof m === "string" && m ? m : "sonnet"; }; // as review.js model()
+// The model for walkthroughs and the review analysis: the review layout's picker (shared), Sonnet by default and at
+// least Sonnet (pr.js codeModel: an old haiku pick reads as sonnet).
+const walkModel = () => { const m = shared("review.model"); return codeModel(typeof m === "string" && m ? m : "sonnet"); }; // as review.js model()
 const STATE = { open: "ansi2", draft: "muted", merged: "ansi5", closed: "ansi1" };
 const WEIGHT = { key: ["key", "ansi3"], skim: ["skim", "dim"] };
 const COVER = { seen: ["done", "ansi2"], partly: ["partly", "ansi3"], absent: ["missing", "ansi1"] };
@@ -502,7 +503,7 @@ export default class PrReview extends View {
           run("tab.new", { space: this.spaceFor(ctx, origin.cwd, this.root), folder: origin.cwd, name: `PR #${origin.number}`, argv: [...this.ctxEnv(origin.sessionContext ?? ctx), "claude", "--resume", origin.session], task: prompt });
           this.note = `${what}: resumed the PR's session in a new tab`;
         } else {
-          run("tab.new", { space: this.spaceFor(ctx, this.root), folder: this.root ?? location().cwd, name: "PR-Review", argv: [...this.ctxEnv(ctx), "claude"], task: prompt });
+          run("tab.new", { space: this.spaceFor(ctx, this.root), folder: this.root ?? location().cwd, name: "PR-Review", argv: [...this.ctxEnv(ctx), "claude", "--model", walkModel()], task: prompt });
           this.note = `${what}: started a new Claude tab`;
         }
         done(cx);
@@ -571,7 +572,7 @@ export default class PrReview extends View {
     const covered = new Set(w.steps.flatMap((s) => s.hunks));
     const left = [...now.values()].filter((h) => !covered.has(h.id));
     const steps = [...w.steps.map((s) => ({ ...s, stale: s.hunks.length > 0 && !s.hunks.some((id) => now.has(id)) }))];
-    if (left.length) steps.push({ title: `Not covered (${left.length} hunks)`, text: w.cut?.length ? `${w.cut.length} of them were too large to send to Haiku.` : "No layer explains these hunks.", hunks: left.map((h) => h.id) });
+    if (left.length) steps.push({ title: `Not covered (${left.length} hunks)`, text: w.cut?.length ? `${w.cut.length} of them were too large to send to the model.` : "No layer explains these hunks.", hunks: left.map((h) => h.id) });
     if (w.asks.length) steps.push({ title: "Check against the task", asks: w.asks, hunks: [] });
     const cur = steps[Math.min(this.step, steps.length - 1)];
     const done = w.steps.filter((_s, i) => this.read.has(i)).length;
@@ -580,7 +581,7 @@ export default class PrReview extends View {
         .child(div().font_semibold().whitespace_normal().child(w.title || "Walkthrough"))
         .child(div().text_size(12).text_color(t.muted).whitespace_normal().child(w.summary))
         .child(h_flex().gap(8).items_center().text_size(11).text_color(t.dim)
-          .child(div().flex_1().min_w(0).truncate().child(`${done} of ${w.steps.length} layers read · ${modelLabel(w.model) ?? "Haiku"}${w.cost != null ? ` · $${w.cost.toFixed(3)}` : ""}${w.cut?.length ? ` · ${w.cut.length} hunks cut` : ""}`))
+          .child(div().flex_1().min_w(0).truncate().child(`${done} of ${w.steps.length} layers read · ${modelLabel(w.model) ?? "model unknown"}${w.cost != null ? ` · $${w.cost.toFixed(3)}` : ""}${w.cut?.length ? ` · ${w.cut.length} hunks cut` : ""}`))
           .when(Boolean(this.walkBusy), (e) => e.child(div().child(SPIN[0]).frames(SPIN, 90)))
           .child(pill(`walk-more-${this.uid}`, t, "⋯", (_e, cx) => { this.walkMore = !this.walkMore; cx.notify(); }, this.walkMore, "Show or hide the model choice and more options", "More walkthrough options")))
         .when(Boolean(this.walkMore), (e) => e.child(h_flex().flex_wrap().gap(8).items_center().pt(2)

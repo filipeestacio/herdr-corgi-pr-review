@@ -214,9 +214,10 @@ export function fixCommentsPrompt({ pr, comments, file, lang, branch = null, pat
 
 // hc run for the sub-agent: under the PR's agent (parent) so it shows there, in its worktree, on the PR's context
 // (env: the context's command prefix), no notes typed into the parent.
-export function subAgentArgs({ parent, cwd, name, env = [], task, job, auto = false }) {
+// model: the review's model (pr.js codeModel), said outright so the account's default (maybe Haiku) never fixes code.
+export function subAgentArgs({ parent, cwd, name, env = [], task, job, auto = false, model = "sonnet" }) {
   return ["run", "--bg", "--json", "--no-notify", "--name", name, "--cwd", cwd, ...(parent ? ["--parent", parent] : ["--no-parent"]),
-    "--label", `pr-review.fix=${job}`, "--", ...env, "claude", "--disallowedTools", ...NO_PUSH, ...permissionArgs(auto), task];
+    "--label", `pr-review.fix=${job}`, "--", ...env, "claude", "--model", model, "--disallowedTools", ...NO_PUSH, ...permissionArgs(auto), task];
 }
 // A fix agent never pushes, never opens a PR and never hands its fix to another session (hc send): the task says so,
 // and these deny rules refuse the commands in any permission mode. The list takes any number of rules, so an option with one value has to follow it (permissionArgs).
@@ -308,7 +309,8 @@ export const showCounts = ({ rows, findings = 0, agents = 0 }) => ({ mine: rows.
 // whether it can push, what comes back and what it costs. kind: "sub" (a fix agent in its own checkout), "main" (the
 // PR's live agent session), "new" (a new agent tab for a question), "live" (a question put into a live agent's
 // input: nothing starts), "resume" (the PR's session, resumed in a new tab), anything else: a live session.
-export function sendFacts({ kind, account, trusted = false, branch = null, name = null, chat = false, where = null }) {
+// model: the label of the model a new agent ("sub", "new") runs on; a live session keeps its own.
+export function sendFacts({ kind, account, trusted = false, branch = null, name = null, chat = false, where = null, model = null }) {
   const own = kind === "sub" || kind === "new", who = name ?? "the agent";
   const starts = { new: `A new agent in a new tab, in the review's checkout of the PR head${where ? ` (${where})` : ""}.`,
     live: `Nothing new. The text goes into the ${chat ? "chat box" : "terminal"} of ${who} as a draft, and you send it there.`,
@@ -320,7 +322,7 @@ export function sendFacts({ kind, account, trusted = false, branch = null, name 
     : kind === "main" ? "Commits in the PR's checkout and a report here." : `An answer in ${kind === "new" ? "the new tab" : "that session"}. The finding stays as it is.`;
   return [
     starts && ["Starts", starts],
-    ["Runs as", own ? account : `${name ?? "The PR's session"}, on its own account and with its own permissions.`],
+    ["Runs as", own ? `${account}${model ? ` · ${model}` : ""}` : `${name ?? "The PR's session"}, on its own account and with its own permissions.`],
     ["Gets", own ? "The text below and every file it opens in its checkout. All of it goes to the provider." : "The text below. The session reads what it needs in its own checkout."],
     ["May", may],
     ["Push", kind === "sub" ? "Never: git push and gh pr create are denied, and the task forbids them." : kind === "new" ? "Only if you approve the command." : "Possible. Nothing here prevents it."],
