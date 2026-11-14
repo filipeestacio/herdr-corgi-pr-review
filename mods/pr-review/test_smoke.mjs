@@ -11,6 +11,7 @@ const { default: PrReview } = await import("./main.js");
 const { splitPatch, hunksOf, diffRows, hash } = await import("./pr.js");
 const { foldOnOpen } = await import("./views.js");
 const R = await import("./review.js");
+const { withThreadState } = await import("./threads.js");
 const fx = (name) => readFileSync(new URL(`../../demo/fixtures/review/${name}`, import.meta.url), "utf8");
 
 // cx.spawn runs the task (as Herdr does) and keeps it, to wait for; a task that throws is a failure, except for the
@@ -56,6 +57,14 @@ async function tour(v, name) {
   for (const tab of ["files", "steps", "comments", "findings"]) act(v, tab, at(`tab ${tab}`));
   // A comment written at a line: the composer, then a pending comment in the diff, the Comments tab and Finish.
   const line = v.hunks[0] && `${v.hunks[0].path}:${v.hunks[0].rows.find((r) => r.kind === "+")?.n ?? 1}`;
+  // GitHub's comments on that line: Markdown, a suggestion, a reply, a bot, an outdated one, a resolved thread.
+  if (line) {
+    const [path, n] = [line.slice(0, line.lastIndexOf(":")), Number(line.slice(line.lastIndexOf(":") + 1))];
+    const g = (id, user, body, extra = {}) => ({ id, path, line: n, side: "RIGHT", user, user_type: user.endsWith("[bot]") ? "Bot" : "User", at: `2026-11-1${id % 10}T10:00:00Z`, commit_id: "c1", body, ...extra });
+    v.gh = withThreadState([g(1, "anna", "**Why** this?\n\n```suggestion\nx = 1\n```\n\n- a\n- [link](https://example.org)"), g(2, "bob", "> quoted\n\nagreed `code`", { in_reply_to_id: 1 }),
+      g(3, "lint[bot]", "<details><summary>Lint</summary>\n\n| a | b |\n|---|---|\n| 1 | 2 |\n</details>"), g(4, "carol", "old", { line: null, original_line: 2, outdated: true })], [{ id: 1, resolved: true, outdated: false }]);
+    act(v, "comments", at("Comments with GitHub's threads")); v.showResolved = true; v.allBots = true; act(v, "files", at("files with GitHub's threads")); act(v, "comments", at("Comments, resolved and bots shown"));
+  }
   if (line) { act(v, `comment:${line}`, at("composer open")); act(v, "draft:Why this?", at("composer with text")); act(v, "add", at("a pending comment")); assert.ok(v.comments.length > 0, at("the comment was added")); act(v, "comments", at("Comments with a pending comment")); act(v, "files", at("files again")); }
   // The pages, with their folds and rows clicked.
   for (const p of ["overview", "blast", "arch"]) act(v, `page:${p}`, at(`page ${p}`));
