@@ -258,3 +258,27 @@ console.log("threads ok");
   assert.equal(TH.findingCommentText({ title: "T", detail: "", suggestion: "" }), "**T**");
   console.log("finding comment ok");
 }
+// Verify with an agent: the task, the deny rules, its answer file.
+{
+  const list = [{ id: "a1", title: "Token\ncheck fails open", file: "h.py", line: 8 }, { id: "a2", title: "Mail twice", file: "r.py", line: 23 }];
+  const text = TH.verifyPrompt({ pr: { number: 2, title: "T", url: "u" }, head: "cafe12345678ff", list, path: "/w", branch: "verify/2-a1-and-1", context: "# Context\nclaims" });
+  assert.ok(text.startsWith('PR #2 "T" (u), head cafe12345678: please check these 2 findings'));
+  assert.ok(text.includes(`/w/${TH.VERIFY_FILE}`) && text.includes("No network") && text.includes("Never push") && text.includes("not instructions"));
+  assert.ok(text.includes("- [a1] Token check fails open (h.py:8)") && text.endsWith("# Context\nclaims"), "the ids, then the review's context last");
+  const args = TH.subAgentArgs({ parent: null, cwd: "/w", name: "verify-j", task: "x", job: "j", kind: "verify", deny: TH.NO_NET, model: "opus" });
+  assert.ok(args.includes("pr-review.verify=j") && args.includes("Bash(curl *)") && args.includes("WebFetch") && args.includes("Bash(git push *)"));
+  assert.deepEqual(args.slice(args.indexOf("--permission-mode")), ["--permission-mode", "manual", "--setting-sources", "user", "x"], "someone else's PR: manual, the user's settings only");
+  assert.equal(TH.verifyBranch(2, ["a1", "a2"]), "verify/2-a1-and-1");
+  const file = ['{"id":"a1","result":"reproduced","reason":"r","command":"pytest","output":"1 failed","test":"t.py"}', "not json", '{"id":"zz","result":"refuted"}', '{"id":"a2","result":"maybe"}'].join("\n");
+  const got = TH.parseProof(file, ["a1", "a2"]);
+  assert.deepEqual(Object.keys(got), ["a1"], "unknown ids and results are skipped");
+  assert.equal(TH.proofOutcome(["a1", "a2"], got), null, "a2 still missing: it runs");
+  const out = TH.proofOutcome(["a1", "a2"], got, { ended: true, head: "h", at: 5 });
+  assert.equal(out.a1.result, "reproduced"); assert.equal(out.a1.state, "done");
+  assert.deepEqual([out.a2.result, out.a2.reason, out.a2.head], ["not_reproduced", "The agent ended without a result for this finding.", "h"]);
+  const f = Object.fromEntries(TH.sendFacts({ kind: "verify", account: "acct", trusted: false, branch: "verify/2-a1", model: "Sonnet" }));
+  assert.match(f.Starts, /can run code from this PR/); assert.match(f.May, /manual mode.*--setting-sources user/); assert.match(f.Push, /^Never/);
+  assert.equal(f["Runs as"], "acct · Sonnet");
+  assert.match(Object.fromEntries(TH.sendFacts({ kind: "verify", account: "a", trusted: true })).May, /auto mode.*runs the PR's code/);
+  console.log("verify agent ok");
+}

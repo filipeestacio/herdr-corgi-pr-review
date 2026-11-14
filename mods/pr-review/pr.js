@@ -924,8 +924,12 @@ export function findingSteps(f, st = null, { report = null, facts = [] } = {}) {
   const v = st?.verify ?? null, declined = report?.status === "wontfix", at = (x) => String(x ?? "").slice(0, 7), word = String(v?.result ?? "").replace("_", " ");
   const done = { reported: true, evidence: f.certainty === "confirmed", sent: Boolean(st?.fixHead) && !declined, verified: v?.result === "fixed" || (st?.s === "fixed" && !v),
     in_pr: v?.result === "fixed" && !v.branch };
+  const p = f.proof?.state === "done" ? f.proof : null, checking = f.proof?.state === "running";
   const missing = {
-    evidence: f.certainty === "derived" ? "No evidence yet: the finding is derived from the code." : f.certainty === "assumed" ? "No evidence yet: the finding rests on something that could not be checked."
+    evidence: checking ? "No evidence yet: an agent is checking it now, in its own checkout of the PR head."
+      : p?.result === "refuted" ? `An agent refuted it${p.reason ? `: ${p.reason.replace(/\.$/, "")}` : ""}. Dismiss it if you agree.`
+      : p?.result === "not_reproduced" ? `No evidence yet: an agent could not reproduce it${p.reason ? `: ${p.reason.replace(/\.$/, "")}` : ""}.`
+      : f.certainty === "derived" ? "No evidence yet: the finding is derived from the code." : f.certainty === "assumed" ? "No evidence yet: the finding rests on something that could not be checked."
       : "No evidence yet: nothing that ran shows it.",
     sent: declined ? `No fix on its way: the agent declined${report.note ? `, ${report.note}` : "."}` : "No fix sent yet: Fix hands the finding to an agent.",
     verified: !v ? "Not verified yet: Verify checks the commit the fix agent reports, on its branch or in the PR head."
@@ -935,7 +939,8 @@ export function findingSteps(f, st = null, { report = null, facts = [] } = {}) {
   };
   const own = { sent: ["Agent", "Branch", "Commit", "Report"], verified: v ? ["Check"] : [] };
   const last = STEPS.map(([k]) => done[k]).lastIndexOf(true), next = STEPS.findIndex(([k], i) => i > last && !done[k]);
-  return STEPS.map(([key, label], i) => ({ key, label, done: done[key], next: i === next, missing: done[key] ? null : missing[key], details: facts.filter(([l]) => own[key]?.includes(l)) }));
+  return STEPS.map(([key, label], i) => ({ key, label, done: done[key], next: i === next, missing: done[key] ? null : missing[key],
+    details: key === "evidence" ? proofFacts(f.proof) : facts.filter(([l]) => own[key]?.includes(l)) }));
 }
 
 // How the Findings tab's number comes about: what each source reported (every report counts), how
@@ -1009,3 +1014,19 @@ export function securityStart({ trigger = null, trusted = false, head = null, ct
   const due = Boolean(trigger?.run) && known && Boolean(head) && ctxHead === head && run?.head !== head && run?.state !== "running";
   return { start: due && trusted && ready, offer: due && !trusted, reasons };
 }
+
+// ---- Verify with an agent (review.js verifyAgent): an agent's check of a finding, kept in the status map as
+// status[id].proof: {state: "running", job, path, branch, base, terminal, head, at} while it works, then {state: "done",
+// result (threads.js PROOF_RESULTS), reason, command, output, test, head, at}. Older statuses have none.
+export const PROOF_WORDS = { reproduced: "Reproduced", not_reproduced: "Not reproduced", refuted: "Refuted" };
+// The findings with the agent's check on them (f.proof): reproduced makes the certainty "confirmed" (something that
+// ran shows it); not reproduced and refuted leave it as it was, and refuted only suggests Dismiss.
+export const withProof = (findings, status = {}) => findings.map((f) => {
+  const p = status[f.id]?.proof;
+  return !p ? f : { ...f, proof: p, ...(p.state === "done" && p.result === "reproduced" ? { certainty: "confirmed" } : {}) };
+});
+// The check as [label, text] pairs, for the "Evidence" step's details.
+export const proofFacts = (p) => !p ? [] : p.state === "running" ? [["Agent", `checking it on ${p.branch ?? "its branch"}${p.terminal ? ` (${p.terminal})` : ""}`]] : [
+  ["Result", `${PROOF_WORDS[p.result] ?? p.result} by an agent${p.head ? ` at ${String(p.head).slice(0, 7)}` : ""}${p.reason ? `: ${p.reason}` : ""}`],
+  p.command && ["Command", p.command], p.output && ["Output", p.output], p.test && ["Test", p.test]].filter(Boolean);
+

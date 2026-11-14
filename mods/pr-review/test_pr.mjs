@@ -705,3 +705,24 @@ console.log("ok");
   assert.deepEqual(securityStart(), { start: false, offer: false, reasons: [] });
   console.log("ok security start");
 }
+// Verify with an agent: its result on the finding and in the step bar.
+{
+  const { withProof, proofFacts, findingSteps } = await import("./pr.js");
+  const fs = [{ id: "a1", certainty: "derived" }, { id: "a2", certainty: "derived" }, { id: "a3", certainty: "assumed" }, { id: "a4", certainty: "derived" }, { id: "a5", certainty: "derived" }];
+  const st = { a1: { proof: { state: "done", result: "reproduced", reason: "the test fails", command: "pytest t.py", output: "1 failed", test: "t.py", head: "cafe1234" } },
+    a2: { proof: { state: "done", result: "refuted", reason: "the check runs first." } }, a3: { proof: { state: "done", result: "not_reproduced", reason: "needs AWS" } },
+    a4: { s: "open", proof: { state: "running", branch: "verify/2-a4", terminal: "t9" } } };
+  const [r, x, n, run, none] = withProof(fs, st);
+  assert.equal(r.certainty, "confirmed", "reproduced: something that ran shows it");
+  assert.equal(x.certainty, "derived", "refuted leaves the certainty"); assert.equal(n.certainty, "assumed");
+  assert.equal(none, fs[4], "no check: the finding as it was");
+  const ev = (f) => findingSteps(f, st[f.id])[1];
+  assert.ok(ev(r).done); assert.deepEqual(ev(r).details.map(([l]) => l), ["Result", "Command", "Output", "Test"]);
+  assert.equal(ev(r).details[0][1], "Reproduced by an agent at cafe123: the test fails");
+  assert.equal(ev(x).missing, "An agent refuted it: the check runs first. Dismiss it if you agree.");
+  assert.equal(ev(n).missing, "No evidence yet: an agent could not reproduce it: needs AWS.");
+  assert.match(ev(run).missing, /an agent is checking it now/); assert.deepEqual(ev(run).details, [["Agent", "checking it on verify/2-a4 (t9)"]]);
+  assert.match(ev(none).missing, /derived from the code/, "an old finding without a check stays as it was");
+  assert.deepEqual(proofFacts(null), []);
+  console.log("ok proof");
+}

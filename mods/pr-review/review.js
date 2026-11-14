@@ -17,6 +17,7 @@ import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig } from "./setup-view.js";
 import { taskList, taskHead, verdictParts, reviewState, certaintyLine, severityTip, componentLine, doesList, checkGroups, costLine } from "./pr.js"; // the Overview page
 import { findingSteps, funnel, funnelLine, ownerOf, quickFirst, hasEffort } from "./pr.js"; // the Findings tab
+import { withProof, PROOF_WORDS } from "./pr.js"; // Verify with an agent
 import { overviewMd, findingMd, findingsMd, layerMd, architectureMd, securityMd, verifyContextMd } from "./markdown.js"; // Copy this page as Markdown
 import { highlightJob, highlightStep, highlightLines, langOf, colors, renderLine, refAt } from "./syntax.js";
 import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js";
@@ -350,6 +351,7 @@ export const ReviewMode = {
       for (;;) { await watchFolder(repliesDir()).catch(() => null); await this.loadThreads(cx); }
     });
     cx.timer.every(180000, (cx) => { if (this.prSel) { this.loadGhComments(cx); this.loadThreads(cx); } }); // GitHub replies: every 3 min while open
+    cx.timer.every(10000, (cx) => this.proofTick(cx)); // Verify with an agent: its answer file, while one runs
     for (const [st, k] of [[this.draft, "draft"], [this.summary, "summary"], [this.itemEdit, "item"], [this.sendText, "send"]]) {
       st.on("focus", (_e, cx) => { this.typing = k; cx.notify(); });
       st.on("blur", (_e, cx) => { if (this.typing === k) this.typing = false; cx.notify(); });
@@ -482,6 +484,9 @@ export const ReviewMode = {
     }
     else if (name === "add") this.addDraft(cx);
     else if (name === "fix-finding") { const f = this.findingById(arg); if (f) this.fix([f], cx); }
+    // Verify with an agent: verify-agent:<finding id>, or verify-agent:security for the unresolved security findings.
+    else if (name === "fstep") { const [id, key] = String(arg).split(":"); this.fstep = id && key ? { id, key } : null; } // fstep:<finding id>:<step key>, the step's click
+    else if (name === "verify-agent") this.verifyAgent(arg === "security" ? this.secOpen() : [this.findingById(arg)], cx);
     else if (name === "trust") this.trust("pr", cx);
     else if (name === "cmenu") { const [k, ...key] = arg.split("|"), card = this.cardByKey(key.join("|")); card?.menu[Number(k)]?.[2]?.(cx); }
     else if (name === "ask") this.setDrawer(arg === "close" ? null : arg === "fold" ? "collapsed" : "open", cx); // the Ask drawer: open | fold | close
@@ -897,8 +902,8 @@ export const ReviewMode = {
     const lines = list.map((f) => (f.line > 0 ? findingAnchor(this.rowsFor(f.file, true), f.line, f.end) : f.line)), at = lines.join();
     if (m?.ai === ai && m.list === list && m.st === st && m.handled === handled && m.n === n && m.at === at) return m;
     const moved = list.map((f, i) => (lines[i] === f.line ? f : { ...f, line: lines[i], end: Math.max(lines[i], f.end ?? 0), head: undefined, code: undefined }));
-    return (this.findMemo = { ai, list, st, handled, n, at,
-      ...mergeFindings([...moved, ...(ai?.steps ?? []).flatMap((s) => s.findings ?? [])], (ai?.suspects ?? []).filter((s) => !handled[s.key]), st) });
+    const m2 = mergeFindings([...moved, ...(ai?.steps ?? []).flatMap((s) => s.findings ?? [])], (ai?.suspects ?? []).filter((s) => !handled[s.key]), st);
+    return (this.findMemo = { ai, list, st, handled, n, at, ...m2, findings: withProof(m2.findings, st) }); // an agent's check on each (Verify with an agent)
   },
   findings() { return this.merged().findings; },
   findingById(id) { return this.findings().find((f) => f.ids.includes(id)) ?? null; },
@@ -1715,6 +1720,7 @@ export const ReviewMode = {
     const out = TH.confirm(p, this.sendText.value());
     this.sendP = null;
     if (p.fix?.target === "sub") return this.startSubFix(p, out.text, cx);
+    if (p.verify) return this.startVerify(p, out.text, cx);
     if (p.go) p.go(out.text, cx);
     else this.deliver(out.text, cx, out.what, (cx) => p.onSent?.(cx));
     cx.notify();
@@ -1812,14 +1818,7 @@ export const ReviewMode = {
     this.sending = true; this.note = null;
     cx.spawn(async (cx) => {
       try {
-        const git = (args) => exec("git", ["-C", base, ...args], { timeout: 60000 });
-        const head = f.head ?? (await git(["rev-parse", "HEAD"])).stdout.trim();
-        if (!head) throw new Error(`${base} is not a git checkout`);
-        // The PR head may not be in this clone yet (the review's checkout can live in another one): fetch it.
-        if ((await git(["cat-file", "-e", `${head}^{commit}`])).code !== 0 && this.prSel?.number) await git(["fetch", "--quiet", "origin", `pull/${this.prSel.number}/head`]);
-        await exec("mkdir", ["-p", f.path.replace(/\/[^/]+$/, "")]).catch(() => null);
-        const w = await git(["worktree", "add", "-b", f.branch, f.path, head]);
-        if (w.code !== 0) throw new Error(w.stderr.trim().slice(0, 200));
+        const { git, head } = await this.addWorktree(base, f);
         const id = Date.now().toString(36), { agent } = this.sendAgent();
         const r = await hc(TH.subAgentArgs({ parent: agent?.address ?? null, cwd: f.path, name: `fix-${id}`, env: this.ctxEnv(this.ctxId()), task: text, job: id, auto: trusted, model: model() }));
         if (r.code !== 0) { await git(["worktree", "remove", "--force", f.path]); await git(["branch", "-D", f.branch]); throw new Error((r.stderr || r.stdout).trim().slice(0, 200)); }
@@ -1840,9 +1839,10 @@ export const ReviewMode = {
     const fv = this.fixView(this.fixOf(x.id)), v = this.find.status[x.id]?.verify, lit = t.foreground;
     const add = (on) => pill(`rv-fcm-${x.id}`, t, "Add to review", (_e, cx) => this.findingComment(x, cx), false, on ? lit : undefined).tooltip("Add this finding to your pending review comments; nothing is posted until you finish the review");
     const ask = pill(`rv-fdi-${x.id}`, t, "Ask an agent…", (_e, cx) => this.discuss(x, cx)).tooltip("Ask an agent about this finding: a preview first says what starts and what it may do");
-    const dismiss = pill(`rv-fdm-${x.id}`, t, "Dismiss finding", (_e, cx) => this.dismiss(x, cx)).tooltip(`Dismiss this finding${x.sources.length > 1 ? ` with all ${x.sources.length} of its sources` : ""}; it stays here under Dismissed`);
-    // The same order as on the card in the diff: Add, Ask, Fix, Dismiss.
-    if (!fv) return [add(true), ask, pill(`rv-ffx-${x.id}`, t, "Fix with agent…", (_e, cx) => this.fix([x], cx)).tooltip("Have an agent fix this: a preview first says where it works, what it may do and that it never pushes"), dismiss];
+    const refuted = x.proof?.result === "refuted";
+    const dismiss = pill(`rv-fdm-${x.id}`, t, "Dismiss finding", (_e, cx) => this.dismiss(x, cx), false, refuted ? lit : undefined).tooltip(refuted ? `An agent refuted this finding: ${x.proof.reason || "see Evidence"}. Dismiss it if you agree; nothing happens by itself.` : `Dismiss this finding${x.sources.length > 1 ? ` with all ${x.sources.length} of its sources` : ""}; it stays here under Dismissed`);
+    // The same order as on the card in the diff: Add, Ask, Fix, Dismiss; Verify with an agent before Dismiss.
+    if (!fv) return [add(!refuted), ask, pill(`rv-ffx-${x.id}`, t, "Fix with agent…", (_e, cx) => this.fix([x], cx)).tooltip("Have an agent fix this: a preview first says where it works, what it may do and that it never pushes"), this.verifyPill(x, t), dismiss];
     const sub = fv.job.target === "sub", ready = Boolean(fv.commit) && sub, checked = v?.branch ? v.result : null;
     return [badge(t, fv.commit ? `Fix ready on ${fv.job.branch ?? "the PR"}` : `Fixing · ${fv.status}`, fv.commit ? t.ansi2 : t.ansi3).id(`rv-ffb-${x.id}`).tooltip("The fix agent's progress on this finding"),
       ...(fv.job.terminal ? [pill(`rv-fgo-${x.id}`, t, "Go to fix", () => this.goFix(fv.job), false, !ready || checked === "not_fixed" ? lit : undefined).tooltip("Show the fix agent's terminal")] : []),
@@ -2371,11 +2371,11 @@ export const ReviewMode = {
   // it from the PR), the facts (threads.js sendFacts: account, what it gets, what it may do, push, result, cost) and
   // the exact text, editable. Only the button at the bottom sends.
   sendPopover(t) {
-    const p = this.sendP, fix = p.fix, sub = fix?.target === "sub", kind = fix ? fix.target : p.ask?.kind ?? null, short = (x) => (x ? String(x).replace(home(), "~") : null);
+    const p = this.sendP, fix = p.fix, sub = fix?.target === "sub", kind = fix ? fix.target : p.verify ? "verify" : p.ask?.kind ?? null, short = (x) => (x ? String(x).replace(home(), "~") : null);
     const live = this.sendAgent().agent, name = live ? p.agent.split(" · ")[0] : null;
-    const facts = kind ? TH.sendFacts({ kind, account: accountOf(this.ctxId()), trusted: this.trustedPr(), branch: fix?.branch, name: p.ask?.name ?? name, chat: p.ask?.chat, where: short(p.ask?.where), model: modelLabel(model()) }) : [];
+    const facts = kind ? TH.sendFacts({ kind, account: accountOf(this.ctxId()), trusted: this.trustedPr(), branch: fix?.branch ?? p.verify?.branch, name: p.ask?.name ?? name, chat: p.ask?.chat, where: short(p.ask?.where), model: modelLabel(model()) }) : [];
     const picking = Boolean(fix?.pool), n = fix?.items.length ?? 0, some = !picking || n > 0, ready = !this.sending && some, text = this.sendText.value();
-    const go = this.sending ? "Sending…" : sub ? (picking && n ? `Start fix agent for ${n} ${n === 1 ? "finding" : "findings"}` : "Start fix agent") : fix ? "Send to main agent"
+    const go = this.sending ? "Sending…" : p.verify ? "Start verify agent" : sub ? (picking && n ? `Start fix agent for ${n} ${n === 1 ? "finding" : "findings"}` : "Start fix agent") : fix ? "Send to main agent"
       : p.ask ? { new: "Start agent", resume: "Resume its session", live: p.ask.chat ? "Draft in chat" : "Paste to agent" }[p.ask.kind] : "Send to agent";
     const head = (label) => div().text_size(11.5).font_semibold().text_color(t.muted).child(label);
     const choice = (k, title, what) => h_flex().id(`rv-fix-${k}`).gap(10).px(6).py(4).rounded(6).items_start().cursor_pointer().hover((s) => s.bg(t.hover))
@@ -2385,7 +2385,7 @@ export const ReviewMode = {
     const picked = new Set((fix?.items ?? []).map((x) => x.id));
     return v_flex().id("rv-send").absolute().top(8).right(12).w(640).max_h_full().overflow_y_scroll().p(14).gap(10).rounded(10).border_1().border_color(t.border).bg(t.popover).shadow_lg()
       .text_size(13).text_color(t.foreground).on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-      .child(h_flex().items_center().child(div().flex_1().font_semibold().text_size(14).child(fix || p.ask ? `${p.what}: preview` : `${p.what}: send to agent`))
+      .child(h_flex().items_center().child(div().flex_1().font_semibold().text_size(14).child(fix || p.ask || p.verify ? `${p.what}: preview` : `${p.what}: send to agent`))
         .child(pill("rv-send-x", t, "✕", (_e, cx) => { this.sendP = null; this.fh.focus(); cx.notify(); }).tooltip("Close the preview without sending").accessibility_label("Close")))
       // "Fix several…": the reviewer ticks what one agent fixes together; nothing is ticked for them.
       .when(picking, (e) => e.child(v_flex().gap(4).child(head(`FINDINGS · tick the ones one agent should fix together · ${n} of ${fix.pool.length} ticked`))
@@ -3675,6 +3675,8 @@ export const ReviewMode = {
       .when(open.length > 0, (e) => e.child(div().id("rv-sec-public").text_size(12.5).text_color(vis === "PUBLIC" ? t.ansi3 : t.muted).whitespace_normal()
         .child(`“${vis === "PUBLIC" ? "Add as public comment" : "Add as comment"}” puts a finding's text, with the way to use the weakness, into a comment on the PR once you post your review. ${this.secReach()}`)))
       .when(!open.length, (e) => e.child(div().text_size(13.5).text_color(t.muted).whitespace_normal().child(none)))
+      .when(open.length > 1 && !this.secOpen().some((f) => f.proof?.state === "running"), (e) => e.child(h_flex().child(pill("rv-sec-vfall", t, `Verify all ${open.length} with an agent…`, (_e, cx) => this.verifyAgent(this.secOpen(), cx))
+        .tooltip("One agent in its own checkout of the PR head tries to show or refute each unresolved security finding, with the threat model, the map and what is not known as context. A preview first."))))
       .when(settled > 0, (e) => e.child(div().text_size(12.5).text_color(t.muted).child(`${settled} more security ${settled === 1 ? "finding is" : "findings are"} fixed or dismissed: see the Findings tab.`)));
   },
   secReach() {
@@ -3696,6 +3698,7 @@ export const ReviewMode = {
     const facts = [f.effect && ["Effect", plain(f.effect)],
       f.certainty && ["Certainty", `${CERTAIN[f.certainty]} ${f.preconditions.length ? `It needs: ${f.preconditions.map(plain).join("; ")}.` : "It needs nothing else: it holds as the code stands."}`],
       reach && ["Reachable from", reach],
+      f.proof?.state === "done" && ["Agent check", `${PROOF_WORDS[f.proof.result]}${f.proof.reason ? `: ${plain(f.proof.reason)}` : "."}${f.proof.command ? ` (ran ${f.proof.command})` : ""}`],
       ["Found by", this.sourcesOf(f)]].filter(Boolean);
     return v_flex().id(`rv-sec-${f.id}`).gap(8).p(12).rounded(8).border_l(3).border_color(col).bg(card && card === ctx.focus ? t.selected : t.surface)
       .when(Boolean(card), (e) => e.on_hover(ctx.hover(card)))
@@ -3710,7 +3713,8 @@ export const ReviewMode = {
         .child(div().w(98).flex_none().text_color(t.muted).child(label)).child(div().flex_1().min_w(0).whitespace_normal().child(text)))))
       .child(h_flex().gap(6).items_center().flex_wrap()
         .child(pill(`rv-sec-open-${f.id}`, t, "Open finding", (_e, cx) => { this.openFinding(f); this.jumpTo(at, cx); cx.notify(); }).tooltip("Its whole text in the Findings tab, with Fix and Dismiss, and its line in the diff"))
-        .child(pill(`rv-sec-cm-${f.id}`, t, this.repoVis?.[this.prSel?.repo] === "PUBLIC" ? "Add as public comment" : "Add as comment", (_e, cx) => this.findingComment(f, cx)).tooltip(`Add this finding to your pending comments. ${this.secReach()}`)));
+        .child(pill(`rv-sec-cm-${f.id}`, t, this.repoVis?.[this.prSel?.repo] === "PUBLIC" ? "Add as public comment" : "Add as comment", (_e, cx) => this.findingComment(f, cx)).tooltip(`Add this finding to your pending comments. ${this.secReach()}`))
+        .child(this.verifyPill(f, t, "rv-sec-vf")));
   },
   // The attack surface: the ways in (public things, routes), most exposed first. Each says who can reach it, what
   // checks the caller and what it may do, whether this PR adds or changes it (its line is an added one in the diff),
@@ -4544,6 +4548,82 @@ export const ReviewMode = {
   checkList() {
     const one = this.tab === "findings" && this.ffocus ? this.findingById(this.ffocus) : null;
     return one ? [one] : this.tab === "steps" && this.page === "blast" ? this.findings().filter((f) => f.security && OPEN_ST.includes(this.fstatus(f))) : [];
+  },
+
+  // ---- Verify with an agent: the way of Fix (a preview, then a sub-agent in its own worktree at the PR head that never
+  // pushes), but the agent tries to show or refute findings, with the review's context (markdown.js verifyContextMd) and
+  // a small test or command as evidence. Its answer file in its worktree (threads.js VERIFY_FILE) is read every 10 s
+  // (proofTick); the result goes into the status map as status[id].proof (pr.js withProof), then the worktree goes.
+
+  secOpen() { return this.findings().filter((f) => f.security && OPEN_ST.includes(this.fstatus(f))); },
+  // Its button: "Verify with an agent…", "Verifying…" (shows the agent) while one runs, "Verify again…" after a result.
+  verifyPill(f, t, id = "rv-fvf") {
+    const p = f.proof;
+    if (p?.state === "running") return pill(`${id}-${f.id}`, t, "Verifying…", () => this.goFix(p)).tooltip(`An agent checks this finding on ${p.branch}; click to show its terminal`);
+    return pill(`${id}-${f.id}`, t, p ? "Verify again…" : "Verify with an agent…", (_e, cx) => this.verifyAgent([f], cx))
+      .tooltip("An agent in its own checkout of the PR head tries to show or refute this finding, with a small test or command. It can run the PR's code there and never pushes. A preview first.");
+  },
+  verifyAgent(list, cx) {
+    list = (list ?? []).filter(Boolean);
+    if (!list.length || !this.prSel) return;
+    const ids = list.map((f) => f.id), branch = TH.verifyBranch(this.prSel.number, ids), path = TH.fixPath(home(), this.prSel.repo, branch), base = this.fixBase();
+    cx.spawn(async (cx) => {
+      const at = base ? (await exec("git", ["-C", base, "rev-parse", "HEAD"], { timeout: 20000 }).catch(() => null))?.stdout?.trim() || null : null;
+      const head = TH.fixStart({ local: Boolean(this.worktree?.local), prHead: this.headNow(), checkoutHead: at });
+      const context = verifyContextMd(list, { pr: this.prSel, head: head ?? "", ai: this.ai, statusOf: (f) => this.fstatus(f), threats: this.ai?.threats ?? this.find.runs?.security?.threats ?? null });
+      this.previewSend(cx, { what: "Verify with an agent", own: list.map((f) => `${f.title} (${f.file}:${f.line})`).join("\n"), ownLabel: list.length === 1 ? "FINDING" : "FINDINGS",
+        prompt: TH.verifyPrompt({ pr: this.pr, head, list, path, branch, context, lang: this.lang() }) });
+      this.sendP.verify = { ids, branch, path, head };
+    });
+  },
+  // A new Claude in a fresh worktree on the verify branch at the PR head; the findings are marked as being checked.
+  // Someone else's PR: manual mode with the user's settings only (threads.js permissionArgs), as for a fix agent.
+  startVerify(p, text, cx) {
+    const v = p.verify, base = this.fixBase(), trusted = this.trustedPr(), n = v.ids.length;
+    if (!base) { this.note = "Not started: the PR has no local checkout to make the agent's checkout from"; return cx.notify(); }
+    this.sending = true; this.note = null;
+    cx.spawn(async (cx) => {
+      try {
+        const { git, head } = await this.addWorktree(base, v);
+        const id = Date.now().toString(36), { agent } = this.sendAgent();
+        const r = await hc(TH.subAgentArgs({ parent: agent?.address ?? null, cwd: v.path, name: `verify-${id}`, env: this.ctxEnv(this.ctxId()), task: text, job: id, auto: trusted, model: model(), kind: "verify", deny: TH.NO_NET }));
+        if (r.code !== 0) { await git(["worktree", "remove", "--force", v.path]); await git(["branch", "-D", v.branch]); throw new Error((r.stderr || r.stdout).trim().slice(0, 200)); }
+        const proof = { state: "running", job: id, ids: v.ids, path: v.path, branch: v.branch, base, terminal: JSON.parse(r.stdout).address, head, at: Date.now() };
+        this.writeStatus(cx, (st) => ({ ...st, ...Object.fromEntries(v.ids.map((k) => [k, { ...st[k], proof }])) }));
+        this.note = `Verify started: an agent checks ${n === 1 ? "the finding" : `${n} findings`} on ${v.branch} in its own checkout. The results appear at the ${n === 1 ? "finding" : "findings"}; nothing goes to the PR.`;
+      } catch (e) { this.note = `Not started: ${String(e).replace(/^Error: /, "")}`; }
+      finally { this.sending = false; cx.notify(); }
+    });
+  },
+  // A running check is over once its file has a line for every finding, or once its agent is gone (not before a
+  // minute: the terminal list may not have it yet). Then: the results into the status map, the agent, worktree and
+  // branch removed (the evidence is kept as text), and a note with the count.
+  proofTick(cx) {
+    const jobs = new Map(Object.values(this.find.status ?? {}).filter((x) => x?.proof?.state === "running").map((x) => [x.proof.job, x.proof]));
+    for (const p of jobs.values()) cx.spawn(async (cx) => {
+      const text = await readTextFile(`${p.path}/${TH.VERIFY_FILE}`).catch(() => "");
+      const all = terminals(), gone = all.length > 0 && Date.now() - p.at > 60000 && !all.some((x) => x.address === p.terminal && x.state === "live");
+      const out = TH.proofOutcome(p.ids, TH.parseProof(text, p.ids), { ended: gone, head: p.head });
+      if (!out || this.find.status[p.ids[0]]?.proof?.job !== p.job) return;
+      this.writeStatus(cx, (st) => ({ ...st, ...Object.fromEntries(Object.entries(out).map(([k, x]) => [k, { ...st[k], proof: x }])) }));
+      if (p.terminal) run("terminal.kill", { terminal: p.terminal });
+      const git = (args) => exec("git", ["-C", p.base, ...args], { timeout: 60000 });
+      await git(["worktree", "remove", "--force", p.path]); await git(["branch", "-D", p.branch]);
+      const said = Object.values(out).map((x) => x.result);
+      this.note = `Verify done: ${TH.PROOF_RESULTS.map((k) => [k, said.filter((x) => x === k).length]).filter(([, c]) => c).map(([k, c]) => `${c} ${PROOF_WORDS[k].toLowerCase()}`).join(", ")}. A reproduced finding is now confirmed; a refuted one only suggests Dismiss.`;
+      cx.notify();
+    });
+  },
+  // A worktree on a new branch at the PR head the preview named (the head may not be in this clone yet: fetched).
+  async addWorktree(base, { branch, path, head: at = null }) {
+    const git = (args) => exec("git", ["-C", base, ...args], { timeout: 60000 });
+    const head = at ?? (await git(["rev-parse", "HEAD"])).stdout.trim();
+    if (!head) throw new Error(`${base} is not a git checkout`);
+    if ((await git(["cat-file", "-e", `${head}^{commit}`])).code !== 0 && this.prSel?.number) await git(["fetch", "--quiet", "origin", `pull/${this.prSel.number}/head`]);
+    await exec("mkdir", ["-p", path.replace(/\/[^/]+$/, "")]).catch(() => null);
+    const w = await git(["worktree", "add", "-b", branch, path, head]);
+    if (w.code !== 0) throw new Error(w.stderr.trim().slice(0, 200));
+    return { git, head };
   },
 
   // Progress that could not be saved: what that means, and the one thing to do about it.
