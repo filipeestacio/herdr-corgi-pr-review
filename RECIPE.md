@@ -15,29 +15,36 @@ blast radius, the architecture impact and fix verification.
 **The panel** (`mods/pr-review`, no props; docks right, 380 px), theme colors throughout, a card with 10 px
 corners and a 1 px `border`:
 
-- Header, 42 px: the PR title (`#42 feat(invites): …`, semibold, truncated) or `vs origin/main`; small pills
-  (10 px text, 4 px corners, `border`, `muted` text, `foreground` on hover): `↻`, `PRs ▾`, `Walkthrough`,
-  `Review`, `GitHub ↗`; then `+N` in `ansi2` and `−N` in `ansi1`.
+- Header, at least 42 px: the PR title (`#42 feat(invites): …`, semibold, up to two lines) or `vs origin/main`;
+  small pills (10 px text, 4 px corners, `border`, `muted` text, `foreground` on hover): `↻`, `GitHub ↗`; then the
+  one filled button (`solid`, 26 px, 12 px semibold): `Review`, or `Resume` once this PR's review was started.
 - A red-tinted banner (`ansi1` at ~11 % alpha) "Needs gh, claude to work. [Open Setup]" when a required program is
   missing or logged out.
-- **IN PROGRESS** (11 px semibold `muted` caps): up to 6 started reviews, each `#n title` (12.5 px), a line like
-  `1/10 steps · 1/17 files · 1 comment · 3 h ago` (11 px `muted`), a context tag when a plug-in supplies several
-  contexts, and `Resume`.
+- **In progress** (11 px semibold `muted`): up to 3 started reviews, then "Show all"; each `#n title` (12.5 px),
+  its risk chips (see the list below), a wrapping line like `1/10 layers · 1/17 files · 1 comment · 3 open
+  findings` (11 px `muted`), a context tag when a plug-in supplies several contexts, and `Resume`. A click on the
+  row shows the PR's diff. A PR shown here is not repeated in the list below.
 - A yellow banner (`ansi3` ~11 %) "This PR belongs to …" with `Switch to …` and `Clear` when the picked PR's
   context is hidden by the current view.
 - `PRs ▾` opens a 360 px list: source tabs `Mine` (PRs your Claude sessions created) / `This repo` / `Review
-  requested`, an "Open PR… URL or owner/repo#123" field, a `Triage PRs` and a `Setup` pill, then rows: title,
-  state (`open` `ansi2`, `draft` `dim`, `merged` `ansi5`, `closed` `ansi1`), a `Review` pill, a second line
-  (repo · session title, or @author · review decision · +/− · age) and triage chips (`● P1` in `ansi1`, `P2`
-  `ansi3`, `P3` `muted`; "Security", "Deep review", …) with the "why" in an accent quote bar on the picked one.
+  requested`, an "Open PR… URL or owner/repo#123" field, a `Triage PRs` and a `Setup` pill, then one row per PR:
+  title, state (`open` `ansi2`, `draft` `muted`, `merged` `ansi5`, `closed` `ansi1`), one pill into the review
+  (`Review`, or `Resume` once started; open and draft PRs only), a second line in `muted` (repo · session title, or
+  @author · review decision · +/− · age), then chips: the risk signal from cached data (`Highest finding: high` in
+  the severity's color, and a tinted `⛨ Security` chip in `ansi1` when an open finding is about security; nothing
+  without a cached analysis or findings) and the triage chips (`● P1` in `ansi1`, `P2` `ansi3`, `P3` `muted`;
+  "Deep review", …) with the "why" in an accent quote bar on the picked one. Merged and closed PRs are folded under
+  a `▸ Merged or closed (n)` row. An empty list is one `muted` sentence that says what to do ("Open a space on a
+  GitHub repo to list its PRs.").
 - The file list (28 px rows, up to 200 px): folder dimmed, file name, `● n` comments in `accent`, `+/−`.
 - A Diff / File toggle and `VS Code ↗` for the open file; File shows the file in a read-only editor (markdown
   rendered).
 - The diff: 20 px rows in the terminal font at 11 px, line number in `dim`, added rows on `#2ea0431a`, removed on
   `#f851491a`, syntax colors from the theme's ANSI colors; comments as small cards under their last line.
-- A "Review: 2 comments in 1 file" bar with `Discard` and a solid `Send review` button.
+- A "2 pending comments in 1 file" bar with `Discard` and a `Finish your review` pill, which opens the review
+  layout with its popover of that name (a branch without a PR has `Send to agent` there instead).
 - The ask box: "On: file line 12", presets `Explain` and `Look up docs`, an input, `Comment` and a solid `Ask`.
-- **Walkthrough** replaces the diff with the AI analysis in reading order, one step at a time.
+- **Walkthrough** replaces the diff with the AI analysis in reading order, one layer at a time.
 - **Setup** replaces the diff with three groups (Required, Optional, Go to definition): each program with ✓ in
   `ansi2`, `missing` in `ansi1`, `not installed` in `muted` or `logged out` in `ansi3`, what it enables
   ("Go to definition in Java needs jdtls"), the install command in mono, `Copy` and `Install in terminal`.
@@ -104,7 +111,7 @@ Explore shows Overview, Layers, Architecture and Files for a topic, without a di
 
 ## How it behaves
 
-- Agent status isn't shown; agents are only targets: the panel's "Send review" and "Ask", the review layout's
+- Agent status isn't shown; agents are only targets: the panel's "Send to agent" (a branch without a PR) and "Ask", the review layout's
   "Submit review" sent to the agent session, and "Fix" go to the PR's session
   agent if it is live, else `claude --resume <session>` in a new tab, else this space's agent, else a new
   `claude` tab, with the prompt as its task.
@@ -201,7 +208,7 @@ references are written `@<path>` and `demo/seed.mjs` turns them into aliases), `
 - `herdr-app check mods/pr-review` passes and every `test_*.mjs` / `test_*.py` passes without network.
 - In the demo (`"dryRun": true`), a click on a line number opens the composer under it, the seeded pending comment
   shows as a thread, and `Submit review` writes the payload to `pr-data/review-dry-run.json` instead of posting.
-- The panel shows the focused branch's diff; a comment and "Send review" reach the space's agent.
+- The panel shows the focused branch's diff; a comment and "Send to agent" reach the space's agent.
 - `PRs ▾ → This repo` lists the repo's open PRs; `Review` opens the layout on one; `← Back` returns.
 - "Analyze" produces layers, an Architecture impact page where no line runs through a card and every connection
   has its badge and legend row, and a blast radius that says "No security review yet" before one ran.
