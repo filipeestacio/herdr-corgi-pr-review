@@ -3695,7 +3695,7 @@ export const ReviewMode = {
         .children(order.map((e) => mark(e))).child("ways in and rights at a card")
         .child(chip(t, "High · 1", t.ansi1, true)).child("unresolved security findings at a card or call")
         .child("Dimmed: neither.").when(hasTrust(L), (e) => e.child(trustLegend(L, t))))
-      .child(this.archCanvas(t, L, opts, { id: "rv-sec-canvas", pic: "rv-sec-pic", wrap: true, decorate: deco, notes: false }));
+      .child(this.archCanvas(t, L, opts, { id: "rv-sec-canvas", pic: "rv-sec-pic", wrap: this.archWrapOn(), decorate: deco, notes: false }));
   },
   // A card of the picture lit (null: none), and its first row below brought into view.
   secCard(id, cx) {
