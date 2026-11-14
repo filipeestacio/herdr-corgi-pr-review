@@ -5295,10 +5295,7 @@ export const ReviewMode = {
   // The run's probes: the derived view (pr.js withResilience), else the findings file's raw block.
   probeList() { return this.ai?.resilience?.probes ?? this.find?.resilience?.probes ?? []; },
   // Why a probe asks before it starts, or null: someone else's PR, or no network barrier on this machine.
-  probeNeeds() {
-    if (this.probeBarrier === "none") return "Runs code from this PR on your machine for at most 30 s. This machine has no sandbox for it (sandbox-exec on macOS, bwrap on Linux), so the code could reach the network and your files.";
-    return this.trustedPr() ? null : "Runs code from this PR on your machine, without network, for at most 30 s.";
-  },
+  probeNeeds() { return TH.probeNeedsText({ barrier: this.probeBarrier ?? "none", trusted: this.trustedPr() }); },
   // A probe as the view reads it: the run's entry with status proposed | confirm | running | done, and when done the
   // runner's result (result: reproduced | not_reproduced | script_failed, number: the one line, base, pre_existing,
   // strength, head, ms, script, output, reason, network_barrier); older: run on another head than the PR's now.

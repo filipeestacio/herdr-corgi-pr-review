@@ -445,6 +445,13 @@ export function proofOutcome(ids, got, { ended = false, head = null, at = Date.n
 
 export const PROBE_DIR = ".pr-review-probe";
 export const PROBE_STATUS = ["reproduced", "not_reproduced", "script_failed"];
+// Why a probe asks before it starts (the review shows it as the probe's state, with a button), or null when it may
+// start at once. barrier: probe.py --barrier. Without a sandbox it says plainly what the code can do: read and change
+// the user's files and reach the network. With one: what the sandbox keeps away. A trusted PR in a sandbox: no question.
+export function probeNeedsText({ barrier, trusted }) {
+  if (!barrier || barrier === "none") return "Runs code from this PR on your machine for up to 30 s with no sandbox (no sandbox-exec or bwrap here): the code can read and change your files and reach the network.";
+  return trusted ? null : "Runs code from this PR on your machine for up to 30 s in a sandbox: no network, nothing from your home, and it writes only to its own temporary folder.";
+}
 export const probeBranch = (number, id) => `probe/${number ?? "pr"}-${String(id).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 40)}`;
 // What the agent may do, and nothing else: --restricted ignores every settings file (no allow rule or hook from the
 // user, the project or the PR's checkout) and leaves only the tools named in --tools; dontAsk refuses whatever the

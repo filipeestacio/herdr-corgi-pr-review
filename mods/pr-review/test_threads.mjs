@@ -309,3 +309,17 @@ console.log("threads ok");
   assert.equal(TH.probeOutcome("p1", { result: JSON.stringify({ id: "p1", status: "refuted" }), ended: true }).status, "script_failed", "only the runner's three words");
   console.log("probe agent ok");
 }
+
+{
+  // The question before a probe says what the code can do: without a sandbox, read and change the user's files and
+  // reach the network; in a sandbox, what it keeps away. A trusted PR in a sandbox starts without a question.
+  const bare = TH.probeNeedsText({ barrier: "none", trusted: true });
+  assert.match(bare, /no sandbox/); assert.match(bare, /read and change your files/); assert.match(bare, /reach the network/); assert.doesNotMatch(bare, /without network/);
+  assert.equal(TH.probeNeedsText({ barrier: undefined, trusted: false }), bare, "an unknown fence counts as none");
+  for (const b of ["sandbox-exec", "bwrap"]) {
+    const fenced = TH.probeNeedsText({ barrier: b, trusted: false });
+    assert.match(fenced, /in a sandbox: no network, nothing from your home/); assert.doesNotMatch(fenced, /change your files/);
+    assert.equal(TH.probeNeedsText({ barrier: b, trusted: true }), null);
+  }
+  console.log("probe question ok");
+}
