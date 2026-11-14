@@ -1237,14 +1237,33 @@ export const RES_BLOCKING = [
   ["removed_signal", "the PR removes the signal on this path"],
 ];
 const days = (s) => (s >= 86400 ? `${Math.round(s / 86400)} ${Math.round(s / 86400) === 1 ? "day" : "days"}` : s >= 3600 ? `${Math.round(s / 3600)} h` : `${Math.round(s)} s`);
-// The calls a path goes through: the deps whose edge or place is one of its steps.
-const depsOf = (path, deps) => (deps ?? []).filter((d) => (d.edge && path.steps.includes(d.edge)) || (d.at && path.steps.includes(d.at)));
+// The calls a path goes through: the deps whose edge or place is one of its steps, or whose file a step is in (a
+// model often names the path by its lines, consumer.py:21, and the call by another line of the same file).
+const fileOf = (x) => String(x ?? "").replace(/:\d+$/, "");
+// loose (ladders and map marks only): also a call in the file of a step; a blocker decides on the strict match.
+const depsOf = (path, deps, loose = false) => (deps ?? []).filter((d) => (d.edge && path.steps.includes(d.edge)) ||
+  (d.at && path.steps.some((s) => s === d.at || (loose && /:\d+$/.test(s) && fileOf(s) === fileOf(d.at)))));
+
+// What the map marks on the chosen path, only there: ⏱ a timeout, ×n a retry, DLQ or "no DLQ" at a consumer,
+// "✕ silent" at its end when nothing signals it, "1 + N" for a call in a loop. at: the step (node, edge or file:line).
+export function marksOf(path, deps) {
+  const out = [];
+  for (const d of depsOf(path, deps, true)) {
+    const at = d.edge ?? d.at;
+    if (d.timeout?.s > 0) out.push({ at, mark: `⏱ ${d.timeout.s} s` });
+    if (d.retry?.attempts > 1) out.push({ at: d.retry.at || at, mark: `×${d.retry.attempts}` });
+    if (d.trigger) out.push({ at, mark: d.trigger.dlq || d.trigger.max_receive > 0 ? "DLQ" : "no DLQ" });
+  }
+  if (path.failing.includes("n_plus_one")) out.push({ at: path.steps[0] ?? null, mark: "1 + N" });
+  if (!path.visible && path.steps.length) out.push({ at: path.steps.at(-1), mark: "✕ silent" });
+  return out;
+}
 
 // How much a failure on this path multiplies: one factor per retry layer and per redelivery, with its line; the
 // product as text. A redelivery without a dead-letter queue or a receive limit has no limit until the message expires.
 export function ladderOf(path, deps) {
   const factors = [];
-  for (const d of depsOf(path, deps)) {
+  for (const d of depsOf(path, deps, true)) {
     const r = d.retry, t = d.trigger;
     if (r?.attempts > 1) factors.push({ label: `${r.layer || "retry"}: ${r.attempts} attempts`, n: r.attempts, at: r.at || d.at });
     if (t && (t.batch > 1) && t.partial_batch === false) factors.push({ label: `the whole batch of ${t.batch} again`, n: t.batch, at: d.at });
@@ -1272,16 +1291,31 @@ export function budgetOf(path, deps) {
 // Whether a path blocks the merge and why, in words with the line: only a path with a finding; by what it breaks
 // (RES_BLOCKING), by a ladder without a limit, by a budget over its timeout, or when it repeats or loses effects
 // and nothing signals it.
-export function blockerOf(path, ladder, budget) {
+// A repeated or lost effect blocks only when the effect is visible and cannot be taken back (a mail, a payment, a
+// notification …): effects on the path (by node, or a line in the effect's file) of such a kind. Without any effects
+// in the block (an older run) the model's word stays.
+const RES_VISIBLE = /mail|sms|text message|push|notif|payment|charge|refund|invoice|order|webhook|ship/i;
+const RES_EFFECT = new Set(["duplicate_effect", "lost_effect", "swallowed_retry"]);
+// A path's end that names such an effect counts too: a lost publish ends in mails nobody gets.
+const visibleOn = (path, effects) => !effects.length || RES_VISIBLE.test(path.end ?? "") || effects.some((e) => RES_VISIBLE.test(`${e.kind} ${e.id}`) &&
+  (path.steps.includes(e.node) || path.steps.some((s) => String(s).split(":")[0] === String(e.at ?? "").split(":")[0])));
+// A message that always fails is bounded when a dead-letter queue or a receive limit takes it (on the path's calls,
+// else on every queue consumer of the run); a run outlasting its timeout blocks only when it comes back (a consumer
+// with redelivery), not in a request that just fails.
+const RES_UNBOUNDED = new Set(["unbounded_retry", "no_dlq", "poison_message"]);
+export function blockerOf(path, ladder, budget, effects = [], deps = []) {
   // Reading state another process holds is a finding, not a blocker: what it breaks (a poison message, a lost mail)
   // blocks in its own path. (A race and such a read exclude each other; neither is double counted.)
   if (path.result !== "finding" || path.failing.includes("reads_foreign_state")) return null;
-  const at = path.steps.find((s) => /:\d+$/.test(s)) ?? path.limited_by ?? null;
-  const hit = RES_BLOCKING.find(([k]) => path.failing.includes(k));
+  const at = path.steps.find((s) => /:\d+$/.test(s)) ?? path.limited_by ?? null, seen = visibleOn(path, effects);
+  const mine = depsOf(path, deps), consumers = (mine.length ? mine : deps).filter((d) => d.trigger);
+  const bounded = consumers.length > 0 && consumers.every((d) => d.trigger.dlq === true || d.trigger.max_receive > 0) && !(ladder?.factors.some((f) => f.n === null));
+  const redelivered = Boolean(budget) || mine.some((d) => d.trigger && d.mode === "async");
+  const hit = RES_BLOCKING.find(([k]) => path.failing.includes(k) && (!RES_EFFECT.has(k) || seen) && (!RES_UNBOUNDED.has(k) || !bounded) && (k !== "over_timeout" || redelivered));
   if (hit) return { why: hit[1], at: hit[0] === "over_timeout" && budget ? budget.at : at };
   if (ladder?.factors.some((f) => f.n === null)) return { why: "load grows without a limit", at: ladder.factors.find((f) => f.n === null).at };
   if (budget?.over_s > 0) return { why: "the worst run outlasts its timeout and is delivered again", at: budget.at };
-  if (!path.visible && (path.kind === "effect" || path.kind === "silent")) return { why: "the path repeats or loses effects and nothing signals it", at };
+  if (!path.visible && (path.kind === "effect" || path.kind === "silent") && seen) return { why: "the path repeats or loses effects and nothing signals it", at };
   return null;
 }
 
@@ -1298,8 +1332,18 @@ export function withResilience(ai, block, head = null, findings = []) {
   const sec = new Set(findings.filter((f) => f.security || (f.sources ?? []).some((x) => x.reviewer === "security")).flatMap((f) => f.ids ?? [f.id]));
   const paths = block.paths.map((p) => {
     const ladder = ladderOf(p, deps), budget = budgetOf(p, deps), pre = p.findings.length > 0 && p.findings.every((id) => before.get(id) === true);
-    return { ...p, ladder, budget, pre_existing: pre, blocker: pre ? null : blockerOf(p, ladder, budget), also_security: p.findings.some((id) => sec.has(id)) };
-  }).sort((a, b) => Number(Boolean(b.blocker)) - Number(Boolean(a.blocker)));
+    return { ...p, ladder, budget, marks: marksOf(p, deps), pre_existing: pre, blocker: pre ? null : blockerOf(p, ladder, budget, block.effects ?? [], deps),
+      also_security: p.findings.some((id) => sec.has(id)) };
+  });
+  // One cause blocks once: a blocking path with the reason of an earlier one and a finding or a call (a dep's place)
+  // in common is that path again (same_cause: its id), a finding but no second blocker; the missing dead-letter queue
+  // behind three paths counts one time.
+  const spots = (p) => new Set([...p.findings, ...p.steps.filter((s) => deps.some((d) => d.edge === s || d.at === s))]);
+  for (const [k, p] of paths.entries()) {
+    const first = p.blocker && paths.slice(0, k).find((q) => q.blocker && q.blocker.why === p.blocker.why && [...spots(p)].some((x) => spots(q).has(x)));
+    if (first) Object.assign(p, { blocker: null, same_cause: first.id });
+  }
+  paths.sort((a, b) => Number(Boolean(b.blocker)) - Number(Boolean(a.blocker)));
   const blockers = paths.filter((p) => p.blocker), found = paths.filter((p) => p.result === "finding"), mitigated = paths.filter((p) => p.result === "mitigated");
   const na = paths.filter((p) => p.result === "not_assessed").length, checks = block.checks ?? [];
   const tail = na ? `; ${na} not assessed` : "";

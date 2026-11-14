@@ -905,6 +905,29 @@ console.log("ok");
   assert.deepEqual(blockerOf(p1, ladderOf(p1, deps), budgetOf(p1, deps)), { why: "a message that always fails comes back until it expires", at: "library/consumer.py:14" });
   assert.deepEqual(blockerOf(P("p", "timeout", ["e5"], "finding", []), null, budgetOf(p1, deps)), { why: "the worst run outlasts its timeout and is delivered again", at: "library/consumer.py:14" });
   assert.equal(blockerOf(P("p", "load", ["e5"], "finding", ["no_jitter", "no_alarm"]), null, null), null, "missing jitter or an alarm alone blocks nothing");
+  // A repeated or lost effect blocks only when it is visible and final; a path's end may name it (a lost publish ends in lost mails).
+  const fx = [{ id: "mail", kind: "mail", at: "library/mailer.py:10", node: "mailer" }, { id: "audit", kind: "log line", at: "library/audit.py:3", node: "audit" }];
+  assert.deepEqual([blockerOf(P("p", "effect", ["mailer"], "finding", ["duplicate_effect"]), null, null, fx)?.why, blockerOf(P("p", "effect", ["library/audit.py:3"], "finding", ["duplicate_effect"]), null, null, fx),
+    blockerOf(P("p", "silent", ["events.py:20"], "finding", ["lost_effect"], { end: "no mails and no signal" }), null, null, fx)?.why],
+    ["a visible effect happens twice", null, "a visible effect is lost"], "a mail twice blocks, a log line twice does not; the end can name the mail");
+  // A path named by its lines finds its calls in the same files; the map's marks come from the same facts.
+  const byLines = P("p", "retry", ["library/consumer.py:21", "library/mailer.py:20"], "finding", ["no_dlq"], { visible: false });
+  assert.equal(ladderOf(byLines, deps).text, "no limit until the message expires (4 days)", "consumer.py:21 finds the consumer's call at consumer.py:14");
+  const { marksOf } = await import("./pr.js");
+  assert.deepEqual(marksOf(byLines, [{ ...deps[0], timeout: { s: 10 } }, deps[1]]), [{ at: "e5", mark: "⏱ 10 s" }, { at: "e5", mark: "no DLQ" },
+    { at: "library/mailer.py:14", mark: "×3" }, { at: "library/mailer.py:20", mark: "✕ silent" }]);
+  // A dead-letter queue bounds a poison message; a slow call in a request that is not redelivered fails, it does not come back.
+  const dlqDeps = [{ edge: "e6", at: "consumer.py:13", mode: "async", trigger: { batch: 5, partial_batch: true, dlq: true, max_receive: 3 } }];
+  assert.equal(blockerOf(P("p", "other", ["handler.py:21"], "finding", ["poison_message"]), null, null, [], dlqDeps), null, "the DLQ takes it after three receives");
+  assert.equal(blockerOf(P("p", "other", ["handler.py:21"], "finding", ["poison_message"]), null, null, [], [{ ...dlqDeps[0], trigger: { dlq: false } }])?.why,
+    "a message that always fails comes back until it expires", "without one it comes back");
+  assert.equal(blockerOf(P("p", "timeout", ["events.py:35"], "finding", ["over_timeout"]), null, null, [], dlqDeps), null, "a request that times out fails, nothing redelivers it");
+  assert.equal(blockerOf(P("p", "timeout", ["e6"], "finding", ["over_timeout"]), null, null, [], dlqDeps)?.why, "the worst run outlasts its timeout and is delivered again");
+  // One cause blocks once: three paths behind the same missing dead-letter queue.
+  const dq = withResilience(mapReview({ steps: [] }, []), { deps, effects: fx, paths: [P("p1", "retry", ["e5"], "finding", ["no_dlq"], { findings: ["dlq"] }),
+    P("p2", "state", ["e5", "x.py:1"], "finding", ["poison_message"], { findings: ["dlq"] }), P("p3", "effect", ["mailer"], "finding", ["duplicate_effect"], { findings: ["twice"] })] }).resilience;
+  assert.deepEqual(dq.paths.map((p) => [p.id, p.blocker ? "block" : p.same_cause ?? "-"]), [["p1", "block"], ["p3", "block"], ["p2", "p1"]], "blockers first, the repeated cause after them");
+  assert.equal(dq.counts.blockers, 2);
   assert.equal(blockerOf(P("p", "state", ["e5"], "finding", ["reads_foreign_state", "poison_message"]), null, null), null, "reading another process' state is a finding, its poison message blocks in its own path");
   assert.equal(blockerOf(P("p", "retry", ["e5"], "mitigated", ["no_dlq"], { limited_by: "a.py:1" }), ladderOf(p1, deps), null), null, "only a path with a finding blocks");
   assert.deepEqual(blockerOf(P("p", "silent", ["events.py:20"], "finding", [], { visible: false }), null, null), { why: "the path repeats or loses effects and nothing signals it", at: "events.py:20" });
