@@ -726,3 +726,16 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   const eff = passZones(new Map([["handler", { trust: "public", drawn: "authenticated" }]]), arch, () => "if crossing 1 fails open");
   assert.deepEqual([...eff].map(([k, v]) => [k, v.trust, v.cond ?? null]), [["handler", "public", null], ["consumer", "public", "if crossing 1 fails open"], ["mailer", "public", "if crossing 1 fails open"]]);
 }
+
+// ---- runs_in as a list: the most exposed zone counts
+{
+  const { runsIn, mapArch, crossingsOf } = await import("./views.js");
+  assert.deepEqual([runsIn({ runs_in: ["a", "b"] }), runsIn({ runs_in: "a" }), runsIn({})], [["a", "b"], ["a"], []]);
+  const arch = { zones: [{ id: "zp", trust: "public", name: "P" }, { id: "zi", trust: "internal", name: "I" }],
+    groups: [{ id: "g_fd", label: "Front desk Lambda" }, { id: "g_rc", label: "Consumer Lambda" }, { id: "g_lib", label: "Shared library code" }],
+    nodes: [{ id: "h", group: "g_fd", zone: "zp" }, { id: "c", group: "g_rc", zone: "zi" }, { id: "m", group: "g_lib", zone: "zi", runs_in: ["g_rc", "g_fd"] }], edges: [] };
+  assert.equal(mapArch(arch).nodes.find((n) => n.id === "m").zone, "zp", "a library in two Lambdas takes the more exposed zone");
+  assert.equal(mapArch({ ...arch, nodes: arch.nodes.map((n) => (n.id === "m" ? { ...n, runs_in: "g_rc" } : n)) }).nodes.find((n) => n.id === "m").zone, "zi", "one id still reads");
+  const rows = crossingsOf({ arch: { ...arch, edges: [{ from: "m", to: "c", crosses: true }] } });
+  assert.deepEqual(rows.map((r) => r.from.trust), ["public"], "a call from the library starts in its most exposed zone");
+}

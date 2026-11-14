@@ -39,7 +39,7 @@ import { hasSources, archLayout, archBands } from "./arch.js";
 import { archMarks, transitionText } from "./arch.js";
 import { resStartOf, resOrder, resPicture, budgetBar, resPathView, resCardOf, resSentence, resMarksOn } from "./views.js";
 import { withResilience, resilienceStart, RUN_TYPICAL } from "./pr.js"; // the Resilience run's data // the Resilience page
-import { wayOf, wayText, passZones } from "./views.js"; // panel round 3: ways through every gate, zones passed on
+import { wayOf, wayText, passZones, runsIn } from "./views.js"; // panel round 3: ways through every gate, zones passed on
 import { transitionMarks, effectiveFrom, inProcess, mapArch, crossingsOf, crossingChanged, secSentence, TRUST_ORDER } from "./views.js";
 import { trustLegend, hasTrust } from "./stack.js";
 import { scopeTable, scopeConflicts, runSummary, AREA_NAME, areaFindings, surfaceOf, EXPOSURE, reachLevel, secOrder, extraWays } from "./views.js";
@@ -3870,7 +3870,10 @@ export const ReviewMode = {
   effZones(a) {
     const rows = crossingsOf({ arch: a, access: this.ai?.access ?? [], threats: this.ai?.threats ?? [], gates: this.ai?.gates ?? [], bypasses: this.ai?.bypasses ?? [], findings: this.openFindings() });
     const door = (id) => { const k = rows.findIndex((r) => r.kind === "entry" && r.ends.to === id); return k >= 0 ? `if crossing ${k + 1} fails open` : null; };
-    return passZones(effectiveFrom(this.ai?.effectiveZones ?? [], a), a, door);
+    // The data's own (pr.js effectiveZonesOf, passed on already): its where names the crossing that must fail open.
+    const eff = effectiveFrom(this.ai?.effectiveZones ?? [], a);
+    for (const v of eff.values()) if (v.via?.length && v.where) { const k = rows.findIndex((r) => r.key === `a:${v.where.access}` || (r.aliases ?? []).includes(`a:${v.where.access}`) || r.key === `e:${String(v.where.edge ?? "").replace(/^e/, "")}`); if (k >= 0) v.cond = `if crossing ${k + 1} fails open`; }
+    return passZones(eff, a, door); // and for an older run without that
   },
   // The trust boundary crossings as a table, the attack surface and the rights included: the changed ones (new,
   // widened, narrowed, removed, or not said), not assessed ones too; the unchanged ones folded to a line. A row: its
@@ -3942,9 +3945,9 @@ export const ReviewMode = {
     // If a frame with a way in is compromised: what its principal may do (the rights rows that start there), unused too.
     const groupOf = (id) => nodeOf(id)?.group ?? null, frames = [...new Set(rows.filter((r) => r.kind === "entry").map((r) => groupOf(r.ends.to)).filter(Boolean))];
     const blast = frames.map((g) => {
-      const name = (arch?.groups ?? []).find((x) => x.id === g)?.label ?? g, rights = rows.filter((r) => r.kind === "right" && r.ends.from && (groupOf(r.ends.from) === g || nodeOf(r.ends.from)?.runs_in === g));
+      const name = (arch?.groups ?? []).find((x) => x.id === g)?.label ?? g, rights = rows.filter((r) => r.kind === "right" && r.ends.from && (groupOf(r.ends.from) === g || runsIn(nodeOf(r.ends.from)).includes(g)));
       // What it reaches in one process: the cards of other frames its cards call without a boundary, and on from there.
-      const reach = [], seen = new Set((arch?.nodes ?? []).filter((n) => n.group === g || n.runs_in === g).map((n) => n.id));
+      const reach = [], seen = new Set((arch?.nodes ?? []).filter((n) => n.group === g || runsIn(n).includes(g)).map((n) => n.id));
       for (const id of [...seen]) for (const e of arch?.edges ?? []) if (e.from === id && inProcess(e) && !seen.has(e.to)) { seen.add(e.to); reach.push(label(e.to)); for (const e2 of arch.edges) if (e2.from === e.to && inProcess(e2) && !seen.has(e2.to)) { seen.add(e2.to); reach.push(label(e2.to)); } }
       const can = [...rights.map((r) => `${(r.actions ?? []).join(", ") || "act"} on ${label(r.ends.to)}${r.unused ? " (granted, not used)" : ""}`), reach.length && `call ${reach.join(" and ")} in the same process`].filter(Boolean);
       return can.length ? `If ${name} is compromised, it can ${can.join("; ")}.` : `If ${name} is compromised, it holds no right the data names.`;
