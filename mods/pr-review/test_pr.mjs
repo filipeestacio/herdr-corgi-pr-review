@@ -228,6 +228,8 @@ assert.equal(findingStatus(fb, { b: { s: "dismissed" } }, reps, "h2", "y(1)"), "
 }
 const fp = fixPrompt([{ id: "a1", severity: "high", reviewer: "codex", file: "a.js", line: 3, end: 4, title: "T", detail: "D", suggestion: "S" }], { number: 7, title: "Fix", url: "u" }, "/r.jsonl");
 assert.ok(fp.includes("[a1] high · codex · `a.js`:3–4: T") && fp.includes(">> /r.jsonl") && fp.includes('"id": "a1"'));
+assert.ok(fp.includes("\nSuggestion: S\n"), "a short suggestion stays on its line");
+assert.ok(fixPrompt([{ id: "a2", severity: "low", reviewer: "ai", file: "a.js", line: 1, title: "T", detail: "D", suggestion: "```js\nx()\n```" }], null, "/r").includes("Suggestion:\n```js\nx()\n```"), "a code block starts on its own line");
 console.log("ok");
 
 // Open reviews: created once (startedAt kept), merged by url, merged/closed PRs turn done after a day, done ones

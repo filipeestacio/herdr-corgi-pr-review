@@ -352,12 +352,14 @@ export function suggestVerdict(c) {
   if (c?.unresolved) return { event: "comment", why: `${c.unresolved} ${are(c.unresolved)} unresolved, none of high severity` };
   return null;
 }
-// "Insert blockers": the unresolved findings from high up as a review body to edit. A security finding goes in with
-// its title only (no place, no detail): the text is public once it is posted.
+// "Insert blockers": the unresolved findings from high up as a review body to edit. It starts with a sentence that
+// counts them, then one line per finding with its file and line. A security finding goes in with its title only (no
+// place, no detail): the text is public once it is posted. AI notes are not findings and never part of it.
 export function blockersDraft(findings) {
-  const high = (findings ?? []).filter((f) => f.severity === "high" || f.severity === "critical");
-  if (!high.length) return "";
-  return [`Blocking before merge (${high.length}):`, ...high.map((f) => (f.security ? `- Security: ${f.title}` : `- ${f.title} (${f.file}:${f.line})`))].join("\n");
+  const high = (findings ?? []).filter((f) => f.severity === "high" || f.severity === "critical"), n = high.length;
+  if (!n) return "";
+  return `${n} ${n === 1 ? "finding needs" : "findings need"} a change before this can merge.\n\n`
+    + high.map((f) => (f.security ? `- Security: ${f.title}` : `- \`${f.file}:${f.line}\`: ${f.title}`)).join("\n");
 }
 
 // ---- the "Run review" popup: one line per run
@@ -371,3 +373,19 @@ export function runLine(r, others = 0, times = {}) {
   const n = r.count ?? 0, found = n ? `${n} ${n === 1 ? "finding" : "findings"}` : `No findings${others ? `. It reviews on its own; the other sources have ${others}` : ""}`;
   return [found, r.cost != null ? `$${Number(r.cost).toFixed(3)}` : null, times.took, times.ago].filter(Boolean).join(" · ");
 }
+
+// ---- a finding as a review comment (review.js "Add to review", "Ask an agent…")
+
+// The comment made from a finding, as Markdown for GitHub. It goes out under the reviewer's name and reads like their
+// own words: the title bold in the first line (one sentence: what is wrong or what to do), the detail as its own
+// paragraph, then the suggestion as its own paragraph. No severity, category or source labels. Markdown in the
+// detail and the suggestion stays as written (inline code, lists, code blocks). A suggestion with a code block goes
+// into a folded block so the comment stays short (fold: false for a text an agent reads); a short one stays open.
+export function findingCommentText(f, { fold = true } = {}) {
+  const md = (x) => String(x ?? "").replace(/\r\n/g, "\n").trim();
+  const title = md(f.title).replace(/\s*\n\s*/g, " "), detail = md(f.detail), sug = md(f.suggestion);
+  const suggested = !sug ? "" : sug.includes("```") && fold ? `<details><summary>Suggested fix</summary>\n\n${sug}\n\n</details>`
+    : sug.includes("\n") ? `Suggested:\n\n${sug}` : `Suggested: ${sug}`;
+  return [title && `**${title}**`, detail, suggested].filter(Boolean).join("\n\n");
+}
+

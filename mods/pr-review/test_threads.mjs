@@ -227,7 +227,8 @@ console.log("threads ok");
   assert.equal(TH.suggestVerdict({ unresolved: 2, high: 0 }).event, "comment");
   assert.equal(TH.suggestVerdict({ unresolved: 0, high: 0 }), null, "nothing unresolved: no suggestion, an approval is the reviewer's call");
   assert.equal(TH.blockersDraft([{ severity: "high", title: "Mails twice", file: "a.py", line: 3 }, { severity: "high", security: true, title: "Empty token passes", file: "h.py", line: 8 }, { severity: "medium", title: "m", file: "b", line: 1 }]),
-    "Blocking before merge (2):\n- Mails twice (a.py:3)\n- Security: Empty token passes");
+    "2 findings need a change before this can merge.\n\n- `a.py:3`: Mails twice\n- Security: Empty token passes");
+  assert.match(TH.blockersDraft([{ severity: "high", title: "T", file: "a.py", line: 3 }]), /^1 finding needs a change before this can merge\./);
   assert.equal(TH.blockersDraft([{ severity: "low", title: "x" }]), "");
   // The reviewers popup: a zero is put in relation, one finding is singular, a failure and "not run" are their own words.
   assert.equal(TH.runLine({ state: "done", count: 0, cost: 0.0886 }, 16, { took: "0:40", ago: "34 min ago" }), "No findings. It reviews on its own; the other sources have 16 · $0.089 · 0:40 · 34 min ago");
@@ -237,4 +238,22 @@ console.log("threads ok");
   assert.equal(TH.runLine(undefined), "Not run on this PR yet");
   assert.equal(TH.runLine({ state: "running" }, 0, { running: "0:12" }), "Running · 0:12");
   console.log("preview, verdict and runs ok");
+}
+
+// A finding as a review comment: the title bold, the detail and the suggestion as their own paragraphs, Markdown kept,
+// a suggested code block folded, no labels of a bot.
+{
+  const f = { severity: "high", category: "bug", reviewer: "claude", file: "a.py", line: 3, title: "publish_overdue raises for every overdue loan",
+    detail: "`status_of` already returns OVERDUE.\n\nSo two things happen:\n\n- the move raises\n- the loan is never marked",
+    suggestion: "Guard the move:\n\n```py\nif status_of(loan, day) is not Status.OVERDUE:\n    move(loan)\n```" };
+  const text = TH.findingCommentText(f);
+  assert.equal(text, "**publish_overdue raises for every overdue loan**\n\n`status_of` already returns OVERDUE.\n\nSo two things happen:\n\n- the move raises\n- the loan is never marked\n\n"
+    + "<details><summary>Suggested fix</summary>\n\nGuard the move:\n\n```py\nif status_of(loan, day) is not Status.OVERDUE:\n    move(loan)\n```\n\n</details>");
+  assert.ok(!/high|bug|claude|a\.py/.test(text), "no severity, category, source or place in the text");
+  assert.ok(text.includes("\n\n```py\n") && text.includes("\n```\n\n</details>"), "a blank line before and after the code block");
+  assert.ok(TH.findingCommentText(f, { fold: false }).endsWith("Suggested:\n\nGuard the move:\n\n```py\nif status_of(loan, day) is not Status.OVERDUE:\n    move(loan)\n```"), "an agent gets it unfolded");
+  assert.equal(TH.findingCommentText({ title: "T", detail: "D", suggestion: "Use `x`." }), "**T**\n\nD\n\nSuggested: Use `x`.", "a short suggestion stays open");
+  assert.equal(TH.findingCommentText({ title: "T", detail: "D", suggestion: "- a\n- b" }), "**T**\n\nD\n\nSuggested:\n\n- a\n- b", "a list starts on its own line");
+  assert.equal(TH.findingCommentText({ title: "T", detail: "", suggestion: "" }), "**T**");
+  console.log("finding comment ok");
 }

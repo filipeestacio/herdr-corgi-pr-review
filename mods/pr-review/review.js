@@ -389,6 +389,7 @@ export const ReviewMode = {
     else if (name === "insert-blockers") this.insertBlockers();
     else if (name === "submit") this.submitClick(cx);
     else if (name === "discard-pending") this.discardAsk = true; // the first click on "Discard N pending…": it only asks
+    else if (name === "add-finding") { const f = this.findingById(arg); if (f) this.findingComment(f, cx); } // a finding's "Add to review"
     else if (name === "route") this.route = arg; // github | agent: where Submit and single comments go
     else if (name === "fix") this.fixComments(arg ? arg.split(",") : this.selected(), cx); // fix:<comment id>[,<id>…], else the selected ones (the preview opens)
     else if (name === "fix-target") this.fixTarget(arg); // sub | main, in the open preview
@@ -973,14 +974,15 @@ export const ReviewMode = {
   findingText(f) {
     const rows = this.rowsFor(f.file), i = rows.findIndex((r) => atLine(r, f.line, false));
     const code = i >= 0 ? selection(rows, i, rows.findIndex((r) => atLine(r, f.end ?? f.line, false)) >= 0 ? rows.findIndex((r) => atLine(r, f.end ?? f.line, false)) : i).hunk : f.code;
-    return `${REVIEWERS[f.reviewer]?.[0] ?? f.reviewer} (${f.severity}): \`${f.file}\`:${f.line} — ${f.title}\n\n${f.detail}${f.suggestion ? `\n\nSuggested: ${f.suggestion}` : ""}\n\n\`\`\`\n${code ?? ""}\n\`\`\`\n\n`;
+    // Where it is and who found it in the first line (the preview is editable), then the finding as paragraphs.
+    return `${REVIEWERS[f.reviewer]?.[0] ?? f.reviewer} (${f.severity}): \`${f.file}\`:${f.line}\n\n${TH.findingCommentText(f, { fold: false })}\n\n\`\`\`\n${code ?? ""}\n\`\`\`\n\n`;
   },
 
   findingComment(f, cx) {
     const rows = this.rowsFor(f.file), i = rows.findIndex((r) => atLine(r, f.line, false));
     const anchor = i >= 0 ? selection(rows, i) : { start: f.line, end: f.line, old: false, hunk: f.code };
-    this.comments = [...this.comments, { id: Date.now().toString(36), file: f.file, ...anchor, head: this.head, text: `${f.title}: ${f.detail}${f.suggestion ? ` Suggested: ${f.suggestion}` : ""}`, from: f.reviewer }];
-    this.persist(cx); this.note = "Added to the pending review"; cx.notify();
+    this.comments = [...this.comments, { id: Date.now().toString(36), file: f.file, ...anchor, head: this.head, text: TH.findingCommentText(f), from: f.reviewer, ...(f.security ? { security: true } : {}) }];
+    this.persist(cx); this.note = `Added to the pending review.${f.security ? ` ${PUBLIC_TIP}` : ""}`; cx.notify();
   },
 
   // "Ask an agent…": what a click would start, decided before the preview so that it can say so. live: the PR's agent
@@ -2142,12 +2144,13 @@ export const ReviewMode = {
             .when(gh, (e) => e.child(div().flex_none().text_color(inline.has(c.id) || !on ? t.muted : t.ansi3).child(inDiff(this.diffLines ?? new Map(), c) ? "line comment" : "goes into the body")))
             .when(!editing, (e) => e.child(pill(`rv-fie-${c.id}`, t, "Edit", (_e, cx) => { this.editItem = c.id; this.itemEdit.set_value(c.text); cx.timer.after(0, () => this.itemEdit.focus()); cx.stop_propagation(); cx.notify(); }).tooltip("Edit the text before it is posted"))))
           .when(Boolean(origin(c)), (e) => e.child(div().text_size(11.5).text_color(t.ansi5).child(origin(c))))
+          .when(gh && on && Boolean(c.security), (e) => e.child(div().id(`rv-fi-pub-${c.id}`).text_size(12).line_height(1.4).whitespace_normal().text_color(t.ansi1).child(PUBLIC_TIP)))
           .child(editing
             ? v_flex().gap(6).child(div().h(90).px(8).py(4).rounded(6).border_1().border_color(t.accent).bg(t.background).cursor_text().on_click(() => this.itemEdit.focus())
               .child(Textarea.new(this.itemEdit).size_full().text_size(13).text_color(t.foreground)))
               .child(h_flex().gap(6).child(pill(`rv-fis-${c.id}`, t, "Save", (_e, cx) => { const text = this.itemEdit.value().trim(); if (text) { this.comments = all.map((x) => (x.id === c.id ? { ...x, text } : x)); this.persist(cx); } this.editItem = null; cx.notify(); }, false, t.foreground).tooltip("Keep the edited text"))
                 .child(pill(`rv-fic-${c.id}`, t, "Cancel", (_e, cx) => { this.editItem = null; cx.notify(); }).tooltip("Discard the edit")))
-            : div().text_size(12.5).line_height(1.45).whitespace_normal().text_color(on ? t.foreground : t.muted).child(c.text)));
+            : div().text_size(12.5).line_height(1.45).text_color(on ? t.foreground : t.muted).child(TextView.markdown(`rv-fim-${c.id}`, c.text))));
     };
     const summary = this.summary.value().trim(), repo = plan ? /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(this.prSel?.url ?? "") : null;
     const ready = !this.sending && (gh ? plan.ready : n > 0);
@@ -2163,9 +2166,11 @@ export const ReviewMode = {
       .child(div().id("rv-summary").tooltip("The review's summary: posted as the review body").h(76).px(10).py(6).rounded(6).border_1().border_color(this.typing === "summary" ? t.accent : t.border).bg(t.background).cursor_text()
         .on_click(() => this.summary.focus()).child(Textarea.new(this.summary).size_full().text_size(13.5).text_color(t.foreground)))
       .when(fc.unresolved > 0, (e) => e.child(h_flex().id("rv-finish-found").gap(8).items_center().text_size(12.5)
-        .child(div().flex_1().min_w(0).whitespace_normal().text_color(t.muted).child(`${fc.unresolved} unresolved ${fc.unresolved === 1 ? "finding is" : "findings are"} not part of this review${fc.high ? `, ${fc.high} of high severity` : ""}. Only what is listed below goes out.`))
+        .child(div().flex_1().min_w(0).whitespace_normal().text_color(t.muted).child(`${fc.unresolved} unresolved ${fc.unresolved === 1 ? "finding is" : "findings are"} not part of this review${fc.high ? `, ${fc.high} of high severity` : ""}.`))
         .when(fc.high > 0, (x) => x.child(pill("rv-blockers", t, "Insert blockers", (_e, cx) => { this.insertBlockers(); cx.notify(); }).flex_none()
-          .tooltip("Put the unresolved findings of high severity into the text above, to edit. A security finding goes in with its title only.")))))
+          .tooltip("Put the unresolved findings of high severity into the text above, to edit. A security finding goes in with its title only.")))
+        .when(typeof this.copyState === "function", (x) => x.child(pill("rv-copy-state", t, "Copy review state", (_e, cx) => { this.copyState(); cx.notify(); }).flex_none()
+          .tooltip("Copy the verdict, the task check and the findings by state as text for a colleague. Nothing is posted; security findings are in it with their title only.")))))
       .child(v_flex().gap(1)
         .child(radio("comment", "Submit general feedback without explicit approval."))
         .child(radio("approve", "Give your approval to merge these changes."))
@@ -3876,3 +3881,4 @@ function tickBox(t, on) {
     .text_size(11).font_semibold().text_color(t.accent_foreground).child(on ? "✓" : "");
 }
 const DRY_TIP = "Dry run: this installation posts nothing to GitHub. What a post would send is written to a file instead (\"dryRun\": true in pr-review.config.json).";
+const PUBLIC_TIP = "This comes from a security finding: once posted, its text is readable by everyone who can see the PR.";
