@@ -325,7 +325,11 @@ def security_view(answer, findings, pic, changed, root=None):
     trust = lambda n: (zone_of.get(n) or {}).get("trust")  # noqa: E731
     differ = lambda e: trust(e.get("from")) and trust(e.get("to")) and trust(e["from"]) != trust(e["to"])  # noqa: E731
     crossing = [{"from": e["from"], "to": e["to"], "edge": f"e{k}"} for k, e in enumerate(edges) if differ(e) and not e.get("in_process")]
-    bypasses = [{"from": e["from"], "to": e["to"], "edge": f"e{k}"} for k, e in enumerate(edges) if differ(e) and e.get("in_process")]
+    # A call in one process bypasses a boundary when it reaches code written for another source of input: a callee with
+    # a way in of its own (a crossing into it, or an access row at it), as a queue consumer's handler. A library called
+    # in one process (no way in of its own) runs in its caller's zone: no bypass.
+    entries = {c["to"] for c in crossing} | {r.get("node") for r in answer.get("access") or [] if isinstance(r, dict)}
+    bypasses = [{"from": e["from"], "to": e["to"], "edge": f"e{k}"} for k, e in enumerate(edges) if differ(e) and e.get("in_process") and e["to"] in entries]
     rows, named = [], {}
     for r in answer.get("access") or []:
         if not isinstance(r, dict) or not r.get("resource"):

@@ -145,10 +145,12 @@ assert reviewers.security_view({}, [], {}, {}) == {"zones": [], "access": [], "c
 w5 = {"architecture": {"groups": [{"id": "g_fd"}, {"id": "g_c"}],
       "nodes": [{"id": "h", "status": "changed", "at": "lib/handler.py:9"}, {"id": "c", "status": "new", "runs_in": "g_c"}, {"id": "m", "status": "unchanged", "runs_in": "c"},
                 {"id": "q", "status": "new"}],
-      "edges": [{"from": "h", "to": "c", "status": "new", "in_process": True}, {"from": "q", "to": "c", "status": "new"}, {"from": "c", "to": "m", "status": "new", "in_process": True}]}}
+      "edges": [{"from": "h", "to": "c", "status": "new", "in_process": True}, {"from": "q", "to": "c", "status": "new"}, {"from": "c", "to": "m", "status": "new", "in_process": True},
+                {"from": "h", "to": "lib", "status": "new", "in_process": True}]}}
+w5["architecture"]["nodes"].append({"id": "lib", "status": "unchanged"})
 cfg = pathlib.Path(tempfile.mkdtemp())
 (cfg / "template.yaml").write_text("Resources:\n  Fn:\n    Environment:\n      API_KEY: x\n")
-ans5 = {"zones": [{"id": "p", "trust": "public", "nodes": ["h"]}, {"id": "i", "trust": "internal", "nodes": ["g_c", "c"]}, {"id": "d", "trust": "data", "nodes": ["q"]}],
+ans5 = {"zones": [{"id": "p", "trust": "public", "nodes": ["h"]}, {"id": "i", "trust": "internal", "nodes": ["g_c", "c", "lib"]}, {"id": "d", "trust": "data", "nodes": ["q"]}],
         "access": [{"resource": "Api", "public": True, "auth_kind": "code", "at": "lib/handler.py:9", "node": "h", "change": "added", "principal": "anyone"},
                    {"resource": "Queue", "public": False, "auth_kind": "iam", "at": "t.yaml:5", "node": "q", "change": "added", "principal": "FrontDesk role", "principal_node": "g_fd"},
                    {"resource": "X", "public": False, "at": "t.yaml:6", "change": "added", "principal_node": "ghost"}],
@@ -159,7 +161,8 @@ ans5 = {"zones": [{"id": "p", "trust": "public", "nodes": ["h"]}, {"id": "i", "t
 tok = [{"id": "tk", "ref": "f1", "file": "t.yaml", "line": 5, "impact": "unauthorized_access"}]  # placed at the queue's row: reachable_from acc2
 v5 = reviewers.security_view(ans5, tok, w5, {"lib/handler.py": {9}, "t.yaml": {5, 6}}, cfg)
 assert v5["crossing"] == [{"from": "q", "to": "c", "edge": "e1"}] and v5["bypasses"] == [{"from": "h", "to": "c", "edge": "e0"}], \
-    "in one process: no crossing; between zones it bypasses the boundary; c -> m stays inside (m runs in c)"
+    ("in one process: no crossing; into a callee with its own way in (c, the queue's) it bypasses the boundary; c -> m stays inside (m runs in c); "
+     "h -> lib reaches a library with no way in of its own: no bypass")
 assert [r["principal_node"] for r in v5["access"][:3]] == [None, "g_fd", None], "a principal's node only when the picture has it"
 t5 = {x["id"]: x for x in v5["threats"]}
 assert (t5["t1"]["where"], t5["t1"]["result"], t5["t1"]["note"], t5["t1"]["path"]) == ({"from": "h", "to": "c", "edge": "e0"}, "not_assessed", "no time", ["internet", "h", "c", "m"]), \
