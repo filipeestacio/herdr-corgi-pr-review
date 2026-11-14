@@ -485,6 +485,7 @@ export const ReviewMode = {
     else if (name === "add") this.addDraft(cx);
     else if (name === "fix-finding") { const f = this.findingById(arg); if (f) this.fix([f], cx); }
     // Verify with an agent: verify-agent:<finding id>, or verify-agent:security for the unresolved security findings.
+    else if (name === "fstep") { const [id, key] = String(arg).split(":"); this.fstep = id && key ? { id, key } : null; } // fstep:<finding id>:<step key>, the step's click
     else if (name === "verify-agent") this.verifyAgent(arg === "security" ? this.secOpen() : [this.findingById(arg)], cx);
     else if (name === "trust") this.trust("pr", cx);
     else if (name === "cmenu") { const [k, ...key] = arg.split("|"), card = this.cardByKey(key.join("|")); card?.menu[Number(k)]?.[2]?.(cx); }
