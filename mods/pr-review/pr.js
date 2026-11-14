@@ -558,7 +558,7 @@ export function itemKeys(items) {
   const seen = new Map();
   return items.map((it, i) => {
     let k;
-    if (it.t === "row") { const r = it.src[it.ri]; k = `r|${it.path}|${lineKey(r) ?? `@${r.text}`}`; }
+    if (it.t === "row") { const r = it.src[it.ri]; k = `r|${it.path}|${lineKey(r) ?? `@${r.text}`}${it.part ? `~${it.part}` : ""}`; } // part: a wrapped line's next visual line
     else if (it.t === "gap") k = `g|${it.path}|${it.r.gap}`;
     else if (it.t === "file") k = `f|${it.f.path}`;
     else if (it.t === "fold") k = `z|${it.path}`;

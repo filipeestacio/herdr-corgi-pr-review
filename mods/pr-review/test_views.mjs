@@ -345,3 +345,59 @@ for (const w of [200, 420, 900]) assert.ok(mdHeight(long, w) >= 21 * wrapCount(l
   assert.equal(blastLine({ zone: zones[2], rights: [] }), "If Consumer is compromised, it holds no right the analysis names.");
   assert.deepEqual(zoneRights([], nodes, [{ node: "handler" }], access), []);
 }
+
+// ---- old and new side by side: which rows stand next to each other
+import { pairRows } from "./views.js";
+const kinds = (s) => [...s].map((c) => ({ kind: c === "g" ? "gap" : c === "n" ? "" : c }));
+const pairs = (s) => pairRows(kinds(s)).map((p) => (p.full !== undefined ? `=${p.full}` : `${p.l ?? "_"}|${p.r ?? "_"}`)).join(" ");
+assert.equal(pairs("@  "), "=0 1|1 2|2", "context: the same line on both sides");
+assert.equal(pairs("@ -+ "), "=0 1|1 2|3 4|4", "changed: the removed line beside the added one");
+assert.equal(pairs("++"), "_|0 _|1", "added only: nothing on the left");
+assert.equal(pairs("-- "), "0|_ 1|_ 2|2", "removed only: nothing on the right");
+assert.equal(pairs("---+"), "0|3 1|_ 2|_", "more removed than added: the rest has nothing beside it");
+assert.equal(pairs("-+++ "), "0|1 _|2 _|3 4|4", "more added than removed");
+assert.equal(pairs(" -+ -+"), "0|0 1|2 3|3 4|5", "two blocks with a line between them pair on their own");
+assert.equal(pairs("-+-+"), "0|1 2|3", "blocks written one after the other pair one by one");
+assert.equal(pairs("+-"), "_|0 1|_", "an added line before a removed one is not its change");
+assert.equal(pairs(" g @-+n"), "0|0 =1 2|2 =3 4|5 =6", "a gap that still hides lines, a hunk header and a note take the whole width");
+assert.equal(pairs(""), "");
+
+// ---- long code lines wrap
+import { wrapCode, wrapHeight, codeCols, sliceSpans } from "./views.js";
+assert.deepEqual(wrapCode("short", 80), [0], "a line that fits does not break");
+assert.deepEqual(wrapCode("x".repeat(80), 80), [0], "exactly the width: one line");
+assert.deepEqual(wrapCode("x".repeat(25), 10), [0, 10, 20], "no place to break: at the width exactly");
+assert.deepEqual(wrapCode("aaaaaaaa bbbbbbbbbbbbbbbbbbbb", 12), [0, 9, 21], "after the last space in the line's last third");
+assert.deepEqual(wrapCode("call(firstarg,second)", 16), [0, 14], "after a comma");
+assert.deepEqual(wrapCode("a bbbbbbbbbbbbbbbbbbbbbbb", 12), [0, 12, 24], "a space early in the line does not make a short line");
+assert.equal(wrapCode("x".repeat(1000), 10, 5).length, 5, "at most max visual lines");
+assert.deepEqual(wrapCode("", 80), [0]);
+assert.equal(wrapHeight([0], 22), 22);
+assert.equal(wrapHeight([0, 40, 80], 22), 66, "three visual lines, three rows high");
+assert.equal(codeCols(122 + 12 + 780, 122, 7.8), 100);
+assert.equal(codeCols(10, 122, 7.8), 8, "never below 8 columns");
+const sp = [{ start: 0, end: 5, kind: "kw" }, { start: 6, end: 14, kind: "fn", ref: true }, { start: 20, end: 22, kind: "str" }];
+assert.deepEqual(sliceSpans(sp, 0, 10), [{ start: 0, end: 5, kind: "kw" }, { start: 6, end: 10, kind: "fn", ref: true }], "a span over the break is split");
+assert.deepEqual(sliceSpans(sp, 10, 20), [{ start: 0, end: 4, kind: "fn", ref: true }], "its second half starts the next line");
+assert.deepEqual(sliceSpans(sp, 14, 20), [], "nothing between spans");
+
+// ---- side by side: which half a press hit
+import { pairSide } from "./views.js";
+assert.deepEqual(pairSide(100, 1000, 3, 4), { side: "l", ri: 3, x: 100, w: 500 });
+assert.deepEqual(pairSide(600, 1000, 3, 4), { side: "r", ri: 4, x: 100, w: 500 }, "x from the right half's left edge");
+assert.deepEqual(pairSide(500, 1000, null, 4), { side: "r", ri: 4, x: 0, w: 500 }, "the middle belongs to the right half");
+assert.equal(pairSide(10, 1000, null, 4).ri, null, "an empty left half: no row");
+import { diffModeOf, HALF_GUTTER, codeCols as cc } from "./views.js";
+const wide = 2 * (HALF_GUTTER + 12 + 80 * 7.8);
+assert.equal(diffModeOf(null, wide, 7.8), "split", "two halves of 80 columns fit: side by side");
+assert.equal(cc(wide / 2, HALF_GUTTER, 7.8), 80);
+assert.equal(diffModeOf(null, wide - 20, 7.8), "unified", "a little narrower: one column");
+assert.equal(diffModeOf("unified", wide * 2, 7.8), "unified", "the person's choice goes first");
+assert.equal(diffModeOf("split", 400, 7.8), "split");
+assert.equal(diffModeOf("bogus", 400, 7.8), "unified");
+import { oneSided } from "./views.js";
+const rowsOf = (s) => [{ kind: "@" }, ...[...s].map((kind) => ({ kind }))];
+assert.equal(oneSided(rowsOf("+++")), true, "a new file");
+assert.equal(oneSided(rowsOf("--")), true, "a deleted file");
+assert.equal(oneSided(rowsOf(" ++")), false, "context: a changed file");
+assert.equal(oneSided(rowsOf("-+")), false, "a line changed");
