@@ -21,6 +21,11 @@ refused = [
     ("blame", ["--contents", "x", "a.py"]), ("blame", ["-S", "revs", "a.py"]), ("blame", ["--ignore-revs-file=x", "a.py"]), ("ls-files", ["-X", "x"]),
     ("ls-files", ["--exclude-from=x"]), ("rev-parse", ["--resolve-git-dir", "x"]), ("rev-parse", ["--git-path", "x"]), ("diff", ["-pO"]),
     ("diff", ["--stat=x"]), ("log", ["--format"]),
+    # an option split differently than git would: a bare optional-value option, a value that is an option, a path as value
+    ("diff", ["-U", "--output=/tmp/x"]), ("diff", ["-U"]), ("status", ["-u", "--output=x"]), ("diff", ["-M", "HEAD"]), ("blame", ["-M", "a.py"]),
+    ("log", ["-n", "-c"]), ("log", ["-n"]), ("log", ["-L", "-/etc/hosts"]), ("log", ["-S", "--output=x"]), ("log", ["-n-c"]), ("log", ["-G", "-x"]),
+    ("log", ["--format=/etc/hosts"]), ("log", ["--grep=../x"]), ("log", ["-S", "~/x"]), ("diff", ["--unified=/x"]), ("log", ["--grep", "x"]),
+    ("diff", ["-pU", "x"]), ("diff", ["-wM"]),
     # other commands
     ("grep", ["x"]), ("config", ["--list"]), ("checkout", ["x"]), ("-C", ["/x", "log"]),
 ]
@@ -32,6 +37,8 @@ allowed = [
     ("ls-files", []), ("rev-parse", ["--short", "HEAD"]), ("merge-base", ["HEAD", "origin/main"]), ("status", ["--short"]), ("status", ["-uno"]),
     ("log", ["--follow", "--", "lib/x.py"]), ("log", ["-n", "3", "-L", "1,5:lib/x.py"]), ("diff", ["-pw", "-U3", "HEAD~1"]), ("show", ["--stat", "HEAD"]),
     ("log", ["--grep=fix ../ in text", "--author=a"]), ("diff", ["--merge-base", "origin/main"]),
+    ("diff", ["-U0", "-M50%", "HEAD~1"]), ("status", ["-uno"]), ("log", ["-n", "5", "-S", "needle", "-G", "a.b"]), ("blame", ["-M", "-L", "1,5", "a.py"][1:]),
+    ("diff", ["--unified=3", "--find-renames"]), ("log", ["--date=format:%Y-%m-%d"]),
 ]
 for cmd, args in allowed:
     assert no(cmd, *args) is None, (cmd, args, no(cmd, *args))
