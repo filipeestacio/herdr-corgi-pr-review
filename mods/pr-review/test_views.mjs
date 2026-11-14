@@ -455,3 +455,16 @@ assert.equal(oneSided(rowsOf("-+")), false, "a line changed");
   assert.equal(exposureNow({ exposure: "internal" }, [{ impact: "unauthorized_access" }]), "internal");
   assert.deepEqual(surfaceOf([{ resource: "a", public: true, auth: "token" }, { resource: "b", public: true, auth: "none" }]).entries.map((x) => x.resource), ["b", "a"], "the order is unchanged");
 }
+
+// ---- contradictions in "What each run checked"
+{
+  const { scopeConflicts, scopeTable } = await import("./views.js");
+  const tab = scopeTable({ checked: [{ area: "personal_data", result: "clean" }, { area: "authentication", result: "finding" }] },
+    { security: { scope: { checked: [{ area: "authentication", result: "clean" }, { area: "secrets", result: "clean" }] } } });
+  const c = scopeConflicts(tab, [{ title: "Token fails open", security: true, effect: "Anyone can list members' names and books." }, { title: "Mailed twice", effect: "Members get two mails." }]);
+  assert.deepEqual([...c.keys()], ["personal_data", "authentication"]);
+  assert.equal(c.get("authentication").kind, "cross"); assert.equal(c.get("personal_data").kind, "effect");
+  assert.match(c.get("personal_data").text, /Token fails open/);
+  assert.equal(scopeConflicts(tab, []).size, 1, "without findings only the runs' own contradiction");
+  assert.equal(scopeConflicts(null).size, 0);
+}

@@ -468,7 +468,7 @@ export function solidOver(base, over) {
 // that reports areas per finding would make this exact.
 const AREA_WORDS = { authentication: /authenticat|\btoken|bearer|login|credential|session/i, authorization: /authori[sz]|access control|\brole|allowed to|any (?:caller|member|loan)/i,
   input_validation: /input|validat|inject|saniti[sz]|unvalidated|request body/i, secrets: /secret|\btoken|api key|password|credential/i, permissions: /\biam\b|policy|permission|grant|least privilege/i,
-  personal_data: /personal|\bpii\b|e-?mail address|member'?s? (?:name|mail|data)|names and/i, dependencies: /dependenc|package|library version|requirements|lockfile/i,
+  personal_data: /personal|\bpii\b|e-?mail address|\bmembers?\b|\bnames?\b|\bcustomers?\b|\busers?'? (?:data|names?|e-?mails?)/i, dependencies: /dependenc|package|library version|requirements|lockfile/i,
   error_handling: /error|exception|raises?\b|retr(?:y|ies)|fails?\b|failure/i, concurrency: /concurren|race|idempoten|redeliver|at[- ]least[- ]once|twice|duplicate|dedup/i,
   state: /\bstate\b|status|transition/i, contracts: /contract|interface|schema|signature|requirement|acceptance/i };
 const AREA_CATEGORY = { correctness: ["bug"], tests: ["test"], contracts: ["requirement"] };
@@ -493,5 +493,22 @@ export function transitionMarks(v, findings) {
     const hit = (findings ?? []).filter((f) => f.file && (f.file === path || f.file.endsWith(`/${path}`) || path.endsWith(`/${f.file}`)) && (f.line ?? 0) <= b && (f.end ?? f.line ?? 0) >= a);
     if (hit.length) out.set(i, { findings: hit, severity: hit.map((f) => f.severity).sort((x, y) => (RANK[x] ?? 9) - (RANK[y] ?? 9))[0] });
   });
+  return out;
+}
+
+// Where the runs' self-reports in "What each run checked" contradict each other or the findings: an area one run calls
+// clean and another finds something in ("cross"), or one a run calls clean while an unresolved security finding names
+// it in its effect, by the area's words ("effect": "personal data clean" and "they can read members' names"). tab: scopeTable;
+// open: the unresolved findings. Returns Map(area -> {kind, text, findings}).
+export function scopeConflicts(tab, open = []) {
+  const out = new Map();
+  for (const r of tab?.rows ?? []) {
+    const cells = Object.entries(r.cells).filter(([, c]) => c), clean = cells.filter(([, c]) => c.result === "clean").map(([k]) => k), found = cells.filter(([, c]) => c.result === "finding").map(([k]) => k);
+    if (!clean.length) continue;
+    if (found.length) { out.set(r.area, { kind: "cross", text: `${clean.join(", ")} ${clean.length === 1 ? "calls" : "call"} it clean, ${found.join(", ")} ${found.length === 1 ? "finds" : "find"} something here.`, findings: [] }); continue; }
+    // Only a finding about security says something an area of the security run should have seen.
+    const words = AREA_WORDS[r.area], hit = words ? open.filter((f) => (f.security || ["unauthorized_access", "data_exposure"].includes(f.impact)) && words.test(String(f.effect ?? ""))) : [];
+    if (hit.length) out.set(r.area, { kind: "effect", text: `Called clean, but ${hit.length === 1 ? "an unresolved finding names" : `${hit.length} unresolved findings name`} it in ${hit.length === 1 ? "its" : "their"} effect: ${hit.slice(0, 2).map((f) => f.title).join("; ")}.`, findings: hit });
+  }
   return out;
 }

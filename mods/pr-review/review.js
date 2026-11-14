@@ -35,7 +35,7 @@ import { hasSources, archLayout, archBands } from "./arch.js";
 import { archMarks, zoneArch, transitionText } from "./arch.js";
 import { transitionMarks } from "./views.js";
 import { trustLegend, hasTrust } from "./stack.js";
-import { scopeTable, runSummary, AREA_NAME, areaFindings, surfaceOf, exposureNow, EXPOSURE, reachLevel, secOrder, extraWays, zoneRights, blastLine } from "./views.js";
+import { scopeTable, scopeConflicts, runSummary, AREA_NAME, areaFindings, surfaceOf, exposureNow, EXPOSURE, reachLevel, secOrder, extraWays, zoneRights, blastLine } from "./views.js";
 import * as TH from "./threads.js";
 import { leftWidth, rowClick, CHIP_W, ASK_W, keyRoute, scopeLine, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf, rangeLabel, pinAnchor, pinAdd, pinDrop, pinsOf, pinsOn, codePins, drillPush, drillTo, crumbs, drillKey, cachePut, mapDrill, exploreId, exploreIndex, exploreAi, pathOf, lineOf, repoOfRemote, exploreTrust, layersForNode } from "./explore.js";
 
@@ -3829,6 +3829,7 @@ export const ReviewMode = {
   secScope(t, title) {
     const runs = this.find.runs, all = this.findings(), tab = scopeTable(this.ai?.scope, runs);
     const from = (k) => all.filter((f) => f.sources.some((x) => x.reviewer === k)).length;
+    const conflicts = scopeConflicts(tab, this.openFindings());
     const lines = [["analysis", "Analysis", this.aiBusy ? { state: "running" } : this.ai ? { state: "done" } : null, null], ...reviewersNow().map(([k, [label]]) => [k, label, runs[k] ?? null, runs[k]?.scope ?? null])];
     const RESULT = { finding: ["Finding", t.ansi1], clean: ["Clean", t.ansi2], not_checked: ["Not checked", t.ansi3] };
     // A row is one line each (its notes cut); a click on it shows the whole texts and, under a "Finding", that run's
@@ -3840,8 +3841,9 @@ export const ReviewMode = {
       const found = c.result === "finding" ? areaFindings(area, k, all) : [], files = read(k);
       return v_flex().id(`rv-sec-sc-${area}-${k}`).gap(4).cursor_pointer().on_click(toggle(area))
         .tooltip(c.result === "clean" ? (files.length ? `Clean, as this run reports it. It read:\n${files.join("\n")}` : "Clean, as this run reports it; it names no file it read.") : open(area) ? "Fold this row" : "Show the whole text and the findings behind it")
-        .child(h_flex().gap(6).items_start().child(chip(t, RESULT[c.result][0], RESULT[c.result][1], c.result !== "clean"))
-          .child(div().flex_1().min_w(0).text_color(t.muted).when(!open(area), (e) => e.truncate()).when(open(area), (e) => e.whitespace_normal()).child(c.note))
+        .child(h_flex().gap(6).items_start().child(c.result === "clean" && !files.length ? chip(t, "Clean, no file named", t.ansi3, false) : chip(t, RESULT[c.result][0], RESULT[c.result][1], c.result !== "clean"))
+          .child(div().flex_1().min_w(0).text_color(t.muted).when(!open(area), (e) => e.truncate()).when(open(area), (e) => e.whitespace_normal())
+            .child(c.result === "clean" && files.length ? `${c.note ? `${c.note} · ` : ""}${files.length} ${files.length === 1 ? "file" : "files"} read` : c.note))
           .when(found.length > 0 && !open(area), (e) => e.child(div().flex_none().text_color(t.muted).child(`${found.length} ▸`))))
         .when(open(area) && c.result === "finding", (e) => e.children(found.length ? found.map((f) => h_flex().id(`rv-sec-sc-f-${area}-${k}-${f.id}`).gap(6).items_start().px(4).rounded(4).hover((x) => x.bg(t.hover))
           .tooltip("Open this finding and show its line in the diff").on_click((_e, cx) => { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); cx.stop_propagation(); cx.notify(); })
@@ -3860,7 +3862,13 @@ export const ReviewMode = {
             .child([runSummary(r, from(k)), scope?.read?.length ? `read: ${scope.read.join(", ")}` : null, scope?.skipped?.length ? `left out: ${scope.skipped.join("; ")}` : null,
               r?.state === "done" && k !== "analysis" && !scope ? "it reported no scope" : null].filter(Boolean).join(" · ")));
       })))
-      .child(tab.rows.length ? this.table(t, "rv-sec-scope-t", [["Area", 130], ...tab.cols.map((k) => [REVIEWERS[k]?.[0] ?? k, null])], tab.rows.map((r) => [AREA_NAME[r.area] ?? r.area, ...tab.cols.map((k) => cell(r.cells[k], r.area, k))]))
+      // An area the runs contradict each other on, or that a run calls clean while a finding names it in its effect
+      // (views.js scopeConflicts): marked in its first cell, the reason in the tooltip and in the opened row.
+      .child(tab.rows.length ? this.table(t, "rv-sec-scope-t", [["Area", 150], ...tab.cols.map((k) => [REVIEWERS[k]?.[0] ?? k, null])], tab.rows.map((r) => [
+        conflicts.has(r.area) ? v_flex().id(`rv-sec-sc-x-${r.area}`).gap(2).cursor_pointer().on_click(toggle(r.area)).tooltip(conflicts.get(r.area).text)
+          .child(div().child(AREA_NAME[r.area] ?? r.area)).child(div().text_size(11.5).text_color(t.ansi3).child("⚠ Contradiction"))
+          .when(open(r.area), (e) => e.child(div().text_size(11.5).text_color(t.muted).whitespace_normal().child(conflicts.get(r.area).text))) : AREA_NAME[r.area] ?? r.area,
+        ...tab.cols.map((k) => cell(r.cells[k], r.area, k))]))
         : div().text_size(12.5).text_color(t.muted).whitespace_normal().child("No run has reported what it checked: the analysis is older than this report, or nothing has run yet."));
   },
   // The rights granted inside the cloud account (the access rows that are no way in): who may do what on which
