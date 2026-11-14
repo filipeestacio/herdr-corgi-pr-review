@@ -108,6 +108,13 @@ try:
     assert calls[-1][0][:4] == ["claude", "-p", "--model", "haiku"], "reshaping prose stays on haiku"
     assert reviewers.normalize(answer["findings"], "claude", d)[0]["severity"] == "high"
 
+    # The command wrote its review as the main answer's text, without the answer tool: that prose is turned too.
+    review_text = "8 findings, most severe first: 1. `a.py:2`: `publish_overdue` always raises `ValueError` because the table forbids the move."
+    outs += ["\n".join([line(**{**done, "result": review_text})]),
+             json.dumps({"structured_output": {"answer": {"findings": [{"file": "a.py", "line": 2, "severity": "high", "title": "always raises", "detail": "d"}]}}, "total_cost_usd": 0.01})]
+    answer, meta = reviewers.claude_review(req, reviewers.code_review_command(req))
+    assert meta["converted"] and review_text in calls[-1][1]["input"] and len(answer["findings"]) == 1
+
     # No answer anywhere: the run fails with a reason instead of counting 0 findings.
     outs.append("\n".join([said(None, {"type": "text", "text": "Command completed"}), line(**done)]))
     try:

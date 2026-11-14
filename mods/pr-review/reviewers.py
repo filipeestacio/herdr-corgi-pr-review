@@ -405,8 +405,11 @@ def claude_review(req, command):
         answer, meta = ask(review.git_hint(req["worktree"]) + PLAIN[req["kind"]].format(base=req["base"], number=req["number"]) + req.get("more", "") + ASK_JSON
                            + (ASK_SECURITY if req["kind"] == "security" else ""), False)
         meta["fallback"] = True
-    if answer is None and (meta.get("text") or "").strip():
-        answer = from_text(meta["text"], req, meta)
+    # Prose from a fork, else the main answer's own prose (a slash command that wrote its review instead of calling the
+    # answer tool; a bare "Command completed" is no review).
+    prose = (meta.get("text") or "").strip() or (str(meta.get("result") or "").strip() if len(str(meta.get("result") or "").strip()) > 80 else "")
+    if answer is None and prose:
+        answer = from_text(prose, req, meta)
         meta["converted"] = True
     if not isinstance(answer, dict) or not isinstance(answer.get("findings"), list):
         raise RuntimeError(f"{FEATURE[req['kind']]}: the reviewer ran but gave no findings answer ({str(meta.get('result') or '')[:120]})")
