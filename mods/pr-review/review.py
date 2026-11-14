@@ -109,7 +109,7 @@ STATUS = {"enum": ["new", "changed", "unchanged", "removed"]}
 ARCHITECTURE = {"type": "object", "required": ["groups", "nodes", "edges"], "properties": {
     "groups": {"type": "array", "maxItems": 5, "items": {"type": "object", "required": ["id", "label", "kind"], "properties": {"id": S, "label": S, "kind": S}}},
     "nodes": {"type": "array", "maxItems": 12, "items": {"type": "object", "required": ["id", "group", "label", "description", "type", "status"], "properties": {
-        "id": S, "group": S, "label": S, "description": S, "details": S, "type": S, "status": STATUS, "at": S, "source": SOURCE, "evidence": S, "runs_in": S,
+        "id": S, "group": S, "label": S, "description": S, "details": S, "type": S, "status": STATUS, "at": S, "source": SOURCE, "evidence": S, "runs_in": STRINGS,
         "states": {"type": "array", "maxItems": 10, "items": {"type": "object", "required": ["name", "type"], "properties": {
             "name": S, "type": {"enum": STATE_TYPES}, "calls": S, "status": STATUS, "source": SOURCE, "evidence": S}}}}}},
     "edges": {"type": "array", "maxItems": 16, "items": {"type": "object", "required": ["from", "to", "label"], "properties": {
@@ -511,8 +511,8 @@ def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None,
             "service, orchestration, status new/changed/unchanged/removed, at: file:line; an orchestrator such as a Step Functions "
             "state machine may list its states in order (name, type task/choice/parallel/map/wait/pass/fail/succeed, calls: the id "
             "of the node a task state invokes, status), each call is then drawn from that state's row), runs_in (for code "
-            "without a deployment of its own, a module or library: the id of the group or node whose process runs it; none for a "
-            "deployed unit), edges (from, to, label: "
+            "without a deployment of its own, a module or library: the ids of the groups or nodes whose processes run it, several "
+            "when it runs in several, e.g. a library two functions import; none for a deployed unit), edges (from, to, label: "
             "what happens, e.g. \"Creates invitation\"; draw them in call direction, caller to callee; in_process: true when the "
             "call stays in one process, a plain function call, no network, queue or event between); "
             "when the code or the template opens a way in from outside (a route, a function URL, a public bucket), the caller "
@@ -734,6 +734,26 @@ def owner_of(path, rules):
     return found
 
 
+def runs_in_of(node):
+    """A node's runs_in as a list: [] without one, a single id (an older analysis) as a list of one."""
+    r = node.get("runs_in")
+    return [r] if isinstance(r, str) and r else [str(x) for x in r] if isinstance(r, list) else []
+
+
+def _reaches(runs, start, goal):
+    """Whether goal is reachable from start along runs_in (breadth-first, each node once)."""
+    seen, todo = set(), [start]
+    while todo:
+        cur = todo.pop()
+        if cur == goal:
+            return True
+        if cur in seen or cur not in runs:
+            continue
+        seen.add(cur)
+        todo += runs_in_of(runs[cur])
+    return False
+
+
 def place(answer):
     """Each finding's place on the architecture picture checked against it: breaks {node} or {from, to, edge: the
     UI's edge id e<k>}; a place the picture doesn't have is dropped. Also after a diagram refresh (new picture)."""
@@ -750,20 +770,19 @@ def place(answer):
         if row.get("node") not in nodes:
             row.pop("node", None)
     groups = {g.get("id") for g in arch.get("groups") or []}
-    for n in arch.get("nodes") or []:  # runs_in: a group or another node, else none
-        if n.get("runs_in") not in (nodes | groups) - {n.get("id")}:
+    for n in arch.get("nodes") or []:  # runs_in: groups or other nodes (a list; an older single id becomes one), else none
+        hosts = [h for h in dict.fromkeys(runs_in_of(n)) if h in (nodes | groups) - {n.get("id")}]
+        if hosts:
+            n["runs_in"] = hosts
+        else:
             n.pop("runs_in", None)
     runs = {n.get("id"): n for n in arch.get("nodes") or []}
-    for n in arch.get("nodes") or []:  # and no cycle (a -> b -> a): the node that closes it loses its runs_in
-        seen, cur = {n.get("id")}, n.get("runs_in")
-        while cur in runs and runs[cur].get("runs_in"):
-            if cur in seen:
+    reaches = lambda a, b: _reaches(runs, a, b)  # noqa: E731
+    for n in arch.get("nodes") or []:  # and no cycle (a -> b -> a): a host that leads back to the node goes
+        if n.get("runs_in"):
+            n["runs_in"] = [h for h in n["runs_in"] if not reaches(h, n.get("id"))]
+            if not n["runs_in"]:
                 n.pop("runs_in", None)
-                break
-            seen.add(cur)
-            cur = runs[cur]["runs_in"]
-        if cur in seen and n.get("runs_in"):
-            n.pop("runs_in", None)
     for e in arch.get("edges") or []:
         if not isinstance(e.get("in_process"), bool):
             e.pop("in_process", None)

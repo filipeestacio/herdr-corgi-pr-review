@@ -965,3 +965,30 @@ console.log("ok");
     recommendModel("resilience", { start: { concurrency: true } }).tier, recommendModel("resilience", { lines: 2000, start: {} }).tier], ["opus", "sonnet", "opus", "opus"]);
   console.log("ok resilience");
 }
+
+// Where a card really stands: the run's effective zone passed on along unchecked calls in one process; a library in
+// several processes stands in the most exposed; a gate on the call stops it.
+{
+  const { effectiveZonesOf, withSecurity, mapReview } = await import("./pr.js");
+  const arch = { zones: [{ id: "fd", trust: "authenticated" }, { id: "rc", trust: "internal" }],
+    groups: [{ id: "g_fd" }, { id: "g_rc" }],
+    nodes: [{ id: "handler", group: "g_fd", zone: "fd" }, { id: "consumer", group: "g_rc", zone: "rc" }, { id: "mailer", group: "g_rc", runs_in: ["g_rc"] },
+      { id: "lib", runs_in: ["g_fd", "g_rc"] }, { id: "queue", group: "g_rc", zone: "rc" }],
+    edges: [{ from: "handler", to: "consumer", in_process: true }, { from: "consumer", to: "mailer", in_process: true }, { from: "consumer", to: "queue" }] };
+  const direct = [{ node: "handler", drawn: "authenticated", effective: "public", where: { access: "acc1" } }];
+  assert.deepEqual(effectiveZonesOf(arch, [], direct), [
+    { node: "handler", drawn: "authenticated", effective: "public", where: { access: "acc1" }, via: [] },
+    { node: "consumer", drawn: "internal", effective: "public", where: { access: "acc1" }, via: ["e0"] },
+    { node: "mailer", drawn: "internal", effective: "public", where: { access: "acc1" }, via: ["e0", "e1"] }],
+    "public, if crossing 1 fails open: the consumer and its mailer behind the in-process call; the queue (a real call) stays; lib stands in the more exposed frame, as drawn");
+  assert.deepEqual(effectiveZonesOf(arch, [{ where: { from: "handler", to: "consumer" }, check: "token" }], direct).map((z) => z.node), ["handler"], "a gate on the call stops it");
+  assert.deepEqual(effectiveZonesOf(arch, [], []).map((z) => [z.node, z.effective, z.where]), [["consumer", "authenticated", null], ["mailer", "authenticated", null]],
+    "without a direct entry the drawn zone of the caller is passed on");
+  const loop = { zones: [{ id: "p", trust: "public" }], nodes: [{ id: "a", zone: "p" }, { id: "b", runs_in: ["c"] }, { id: "c", runs_in: ["b"] }],
+    edges: [{ from: "a", to: "b", in_process: true }, { from: "b", to: "a", in_process: true }] };
+  assert.deepEqual(effectiveZonesOf(loop, [], []), [], "cycles in runs_in or calls end; b has no drawn zone, so nothing to compare");
+  const ai = withSecurity(mapReview({ architecture: { groups: arch.groups, nodes: arch.nodes.map(({ zone, ...n }) => n), edges: arch.edges }, steps: [] }, []),
+    { head: "h", zones: [{ id: "fd", trust: "authenticated", nodes: ["handler"] }, { id: "rc", trust: "internal", nodes: ["consumer", "queue"] }], crossing: [], access: [], threats: [], effective_zones: direct }, null, "h");
+  assert.deepEqual(ai.effectiveZones.map((z) => [z.node, z.effective, z.via]), [["handler", "public", []], ["consumer", "public", ["e0"]], ["mailer", "public", ["e0", "e1"]]], "withSecurity gives the passed-on zones");
+  console.log("ok effective zones");
+}

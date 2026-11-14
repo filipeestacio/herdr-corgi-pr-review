@@ -119,13 +119,18 @@ ASK_SECURITY = (
     "zones of different trust; the PR adds or changes it when the edge or one of its ends is new or changed. A call that "
     "stays in one process (in_process in the picture) is no crossing; when it reaches code written for another source "
     "of input (a queue consumer's handler called with an internet request), it bypasses the boundary and needs a threat "
-    "like a crossing. A node that runs in another node's or group's process (runs_in) stands in that zone. gates: the check at each crossing the PR adds or changes, where it really happens: where (access: "
+    "like a crossing. A node that runs in another node's or group's process (runs_in) stands in that zone; one that runs in several stands in the most exposed of them. gates: the check at each crossing the PR adds or changes, where it really happens: where (access: "
     "the id of an access row; or from and to: the two picture nodes), principal (the identity the request goes on with), "
     "check (none, network, token, signature, iam), at (file:line of the check), source (config: a gateway, authorizer or "
     "policy checks before the code runs; code: the receiving function's own code checks), holds_if (what must be true for "
     "the check to hold, e.g. \"FRONT_DESK_TOKEN is set and not empty\"; empty when nothing), carries (the parts of the "
     "request an attacker controls past this point, e.g. \"body.id\", \"Authorization header\"; never empty for a crossing "
     "from public). threats: a threat model of the crossings this PR adds or changes, at least one entry for each of them, "
+    "each one about what an attacker does, never a defect of the code (a call that never happens, a wrong value, a "
+    "missing retry: that is a finding); for an access row that grants a principal a right into another zone (a role or "
+    "function allowed to send to a queue, read a table, invoke another function), the threat to name first is the misuse "
+    "of that right by an attacker who has taken over the principal, with goal what they then reach, also when the code "
+    "uses the right correctly or not at all; "
     "one entry per concrete threat, no two alike: where (as for gates), boundary (the boundary crossed, e.g. \"Internet → "
     "Front desk function\"), threat (one sentence about this code: who does what, through which line), stride (one letter: "
     "S spoofing, T tampering, R repudiation, I information disclosure, D denial of service, E elevation of privilege), "
@@ -242,7 +247,7 @@ def picture_text(pic):
             + "\n".join(f"- {g.get('id')}: {g.get('label')}, {g.get('kind') or ''}" for g in arch.get("groups") or [])
             + "\nNodes (id: label, type, status, group, file:line, runs_in):\n"
             + "\n".join(f"- {n.get('id')}: {n.get('label')}, {n.get('type') or ''}, {n.get('status') or ''}, {n.get('group') or ''}, {n.get('at') or ''}"
-                        + (f", runs in {n['runs_in']}" if n.get("runs_in") else "") for n in arch["nodes"])
+                        + (f", runs in {', '.join(review.runs_in_of(n))}" if n.get("runs_in") else "") for n in arch["nodes"])
             + "\nEdges (caller -> callee: label, status):\n"
             + "\n".join(f"- {e.get('from')} -> {e.get('to')}: {e.get('label') or ''}, {e.get('status') or ''}" + (", in_process" if e.get("in_process") else "")
                          for e in arch.get("edges") or []))
@@ -311,20 +316,28 @@ def security_view(answer, findings, pic, changed, root=None):
     arch = pic.get("architecture") or {}
     nodes, edges = arch.get("nodes") or [], arch.get("edges") or []
     ids, frames = {n.get("id") for n in nodes}, {g.get("id") for g in arch.get("groups") or []}
-    runs_in = {n.get("id"): n.get("runs_in") for n in nodes if n.get("runs_in")}
+    runs_in = {n.get("id"): review.runs_in_of(n) for n in nodes if n.get("runs_in")}
     zones, zone_of = [], {}
     for z in answer.get("zones") or []:
         if isinstance(z, dict) and z.get("id") and z.get("trust") in TRUST and z["id"] not in [x["id"] for x in zones]:
             mine = [n for n in dict.fromkeys(z.get("nodes") or []) if n in ids and n not in zone_of]
             zone_of.update((n, z) for n in mine)
             zones.append({"id": str(z["id"]), "name": str(z.get("name") or z["id"]), "trust": z["trust"], "evidence": str(z.get("evidence") or ""), "nodes": mine})
-    for n in ids:  # code without a deployment of its own stands where it runs (along runs_in; a cycle ends it)
-        host, seen = runs_in.get(n), {n}
-        while n not in zone_of and host in runs_in and host not in zone_of and host not in seen:
-            seen.add(host)
-            host = runs_in[host]
-        if n not in zone_of and host in zone_of:
-            zone_of[n] = zone_of[host]
+    for n in ids:  # code without a deployment of its own stands where it runs; in several, the most exposed zone
+        if n in zone_of:
+            continue
+        found, seen, todo = [], {n}, list(runs_in.get(n, []))
+        while todo:
+            h = todo.pop(0)
+            if h in seen:
+                continue
+            seen.add(h)
+            if h in zone_of:
+                found.append(zone_of[h])
+            else:
+                todo += runs_in.get(h, [])
+        if found:
+            zone_of[n] = min(found, key=lambda z: TRUST.index(z["trust"]))
     trust = lambda n: (zone_of.get(n) or {}).get("trust")  # noqa: E731
     differ = lambda e: trust(e.get("from")) and trust(e.get("to")) and trust(e["from"]) != trust(e["to"])  # noqa: E731
     crossing = [{"from": e["from"], "to": e["to"], "edge": f"e{k}"} for k, e in enumerate(edges) if differ(e) and not e.get("in_process")]
