@@ -25,6 +25,7 @@ import shutil
 import subprocess
 import sys
 
+sys.dont_write_bytecode = True  # a .pyc written into the mod's folder reloads the mod: the view waiting for this run is gone
 import llm  # noqa: E402  (this folder)
 
 FEATURE = "Review analysis"
@@ -110,6 +111,25 @@ JUDGED_TEXT = ("impact (the gravest that applies; it sets the severity. " + SCAL
                "test in the repo or a command's output; derived: it follows from the code you read, every step is in the files; "
                "assumed: it needs something you could not check, such as deployment settings or how a gateway or library "
                "behaves, and preconditions names it)")
+# How the texts a person reads are written: markdown where it shortens the reading, never longer than prose. The UI
+# renders it in findings and comments; a title stands in one-line lists and stays plain.
+TEXTS = ("Texts: detail, suggestion, effect, why and a suggestion's text are markdown. Identifiers, paths and calls are "
+         "always `inline code`. Three or more parallel items (cases, the steps of a failure, the rules something breaks) are "
+         "a short bullet list, numbered when the order matters, after one introducing line, not one long sentence. A text "
+         "of more than three sentences is split into short paragraphs with a blank line between them, one thought each, e.g. "
+         "what the code does, then what follows from it. A finding's suggestion says in one sentence what to change; when "
+         "the change is a few lines of code (up to about six), it shows them after that sentence in a fenced code block "
+         "with its language. No code blocks anywhere else. effect, why and a suggestion's text stay one or two sentences, "
+         "with inline code only. title stays one line of plain text without any markdown. No headings, tables, images or "
+         "HTML. Structure replaces words, it adds none: apart from a code block, no text gets longer than the plain "
+         "sentences would be.")
+# The same rules at the fields themselves: a reviewer that runs as a fork sees only the schema, and a rule next to
+# its field is followed more often than one in a long prompt.
+PROSE = {"title": {**S, "description": "One line of plain text, no markdown."},
+         "detail": {**S, "description": "Markdown. Identifiers, paths and calls as `inline code`. More than three sentences: short paragraphs, a "
+                                        "blank line between them. Three or more parallel cases or steps: a bullet list after one introducing line."},
+         "suggestion": {**S, "description": "Markdown. One sentence on what to change; a change of a few lines of code follows in a fenced code "
+                                            "block with its language."}}
 # What a run reports about its own work (the model's self-report, not a measurement): one row per area.
 AREAS_SECURITY = ["authentication", "authorization", "input_validation", "secrets", "permissions", "personal_data", "dependencies"]
 AREAS_CODE = ["correctness", "error_handling", "concurrency", "state", "contracts", "tests"]
@@ -126,7 +146,7 @@ def checked_schema(areas):
 # An architecture-review finding of one layer: a problem across lines or files, confirmed in the code. It lives in its
 # layer (no findings file); finish() gives it the id the UI uses and its severity; reviewer "analysis".
 FINDING = {"type": "object", "required": ["file", "line", "title", "detail", "suggestion", *JUDGED, "criteria"], "properties": {
-    "file": S, "line": {"type": "integer"}, "end": {"type": "integer"}, "title": S, "detail": S, "suggestion": S, **JUDGED,
+    "file": S, "line": {"type": "integer"}, "end": {"type": "integer"}, **PROSE, **JUDGED,
     "criteria": STRINGS, "breaks": {"type": "object", "properties": {"node": S, "from": S, "to": S}}}}
 ASK_STATES = ["met", "partly", "broken", "not_done", "extra"]
 SCHEMA = {"type": "object", "required": ["title", "summary", "behavior", "merge_risk", "effort", "rule_checks", "architecture", "blast_radius", "steps", "asks",
@@ -342,7 +362,7 @@ def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None,
             "question is about when that is exactly one file, else \"\"); suggestions (concrete suspicious lines in these hunks: "
             "hunk, line (the number before the line), side (new for + and context, old for removed lines), severity "
             "(high|medium|low, by the scale of a finding's impact), category (as for findings), text (one sentence that works as a "
-            "review comment); empty when nothing is confirmed); findings (an architecture review of this layer: problems confirmed in "
+            "review comment, see Texts); empty when nothing is confirmed); findings (an architecture review of this layer: problems confirmed in "
             "the code at the level of structure and across files, kept apart from suggestions (single suspicious lines): file, line "
             "(new side), end (optional), category (structure: coupling, boundaries, encapsulation, "
             "responsibilities; security: exposure, auth, secrets, permissions; data: storage, retention, personal data, migrations; "
@@ -350,8 +370,9 @@ def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None,
             "ticket asks for that the code doesn't do; bug; test: changed behavior or a requirement that no test would catch when "
             "it breaks, or a test that passes while the behavior is wrong, in the layer of the tests at the place where the test "
             "belongs, with impact untested and as criteria the requirements it leaves unguarded; availability: a failure that is not contained or not seen, e.g. no retry, timeout, dead-letter queue or alarm, "
-            "or one bad input failing a whole batch), " + JUDGED_TEXT + ", title (one line), detail (2-3 sentences that claim "
-            "only what the certainty covers: write an assumed step as an assumption, not as a fact), suggestion (one sentence), "
+            "or one bad input failing a whole batch), " + JUDGED_TEXT + ", title (one line, plain text), detail (2-3 sentences that claim "
+            "only what the certainty covers: write an assumed step as an assumption, not as a fact; see Texts), suggestion "
+            "(one sentence, a code block may follow; see Texts), "
             "criteria (the ids of the requirements in asks that this finding breaks; empty when it breaks none), breaks "
             "(where it breaks the flow on the architecture picture: node (the id of the node whose code is wrong), or from and to "
             "(the ends of the edge, when the call, event or data between two nodes is what fails or is missing); name it for every "
@@ -384,7 +405,7 @@ def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None,
             "wait, pass, fail, succeed), states inside a Parallel or Map state have parent (its id) and branch (0, 1, …); "
             "transitions in execution order, a choice's ways labelled with their condition, Catch and Retry as transitions with "
             "error catch or retry (label e.g. \"Retry ×3\"). The steps are layers: group by intent "
-            "(e.g. data model, API, emails, UI), reading_order with the foundation first.\n\nSources: every node, edge, "
+            "(e.g. data model, API, emails, UI), reading_order with the foundation first.\n\n" + TEXTS + "\n\nSources: every node, edge, "
             "state and transition in architecture and visuals, and every intent and behavior statement, gets a source: "
             "implemented (in this PR's diff; evidence: file:line in the new version, required), existing (already in the "
             "codebase and unchanged; evidence where known), spec (only described in the PR description, the linked ticket, "

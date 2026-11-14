@@ -257,6 +257,8 @@ for part in ("state (met:", "not_done", "acceptance (true", "criteria (the ids",
              "breaks_requirement (breaks an acceptance criterion", "certainty (confirmed", "preconditions (what must hold", "test: changed behavior",
              "titled \"Tests\"", "one finding per defect", "with impact untested", "components: the inventory", "access: who may do what", "checked: your own report", "without an authorizer"):
     assert part in p, part
+assert "Texts: detail, suggestion, effect, why" in p and "title (one line, plain text)" in p and "fenced code block" in p and "short bullet list" in p
+assert "Texts:" not in review.picture_guide("English"), "pictures carry no prose rules"
 assert "This one is not optional" in p and "This one is not optional" in review.picture_guide("English")
 assert "coverage" not in p and "severity (high|medium|low)," not in p, "a finding's severity comes from its impact"
 assert "ids so far: old" in review.diagrams_prompt([], {"answer": {"architecture": {"nodes": [{"id": "old"}]}}}, None, False)
