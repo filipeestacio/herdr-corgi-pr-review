@@ -35,9 +35,10 @@ import time
 sys.dont_write_bytecode = True  # a .pyc written into the mod's folder reloads the mod: the view waiting for this run is gone
 import llm  # noqa: E402  (this folder)
 import related  # noqa: E402  (the diff read as files and added lines)
+import resilience  # noqa: E402  (the resilience run's schema, prompt and checks)
 import review  # noqa: E402  (the severity scale and the areas of a run's self-report)
 
-FEATURE = {"claude": "Claude code review", "security": "Security review", "codex": "Codex review"}
+FEATURE = {"claude": "Claude code review", "security": "Security review", "codex": "Codex review", "resilience": "Resilience review"}
 BUDGET = {"haiku": 0.5, "sonnet": 3.0, "opus": 8.0}
 TIMEOUT = 1500
 # What a reviewer may do: the analysis' rules (review.permissions: the checkout, read-only git, no network, no writes,
@@ -59,7 +60,7 @@ PLAIN_FINDINGS = {"type": "object", "required": ["findings"], "properties": {"fi
 ASK_PLAIN = ("\n\nAnswer with the findings in the requested JSON: file (path in the repo), line (line number on the new "
              "side, as in the PR head), end (last line, optional), severity (high|medium|low), category (optional), title "
              "(one line), detail (why it is a problem), suggestion (the fix, optional). An empty list is fine.")
-AREAS = {"claude": review.AREAS_CODE, "security": review.AREAS_SECURITY}
+AREAS = {"claude": review.AREAS_CODE, "security": review.AREAS_SECURITY, "resilience": resilience.AREAS}
 ASK = ("When you are done, answer with the requested JSON. findings: file (path in the repo), line (line number on the new "
        "side, as in the PR head), end (last line, optional), category (structure, security, data, scope, requirement, bug, "
        "test, availability), " + review.JUDGED_TEXT + ", title (one line, plain text), detail (why it is a problem; claim only what the "
@@ -141,14 +142,16 @@ def findings_schema(kind, worktree=None):
     """What a Claude reviewer answers with. The ask is also the schema's description: a slash command that runs as a
     fork takes no extra prompt text (it would read it as the review target), but it sees the schema; so the way to call
     git (review.git_hint) stands there too. The security reviewer also answers with its view (SECURITY)."""
-    sec = kind == "security"
-    extra = {"ref": S, "reachability": {"enum": REACH}} if sec else {}  # every Claude reviewer may name the way from outside (review.PATH)
-    return {"type": "object", "description": review.git_hint(worktree) + ASK + (ASK_SECURITY if sec else ""), "required": ["findings", "scope", *(SECURITY if sec else [])], "properties": {
-        "findings": {"type": "array", "items": {"type": "object", "required": ["file", "line", "title", "detail", *review.JUDGED, *(["ref"] if sec else [])],
+    sec, res = kind == "security", kind == "resilience"
+    extra = {"ref": S, "reachability": {"enum": REACH}} if sec else {"ref": S} if res else {}  # every Claude reviewer may name the way from outside (review.PATH)
+    own = SECURITY if sec else resilience.SCHEMA if res else {}
+    return {"type": "object", "description": review.git_hint(worktree) + ASK + (ASK_SECURITY if sec else resilience.ASK if res else ""),
+            "required": ["findings", "scope", *own], "properties": {
+        "findings": {"type": "array", "items": {"type": "object", "required": ["file", "line", "title", "detail", *review.JUDGED, *(["ref"] if sec or res else [])],
                                                "properties": {**PLACE, **review.JUDGED, **review.PATH, **extra}}},
         "scope": {"type": "object", "required": ["read", "checked", "skipped"], "properties": {
             "read": review.STRINGS, "checked": review.checked_schema(AREAS[kind]), "skipped": review.STRINGS}},
-        **(SECURITY if sec else {})}}
+        **own}}
 
 
 MISSING = re.compile(r"unknown (slash )?(command|skill)|no such (command|skill)|not a (known|valid) (command|skill)", re.I)
@@ -182,7 +185,9 @@ SECURITY_STEPS = (
 PLAIN = {"claude": "Review the changes of this checkout against origin/{base} (git diff origin/{base}...HEAD), which are "
                    "PR #{number}, for bugs and correctness problems: read the surrounding code before you report anything.",
          "security": "Do a security review of the changes of this checkout against origin/{base} (git diff "
-                     "origin/{base}...HEAD), which are PR #{number}." + SECURITY_STEPS}
+                     "origin/{base}...HEAD), which are PR #{number}." + SECURITY_STEPS,
+         "resilience": "Review the changes of this checkout against origin/{base} (git diff origin/{base}...HEAD), which are "
+                       "PR #{number}, for resilience." + resilience.STEPS.replace("{", "{{").replace("}", "}}")}
 
 
 def git(*args, cwd):
@@ -501,9 +506,9 @@ def from_text(text, req, meta):
     return answer
 
 
-def merge(file, reviewer, head, findings, run, security=None):
-    """Replace this reviewer's findings (None: keep them, only the run changes) and, given one, the security view in
-    the PR's file, under a lock; statuses (set by the panel) stay. ponytail: the panel writes statuses without this lock (compare-and-swap on the
+def merge(file, reviewer, head, findings, run, security=None, blocks=None):
+    """Replace this reviewer's findings (None: keep them, only the run changes) and, given one, the security view (and
+    other blocks by name, e.g. {"resilience": …}) in the PR's file, under a lock; statuses (set by the panel) stay. ponytail: the panel writes statuses without this lock (compare-and-swap on the
     whole file), so a status set in the very moment a reviewer finishes can be lost."""
     file.parent.mkdir(parents=True, exist_ok=True)
     with open(file.with_suffix(".lock"), "w") as lock:
@@ -514,6 +519,7 @@ def merge(file, reviewer, head, findings, run, security=None):
         doc.setdefault("runs", {})[reviewer] = run
         if security is not None:
             doc["security"] = security
+        doc.update(blocks or {})
         tmp = file.with_name(f".{file.name}.{os.getpid()}.tmp")
         tmp.write_text(json.dumps(doc, ensure_ascii=False, indent=1))
         tmp.replace(file)
@@ -553,7 +559,7 @@ def claude_review(req, command=None):
         if not missing_command(e):
             raise
         answer, meta = ask(review.git_hint(req["worktree"]) + PLAIN[req["kind"]].format(base=req["base"], number=req["number"]) + req.get("more", "") + ASK_JSON
-                           + (ASK_SECURITY if req["kind"] == "security" else ""), False)
+                           + (ASK_SECURITY if req["kind"] == "security" else resilience.ASK if req["kind"] == "resilience" else ""), False)
         meta["fallback"] = command is not None
     # Prose from a fork, else the main answer's own prose (a slash command that wrote its review instead of calling the
     # answer tool; a bare "Command completed" is no review).
@@ -600,6 +606,16 @@ def main(arg):
         pic, made = picture(req["file"])
         req = {**req, "more": picture_text(pic)}
         answer, meta = claude_review(req)
+    elif req["kind"] == "resilience":  # the picture, the security view and the findings so far as hints
+        pic, made = picture(req["file"])
+        try:
+            doc = json.loads(pathlib.Path(req["file"]).read_text())
+        except (OSError, ValueError):
+            doc = {}
+        known = [f for f in doc.get("findings") or [] if f.get("reviewer") != "resilience"] + \
+                [{**f, "reviewer": "analysis"} for st in pic.get("steps") or [] for f in st.get("findings") or [] if f.get("id")]
+        req = {**req, "more": picture_text(pic) + resilience.hints(pic, doc.get("security"), known)}
+        answer, meta = claude_review(req)
     else:
         answer, meta = codex_review(req)
     findings = normalize(answer.get("findings"), req["kind"], wt)
@@ -610,7 +626,11 @@ def main(arg):
         changed = None
     for f in findings:
         review.introduced(f, changed)
-    security = None
+    security, blocks = None, {}
+    if req["kind"] == "resilience":
+        blocks["resilience"] = {"head": req["head"], "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "model": meta.get("model_id"), "picture": made,
+                                "hints_used": {"architecture": bool((pic.get("architecture") or {}).get("nodes")), "security": bool(doc.get("security")), "findings": bool(known)},
+                                **resilience.view(answer, findings, pic, [f["id"] for f in known])}
     if req["kind"] == "security":
         security = {"head": req["head"], "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "picture": made, **security_view(answer, findings, pic, changed, wt)}
     for f in findings:
@@ -620,7 +640,7 @@ def main(arg):
     run = {"state": "done", "cost": meta.get("cost"), "ms": int((time.monotonic() - started) * 1000), "model": meta.get("model_id"),
            "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "count": len(findings), "head": req["head"], "scope": scope(answer.get("scope"), req["kind"]),
            **({"note": ". ".join(notes)} if notes else {}), **({"auto": req["auto"]} if req.get("auto") else {}), "allowed": allowed(req)}
-    merge(pathlib.Path(req["file"]), req["kind"], req["head"], findings, run, security)
+    merge(pathlib.Path(req["file"]), req["kind"], req["head"], findings, run, security, blocks)
     print(json.dumps(run))
 
 
