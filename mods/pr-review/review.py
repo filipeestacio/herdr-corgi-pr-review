@@ -119,7 +119,7 @@ BLAST = {"type": "object", "required": ["units", "context"], "properties": {
         "id": S, "label": S, "type": S, "status": {"enum": ["added", "changed", "removed"]}, "files": STRINGS, "spots": {"type": "integer"}}}},
     "context": {"type": "array", "maxItems": 8, "items": {"type": "object", "required": ["id", "file", "direction", "relation", "links_to"], "properties": {
         "id": S, "file": S, "direction": {"enum": ["upstream", "downstream"]}, "relation": S, "links_to": S}}}}}
-CATEGORIES = ["structure", "security", "data", "scope", "requirement", "bug", "test", "availability", "consistency", "observability", "performance"]
+CATEGORIES = ["structure", "security", "data", "scope", "requirement", "bug", "test", "availability", "consistency", "observability", "performance", "complexity"]
 # The fixed severity scale: a finding names its impact (the gravest that applies) and the severity follows from it
 # (judge), so "high" means the same in every run. {impact: (severity, what it means)}.
 IMPACTS = {

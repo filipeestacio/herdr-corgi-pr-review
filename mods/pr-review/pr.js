@@ -1294,9 +1294,11 @@ export function withResilience(ai, block, head = null, findings = []) {
   if (!ai) return ai;
   if (!block || !Array.isArray(block.paths)) return { ...ai, resilience: null };
   const deps = block.deps ?? [], before = new Map(findings.flatMap((f) => (f.ids ?? [f.id]).map((id) => [id, f.introduced_here === false])));
+  // also_security: one of the path's findings is also a security finding (⛨, or found by the security run too).
+  const sec = new Set(findings.filter((f) => f.security || (f.sources ?? []).some((x) => x.reviewer === "security")).flatMap((f) => f.ids ?? [f.id]));
   const paths = block.paths.map((p) => {
     const ladder = ladderOf(p, deps), budget = budgetOf(p, deps), pre = p.findings.length > 0 && p.findings.every((id) => before.get(id) === true);
-    return { ...p, ladder, budget, pre_existing: pre, blocker: pre ? null : blockerOf(p, ladder, budget) };
+    return { ...p, ladder, budget, pre_existing: pre, blocker: pre ? null : blockerOf(p, ladder, budget), also_security: p.findings.some((id) => sec.has(id)) };
   }).sort((a, b) => Number(Boolean(b.blocker)) - Number(Boolean(a.blocker)));
   const blockers = paths.filter((p) => p.blocker), found = paths.filter((p) => p.result === "finding"), mitigated = paths.filter((p) => p.result === "mitigated");
   const na = paths.filter((p) => p.result === "not_assessed").length, checks = block.checks ?? [];
@@ -1309,9 +1311,16 @@ export function withResilience(ai, block, head = null, findings = []) {
     ...(block.blind_spots ?? []).filter((b) => b.alarm === "none" || b.alarm === "unknown").map((b) => `${b.failure} (${b.at}): nothing in the repository alarms on it`),
     ...deps.filter((d) => d.mode === "async").map((d) => `the age of the oldest message at ${d.edge ?? d.at}`),
   ])];
-  return { ...ai, resilience: { ...block, paths, blockers: blockers.map((p) => p.id), summary, watch, older: Boolean(block.head && head && block.head !== head),
+  // The parts the PR adds, weighed against their cost (additions): "This PR adds 4 parts: 2 justified, 1 questionable,
+  // 1 solves nothing here."; "" without any.
+  const adds = block.additions ?? [], by = (r) => adds.filter((a) => a.result === r).length;
+  const addParts = [[by("justified"), "justified"], [by("questionable"), "questionable"], [by("unjustified"), "solves nothing here", "solve nothing here"]].filter(([n]) => n)
+    .map(([n, one, many]) => `${n} ${n === 1 || !many ? one : many}`);
+  const additionsLine = adds.length ? `This PR adds ${plural(adds.length, "part")}: ${addParts.length > 1 ? `${addParts.slice(0, -1).join(", ")} and ${addParts.at(-1)}` : addParts[0]}.` : "";
+  return { ...ai, resilience: { ...block, paths, blockers: blockers.map((p) => p.id), summary, watch, additionsLine, older: Boolean(block.head && head && block.head !== head),
     counts: { paths: paths.length, blockers: blockers.length, mitigated: mitigated.length, not_assessed: na,
-      checks_clean: checks.filter((c) => c.result === "clean").length, not_checkable: checks.filter((c) => c.result === "not_checkable").length } } };
+      checks_clean: checks.filter((c) => c.result === "clean").length, not_checkable: checks.filter((c) => c.result === "not_checkable").length,
+      additions: { justified: by("justified"), questionable: by("questionable"), unjustified: by("unjustified") } } } };
 }
 
 // Where a resilience run would start, counted from the diff without a model (files: splitPatch): queues, functions,
