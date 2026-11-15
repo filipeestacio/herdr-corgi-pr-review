@@ -1555,3 +1555,10 @@ export function leftNow(before, left) {
 // The review's own risk signal from its finding counts (pr.js findingCounts: unresolved ones by severity, security by
 // cause), in riskSignal's shape. It goes into the registry entry, so the minimized chip shows the mark the review shows.
 export const riskOfCounts = (c) => ({ top: c?.high ? "high" : c?.medium ? "medium" : c?.low ? "low" : null, open: c?.unresolved ?? 0, security: Boolean(c?.security) });
+
+// ---- the text sizes (U34): named steps instead of fifteen sizes, in px at 100 % zoom. micro: text inside a picture
+// (a call's text, a chip on a line); small: what is glanced at (meta lines, group headings, chips); body: what is
+// read; title: a section's or a layer's title, the verdict; page: a page's title. panel: the PR panel's 280 px column,
+// between micro and small, because its rows and buttons are laid out for it. Code is not on the ladder and keeps its
+// sizes: in the diff (the probe that measures a character's width is drawn in it) and in the panel's narrow diff.
+export const TYPE = Object.freeze({ micro: 10.5, panel: 11, small: 12, body: 13.5, title: 15, page: 22, code: 13, codePanel: 11 });

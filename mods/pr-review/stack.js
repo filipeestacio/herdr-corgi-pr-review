@@ -10,22 +10,23 @@ import { clampText, MARK_CARD_H } from "./arch.js"; // wave C2: a mark's finding
 import { bundleChips, markRoom } from "./arch.js"; // finding chips of a state diagram that would touch are one; a card's mark takes one or two lines
 import { flowArch, seqLayout, wrapCount, SEQ, solidOver } from "./views.js";
 import { readableFade } from "./views.js"; // wave R2: dimmed text stays readable
+import { TYPE } from "./views.js"; // the text sizes (U34)
 
 export const STATUS_COLOR = { new: "ansi2", added: "ansi2", changed: "accent", unchanged: "muted", removed: "ansi1" };
 export const SEVERITY_COLOR = { critical: "ansi1", high: "ansi1", medium: "ansi3", low: "ansi4", minimal: "ansi2" };
 const GLYPH = { external: "⇢", component: "◧", data: "⛁", service: "⚙", "api·service": "⇄", api: "⇄", context: "</>", queue: "☰", job: "⏱", ui: "▣" };
 
 // A small "spec" tag: the element is only in the PR description/ticket, not found in the diff.
-export const specTag = (t, id) => div().id(id).flex_none().px(4).rounded(4).border_1().border_dashed().border_color(t.ansi5).text_size(10).text_color(t.ansi5).tooltip(SPEC_TIP).child("spec");
+export const specTag = (t, id) => div().id(id).flex_none().px(4).rounded(4).border_1().border_dashed().border_color(t.ansi5).text_size(TYPE.micro).text_color(t.ansi5).tooltip(SPEC_TIP).child("spec");
 
 // The sources legend: Implemented (solid) · Existing (grey) · Spec only (dashed).
-export const sourceLegend = (t) => h_flex().gap(10).text_size(11.5).text_color(t.muted).children([["Implemented", t.accent, false], ["Existing", t.muted, false], ["Spec only", t.ansi5, true]]
+export const sourceLegend = (t) => h_flex().gap(10).text_size(TYPE.small).text_color(t.muted).children([["Implemented", t.accent, false], ["Existing", t.muted, false], ["Spec only", t.ansi5, true]]
   .map(([label, c, dashed]) => h_flex().gap(4).items_center().child(div().w(16).h(0).border_t(2).border_color(c).when(dashed, (e) => e.border_dashed())).child(label)));
 
 // id + tip (optional): a hover explanation; the id must be unique on the page.
 // A state, not a button: tinted (solid: stronger), without the frame that buttons have.
 export const chip = (t, label, color, solid = false, id = null, tip = null) => div().flex_none().px(6).py(1).rounded(5).bg(color + (solid ? "33" : "1a"))
-  .when(Boolean(id && tip), (e) => e.id(id).tooltip(tip)).text_size(11).font_semibold().text_color(color).child(label);
+  .when(Boolean(id && tip), (e) => e.id(id).tooltip(tip)).text_size(TYPE.micro).font_semibold().text_color(color).child(label);
 
 // What a triage chip (pr.js triageOf) means, for its tooltip.
 const TRIAGE_TIP = { "High security risk": "Unresolved high-severity security findings, or a high merge risk", "Security risk": "Unresolved security findings on this PR",
@@ -45,7 +46,7 @@ export function foldCard(t, id, title, right, open, toggle, body) {
     .child(h_flex().id(`${id}-h`).px(12).py(10).gap(8).items_center().cursor_pointer().on_click(toggle)
       .tooltip(open ? "Collapse this section" : "Expand this section").accessibility_label(`${open ? "Collapse" : "Expand"} ${title}`)
       .child(div().w(12).text_color(t.muted).child(open ? "▾" : "▸"))
-      .child(div().flex_1().min_w(0).truncate().font_semibold().text_size(14).child(title))
+      .child(div().flex_1().min_w(0).truncate().font_semibold().text_size(TYPE.title).child(title))
       .children(right ?? []))
     .when(open, (e) => e.child(v_flex().px(14).pb(12).gap(8).child(body())));
 }
@@ -79,7 +80,7 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
   const markRow = (m, cid, h, stacked = false, w = 160, lines = 2) => { const ml = markLine(m, 40), text = clampText(ml.text, Math.max(8, Math.floor(w / 6)), 2).text;
     return (stacked ? v_flex().items_start() : h_flex().items_start()).id(`${cid}-r`).flex_none().h(h).gap(stacked ? 1 : 4).tooltip(markTip(m))
     .when(Boolean(opts.onFinding && ml.top), (e) => e.cursor_pointer().on_click((_e, cx) => { opts.onFinding(ml.top, cx); cx.stop_propagation(); }))
-    .child(markChip(m, cid)).child(div().when(!stacked, (e) => e.flex_1()).when(stacked, (e) => e.flex_none()).w_full().min_w(0).h(14 * lines).overflow_hidden().whitespace_normal().line_height(1.3).text_size(10.5).text_color(t.foreground).child(text)); };
+    .child(markChip(m, cid)).child(div().when(!stacked, (e) => e.flex_1()).when(stacked, (e) => e.flex_none()).w_full().min_w(0).h(14 * lines).overflow_hidden().whitespace_normal().line_height(1.3).text_size(TYPE.micro).text_color(t.foreground).child(text)); };
   // opts.zoom (the person's zoom): a line is at least one device pixel wide, or it is not drawn when zoomed far out.
   const thin = Math.max(1.5, 1 / (opts.zoom || 1)), W = (p) => (opts.hl === p.num ? thin + 1 : thin);
   const dim = (el, on, by = fade) => (on ? el.opacity(by) : el);
@@ -114,13 +115,13 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
         els.push(dim(p.dashed ? seg.border_dashed() : seg, faded));
       }
     });
-    els.push(dim(div().id(`${id}-a${i}`).absolute().left(p.arrow.left ? p.arrow.x : p.arrow.x - 9).top(p.arrow.y - 8).text_size(11).text_color(c).child(p.arrow.left ? "◀" : "▶"), faded));
+    els.push(dim(div().id(`${id}-a${i}`).absolute().left(p.arrow.left ? p.arrow.x : p.arrow.x - 9).top(p.arrow.y - 8).text_size(TYPE.micro).text_color(c).child(p.arrow.left ? "◀" : "▶"), faded));
   }
   // A marked call without its text on the line: its number in the severity's colour (the legend row has the count).
   const bare = (p) => (p.text?.mark ? null : pathMark(marks, p));
   const badges = L.paths.flatMap((p, i) => (p.badge && (opts.numbers !== false || bare(p)) ? [dim(div().id(`${id}-b${i}`).absolute().left(p.badge.x - ARCH.BADGE / 2).top(p.badge.y - ARCH.BADGE / 2).w(ARCH.BADGE).h(ARCH.BADGE)
     .flex().items_center().justify_center().rounded_full().border_1().border_color(bare(p) ? sevOf(bare(p)) : color(p)).bg(opts.hl === p.num ? t.accent + "33" : bare(p) ? sevOf(bare(p)) + "26" : t.background)
-    .text_size(11).text_color(t.foreground).tooltip([tipOf(p), bare(p) && markTip(bare(p))].filter(Boolean).join("\n")).child(String(p.num))
+    .text_size(TYPE.micro).text_color(t.foreground).tooltip([tipOf(p), bare(p) && markTip(bare(p))].filter(Boolean).join("\n")).child(String(p.num))
     .when(Boolean(opts.onHl), (e) => e.on_hover((on, cx) => opts.onHl(on ? p.num : null, cx)))
     .when(Boolean(p.evidence && opts.onJump), (e) => e.cursor_pointer().on_click((_e, cx) => { opts.onJump(p.evidence, cx); cx.stop_propagation(); })), dimP(p), textFade)] : []));
   // A call's text on its line, next to its number; a mark above it. Hover lights the call, a click opens its place.
@@ -132,8 +133,8 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
     .children(p.text.lines.map((l) => div().flex_none().h(LB.LH).line_height(LB.LH / LB.px).whitespace_nowrap().child(l))), dimP(p), textFade)] : []));
   const chips = L.paths.flatMap((p, i) => (p.chip ? [dim(div().id(`${id}-c${i}`).absolute().left(p.chip.x).top(p.chip.y).w(p.chip.w).h(p.chip.h).px(5)
     .flex().items_center().gap(6).rounded(6).border_1().border_color(bare(p) ? sevOf(bare(p)) : color(p)).when(p.dashed, (e) => e.border_dashed()).bg(opts.hl === p.num ? t.accent + "33" : t.background)
-    .text_size(12).text_color(t.foreground).tooltip(`Call ${p.num}: ${tipOf(p)}\nNot drawn as a line, because it would skip a column or point back: the target is elsewhere in the picture. Hover to light it up, click to focus it.`)
-    .child(div().w(ARCH.BADGE - 2).h(ARCH.BADGE - 2).flex_none().flex().items_center().justify_center().rounded_full().border_1().border_color(color(p)).text_size(10.5).child(String(p.num)))
+    .text_size(TYPE.small).text_color(t.foreground).tooltip(`Call ${p.num}: ${tipOf(p)}\nNot drawn as a line, because it would skip a column or point back: the target is elsewhere in the picture. Hover to light it up, click to focus it.`)
+    .child(div().w(ARCH.BADGE - 2).h(ARCH.BADGE - 2).flex_none().flex().items_center().justify_center().rounded_full().border_1().border_color(color(p)).text_size(TYPE.micro).child(String(p.num)))
     .child(div().min_w(0).truncate().child(p.chip.text))
     .when(Boolean(opts.onHl), (e) => e.on_hover((on, cx) => opts.onHl(on ? p.num : null, cx)))
     .when(Boolean(opts.onFocus), (e) => e.cursor_pointer().on_click((_e, cx) => { opts.onFocus(p.to, cx); cx.stop_propagation(); })), dimP(p), textFade)] : []));
@@ -141,7 +142,7 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
   // in the header). A bare group (cards outside every zone) has no frame.
   const groups = L.groups.flatMap((g, i) => (g.bare ? [] : [div().id(`${id}-g${i}`).absolute().left(g.x).top(g.y).w(g.w).h(g.h).rounded(12).border_1().when(!SOLID(g.trust), (e) => e.border_dashed())
     // Opaque: the grid stays in the space between systems, never behind a frame's cards and call labels.
-    .border_color(g.trust ? trustColor(t, g.trust) : t.border).bg(g.trust ? solidOver(t.background, trustColor(t, g.trust) + "0f") : t.background).child(h_flex().px(PAD_IN).h(26).items_center().gap(6).text_size(11.5)
+    .border_color(g.trust ? trustColor(t, g.trust) : t.border).bg(g.trust ? solidOver(t.background, trustColor(t, g.trust) + "0f") : t.background).child(h_flex().px(PAD_IN).h(26).items_center().gap(6).text_size(TYPE.small)
       .child(div().id(`${id}-gl${i}`).flex_1().min_w(0).truncate().font_semibold().text_color(t.foreground).tooltip(g.label ?? "").child(g.label ?? "")) // the name gives way, the level (kind) stays
       .child(div().flex_none().text_color(g.trust ? trustColor(t, g.trust) : t.muted).child(g.kind ?? "")))]));
   // A call over a trust boundary: two bars across its line, before the arrow; the tooltip names both zones (opts.zones).
@@ -149,9 +150,9 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
   const zoneName = (z) => (z ? `${z.name ?? z.id} (${z.trust})` : "an unnamed zone");
   // A call in one process that bypasses a boundary: no "‖", a "⤳" in the same place.
   const bypasses = L.paths.flatMap((p, i) => (p.bypass && !p.crosses ? [dim(div().id(`${id}-y${i}`).absolute().left(p.arrow.x - 26).top(p.arrow.y - 10).w(16).h(18).flex().items_center().justify_center()
-    .text_size(13).text_color(t.ansi3).tooltip("Bypasses the boundary: a call in the same process into code written for another way in, so it gets this caller's input without that way's check").child("⤳"), dimP(p))] : []));
+    .text_size(TYPE.body).text_color(t.ansi3).tooltip("Bypasses the boundary: a call in the same process into code written for another way in, so it gets this caller's input without that way's check").child("⤳"), dimP(p))] : []));
   const crossings = L.paths.flatMap((p, i) => (p.crosses ? [dim(div().id(`${id}-x${i}`).absolute().left(p.arrow.x - 24).top(p.arrow.y - 9).w(12).h(18).flex().items_center().justify_center()
-    .text_size(13).font_semibold().text_color(t.ansi3).tooltip(zoneById.size ? `Crosses a trust boundary: from ${zoneName(zoneOfN(p.from[0]))} to ${zoneName(zoneOfN(p.to))}` : `Crosses a trust boundary${typeof p.crosses === "string" ? `: ${p.crosses}` : ""}`).child("‖"), dimP(p))] : []));
+    .text_size(TYPE.body).font_semibold().text_color(t.ansi3).tooltip(zoneById.size ? `Crosses a trust boundary: from ${zoneName(zoneOfN(p.from[0]))} to ${zoneName(zoneOfN(p.to))}` : `Crosses a trust boundary${typeof p.crosses === "string" ? `: ${p.crosses}` : ""}`).child("‖"), dimP(p))] : []));
   const nodes = L.nodes.map((n, i) => {
     const st = sourceStyle(n.source), c = st.tone === "muted" ? t.muted : t[STATUS_COLOR[n.status] ?? "muted"];
     const live = st.tone !== "muted" && n.status && n.status !== "unchanged", lit = hlNodes.has(n.id) || opts.focus === n.id;
@@ -165,22 +166,22 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
       .when(Boolean(opts.onFocus), (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => opts.onFocus(opts.focus === n.id ? null : n.id, cx)))
       .when(!opts.onFocus && open, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((ev, cx) => onNode(n, ev, cx)))
       .when(Boolean(opts.onHover), (e) => e.on_hover((on, cx) => opts.onHover(on ? n.id : null, cx)))
-      .child(h_flex().gap(6).items_start().text_size(12.5)
+      .child(h_flex().gap(6).items_start().text_size(TYPE.small)
         .child(div().id(`${id}-gl${i}`).flex_none().h(17).text_color(t.muted).when(Boolean(n.type), (e) => e.tooltip(`Type: ${n.type}`).accessibility_label(`Type: ${n.type}`)).child(GLYPH[n.type] ?? "◇"))
         // Its trust zone as a small dot (opts.zones); ringed when it is really reachable from further out (opts.effective).
         .when(Boolean(zoneById.get(n.zone)), (e) => { const z = zoneById.get(n.zone), eff = opts.effective?.get(n.id);
           return e.child(div().id(`${id}-z${i}`).flex_none().mt(4).w(9).h(9).rounded_full().bg(trustColor(t, z.trust)).when(Boolean(eff), (x) => x.border_2().border_color(t.ansi1))
             .tooltip(`Trust zone: ${zoneName(z)}${eff ? `\nReachable as ${eff.trust}: ${eff.why}.` : ""}`).accessibility_label(`Trust zone ${z.trust}`)); })
         .child(div().flex_1().min_w(0).h(n.titleLines * 17).overflow_hidden().whitespace_normal().line_height(1.35).font_semibold().child(n.title))
-        .when(n.spots > 0, (e) => e.child(div().id(`${id}-sn${i}`).flex_none().tooltip(`${n.spots} changed ${n.spots === 1 ? "spot" : "spots"} in the code`).text_size(11).text_color(t.muted).child(`</> ${n.spots}`)))
+        .when(n.spots > 0, (e) => e.child(div().id(`${id}-sn${i}`).flex_none().tooltip(`${n.spots} changed ${n.spots === 1 ? "spot" : "spots"} in the code`).text_size(TYPE.micro).text_color(t.muted).child(`</> ${n.spots}`)))
         .when(Boolean(st.chip), (e) => e.child(specTag(t, `${id}-sp${i}`))))
-      .when(n.descLines > 0, (e) => e.child(div().flex_none().h(n.descLines * 15).overflow_hidden().text_size(11).line_height(1.35).whitespace_normal().text_color(t.muted).child(n.desc)))
+      .when(n.descLines > 0, (e) => e.child(div().flex_none().h(n.descLines * 15).overflow_hidden().text_size(TYPE.micro).line_height(1.35).whitespace_normal().text_color(t.muted).child(n.desc)))
       .children(decorate ? decorate(n) : [])
       .when(Boolean(marks?.nodes?.get(n.id)), (e) => { const room = markRoom(marks.nodes.get(n.id), n.w - 20); return e.child(markRow(marks.nodes.get(n.id), `${id}-m${i}`, room.h, true, n.w - 20, room.lines)); })
       .child(div().flex_1())
       // No type word here: it was cut off in most cards (the glyph's tooltip and the card's panel name the type). A
       // narrow card (Fit, a layer's flow) has no room for the link either: its panel has it.
-      .child(h_flex().gap(6).items_center().text_size(10.5)
+      .child(h_flex().gap(6).items_center().text_size(TYPE.micro)
         .child(div().flex_1())
         .when(open && Boolean(opts.onFocus) && n.w >= ARCH.W, (e) => e.child(div().id(`${id}-o${i}`).flex_none().px(4).rounded(4).text_color(t.accent).cursor_pointer().hover((s) => s.bg(t.hover))
           .tooltip("Show this place in the diff").child("Show in diff ↗").on_click((ev, cx) => { onNode(n, ev, cx); cx.stop_propagation(); })))
@@ -189,7 +190,7 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
   // An orchestrator's states: a lane down the card, one row each; a state that calls a component ends in "→" where its
   // line leaves the card.
   const states = L.nodes.flatMap((n, i) => (n.stateTop === null || n.stateTop === undefined ? [] : [dim(v_flex().id(`${id}-s${i}`).absolute()
-    .left(n.x + 10).top(n.y + n.stateTop).w(n.w - 14).children(n.states.map((s, k) => h_flex().id(`${id}-s${i}-${k}`).h(ARCH.ROW).gap(6).items_center().text_size(11).tooltip(`${s.type ?? "state"}: ${s.name}${s.calls ? " (calls a component)" : ""}`)
+    .left(n.x + 10).top(n.y + n.stateTop).w(n.w - 14).children(n.states.map((s, k) => h_flex().id(`${id}-s${i}-${k}`).h(ARCH.ROW).gap(6).items_center().text_size(TYPE.micro).tooltip(`${s.type ?? "state"}: ${s.name}${s.calls ? " (calls a component)" : ""}`)
       .child(div().flex_none().w(14).text_color(s.source !== "existing" && (s.status === "new" || s.status === "changed") ? t.accent : t.muted).child(STATE_GLYPH[s.type] ?? "▭"))
       .child(div().flex_1().min_w(0).truncate().text_color(s.source === "spec" || s.source === "existing" ? t.muted : t.foreground).child(s.name))
       .when(s.source === "spec", (e) => e.child(specTag(t, `${id}-s${i}-${k}-sp`)))
@@ -233,7 +234,7 @@ export function trustLegend(L, t, zones = []) {
   const framed = L.groups.some((g) => g.trust), byId = new Map((zones ?? []).map((z) => [z.id, z.trust]));
   const levels = [...new Set(framed ? L.groups.map((g) => g.trust).filter(Boolean) : L.nodes.map((n) => byId.get(n.zone)).filter(Boolean))];
   const swatch = (z) => (framed ? div().w(10).h(10).rounded(3).border_1().when(!SOLID(z), (e) => e.border_dashed()).border_color(trustColor(t, z)).bg(trustColor(t, z) + "33") : div().w(9).h(9).rounded_full().bg(trustColor(t, z)));
-  return h_flex().gap(10).text_size(11.5).text_color(t.muted)
+  return h_flex().gap(10).text_size(TYPE.small).text_color(t.muted)
     .when(levels.length > 0, (e) => e.child("Trust zones:").children(levels.map((z) => h_flex().gap(4).items_center().child(swatch(z)).child(z))))
     .when(L.paths.some((p) => p.crosses), (e) => e.child(h_flex().gap(4).items_center().child(div().font_semibold().text_color(t.ansi3).child("‖")).child("call over a trust boundary")));
 }
@@ -251,21 +252,21 @@ export function archLegend(L, t, id, title, opts = {}, big = false) {
   const rows = L.paths.filter((p) => !p.text || p.text.cut), mark = (p) => (p.text?.mark ? null : pathMark(opts.marks, p));
   if (!rows.length) return div();
   return v_flex().id(id).flex_none().gap(2).p(big ? 12 : 10).rounded(10).border_1().border_color(t.border).bg(t.surface)
-    .child(div().pb(4).text_size(big ? 13 : 12).font_semibold().text_color(t.muted).child(title))
+    .child(div().pb(4).text_size(big ? TYPE.body : TYPE.small).font_semibold().text_color(t.muted).child(title))
     .children(rows.map((p) => h_flex().id(`${id}-r${p.num}`).gap(8).items_start().px(6).py(3).rounded(6).tooltip("Hover to highlight this connection in the picture")
       .when(opts.hl === p.num, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).when(Boolean(F) && !F.paths.has(p.num), (e) => e.opacity(readableFade(t.muted, t.surface, 0.4))) // its grey text stays at 4.5:1
       .when(Boolean(opts.onHl), (e) => e.on_hover((on, cx) => opts.onHl(on ? p.num : null, cx)))
       .child(div().flex_none().mt(1).w(18).h(18).flex().items_center().justify_center().rounded_full().border_1()
-        .border_color(opts.hl === p.num || p.status ? t.accent : t.muted).text_size(11).text_color(t.foreground).child(String(p.num)))
+        .border_color(opts.hl === p.num || p.status ? t.accent : t.muted).text_size(TYPE.micro).text_color(t.foreground).child(String(p.num)))
       .when(p.source === "spec", (e) => e.child(div().flex_none().mt(2).child(specTag(t, `${id}-sp${p.num}`))))
       .when(Boolean(mark(p)), (e) => e.child(div().flex_none().mt(1).child(chip(t, `${cap(mark(p).severity)} · ${mark(p).n}: ${markLine(mark(p)).text}`, t[SEVERITY_COLOR[mark(p).severity]] ?? t.muted, true, `${id}-m${p.num}`, markTip(mark(p))))))
-      .child(div().flex_1().min_w(0).whitespace_normal().text_size(big ? 13 : 12).line_height(1.4)
+      .child(div().flex_1().min_w(0).whitespace_normal().text_size(big ? TYPE.body : TYPE.small).line_height(1.4)
         .child(`${p.from.map((f) => name.get(f)).join(", ")} → ${name.get(p.to)}${p.label ? `: ${p.label}` : ""}`))));
 }
 
 // The status colours, in the cards' own words ("Added", as on a card's chip). counts {unchanged, changed, added,
 // removed}: how many cards of each the picture has, after the word (0 and missing: no number).
-export const legend = (t, counts = {}) => h_flex().gap(10).text_size(11.5).text_color(t.muted).children([["Unchanged", "muted"], ["Changed", "accent"], ["Added", "ansi2"], ["Removed", "ansi1"]]
+export const legend = (t, counts = {}) => h_flex().gap(10).text_size(TYPE.small).text_color(t.muted).children([["Unchanged", "muted"], ["Changed", "accent"], ["Added", "ansi2"], ["Removed", "ansi1"]]
   .map(([label, c]) => h_flex().gap(4).items_center().child(div().w(10).h(10).rounded(3).border_1().border_color(t[c]).bg(t[c] + "33")).child(counts[label.toLowerCase()] ? `${label} ${counts[label.toLowerCase()]}` : label)));
 
 // A layer's pictures in the narrow left column (several: stacked with their kind above each, as tabs when more than
@@ -283,7 +284,7 @@ export function visualsCard(visuals, t, id, onJump, tab = 0, onTab = null, wrapX
   if (visuals.length <= 2 || !onTab) return v_flex().gap(8).when(sources, (e) => e.child(sourceLegend(t))).children(visuals.map((v, k) => visualCard(v, t, `${id}-${k}`, onJump, wrapX)));
   const k = Math.min(tab, visuals.length - 1);
   return v_flex().gap(6).when(sources, (e) => e.child(sourceLegend(t)))
-    .child(h_flex().flex_wrap().gap(4).children(visuals.map((v, j) => div().id(`${id}-t${j}`).px(8).h(22).flex().items_center().rounded(5).cursor_pointer().text_size(11.5)
+    .child(h_flex().flex_wrap().gap(4).children(visuals.map((v, j) => div().id(`${id}-t${j}`).px(8).h(22).flex().items_center().rounded(5).cursor_pointer().text_size(TYPE.small)
       .bg(j === k ? t.selected : t.chrome).text_color(j === k ? t.foreground : t.muted).max_w(180).tooltip(`Show: ${visualName(v)}`).child(div().truncate().child(visualName(v)))
       .on_click((_e, cx) => { onTab(j, cx); cx.stop_propagation(); }))))
     .child(visualCard(visuals[k], t, `${id}-${k}`, onJump, wrapX));
@@ -337,10 +338,10 @@ export function visualCard(v, t, id, onJump, wrapX = null, wide = null, opts = {
   const name = new Map(v.nodes.map((n) => [n.id, n.label ?? n.id])), c = (x) => (x?.changed && x?.source !== "existing" ? t.accent : t.border);
   const box = (n, k) => v_flex().id(`${id}-b${k}`).flex_none().max_w(180).px(8).py(4).gap(2).rounded(6).border_1().border_color(c(n)).when(n.source === "spec", (e) => e.border_dashed().tooltip(SPEC_TIP)).bg(t.background)
     .when(Boolean(n.at && onJump), (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).tooltip(n.source === "spec" ? `${SPEC_TIP}\nClick to jump to the related code` : "Jump to this place in the code").on_click((_e, cx) => { onJump(n.at, cx); cx.stop_propagation(); }))
-    .child(h_flex().gap(4).items_center().child(div().text_size(12).font_semibold().text_color(n.source === "existing" ? t.muted : n.changed ? t.accent : t.foreground).child(n.label ?? n.id))
+    .child(h_flex().gap(4).items_center().child(div().text_size(TYPE.small).font_semibold().text_color(n.source === "existing" ? t.muted : n.changed ? t.accent : t.foreground).child(n.label ?? n.id))
       .when(n.source === "spec", (e) => e.child(specTag(t, `${id}-b${k}-sp`))))
-    .when(Boolean(n.note), (e) => e.child(div().px(5).rounded(5).bg(t.accent + "1f").text_size(10.5).text_color(t.foreground).whitespace_normal().child(n.note)));
-  const edge = (e, k, prefix = "") => h_flex().id(`${id}-x${k}`).gap(4).items_start().text_size(11.5).text_color(e.changed && e.source !== "existing" ? t.accent : t.muted)
+    .when(Boolean(n.note), (e) => e.child(div().px(5).rounded(5).bg(t.accent + "1f").text_size(TYPE.micro).text_color(t.foreground).whitespace_normal().child(n.note)));
+  const edge = (e, k, prefix = "") => h_flex().id(`${id}-x${k}`).gap(4).items_start().text_size(TYPE.small).text_color(e.changed && e.source !== "existing" ? t.accent : t.muted)
     .when(e.source === "spec", (x) => x.child(specTag(t, `${id}-x${k}-sp`)))
     .child(div().flex_1().min_w(0).whitespace_normal().child(`${prefix}${name.get(e.from) ?? e.from} → ${name.get(e.to) ?? e.to}${transitionText(e) ? ` · ${transitionText(e)}` : ""}`));
   const edges = edgesOf(v), P = wide ? visualPlan(v, wide, Boolean(opts.bare)) : null, place = (x) => x?.at ?? x?.evidence;
@@ -353,13 +354,13 @@ export function visualCard(v, t, id, onJump, wrapX = null, wide = null, opts = {
     // the numbered calls under it folded to one line.
     const room = wrapX?.room?.(`${id}-sq`) || 0, Q = seqLayout(v, room || 200 * v.nodes.length), open = openLists.has(id);
     body = v_flex().gap(6).child((wrapX ?? nativeX)(`${id}-sq`, Q.width, Q.height, seqView(Q, t, `${id}-sv`, onJump)))
-      .child(h_flex().id(`${id}-calls`).gap(6).cursor_pointer().text_size(11.5).text_color(t.muted).hover((x) => x.text_color(t.foreground))
+      .child(h_flex().id(`${id}-calls`).gap(6).cursor_pointer().text_size(TYPE.small).text_color(t.muted).hover((x) => x.text_color(t.foreground))
         .tooltip(open ? "Fold the list of calls" : "Show every call with its whole text").on_click((_e, cx) => { if (open) openLists.delete(id); else openLists.add(id); cx.stop_propagation(); cx.notify(); })
         .child(open ? "▾" : "▸").child(`${edges.length} numbered ${edges.length === 1 ? "call" : "calls"}`))
       .when(open, (e) => e.children(edges.map((x, k) => edge(x, k, `${k + 1}. `))));
   } else if (v.kind === "state_machine" && P) {
     // Every transition with its whole text: the diagram cuts a label where its line leaves no room.
-    const list = v_flex().flex_1().min_w(0).children(edges.map((e, k) => div().id(`${id}-tr${k}`).flex_none().pt(4).text_size(12).line_height(1.5).whitespace_normal()
+    const list = v_flex().flex_1().min_w(0).children(edges.map((e, k) => div().id(`${id}-tr${k}`).flex_none().pt(4).text_size(TYPE.small).line_height(1.5).whitespace_normal()
       .text_color(e.changed && e.source !== "existing" ? t.foreground : t.muted).when(Boolean(e.evidence), (x) => x.tooltip(e.evidence))
       .when(Boolean(place(e) && onJump), (x) => x.cursor_pointer().hover((s) => s.text_color(t.accent)).on_click((_e, cx) => { onJump(place(e), cx); cx.stop_propagation(); })).child(P.texts[k])));
     const pic = div().w(P.w).flex_none().child(stateView(P.S, t, `${id}-sv`, onJump, opts.marks));
@@ -369,17 +370,17 @@ export function visualCard(v, t, id, onJump, wrapX = null, wide = null, opts = {
     body = (wrapX ?? nativeX)(`${id}-sm`, S.width, S.height + 2, stateView(S, t, `${id}-sv`, onJump, opts.marks));
   } else if (v.kind === "steps") {
     const lv = levels(v.nodes, edges), order = [...v.nodes].sort((a, b) => lv.get(a.id) - lv.get(b.id));
-    body = v_flex().gap(4).children(order.map((n, k) => h_flex().gap(6).items_start().child(div().w(16).flex_none().text_size(12).text_color(t.muted).child(`${k + 1}.`)).child(box(n, k))));
+    body = v_flex().gap(4).children(order.map((n, k) => h_flex().gap(6).items_start().child(div().w(16).flex_none().text_size(TYPE.small).text_color(t.muted).child(`${k + 1}.`)).child(box(n, k))));
   } else {
     const L = P?.L ?? flowModel(v);
     body = v_flex().gap(6)
       .child((wrapX ?? nativeX)(`${id}-fs`, L.width + 4, L.height + 4, archView(L, t, `${id}-av`, onJump ? (n, _e, cx) => { onJump(place(n), cx); cx.stop_propagation(); } : null, null, {}), 6))
       // A picture wider than its room says so instead of being scaled down.
-      .when(P ? P.over : L.width > FLOW_FITS, (e) => e.child(div().h(16).flex_none().text_size(10.5).text_color(t.muted).child("Scroll sideways for the whole picture →")))
+      .when(P ? P.over : L.width > FLOW_FITS, (e) => e.child(div().h(16).flex_none().text_size(TYPE.micro).text_color(t.muted).child("Scroll sideways for the whole picture →")))
       .child(archLegend(L, t, `${id}-lg`, "Edges"));
   }
   return v_flex().id(id).flex_none().mt(4).p(10).gap(8).rounded(8).border_1().border_color(t.border).bg(t.surface).when(Boolean(P), (e) => e.h(P.h - 4).overflow_hidden())
-    .child(h_flex().h(16).flex_none().gap(8).items_center().text_size(11.5).child(div().flex_none().font_semibold().text_color(t.muted).child((KIND_NAME[v.kind] ?? v.kind).toUpperCase()))
+    .child(h_flex().h(16).flex_none().gap(8).items_center().text_size(TYPE.small).child(div().flex_none().font_semibold().text_color(t.muted).child((KIND_NAME[v.kind] ?? v.kind).toUpperCase()))
       .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(v.title ?? ""))
       .when(Boolean(P) && hasSources(v), (e) => e.child(sourceLegend(t))))
     .child(body);
@@ -395,7 +396,7 @@ function seqView(Q, t, id, onJump = null) {
   const heads = Q.cols.flatMap((n, k) => [
     div().id(`${id}-l${k}`).absolute().left(n.x).top(Q.head).w(0).h(Q.height - Q.head).border_l(1.5).border_color(t.muted),
     jump(div().id(`${id}-p${k}`).absolute().left(n.x - n.w / 2).top(0).w(n.w).h(Q.head - 4).px(6).flex().items_center().justify_center().rounded(6).border_1()
-      .border_color(n.changed && n.source !== "existing" ? t.accent : t.border).when(n.source === "spec", (e) => e.border_dashed()).bg(t.background).text_size(12).font_semibold()
+      .border_color(n.changed && n.source !== "existing" ? t.accent : t.border).when(n.source === "spec", (e) => e.border_dashed()).bg(t.background).text_size(TYPE.small).font_semibold()
       .text_color(n.source === "existing" ? t.muted : t.foreground).tooltip([n.label ?? n.id, n.note, n.source === "spec" ? SPEC_TIP : ""].filter(Boolean).join("\n"))
       .child(Q.head > SEQ.HEAD ? div().max_h(Q.head - 8).overflow_hidden().whitespace_normal().text_center().line_height(1.25).child(n.label ?? n.id) : div().truncate().child(n.label ?? n.id)), n.at ?? n.evidence)]);
   const calls = Q.calls.flatMap((e, k) => {
@@ -403,8 +404,8 @@ function seqView(Q, t, id, onJump = null) {
     return [
       self ? div().id(`${id}-c${k}`).absolute().left(lo).top(y - 12).w(22).h(12).border_t(1.5).border_r(1.5).border_b(1.5).rounded_r(6).border_color(c)
         : div().id(`${id}-c${k}`).absolute().left(lo).top(y).w(Math.abs(e.x2 - e.x1)).h(0).border_t(1.5).border_color(c).when(Boolean(e.dashed) || e.source === "spec", (x) => x.border_dashed()),
-      div().id(`${id}-a${k}`).absolute().left(left ? e.x2 : e.x2 - 9).top(y - 8).text_size(11).text_color(c).child(left ? "◀" : "▶"),
-      jump(div().id(`${id}-t${k}`).absolute().left(e.tx).top(e.y + (self ? 12 : 4)).max_w(e.tw).h(17).px(3).bg(t.surface).text_size(11.5)
+      div().id(`${id}-a${k}`).absolute().left(left ? e.x2 : e.x2 - 9).top(y - 8).text_size(TYPE.micro).text_color(c).child(left ? "◀" : "▶"),
+      jump(div().id(`${id}-t${k}`).absolute().left(e.tx).top(e.y + (self ? 12 : 4)).max_w(e.tw).h(17).px(3).bg(t.surface).text_size(TYPE.small)
         .text_color(e.changed && e.source !== "existing" ? t.foreground : t.muted).tooltip([text, e.evidence].filter(Boolean).join("\n")).child(div().truncate().child(text)), e.at ?? e.evidence)];
   });
   return div().id(id).relative().flex_none().w(Q.width).h(Q.height).children([gridBg(t, Q.width, Q.height), ...heads, ...calls]);
@@ -432,7 +433,7 @@ export function stateView(L, t, id, onJump, marks = null) {
       els.push(s.y1 === s.y2 ? hline(`${id}-e${i}-${k}`, s.x1, s.x2, s.y1, c, e.dashed) : vline(`${id}-e${i}-${k}`, s.x1, s.y1, s.y2, c, e.dashed));
     });
     els.push(div().id(`${id}-a${i}`).absolute().left(e.arrow.x - 5).top(e.arrow.y - 11).text_size(9).text_color(c).child("▼"));
-    if (e.text && e.labelAt) els.push(jump(div().id(`${id}-l${i}`).absolute().left(e.labelAt.x).top(e.labelAt.y).w(e.labelAt.w).h(13).text_size(10.5).text_color(mk(e) ? c : e.changed ? t.accent : t.muted)
+    if (e.text && e.labelAt) els.push(jump(div().id(`${id}-l${i}`).absolute().left(e.labelAt.x).top(e.labelAt.y).w(e.labelAt.w).h(13).text_size(TYPE.micro).text_color(mk(e) ? c : e.changed ? t.accent : t.muted)
       .tooltip([e.text, sourceStyle(e.source).tip, e.evidence].filter(Boolean).join("\n") + findTip(mk(e))).child(div().truncate().when(Boolean(e.labelAt.left), (x) => x.text_right()).child(e.text)), e.at ?? e.evidence));
   });
   L.backs.forEach((b, i) => {
@@ -441,7 +442,7 @@ export function stateView(L, t, id, onJump, marks = null) {
     if (b.tx > near) els.push(hline(`${id}-rt${i}`, near, b.tx, b.ty, c, b.dashed));
     if (b.sx > near) els.push(hline(`${id}-rs${i}`, near, b.sx, b.sy, c, b.dashed));
     els.push(div().id(`${id}-ra${i}`).absolute().left(b.tx - 8).top(b.ty - 8).text_size(9).text_color(c).child("▶"));
-    if (b.text) els.push(div().id(`${id}-rl${i}`).absolute().left(b.laneX + 4).top(b.ty + 3).max_w(near - b.laneX - 6).text_size(10.5).text_color(b.changed ? t.accent : t.muted).tooltip(b.text).child(div().truncate().child(b.text)));
+    if (b.text) els.push(div().id(`${id}-rl${i}`).absolute().left(b.laneX + 4).top(b.ty + 3).max_w(near - b.laneX - 6).text_size(TYPE.micro).text_color(b.changed ? t.accent : t.muted).tooltip(b.text).child(div().truncate().child(b.text)));
   });
   const nodes = L.nodes.map((n, i) => {
     if (n.kind === "start") return div().id(`${id}-n${i}`).absolute().left(n.x + 1).top(n.y + 1).w(12).h(12).rounded_full().bg(t.foreground).tooltip("Start state").accessibility_label("Start state");
@@ -450,27 +451,27 @@ export function stateView(L, t, id, onJump, marks = null) {
     const st = sourceStyle(n.source), lit = n.changed && st.tone !== "muted";
     const card = v_flex().id(`${id}-n${i}`).absolute().left(n.x).top(n.y).w(n.w).h(n.h).px(8).py(5).gap(1).rounded(6).border_1().border_color(lit ? t.accent : t.border).when(st.dashed, (e) => e.border_dashed()).bg(t.background)
       .when(Boolean((n.at || n.evidence) && onJump), (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).tooltip("Jump to this place in the code").on_click((_e, cx) => { onJump(n.at ?? n.evidence, cx); cx.stop_propagation(); }))
-      .child(h_flex().gap(5).items_center().text_size(12).child(div().flex_none().text_color(t.muted).child(SM_GLYPH[n.type] ?? "▭"))
+      .child(h_flex().gap(5).items_center().text_size(TYPE.small).child(div().flex_none().text_color(t.muted).child(SM_GLYPH[n.type] ?? "▭"))
         .child(div().flex_1().min_w(0).truncate().font_semibold().text_color(lit ? t.accent : st.tone === "muted" ? t.muted : t.foreground).child(n.label ?? n.id))
         .when(Boolean(st.chip), (e) => e.child(specTag(t, `${id}-n${i}-sp`)))
-        .when(n.kind === "block", (e) => e.child(div().flex_none().text_size(10.5).text_color(t.muted).child(n.type ?? ""))))
-      .when(Boolean(n.note) && n.kind !== "block", (e) => e.child(div().truncate().text_size(10.5).text_color(t.muted).child(n.note)))
+        .when(n.kind === "block", (e) => e.child(div().flex_none().text_size(TYPE.micro).text_color(t.muted).child(n.type ?? ""))))
+      .when(Boolean(n.note) && n.kind !== "block", (e) => e.child(div().truncate().text_size(TYPE.micro).text_color(t.muted).child(n.note)))
       .when(Boolean(n.note || st.tip || n.evidence), (e) => e.tooltip([`${n.label ?? n.id}`, n.note, st.tip, n.evidence].filter(Boolean).join("\n\n")));
     return card;
   });
   const kids = L.nodes.flatMap((n, i) => (n.children ?? []).flatMap((k, j, list) => {
     const out = [div().id(`${id}-k${i}-${j}`).absolute().left(k.x).top(k.y).w(k.w).h(k.h).px(6).flex().items_center().rounded(5).border_1().border_color(k.changed ? t.accent : t.border).when(k.source === "spec", (e) => e.border_dashed().tooltip(SPEC_TIP)).bg(t.surface).tooltip(k.label ?? k.id)
-      .text_size(11).text_color(k.changed ? t.accent : t.foreground).child(div().truncate().child(k.label ?? k.id))];
+      .text_size(TYPE.micro).text_color(k.changed ? t.accent : t.foreground).child(div().truncate().child(k.label ?? k.id))];
     const nxt = list[j + 1];
     if (nxt && nxt.branch === k.branch) out.push(vline(`${id}-kl${i}-${j}`, k.x + k.w / 2, k.y + k.h, nxt.y, t.muted));
     return out;
   }));
   const loops = L.loops.flatMap((l, i) => [div().id(`${id}-o${i}`).absolute().left(l.x).top(l.y).w(14).h(12).rounded(6).border(1.5).border_color(col(l)).when(l.dashed, (e) => e.border_dashed()).tooltip(`${l.text || "self-transition"}${findTip(mk(l))}`),
-    ...(l.text ? [div().id(`${id}-ol${i}`).absolute().left(l.x + 17).top(l.y - 1).max_w(l.w).text_size(10.5).text_color(l.changed ? t.accent : t.muted).tooltip(l.text).child(div().truncate().child(`↺ ${l.text}`))] : [])]);
+    ...(l.text ? [div().id(`${id}-ol${i}`).absolute().left(l.x + 17).top(l.y - 1).max_w(l.w).text_size(TYPE.micro).text_color(l.changed ? t.accent : t.muted).tooltip(l.text).child(div().truncate().child(`↺ ${l.text}`))] : [])]);
   const stubs = L.stubs.flatMap((s, i) => {
     const c = /retry/i.test(s.text) ? t.ansi3 : t.ansi1;
     return [hline(`${id}-sl${i}`, s.x1, s.x2, s.y, c, s.dashed), div().id(`${id}-sc${i}`).absolute().left(s.chip.x).top(s.chip.y).w(s.chip.w).h(s.chip.h).px(5).flex().items_center()
-      .rounded(5).border_1().border_color(c).when(s.dashed, (e) => e.border_dashed()).bg(t.background).text_size(10.5).text_color(t.foreground).tooltip(s.text).child(div().truncate().child(s.text))];
+      .rounded(5).border_1().border_color(c).when(s.dashed, (e) => e.border_dashed()).bg(t.background).text_size(TYPE.micro).text_color(t.foreground).tooltip(s.text).child(div().truncate().child(s.text))];
   });
   // The finding chips, one per marked transition at its arrow (a self-loop: over its ring). Chips that would touch
   // (several transitions end side by side at one state) are one chip, "5 findings" in the highest severity's colour,
@@ -480,7 +481,7 @@ export function stateView(L, t, id, onJump, marks = null) {
   const marked = [...L.edges.map((e, i) => ({ e, key: `m${i}`, x: e.arrow.x + 7, y: e.arrow.y - 16, text: e.text || "Transition" })),
     ...L.loops.map((l, i) => ({ e: l, key: `om${i}`, x: l.x - 2, y: l.y - 16, text: l.text || "Self-transition" }))].filter((c) => mk(c.e))
     .map((c) => ({ ...c, m: mk(c.e), w: Math.ceil(chipText(mk(c.e)).length * 6) + 10 }));
-  const chip = (key, x, y, c, tip, text) => div().id(`${id}-${key}`).absolute().left(x).top(y - 1).px(4).h(16).flex().items_center().rounded(4).border_1().border_color(c).bg(t.background).text_size(10.5).text_color(t.foreground).tooltip(tip).child(text);
+  const chip = (key, x, y, c, tip, text) => div().id(`${id}-${key}`).absolute().left(x).top(y - 1).px(4).h(16).flex().items_center().rounded(4).border_1().border_color(c).bg(t.background).text_size(TYPE.micro).text_color(t.foreground).tooltip(tip).child(text);
   const chips = bundleChips(marked).map((g, k) => {
     if (g.length === 1) return jump(chip(g[0].key, g[0].x, g[0].y, col(g[0].e), `${g[0].text}${findTip(g[0].m)}`, chipText(g[0].m)), g[0].e.at ?? g[0].e.evidence);
     const all = [...new Map(g.flatMap((c) => c.m.findings).map((f) => [f.id ?? f.title, f])).values()], sev = SEV_RANK.find((s) => g.some((c) => c.m.severity === s)) ?? g[0].m.severity;
@@ -498,10 +499,10 @@ export function triageCard(t, id, pr, tri, onClick) {
   return v_flex().id(id).flex_none().px(8).py(6).gap(5).rounded(8).border_1().border_color(t.border).bg(t.surface).cursor_pointer().hover((s) => s.bg(t.hover)).on_click(onClick)
     .child(h_flex().gap(6).items_center()
       .child(chip(t, `● P${tri.priority}`, tri.priority === 1 ? t.ansi1 : tri.priority === 2 ? t.ansi3 : t.muted, false, `${id}-p`, PRIORITY_TIP))
-      .child(div().flex_1().min_w(0).truncate().font_semibold().text_size(12).child(pr.title ?? `#${pr.number}`)))
-    .when(Boolean(tri.why), (e) => e.child(div().pl(8).border_l(3).border_color(t.accent).text_size(11.5).line_height(1.4).text_color(t.foreground).whitespace_normal().child(tri.why)))
+      .child(div().flex_1().min_w(0).truncate().font_semibold().text_size(TYPE.small).child(pr.title ?? `#${pr.number}`)))
+    .when(Boolean(tri.why), (e) => e.child(div().pl(8).border_l(3).border_color(t.accent).text_size(TYPE.small).line_height(1.4).text_color(t.foreground).whitespace_normal().child(tri.why)))
     .child(h_flex().flex_wrap().gap(4).children(tri.chips.map((c, k) => chip(t, c, /security/i.test(c) ? t.ansi1 : t.muted, false, `${id}-ch${k}`, triageTip(c)))))
-    .child(div().id(`${id}-rp`).text_size(10.5).text_color(t.muted).tooltip("Repository and PR number").child(`${pr.repo} #${pr.number}`));
+    .child(div().id(`${id}-rp`).text_size(TYPE.micro).text_color(t.muted).tooltip("Repository and PR number").child(`${pr.repo} #${pr.number}`));
 }
 
 // A faint grid behind a picture (graph paper): one painted path (window.paint_path) with a line every GRID px, as many
@@ -527,6 +528,6 @@ export function bulletChart(t, id, b, valueText, limitText, width = 320) {
       .when(b.over > 0, (e) => e.child(div().absolute().left(b.limit).top(2).h(12).w(b.over).border_1().border_color(t.ansi1)
         .child(globalThis.window.paint_path(rect(), Background.pattern_slash(t.ansi1, 1.5, 6)).absolute().top(0).left(0).size_full())))
       .child(div().absolute().left(b.limit).top(-3).w(2).h(22).bg(t.foreground)))
-    .child(div().text_size(12.5).child(`${valueText} against ${limitText}`))
-    .when(b.over > 0, (e) => e.child(div().text_size(12.5).font_semibold().text_color(t.ansi1).child(`✗ ${b.overS} s over`)));
+    .child(div().text_size(TYPE.small).child(`${valueText} against ${limitText}`))
+    .when(b.over > 0, (e) => e.child(div().text_size(TYPE.small).font_semibold().text_color(t.ansi1).child(`✗ ${b.overS} s over`)));
 }

@@ -1111,3 +1111,16 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.equal(skipText("the shell: not available, so no tests were run"), "no tests were run");
   console.log("ok guards, operator ways and the findings behind threats");
 }
+
+// The text sizes are the named steps of TYPE (U34): no view sets a size as a bare number, but for the two arrowheads
+// of the state diagram (9 px, drawn marks). A new size is a new step in views.js, with its reason.
+{
+  const { readFileSync } = await import("node:fs");
+  const { TYPE } = await import("./views.js");
+  assert.deepEqual(Object.keys(TYPE), ["micro", "panel", "small", "body", "title", "page", "code", "codePanel"]);
+  for (const f of ["review.js", "stack.js", "main.js", "setup-view.js"]) {
+    const bare = [...readFileSync(new URL(f, import.meta.url), "utf8").matchAll(/text_size\((\d+(?:\.\d+)?)\)/g)].map((m) => m[1]).filter((v) => v !== "9");
+    assert.deepEqual(bare, [], `${f}: text_size with a bare number`);
+  }
+  console.log("ok text sizes");
+}
