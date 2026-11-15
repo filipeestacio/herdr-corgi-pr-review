@@ -6,6 +6,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { baseText, sidesOf, readTerraform, readCloudFormation, infraModel, infraArch, infraMarks, infraPicture, infraMd, infraSource, infraSummary, cardLines, rowText, noticeText, isIac, INFRA_MAX } from "./infra.js";
 import { splitPatch } from "./pr.js";
 import { mermaidFlow } from "./markdown.js";
+import { archLayout } from "./arch.js";
 
 // A changed file as the patch has it, here as one hunk without context.
 const file = (path, base, head) => ({ path, status: base === null ? "added" : head === null ? "deleted" : "modified", head: head ?? undefined,
@@ -323,6 +324,11 @@ test("the Terraform fixture end to end: from the patch and the files at the head
   assert.ok(!md.includes("placeholder"), "the secret's value is in no line");
   const P = infraPicture(m);
   assert.deepEqual([P.L.nodes.length, P.L.groups.length, P.arch.folded], [13, 1, null]);
+  // One layout, not the search at archLayout's end (Herdr stops a render that takes that long): counted by the cards' sizes it asks for.
+  let asked = 0; archLayout(P.arch, "diff", (n) => { if (n.id === P.arch.nodes[0].id) asked++; return 0; }, false, { labels: true, over: new Set() }); const once = asked;
+  asked = 0; archLayout(P.arch, "diff", (n) => { if (n.id === P.arch.nodes[0].id) asked++; return 0; }, false, { labels: true });
+  assert.ok(once > 0 && asked > 5 * once, "the search lays this picture out many times over");
+  assert.deepEqual(P.L.paths.map((p) => p.kind).sort().join(), archLayout(P.arch, "diff", (n) => n.lines.reduce((k, l) => k + l.rows, 0), false, { labels: true, over: new Set() }).paths.map((p) => p.kind).sort().join(), "the picture is that one layout");
   assert.ok(P.L.paths.every((p) => !p.arrow.left) && P.L.nodes.every((n) => Number.isFinite(n.x + n.y + n.w + n.h)));
   const worker = P.arch.nodes.find((n) => n.label === "worker" && n.type === "aws_lambda_function");
   assert.deepEqual([worker.status, worker.word, worker.dashed, worker.at], ["replaced", "MAY BE REPLACED", true, "stacks/orders/worker.tf:1"], "may be replaced: its own word and a dashed border, not only a colour");
