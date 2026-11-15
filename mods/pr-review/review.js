@@ -524,7 +524,7 @@ export const ReviewMode = {
     else if (name === "trust") this.trust("pr", cx);
     else if (name === "cmenu") { const [k, ...key] = arg.split("|"), card = this.cardByKey(key.join("|")); card?.menu[Number(k)]?.[2]?.(cx); }
     else if (name === "ask") this.setDrawer(arg === "close" ? null : arg === "fold" ? "collapsed" : "open", cx); // the Ask drawer: open | fold | close
-    else if (name === "worktrees") this.listWorktrees(cx); // the ⋯ menu's "Fix worktrees…"
+    else if (name === "worktrees") { const [x, y] = arg.split(",").map(Number); this.listWorktrees(cx, Number.isFinite(y) ? { x, y } : null); } // the ⋯ menu's "Fix worktrees…"; worktrees:<x>,<y>: where the list opens (default: the pointer)
     else if (name === "wt-remove") this.removeWorktree(Number(arg), cx); // wt-remove:<index>: a row of that list
     else if (name === "apply") { const j = this.fixes().find((f) => f.id === arg) ?? this.fixes().filter((f) => f.state === "running").at(-1); if (j) this.applyFix(j, cx); }
     else if (name === "open") {
@@ -5596,7 +5596,7 @@ export const ReviewMode = {
   // ---- fix worktrees left on disk (~/.herdr/worktrees/<repo>/fix-…): nothing removes them by age, because one may
   // hold a fix that exists nowhere else. "Fix worktrees…" lists them with what would be lost; a click removes one,
   // and one with commits or changes only there asks for a second click.
-  listWorktrees(cx) {
+  listWorktrees(cx, at = null) {
     const base = this.fixBase();
     if (!base) { this.note = "This PR has no local checkout, so there are no fix worktrees to list."; return cx.notify(); }
     const git = (cwd, args) => exec("git", ["-C", cwd, ...args], { timeout: 30000 }).catch(() => ({ code: 1, stdout: "" }));
@@ -5609,7 +5609,7 @@ export const ReviewMode = {
         return { ...w, only: Number(only.stdout.trim()) || 0, dirty: st.stdout.trim().length > 0, unknown: only.code !== 0 || st.code !== 0 };
       }));
       if (!this.wts.length) this.note = "No fix worktrees are left on disk for this repository.";
-      else openOverlay({ mod: "pr-review", props: { part: "cmenu", key: "wt", items: this.wts.map((w, k) => [TH.worktreeLine(w, this.wtAsk === w.path), TH.worktreeRisky(w), `wt-remove:${k}`]) }, kind: "popup", width: 520, height: 12 + 30 * this.wts.length });
+      else openOverlay({ mod: "pr-review", props: { part: "cmenu", key: "wt", items: this.wts.map((w, k) => [TH.worktreeLine(w, this.wtAsk === w.path), TH.worktreeRisky(w), `wt-remove:${k}`]) }, kind: "popup", width: 520, height: 12 + 30 * this.wts.length, ...(at ? { at } : {}) });
       cx.notify();
     });
   },

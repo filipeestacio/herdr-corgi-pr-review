@@ -928,7 +928,7 @@ export default class PrReview extends View {
           .on_click((_e, cx) => { this.showOther = !this.showOther; cx.notify(); }).child(div().w(10).flex_none().child(this.showOther ? "▾" : "▸")).child(`Other repos or older (${rest.length})`)))
         .when(rest.length > 0 && Boolean(this.showOther), (e) => e.children(rest.map(row)))
         .when(done.length > 0, (e) => e.child(h_flex().id(`pr-done-${this.uid}`).flex_none().mt(4).px(8).h(24).gap(6).items_center().rounded(6).cursor_pointer().text_size(11.5).text_color(t.muted)
-          .tooltip(this.showDone ? "Hide the merged and closed PRs" : "Show the merged and closed PRs").hover((s) => s.bg(t.hover).text_color(t.foreground))
+          .tooltip(src === "mine" ? `${this.showDone ? "Hide" : "Show"} this repository's PRs that were merged or closed in the last 14 days. Older ones are not listed: open them by URL above.` : this.showDone ? "Hide the merged and closed PRs" : "Show the merged and closed PRs").hover((s) => s.bg(t.hover).text_color(t.foreground))
           .on_click((_e, cx) => { this.showDone = !this.showDone; cx.notify(); }).child(div().w(10).flex_none().child(this.showDone ? "▾" : "▸")).child(`Merged or closed (${done.length})`)))
         .when(done.length > 0 && Boolean(this.showDone), (e) => e.children(done.map(row)))
         .when(!open.length && !rest.length && !done.length, (e) => e.child(div().p(8).whitespace_normal().text_color(t.muted).child(empty)));
