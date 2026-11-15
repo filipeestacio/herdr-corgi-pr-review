@@ -598,6 +598,17 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   assert.deepEqual([EV.editorFor({ root: "/co/r" }, cx), EV.editorLink(v, S.theme, "k", { root: "/co/r" }, cx).length], [null, 0]);
   EV.forgetEditors(); S.exec = null; timers.length = 0;
 }
+// Watched repos: the oldest of more than three is cancelled at once, the others when the copy closes; a cancelled
+// watch ends its loop (no new watch for a repo that was let go).
+{ S.props = {}; S.cancelled = []; const v = new PrReview(); v.init({}, cx); await settle();
+  for (const r of ["/r1", "/r2", "/r3", "/r4"]) { v.watch(r, cx); await settle(); }
+  assert.deepEqual(S.cancelled, ["/r1"], "the fourth repo lets the first go");
+  assert.deepEqual([...v.watching.keys()], ["/r2", "/r3", "/r4"]);
+  await v.close(); await settle();
+  assert.deepEqual(S.cancelled.sort(), ["/r1", "/r2", "/r3", "/r4"], "closing lets every watched repo go");
+  assert.equal(v.watching.size, 0, "and no loop watches again");
+  S.cancelled = null; timers.length = 0;
+}
 // `herdr-app check` runs init for real: there it starts no task and no timer (so no helper process, no file written),
 // and its one frame still draws; a live window does start them.
 { const made = { spawn: 0, timer: 0, exec: 0 }, quiet = { ...base, spawn() { made.spawn++; }, timer: { after() { made.timer++; }, every() { made.timer++; } } };

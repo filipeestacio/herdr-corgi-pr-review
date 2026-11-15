@@ -432,7 +432,7 @@ export const ReviewMode = {
     // Reviewer runs and the fixing agent's reports land in pr-data/findings: follow that folder.
     cx.spawn(async (cx) => {
       await exec("mkdir", ["-p", findDir()]).catch(() => null);
-      for (;;) { await watchFolder(findDir()).catch(() => null); await this.loadFindings(cx); }
+      while (!this.closed) { this.findWatch = watchFolder(findDir()); await this.findWatch.catch(() => null); await this.loadFindings(cx); } // close() cancels it (main.js)
     });
     this.press = { x: 0, w: 0, shift: false }; this.items = []; this.at = {};
     // The inline composer (one at a time, under the selection) and the Finish-your-review popover's summary.
@@ -450,7 +450,7 @@ export const ReviewMode = {
     this.replyIn.on("submit", (_e, cx) => this.followup(cx));
     cx.spawn(async (cx) => {
       await exec("mkdir", ["-p", repliesDir()]).catch(() => null);
-      for (;;) { await watchFolder(repliesDir()).catch(() => null); await this.loadThreads(cx); }
+      while (!this.closed) { this.replyWatch = watchFolder(repliesDir()); await this.replyWatch.catch(() => null); await this.loadThreads(cx); }
     });
     this.ghPoll = pollAfter(null, true, Date.now()); // opening asks GitHub (onSource, refresh): the first tick is GH_MS later
     cx.timer.every(60000, (cx) => this.ghTick(cx)); // a time check; GitHub at most every GH_MS (ghTick)

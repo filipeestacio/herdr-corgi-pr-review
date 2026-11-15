@@ -57,7 +57,7 @@ const STUBS = {
     export const spaces = () => live("spaces", S.spaces ?? []), panes = () => live("panes", S.panes ?? []), agents = () => live("agents", []), terminals = () => live("terminals", S.terminals ?? []), focused = () => live("focused", S.focused ?? null), layout = () => live("layout", S.layout === undefined ? { id: "root", type: "row", children: [] } : S.layout); // null: as in a copy's init, before Herdr has a layout
     export const theme = () => S.theme, settings = () => ({}), props = () => S.props ?? { part: "review" };
     export const shared = (k) => S.store.get(k), setShared = (k, v) => S.store.set(k, v), appHome = () => "/h", home = () => "/h", checking = () => Boolean(S.checking);
-    export const nextCommand = () => (S.nextCommand ? S.nextCommand() : never()), watchFolder = never, openOverlay = (o) => { S.overlays.push(o); }, closeOverlay = () => {}, notify = (n) => { (S.toasts ??= []).push(n); return "n"; };`,
+    export const nextCommand = () => (S.nextCommand ? S.nextCommand() : never()), watchFolder = (dir) => { let end; return Object.assign(new Promise((r) => { end = r; }), { cancel() { (S.cancelled ??= []).push(dir); end([]); } }); }, openOverlay = (o) => { S.overlays.push(o); }, closeOverlay = () => {}, notify = (n) => { (S.toasts ??= []).push(n); return "n"; };`,
 };
 registerHooks({
   resolve: (spec, ctx, next) => (STUBS[spec] ? { url: `stub:${spec}`, shortCircuit: true } : next(spec, ctx)),

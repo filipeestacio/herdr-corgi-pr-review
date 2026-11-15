@@ -305,14 +305,17 @@ export default class PrReview extends View {
   }
 
   // Watches a shown repo (at most WATCHES; the oldest is let go). A change that matters marks it dirty; shown, it
-  // refreshes once a second later.
+  // refreshes once a second later. The map keeps each repo's pending watch (Herdr's FolderWatch): a repo let go, and
+  // every repo when this copy closes, is cancelled, which frees its place among Herdr's watched folders at once and
+  // ends its loop (a cancelled watch resolves with []).
   watch(root, cx) {
     if (this.watching.has(root)) { const v = this.watching.get(root); this.watching.delete(root); this.watching.set(root, v); return; }
-    this.watching.set(root, true);
-    if (this.watching.size > WATCHES) this.watching.delete(this.watching.keys().next().value);
+    this.watching.set(root, null);
+    if (this.watching.size > WATCHES) { const [old, w] = this.watching.entries().next().value; this.watching.delete(old); w?.cancel(); }
     cx.spawn(async (cx) => {
       while (this.watching.has(root)) {
-        const paths = await watchFolder(root);
+        const w = watchFolder(root); this.watching.set(root, w);
+        const paths = await w;
         if (!this.watching.has(root) || !paths.some((p) => !IGNORED.test(p))) continue;
         const was = this.dirty.has(root);
         this.dirty.add(root);
@@ -1382,6 +1385,11 @@ export default class PrReview extends View {
   // Removed or closed: Go to stops offering "Review PR" (a stale handler would hand PRs to nobody). Another copy
   // that still runs announces them again on its next render.
   async close() {
+    // The folders this copy watched are let go: the shown repos (watch) and the review's findings and replies.
+    this.closed = true;
+    const watches = [this.findWatch, this.replyWatch, ...(this.watching?.values() ?? [])];
+    this.watching?.clear();
+    for (const w of watches) w?.cancel();
     if (!this.announces) return;
     setShared("goto.handlers.review", null);
     setShared("goto.items.review", null);
