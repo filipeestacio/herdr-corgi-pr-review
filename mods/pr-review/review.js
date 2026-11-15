@@ -44,6 +44,7 @@ import { resStartOf, resOrder, resPicture, budgetBar, resPathView, resCardOf, re
 import { resWord, resToolText, resVerdict, resWatch, resTwice, PROBE_TYPICAL, resEdgeMarks, resByProbe, RES_MARK_ROW, resMarkRows, resMarkLines, resVerdictParts, resStartCard } from "./views.js";
 import { withProbes, certaintyText, probedText } from "./views.js"; // wave C2 V3: a reproduced probe confirms its findings // wave R2: words, verdict, watch, doubled ways
 import { withResilience, resilienceStart, RUN_TYPICAL } from "./pr.js"; // the Resilience run's data // the Resilience page
+import { keepLast } from "./views.js"; // every cache has a limit
 import { resDepRows, resMeta, resFade } from "./views.js"; // Resilience: dependencies that fail or are overloaded; a path's second line; readable dimming
 import { wayOf, wayText, passZones, runsIn } from "./views.js"; // panel round 3: ways through every gate, zones passed on
 import { transitionMarks, effectiveFrom, inProcess, mapArch, crossingsOf, crossingChanged, secSentence, TRUST_ORDER, asideOf, threatCited, blastOf, skipText } from "./views.js";
@@ -545,6 +546,7 @@ export const ReviewMode = {
     this.reviewKey = null; this.ai = null; this.aiError = null; this.aiModel = null; this.cur = 0; this.focusHunk = null; this.fsel = null; this.sug = null;
     this.composing = false; this.editing = null; this.finishOpen = false; this.posted = null; this.gh = []; this.route = null; this.event = null;
     this.full = {}; this.gaps = {}; this.whole = new Set(); this.collapsed = new Set(); this.hunks = null;
+    this.rowsMemo = null; this.ghMemo = null; this.fitMemos = null; // what was computed for the PR before goes with it
     this.ctx = null; this.since = null; this.sinceOn = false; this.lastReviewed = null; this.page = "overview"; this.aiFile = null; this.needClone = null;
   },
 
@@ -3356,6 +3358,7 @@ export const ReviewMode = {
     // The map as the boundary really runs (views.js mapArch): the Internet card at the way in, no zone on shared code,
     // no "‖" on a call in one process.
     const memo = (this.fitMemos ??= {});
+    if (!(slot in memo) && Object.keys(memo).length >= 8) delete memo[Object.keys(memo)[0]]; // a layout per kind of map shown, the oldest goes
     if (memo[slot]?.key !== key) memo[slot] = { key, L: archLayout(mapArch(a, this.ai?.access, this.ai?.bypasses ?? []), this.archMode, (n) => (m.nodes.has(n.id) ? markRoom(m.nodes.get(n.id), (fit ? ARCH_FIT.W : ARCH_SIZE.W) - 20).rows : 0) + (more?.has(n.id) ? resMarkRows(more.get?.(n.id) ?? 1) : 0), fit, { labels: true, labelPx: labelPx ?? undefined, marked: (es) => es.some((i) => m.edges.has(i)) }) };
     return memo[slot].L;
   },
@@ -4875,7 +4878,7 @@ export const ReviewMode = {
     const open = Boolean(this.ghOpen?.has(g.id)), memo = (this.ghMemo ??= new Map()), m = memo.get(g.id);
     if (m && m.body === g.body && m.open === open) return m.blocks;
     const blocks = mdBlocks(ghMd(g.body, open));
-    memo.set(g.id, { body: g.body, open, blocks });
+    keepLast(memo.set(g.id, { body: g.body, open, blocks }), 500);
     return blocks;
   },
   // A fenced block in a card: mono at the card's size, its long lines wrapped at the card's width (views.js wrapCode),

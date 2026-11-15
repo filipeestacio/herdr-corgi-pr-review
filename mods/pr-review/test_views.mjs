@@ -836,6 +836,13 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.deepEqual([resDepRows(null), resDepRows({ paths: [] }), resWord("no_backoff")], [[], [], "retries at once, without backoff"]);
 }
 
+// ---- a cache keeps its newest entries only
+{
+  const { keepLast } = await import("./views.js");
+  const m = new Map([["a", 1], ["b", 2], ["c", 3]]);
+  assert.deepEqual([[...keepLast(m, 2).keys()], [...keepLast(m.set("d", 4), 2).keys()], [...keepLast(new Map(), 2)]], [["b", "c"], ["c", "d"], []]);
+}
+
 // ---- Resilience: a path's second line names at most three things it breaks; a dimmed part stays readable
 {
   const { resMeta, resFade, mdTarget } = await import("./views.js");

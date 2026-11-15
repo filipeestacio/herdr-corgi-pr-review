@@ -25,6 +25,7 @@ import { loadDiff, saveDiff } from "./diffcache.js";
 import { setupBanner, renderSetup, loadSetup, runSetup, openUrl, readConfig } from "./setup-view.js";
 import { chip, PRIORITY_TIP } from "./stack.js";
 import { panelState, bodyTab, DONE_DAYS, diffTooLarge, filesToDiff, isOpenPr, byState, listRows, riskSignal, progressText, pendingText, rowMarks, mineGroups, progressRows, removedText, withPick, openSig, panelShown } from "./views.js";
+import { keepLast } from "./views.js"; // every cache has a limit
 import { ReviewMode, startReview, startExplore, saveKey, flowCard, modelPills, modelLabel, renderReviews, renderAgentBar, renderKeys, renderCardMenu, renderMini } from "./review.js";
 import { highlightJob, highlightStep, langOf, colors, renderLine, editorSyntax } from "./syntax.js";
 
@@ -287,7 +288,7 @@ export default class PrReview extends View {
   checkHead(pr, cx) {
     const seen = this.heads.get(pr.url);
     if (seen && Date.now() - seen.at < PR_INFO_MS) return;
-    this.heads.set(pr.url, { at: Date.now(), sha: seen?.sha ?? pr.headSha });
+    keepLast(this.heads.set(pr.url, { at: Date.now(), sha: seen?.sha ?? pr.headSha }), 300); // one entry per PR seen, the oldest goes
     cx.spawn(async (cx) => {
       const sha = await this.headOf(pr.url);
       if (!sha) return;

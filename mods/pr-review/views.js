@@ -1459,3 +1459,9 @@ export function resMeta(p, way, findings = 0, max = 3) {
 // The opacity of a dimmed part of the Resilience page (an analysis of another head, a probe of an older one): as dim
 // as 0.55 where the second colour of the text still reads at 4.5:1 on each background given, else less dim.
 export const resFade = (t, bgs = [t.background, t.surface]) => Math.max(...bgs.map((bg) => readableFade(t.muted, bg, 0.55)));
+
+// ---- A cache has a limit: after a set, the oldest entries of a Map go until at most `max` are left. Returns the map.
+export function keepLast(map, max) {
+  while (map.size > max) map.delete(map.keys().next().value);
+  return map;
+}
