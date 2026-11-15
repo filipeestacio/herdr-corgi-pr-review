@@ -5494,9 +5494,13 @@ export const ReviewMode = {
   // sees a slice busy for more than HL_STALE and starts the queue again. The job that was running then (it never got
   // to clear `running`) is dropped, and so is one that throws: its file stays plain (its spans stay empty and it is
   // not queued again), the files behind it get their colors.
+  // A slice asks for no frame of its own (a frame draws the whole window, and a big review took 13 to 17 of them to
+  // get its colors). The files on screen go first, and a frame is asked for once they are all colored; the files
+  // off screen get theirs without one (the list reads the spans when it scrolls to them). One last frame follows when
+  // the queue is empty, and while a long queue runs there is one every HL_FRAME ms at most.
   drainHighlight(cx) {
-    const start = this.hlBusy = Date.now();
-    for (const [k, job] of this.hlQueue ?? []) {
+    const start = this.hlBusy = Date.now(), queue = this.hlQueue ?? new Map(), seen = this.shownSpans();
+    for (const [k, job] of seen.size ? [...queue].sort(([a], [b]) => (seen.has(b) ? 1 : 0) - (seen.has(a) ? 1 : 0)) : [...queue]) {
       if (job.running) { this.hlQueue.delete(k); continue; }
       let out = null;
       job.running = true;
@@ -5508,11 +5512,19 @@ export const ReviewMode = {
       if (!out) break;
       job.inf.spans = out;
       this.hlQueue.delete(k);
+      if (seen.has(k)) this.hlSeen = true; else this.hlUnseen = true; // colored since the last frame: on screen, off screen
       if (Date.now() - start > 12) break;
     }
     this.hlBusy = 0;
-    if (this.hlQueue?.size) { this.hlBusy = Date.now(); cx.timer.after(0, (cx) => this.drainHighlight(cx)); }
-    cx.notify();
+    if (queue.size) { this.hlBusy = Date.now(); cx.timer.after(0, (cx) => this.drainHighlight(cx)); }
+    const some = this.hlSeen || this.hlUnseen, waiting = [...seen].some((inf) => queue.has(inf)); // a file on screen is still without its colors
+    if ((this.hlSeen && !waiting) || (some && (!queue.size || Date.now() - (this.hlDrawn ?? 0) > HL_FRAME))) { this.hlSeen = this.hlUnseen = false; this.hlDrawn = Date.now(); cx.notify(); }
+  },
+  // The span holders (spanMap's values) of the files whose lines the list drew in its last frame: what a person sees.
+  shownSpans() {
+    const v = this.codeShown ? this.visCode : null, seen = new Set();
+    if (v && this.items) for (let k = v.start; k < v.end && k < this.items.length; k++) { const inf = this.items[k].t === "row" && this.spanMap?.get(this.items[k].src); if (inf) seen.add(inf); }
+    return seen;
   },
   // A row's code, highlighted (syntax.js); spans per row array are computed once per render (spanMap).
   // a, b: one visual line of a wrapped line (its columns a..b of the tab-expanded text, b undefined: to the end).
@@ -5653,9 +5665,10 @@ export const ReviewMode = {
       if (lang) (this.hlQueue ??= new Map()).set(inf, { shown, lang, hkey: `${head}:${it.path}`, inf });
     }
     // A slice busy for longer than HL_STALE was stopped (or its timer never fired): the queue starts again.
-    if (this.hlQueue?.size && (!this.hlBusy || Date.now() - this.hlBusy > HL_STALE)) { this.hlBusy = Date.now(); cx.timer.after(0, (cx) => this.drainHighlight(cx)); }
+    if (this.hlQueue?.size && (!this.hlBusy || Date.now() - this.hlBusy > HL_STALE)) { this.hlBusy = Date.now(); if (!this.hlSeen && !this.hlUnseen) this.hlDrawn = Date.now(); cx.timer.after(0, (cx) => this.drainHighlight(cx)); }
     if (items.length > 9990) items.length = 9990; // the virtual list's hard limit is 10000
     const keys = itemKeys(items), sizes = items.map((it) => this.sizeOf(it)), hcode = this.codeScroll(listShown ? items : []);
+    this.codeShown = listShown; // for drainHighlight: whether lines of code are on screen at all
     if (listShown) { this.items = items; this.at = at; this.byKey = new Map(keys.map((k, i) => [k, items[i]])); }
     if (heads) this.layFiles(items, keys, sizes, heads.filter((h) => h < items.length));
     if (listShown) this.settleTop(this.tab === "steps" ? "steps" : "files", at, sizes, cx);
@@ -6285,6 +6298,7 @@ function certaintyWord(t, f, id) {
   const reach = f?.certainty === "derived" && f.path_certainty === "assumed";
   return f?.security && CERT_TIP[f.certainty] ? div().id(id).tooltip(`${CERT_TIP[f.certainty]}${reach ? ". That an attacker gets there is assumed" : ""}`).flex_none().text_size(TYPE.small).text_color(t.muted).child(reach ? "assumed reachable" : certaintyText(f)) : null;
 }
+const HL_FRAME = 250; // ms between two frames asked for while the queue of files to color runs
 const HL_STALE = 2000; // ms a highlight slice may be busy before it counts as stopped (Herdr stops one after ~50 ms)
 // A row's sign (views.js signOf, signEl): the kind's glyph in the color of the highest severity behind the row, on
 // a filled ground when that is confirmed, in a dashed frame with "?" when it is only assumed. The column has one
