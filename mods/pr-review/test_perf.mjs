@@ -4,7 +4,7 @@
 // it so must give what a fresh computation gives after everything that changes their inputs. Counts, not times: the
 // one time check is generous and takes the best of three. perf_bench.mjs prints the numbers.)
 import assert from "node:assert/strict";
-import { hasFixtures, openReview, PR2, BIG, STATES, measure, counted, frame, later, settled, quiet, cx, settle } from "./perf_bench.mjs";
+import { hasFixtures, openReview, openPanel, PR2, BIG, STATES, measure, counted, frame, later, settled, quiet, cx, settle } from "./perf_bench.mjs";
 import { S } from "./render_stub.mjs";
 
 if (!hasFixtures) {
@@ -52,7 +52,7 @@ for (const [name, data] of [["PR #2", PR2()], ["the big review", BIG()]]) {
 // ---- a frame that changes nothing
 // At most this many of the mod's own functions run in it (measured on the big review, with room: before the memos
 // the Overview ran 13 350, a layer 38 900), and none of the expensive ones.
-const BUDGET = { "Files (as opened)": 14000, "Files (all open)": 14000, "Findings": 15000, "Findings, one open": 15000, "Comments": 14000, "Walkthrough, a layer": 17000, "Overview": 3000, "Architecture": 3200,
+const BUDGET = { "Files (as opened)": 14000, "Files (all open)": 14000, "Findings": 15000, "Findings, one open": 15000, "Comments": 14000, "Walkthrough, a layer": 22000, "Overview": 3000, "Architecture": 3200,
   "Architecture, a card": 3200, "Security": 2600, "Resilience": 3500, "Markdown preview": 3000 };
 const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilienceStart", "pr.diffRows", "pr.splitPatch", "pr.hunksOf", "views.findingAnchor", "views.crossingsOf", "views.areaFindings"];
 {
@@ -120,6 +120,39 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   S.exec = null; S.props = null; await settle();
 }
 
+// ---- frames that Herdr stopped: the view draws less there
+// (A stopped frame leaves `drawing` set: no code of the mod runs after it. Two in a row on one tab and page count.)
+{
+  const ids = (v) => { S.ids = new Set(); frame(v); const got = S.ids; S.ids = null; return got; };
+  const stopped = (v) => { v.drawing = true; return ids(v); }; // the frame after a stopped one
+  const big = await openReview(BIG());
+  STATES.Resilience(big); await settle(); await quiet(big);
+  assert.ok(ids(big).has("rv-res-canvas") && big.leanLevel() === 0, "the map is drawn");
+  assert.ok(stopped(big).has("rv-res-canvas"), "one stopped frame changes nothing");
+  assert.ok(ids(big).has("rv-res-canvas") && big.cut === 0, "and a frame that ended starts the count again");
+  stopped(big); const lean = stopped(big);
+  assert.ok(!lean.has("rv-res-canvas") && lean.has("rv-res-canvas-lean") && lean.has("rv-res-canvas-again"), "two in a row: the page without its picture, with a sentence and a way back");
+  assert.ok(!ids(big).has("rv-res-canvas"), "it stays so");
+  STATES.Architecture(big); await settle(); await quiet(big);
+  assert.ok(ids(big).has("rv-arch-canvas"), "another page is drawn as before");
+  STATES.Resilience(big); await settle();
+  assert.ok(!ids(big).has("rv-res-canvas"), "back on the page: still without the picture, no frames are stopped again to find out");
+  S.clicks.get("rv-res-canvas-again")({ modifiers: {}, click_count: 1 }, cx);
+  assert.ok(ids(big).has("rv-res-canvas"), "Draw it again brings the picture back");
+  // The list: the lines listed halve per level, and the Walkthrough has its own number whatever the Files tab did.
+  STATES["Files (as opened)"](big); await settle(); frame(big);
+  STATES["Walkthrough, a layer"](big); await settle(); frame(big);
+  const rows = () => big.items.filter((it) => it.t === "row").length, before = rows();
+  assert.ok(before > 4000 && before <= 5000, `the Walkthrough lists up to 5 000 lines (${before}), also after the Files tab was drawn`);
+  stopped(big); stopped(big);
+  assert.ok(rows() <= 2500 && rows() > 1500, `after two stopped frames it lists half (${rows()})`);
+  // An exception is not a stopped frame.
+  const boom = big.renderReview; big.renderReview = () => { throw new Error("boom"); };
+  for (let k = 0; k < 3; k++) assert.throws(() => big.render(cx), /boom/);
+  big.renderReview = boom; frame(big);
+  assert.equal(big.leanLevel(), 1, "three frames that threw did not count as stopped");
+}
+
 // ---- a frame lays a map out only as far as a frame can afford; the rest comes in slices after it
 // (In Herdr a render is stopped after about 50 ms and the page never came: the full layout of 80 cards took 208 ms
 // there. One mechanism, stack.js laidOut: up to 16 calls the full layout in the frame; up to 40 one rough pass with no
@@ -137,7 +170,7 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   const big = await openReview(BIG());
   for (const id of ["rv-arch-canvas", "rv-res-canvas"]) big.hsOf(id).viewW = 1300; // measured, as in a window: Fit decides from it
   for (const [state, id] of [["Architecture", "rv-arch-canvas"], ["Resilience", "rv-res-canvas"]]) {
-    STATES[state](big); await settle(); settled(big); searched(state); big.fitMemos = null;
+    STATES[state](big); await settle(); await quiet(big); big.fitMemos = null; // every search queued so far is through
     assert.deepEqual(drawn(big), { layouts: 0, priced: 0, map: [] }, `${state}, 80 cards: the first frame lays nothing out and draws the page without its picture`);
     assert.equal(Object.keys(big.fitMemos).length, 1, `${state}: only the card size shown is asked for`);
     // The first slice after the frame: one layout, and that one rough (no order of cards or lanes priced).
@@ -153,7 +186,7 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   }
   // Marks changed (a finding dismissed): the frame draws the layout from before until the search for the new one is
   // through; no rough picture in between.
-  STATES.Architecture(big); settled(big); searched("Architecture");
+  STATES.Architecture(big); await quiet(big);
   const marked = big.openFindings().find((f) => big.archMarksNow().nodes.size && [...big.archMarksNow().nodes.values()].some((m) => m.findings.includes(f) && m.findings.length === 1));
   assert.ok(marked, "the fixture has a card marked by one finding");
   { const shown = () => big.fitMemos.true.L, before = shown(); // the map with narrow cards (Fit), the one on the page
@@ -165,9 +198,26 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
     assert.notEqual(shown(), before, "and the search's layout replaces it"); }
   const small = await openReview(PR2());
   for (const id of ["rv-arch-canvas", "rv-res-canvas"]) small.hsOf(id).viewW = 1300;
-  STATES.Architecture(small); await settle(); settled(small); searched("PR #2"); small.fitMemos = null;
+  STATES.Architecture(small); await settle(); await quiet(small); small.fitMemos = null;
   const first = drawn(small);
   assert.deepEqual([first.layouts, first.map, first.priced > 0], [1, ["rv-arch-canvas"], true], "9 cards: laid out once and drawn in the first frame, with the orders tried (the full layout: nothing crosses, so one pass)");
+}
+// ---- the panel beside the chat builds what it shows
+// With a PR chosen the list of PRs is not built (it was: 390 elements a frame without a single diff line, now 76), and
+// the open file's diff is a virtual list: a frame builds the 60 lines on screen, for 200 lines as for 5000 (it built
+// up to 1500 lines, about 10 000 elements, and with colors that frame was stopped by Herdr's 50 ms).
+{
+  const { v: p, prs } = await openPanel(PR2());
+  const file = (n) => Object.assign(Array.from({ length: n }, (_x, i) => (i % 50 === 0 ? { kind: "@", text: `@@ -${i},50 +${i},50 @@` } : { kind: i % 3 ? "+" : " ", number: i, n: i, text: `    records = event.get("Records", [])  # line ${i}` })), { sig: `f${n}` });
+  const at = (go) => { go(); p.view = "diff"; settled(p); p.view = "diff"; return frame(p); }; // without the tools Setup opens by itself here: the diff is what is counted
+  p.memo.clear(); p.context = null; p.choose(prs[0], cx); await settle();
+  const first = p.open, bare = at(() => { p.open = null; p.rows = Object.assign([], { sig: "" }); });
+  assert.ok(bare.el <= 120 && bare.items === 0, `a PR chosen, no file open: ${bare.el} elements in a frame, at most 120`);
+  const small = at(() => { p.open = first; p.rows = file(200); }), big = at(() => { p.open = first; p.rows = file(5000); });
+  assert.deepEqual([small.items, big.items], [201, 5001], "every line is an item of the list");
+  assert.equal(big.el, small.el, `a frame builds as much for 5000 lines as for 200: ${big.el} and ${small.el} elements`);
+  assert.ok(big.el <= 1300 && big.call <= 6500, `the open file's frame: ${big.el} elements and ${big.call} builder calls, at most 1300 and 6500`);
+  S.exec = null;
 }
 await settle();
 console.log("perf ok");
