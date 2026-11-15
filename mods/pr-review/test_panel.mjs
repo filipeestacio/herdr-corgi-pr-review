@@ -335,11 +335,11 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   const file = (n) => Object.assign(Array.from({ length: n }, (_x, i) => (i % 50 === 0 ? { kind: "@", text: `@@ -${i},50 +${i},50 @@` } : { kind: i % 3 ? "+" : " ", number: i, n: i, text: `import os${i}  # line ${i}` })), { sig: `f${n}` });
   // One frame: the render, then the list asked for the 40 lines the panel shows (as Herdr asks it while laying out).
   const frame = (range = { start: 100, end: 140 }) => {
-    S.lists.length = 0; S.made = 0; v.render(cx);
+    S.lists.length = 0; const el0 = S.n.el; v.render(cx);
     const list = S.lists.find((l) => String(l.id).startsWith("pr-diff-"));
     assert.ok(list, "the diff is a virtual list");
     S.texts = new Set(); list.render(range, cx); const texts = S.texts; S.texts = null;
-    return { made: S.made, n: list.n, texts };
+    return { made: S.n.el - el0, n: list.n, texts };
   };
   const made = {};
   for (const n of [200, 1500, 5000]) { v.rows = file(n); v.open = "a.py"; v.sel = null; frame(); await flush(); made[n] = frame(); assert.equal(made[n].n, n + 1, `${n} lines and the line to comment on the file`); }
@@ -385,5 +385,31 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   const asked = []; v.diffList = { scroll_to_item: (i, how) => asked.push([i, how]) };
   v.comments = []; v.scrollRow = 30; v.sel = null; v.askTop = false; v.render(cx); v.scrollRow = "top"; v.render(cx);
   assert.deepEqual([asked, v.scrollRow], [[[31, "center"], [0, "top"]], null]);
+}
+
+// ---- the Worktrees mod's PR marks (shared "worktrees.prs.review"): only with that mod there, written only on a change
+{
+  const { worktreePrs } = await import("./views.js");
+  const now = Date.parse("2026-11-15T12:00:00Z"), pr = (n, state, extra = {}) => ({ url: `https://github.com/o/r/pull/${n}`, repo: "o/r", number: n, state, head: `feat/${n}`, base: "main", headSha: `h${n}`, updatedAt: "2026-11-14T00:00:00Z", ...extra });
+  assert.deepEqual(worktreePrs([[pr(2, "open"), pr(1, "merged"), pr(3, "merged", { updatedAt: "2026-09-01T00:00:00Z" }), pr(4, "open", { head: null })], [pr(2, "draft")]], now).map((x) => [x.number, x.state, x.branch]),
+    [[1, "merged", "feat/1"], [2, "open", "feat/2"]], "one per URL, sorted; not merged long ago, not without a head branch");
+  S.props = {}; S.exec = null; S.spaces = [{ id: "s1", active: true, folder: "/repo", tabs: [] }];
+  for (const k of ["pr.selected", "pr.sourceBy", "review.open", "worktrees.api", "worktrees.providers", "worktrees.prs.review"]) Map.prototype.set.call(S.store, k, null);
+  const file = (prs) => S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: "x", prs }));
+  const mine = (n, state = "open") => ({ ...pr(n, state), session: "abcdefgh", at: "2026-11-14" });
+  file([mine(7)]);
+  const v = new PrReview(); v.init({}, cx); await flush(); v.render(cx); await flush();
+  assert.equal(S.store.get("worktrees.prs.review"), null, "without the Worktrees mod nothing is written");
+  Map.prototype.set.call(S.store, "worktrees.api", { version: 1 }); reset(); v.render(cx); await flush();
+  assert.deepEqual([n.writes, S.store.get("worktrees.providers"), S.store.get("worktrees.prs.review").prs.map((x) => `${x.repo}#${x.number} ${x.branch} ${x.state}`), S.store.get("worktrees.prs.review").run],
+    [["worktrees.providers", "worktrees.prs.review"], ["review"], ["o/r#7 feat/7 open"], [["pr-review.pick:{repo}#{number}", {}]]], "the mod appears: the provider and its list, once");
+  await idle(v, "the same list: renders write nothing");
+  reset(); await v.loadPrs(cx); v.publishWorktrees(); assert.deepEqual(n.writes, [], "prs.json read again with the same PRs: nothing written");
+  file([mine(7, "merged"), mine(8)]); reset(); await v.loadPrs(cx);
+  assert.deepEqual([n.writes, S.store.get("worktrees.prs.review").prs.map((x) => `${x.number} ${x.state}`)], [["worktrees.prs.review"], ["7 merged", "8 open"]], "a changed list is written once");
+  // A click on a mark there: pick:<owner/repo#n> picks the PR here, also when the shown source does not list it, and leaves the source alone.
+  Map.prototype.set.call(S.store, "pr.source", "review"); v.srcLists.review = { key: "review", prs: [] };
+  v.panelCommand("pick:o/r#8", cx); await flush();
+  assert.deepEqual([v.prSel?.number, v.sourceNow()], [8, "review"], "the PR is picked, the source stays");
 }
 console.log("panel ok");

@@ -24,7 +24,7 @@ import { tabArgs } from "./threads.js"; // a new Claude tab with the PR's text: 
 import { loadDiff, saveDiff } from "./diffcache.js";
 import { setupBanner, renderSetup, loadSetup, runSetup, openUrl, readConfig } from "./setup-view.js";
 import { chip, PRIORITY_TIP } from "./stack.js";
-import { panelState, bodyTab, DONE_DAYS, diffTooLarge, filesToDiff, isOpenPr, byState, listRows, riskSignal, progressText, pendingText, rowMarks, mineGroups, progressRows, removedText, withPick, openSig, panelShown, byRef, fileRisk, leftNow, wrapCode, codeCols, sliceSpans, markLabel, chipAt, textW, spaceFolders, headBranch, spaceBranches, branchPrQuery, branchPrs, spaceOrder, focusedPr, spaceEmpty } from "./views.js";
+import { panelState, bodyTab, DONE_DAYS, diffTooLarge, filesToDiff, isOpenPr, byState, listRows, riskSignal, progressText, pendingText, rowMarks, mineGroups, progressRows, removedText, withPick, openSig, panelShown, byRef, fileRisk, leftNow, wrapCode, codeCols, sliceSpans, markLabel, textW, panelButtons, panelHit, panelPress, PANEL_EDGE, spaceFolders, headBranch, spaceBranches, branchPrQuery, branchPrs, spaceOrder, focusedPr, spaceEmpty, worktreePrs } from "./views.js";
 import { keepLast } from "./views.js"; // every cache has a limit
 import { ReviewMode, startReview, startExplore, saveKey, flowCard, modelPills, modelLabel, renderReviews, renderAgentBar, renderKeys, renderCardMenu, renderMini } from "./review.js";
 import { highlightJob, highlightStep, langOf, firstLineOf, colors, renderLine, editorSyntax } from "./syntax.js";
@@ -61,16 +61,20 @@ const REVIEW = { APPROVED: ["approved", "ansi2"], CHANGES_REQUESTED: ["changes r
 const BRANCH = "branch"; // shared "pr.selected": the current branch was picked (not a PR)
 // The panel's diff is a virtual list (as the review's): only the lines on screen are built per frame, so a frame costs
 // the same for 200 lines as for 9000. Its cards have no handler of their own (a list's renderer cannot hold one): a
-// press is found by its place, so their buttons have stated widths, right-aligned at the card's inner edge.
+// press is found by its place. views.js panelButtons says each card's buttons, their widths and gap: they are drawn
+// from it (diffItem) and hit from it (onDiffItem, panelHit).
 const ONE_LINE = [0]; // a line that does not wrap
 const DIFF_MAX = 9000; // lines of one file's diff; the list itself holds at most 10000 items
-const LINE_H = 20, CARD_EDGE = 21; // a line's height; from the list's right edge to a card's inner one (12 margin, 1 border, 8 padding)
-const PRESET_W = PRESETS.map(([label]) => textW(label, TYPE.panel) + 20), ACT_W = [58, 78, 46], BOX_W = [32, 46]; // Cancel, Comment or Save, Ask; Edit, Delete
+const LINE_H = 20; // a line's height
 const HL_STALE = 2000; // ms a highlight slice may be busy before it counts as stopped (Herdr stops one after ~50 ms)
 const SEC_MARK = "⛨"; // security's own mark in a PR row (a shield), next to the word
 // A PR's head as GitHub last gave it ({at, sha} by url) and the asks under way: one for every copy of the mod (the
 // panel, then the review of the same PR), so opening the review does not ask again what the panel just asked.
 const HEADS = new Map(), HEAD_ASKS = new Map();
+// A folder's repo (git rev-parse: root, git dir, default branch) by folder, for every copy of the mod as well: the
+// review of a PR is a new copy each time it opens, and waited for this one command (0.3 s, 0.7 to 2 s on a busy
+// machine) before it built anything from the diff it had read from the cache in a few ms.
+const REPOS = new Map();
 const age = (iso) => { const m = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000)); return !Number.isFinite(m) ? "" : m < 60 ? `${m}m` : m < 2880 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`; };
 
 function location() {
@@ -136,7 +140,7 @@ export default class PrReview extends View {
     this.view = "diff"; this.walk = null; this.step = 0; this.read = new Set();
     // Speed: every spawn costs 0.3-0.5 s here. Repos and PR info are remembered; memo keeps the last MEMO contexts
     // (diff, open file, selection) so going back to one shows it with no exec; watchFolder marks a repo dirty.
-    this.repos = new Map(); this.prInfo = new Map(); this.memo = new Map(); this.dirty = new Set(); this.watching = new Map(); this.heads = HEADS;
+    this.repos = REPOS; this.prInfo = new Map(); this.memo = new Map(); this.dirty = new Set(); this.watching = new Map(); this.heads = HEADS;
     if (this.part === "review") return this.initReview(cx);
     // The pick from before (shared "pr.selected") is known at once: the list is not drawn (nor fetched) while prs.json
     // is read, and the branch's diff is only made when the branch is what the panel shows.
@@ -199,8 +203,13 @@ export default class PrReview extends View {
     // buttons; bh<comment id>: a comment's Edit and Delete), x px from the list's left edge for the cards' buttons.
     else if (name === "press" && arg) { const m = /^(\d+),(.+)$/.exec(arg); this.press = { x: m ? Number(m[1]) : 0, w: this.panelW ?? 380, shift: false }; this.onDiffItem(m ? m[2] : arg, cx); }
     else if (name === "file" && arg && this.files.some((f) => f.path === arg)) this.pick(arg, cx); // file:<path>, a file row's click in the shown diff
-    // pick:<number | owner/repo#number | url>: a row of the list, else a row of In progress (the same click there).
-    else if (name === "pick") { const pr = byRef(this.listNow(), arg), r = pr ? null : byRef(this.panelProgress().shown, arg); if (pr) this.pickTarget(pr, cx); else if (r) this.pickTarget(r.target ?? r, cx); }
+    // pick:<number | owner/repo#number | url>: a row of the shown list; else a PR of another list (the source shown
+    // stays as it is), else, named with its repo, any PR as "Open PR…" takes it (a click on a mark in the Worktrees mod).
+    else if (name === "pick") {
+      const pr = byRef(this.listNow(), arg) ?? byRef(this.knownPrs(), arg), ref = pr ? null : parsePrRef(arg);
+      if (pr) this.pickTarget(pr, cx);
+      else if (ref) { this.openRefInput.set_value(arg); this.openRef(cx); }
+    }
   }
 
   key() { return this.prSel?.url ?? JSON.stringify(location()); }
@@ -222,6 +231,7 @@ export default class PrReview extends View {
     if (doc) this.prs = doc.prs ?? [];
     this.dropMinimized();
     if (this.prSel) this.prSel = this.prs.find((p) => p.url === this.prSel.url) ?? this.prSel; // fresh updatedAt: the diff cache stamp
+    this.publishWorktrees();
     cx.notify();
     return doc;
   }
@@ -264,7 +274,8 @@ export default class PrReview extends View {
       this.repos.set(cwd, exec("git", ["rev-parse", "--show-toplevel", "--absolute-git-dir", "--abbrev-ref", "origin/HEAD"], { cwd }).then((r) => {
         const [root, gitdir, base] = r.stdout.trim().split("\n");
         return gitdir?.startsWith("/") ? { root, gitdir, base: r.code === 0 ? base : "origin/main" } : null;
-      }).catch(() => null));
+      }).catch(() => { this.repos.delete(cwd); return null; })); // the command did not run: asked again next time
+      keepLast(this.repos, 100);
     }
     return this.repos.get(cwd);
   }
@@ -830,7 +841,7 @@ export default class PrReview extends View {
     if (!key) { this.srcLists[now] = { key: null, prs: [], why }; return shown(); } // nothing to ask GitHub about here: the list says what to do
     const before = await readTextFile(sourcesFile()).catch(() => null), doc = JSON.parse(before ?? "{}");
     if (stale()) return;
-    if (!force && doc[key] && Date.now() - doc[key].at < SOURCE_MS) { this.srcLists[now] = { key, why, ...doc[key] }; return shown(); }
+    if (!force && doc[key] && Date.now() - doc[key].at < SOURCE_MS) { this.srcLists[now] = { key, why, ...doc[key] }; this.publishWorktrees(); return shown(); }
     const busy = (this.srcBusy ??= new Set()); // by list: neighbours can be fetched at the same time
     if (busy.has(key)) return; // this list is being fetched: that answer serves this ask too
     busy.add(key);
@@ -839,7 +850,7 @@ export default class PrReview extends View {
     busy.delete(key);
     const here = now === "review" || !stale(); // another space's list: kept in sources.json for it, not shown in this one
     if (prs instanceof Error) { if (here) { this.srcLists[now] = { ...this.srcLists[now], loading: false, error: `gh: ${String(prs.message ?? prs).slice(0, 160)}` }; cx.notify(); } return; }
-    if (here) { this.srcLists[now] = { key, why, prs, at: Date.now() }; this.dropMinimized(); }
+    if (here) { this.srcLists[now] = { key, why, prs, at: Date.now() }; this.dropMinimized(); this.publishWorktrees(); }
     for (let attempt = 0; attempt < 3; attempt++) { // compare-and-swap: another copy may write it too
       const old = await readTextFile(sourcesFile()).catch(() => null);
       try { await writeTextFile(sourcesFile(), JSON.stringify(pruneSources({ ...JSON.parse(old ?? "{}"), [key]: { at: Date.now(), prs } }, SOURCE_KEEP)), old); break; } catch { /* again */ }
@@ -875,7 +886,24 @@ export default class PrReview extends View {
 
   // Optional Go to (mods/goto/PROVIDERS.md) integration: PR links there become "Review PR", and reviews in progress
   // are findable. Go to hands the PR over through shared "pr.goto"; render picks it up. Without goto nothing happens.
+  // Every PR the panel knows in the contexts the view shows: your session PRs, the lists fetched, the reviews in progress.
+  knownPrs() {
+    return [...this.prs, ...Object.values(this.srcLists ?? {}).flatMap((l) => l?.prs ?? []), ...(shared("review.open") ?? []).map((r) => r.target ?? r)].filter(shownIn);
+  }
+  // Optional Worktrees (its PROVIDERS.md) integration: which PR belongs to which branch, from what the panel already
+  // has (no fetch, no timer). Only with that mod there (shared "worktrees.api"), and written only when the list
+  // changed: a shared write redraws every mod of the window. A click on a mark there picks the PR here.
+  publishWorktrees() {
+    if (this.part || !shared("worktrees.api")) return;
+    const prs = worktreePrs([this.knownPrs()]), sig = JSON.stringify(prs);
+    if (sig === this.wtSig) return;
+    this.wtSig = sig;
+    const p = shared("worktrees.providers") ?? [];
+    if (!p.includes("review")) setShared("worktrees.providers", [...p, "review"]);
+    setShared("worktrees.prs.review", { at: Date.now(), run: [["pr-review.pick:{repo}#{number}", {}]], prs });
+  }
   publishGoto() {
+    this.publishWorktrees(); // the reviews in progress changed, or the copy starts
     const p = shared("goto.providers") ?? [];
     if (!p.includes("review")) setShared("goto.providers", [...p, "review"]);
     const open = { key: "pr.goto", value: { url: "{url}", repo: "{owner}/{repo}", number: "{number}" } };
@@ -1116,7 +1144,7 @@ export default class PrReview extends View {
   }
   // A comment's text takes the lines its length asks for at the card's width (a stated height, as the list needs).
   boxH(c) {
-    const w = Math.max(120, (this.panelW ?? 380) - 2 * CARD_EDGE);
+    const w = Math.max(120, (this.panelW ?? 380) - 2 * PANEL_EDGE);
     return 10 + 17 * String(c.text ?? "").split("\n").reduce((n, l) => n + Math.max(1, Math.ceil(textW(l, TYPE.small) / w)), 0);
   }
   // One item as an element, without a handler (the list's renderer cannot hold one): onDiffItem acts on a press.
@@ -1126,40 +1154,43 @@ export default class PrReview extends View {
     if (it.t === "ask") return div().id(`pr-ask-file-${this.uid}`).w_full().px(12).h(it.h).flex().items_center().font_family(settings().ui_font ?? "Geist").text_size(TYPE.panel).text_color(t.dim).cursor_pointer()
       .tooltip("Write a comment or question about the whole file (c)").hover((s) => s.text_color(t.foreground)).child(`+ Comment or ask about ${this.open?.split("/").pop() ?? "this file"} (or click a line)`);
     if (it.t === "more") return ui(div().w_full().px(12).h(it.h).flex().items_center().text_color(t.dim)).child(`${it.n} more lines are not shown: the list holds about 10000 at once.`);
-    // A card is drawn over two or three items: its frame's top on the first, its bottom on the last.
-    const frame = (color, top, bottom, child) => div().w_full().h(it.h).px(12).when(top, (e) => e.pt(4)).when(bottom, (e) => e.pb(4))
+    // A card is drawn over two or three items: its frame's top on the first, its bottom on the last. Its inner right
+    // edge is PANEL_EDGE from the list's (margin, 1 px border, 8 px padding), where panelButtons' last button ends.
+    const frame = (color, top, bottom, child) => div().w_full().h(it.h).px(PANEL_EDGE - 9).when(top, (e) => e.pt(4)).when(bottom, (e) => e.pb(4))
       .child(ui(child.size_full().px(8).bg(t.surface).border_x(1).border_color(color).when(top, (e) => e.border_t(1).rounded_t(8)).when(bottom, (e) => e.border_b(1).rounded_b(8)).overflow_hidden()));
-    const fixed = (id, label, w, tip) => div().id(`${id}-${this.uid}`).tooltip(tip).flex_none().w(w).flex().items_center().justify_center();
-    if (it.t === "bh") return frame(t.border, true, false, h_flex().gap(8).items_center().text_size(TYPE.micro).text_color(t.dim)
+    // The row's buttons, in panelButtons' order and widths; look(key, element) gives each its label and colors.
+    const o = this.buttonOpts(), row = panelButtons(it.t, o), canSend = Boolean((this.root || this.pr) && !this.sending), ready = Boolean(this.question.trim() && canSend);
+    const buttons = (look) => row.list.map((b) => look(b.key, div().flex_none().w(b.w).flex().items_center().justify_center()));
+    const act = (e, id, label, on, solid, tip) => e.id(`${id}-${this.uid}`).tooltip(tip).h(26).rounded(6)
+      .when(solid, (x) => x.bg(on ? t.solid : t.raised).text_color(on ? t.solid_foreground : t.dim)).when(!solid, (x) => x.border_1().border_color(t.border).text_color(on ? t.foreground : t.dim))
+      .when(on, (x) => x.cursor_pointer()).child(label);
+    if (it.t === "bh") return frame(t.border, true, false, h_flex().gap(row.gap).items_center().text_size(TYPE.micro).text_color(t.dim)
       .child(div().flex_1().min_w(0).truncate().child(it.label ?? uiLine(it.c)))
-      .child(fixed(`ce-${it.c.id}`, "Edit", BOX_W[0], "Edit this comment").cursor_pointer().hover((s) => s.text_color(t.foreground)).child("Edit"))
-      .child(fixed(`cd-${it.c.id}`, "Delete", BOX_W[1], "Delete this comment; it has not been sent").cursor_pointer().hover((s) => s.text_color(t.ansi1)).child("Delete")));
+      .children(buttons((key, e) => (key === "edit" ? e.id(`ce-${it.c.id}`).tooltip("Edit this comment").cursor_pointer().hover((s) => s.text_color(t.foreground)).child("Edit")
+        : e.id(`cd-${it.c.id}`).tooltip("Delete this comment; it has not been sent").cursor_pointer().hover((s) => s.text_color(t.ansi1)).child("Delete")))));
     if (it.t === "bb") return frame(t.border, false, true, div().whitespace_normal().line_height(1.4).child(it.c.text));
-    const canSend = Boolean((this.root || this.pr) && !this.sending), ready = Boolean(this.question.trim() && canSend);
-    if (it.t === "ch") return frame(t.accent, true, false, h_flex().gap(6).items_center()
+    if (it.t === "ch") return frame(t.accent, true, false, h_flex().gap(row.gap).items_center()
       .child(div().flex_1().min_w(0).truncate().text_size(TYPE.panel).text_color(t.dim).child(this.editing ? "Editing comment (Esc: cancel)" : `On ${where}`))
-      .when(!this.editing, (e) => e.children(PRESETS.map(([label, q], k) => fixed(`preset-${k}`, label, PRESET_W[k], `Send this question to the agent now: ${q}`).h(22).rounded(5).border_1().border_color(t.border).text_size(TYPE.panel).text_color(t.muted)
-        .cursor_pointer().hover((s) => s.text_color(t.foreground)).child(label)))));
+      .children(buttons((key, e) => { const k = Number(key.split(":")[1]); return e.id(`preset-${k}-${this.uid}`).tooltip(`Send this question to the agent now: ${PRESETS[k][1]}`).h(22).rounded(5).border_1().border_color(t.border)
+        .text_size(TYPE.panel).text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground)).child(PRESETS[k][0]); })));
     if (it.t === "ci") return frame(t.accent, false, false, div().py(3).child(div().id("pr-question").tooltip("Type a comment or a question about the selected lines").h(30).px(8).flex().items_center().rounded(6).border_1()
       .border_color(this.typing ? t.accent : t.border).cursor_text().child(Input.new(this.input).h_full().text_size(TYPE.small).text_color(t.foreground))));
-    const btn = (id, label, w, on, solid, tip) => fixed(id, label, w, tip).h(26).rounded(6)
-      .when(solid, (e) => e.bg(on ? t.solid : t.raised).text_color(on ? t.solid_foreground : t.dim)).when(!solid, (e) => e.border_1().border_color(t.border).text_color(on ? t.foreground : t.dim))
-      .when(on, (e) => e.cursor_pointer()).child(label);
-    return frame(t.accent, false, true, h_flex().gap(6).justify_end().items_center() // "ca": the composer's buttons
-      .child(btn("pr-cancel", "Cancel", ACT_W[0], true, false, "Close without saving (Esc)"))
-      .child(btn("pr-comment", this.editing ? "Save" : "Comment", ACT_W[1], Boolean(this.question.trim() && this.open), false, this.editing ? "Save the changed comment" : "Add to the pending review; nothing is sent yet"))
-      .when(!this.editing, (e) => e.child(btn("pr-ask", this.sending ? "…" : "Ask", ACT_W[2], ready, true, "Send this question to the coding agent now"))));
+    return frame(t.accent, false, true, h_flex().gap(row.gap).justify_end().items_center().children(buttons((key, e) => // "ca": the composer's buttons
+      (key === "cancel" ? act(e, "pr-cancel", "Cancel", true, false, "Close without saving (Esc)")
+        : key === "comment" ? act(e, "pr-comment", this.editing ? "Save" : "Comment", Boolean(this.question.trim() && this.open), false, this.editing ? "Save the changed comment" : "Add to the pending review; nothing is sent yet")
+          : act(e, "pr-ask", this.sending ? "…" : "Ask", ready, true, "Send this question to the coding agent now")))));
   }
+  buttonOpts() { return { editing: Boolean(this.editing), presets: PRESETS.map(([label]) => label) }; }
   // A press on an item of the diff's list (its key): a line is selected; a card's button is the one under the press
-  // (this.press: where the mouse went down, from the list's own handler; views.js chipAt finds the button).
+  // (this.press: where the mouse went down, from the list's own handler; views.js panelHit finds the button).
   onDiffItem(key, cx) {
-    const { x = 0, w = this.panelW ?? 380, shift = false } = this.press ?? {}, right = w - CARD_EDGE;
-    if (key[0] === "r") this.rowClick(Number.parseInt(key.slice(1), 10), shift, cx);
+    const { x = 0, w = this.panelW ?? 380, shift = false } = this.press ?? {}, hit = (kind) => panelHit(kind, x, w, this.buttonOpts());
+    if (key[0] === "r") this.rowClick(Number.parseInt(key.slice(1), 10), shift, cx); // "r12", or "r12.1": a wrapped line's second visual line
     else if (key === "ask") { this.sel = null; this.selEnd = null; this.askTop = true; this.focusInput(cx); }
     else if (key === "ci") this.focusInput(cx);
-    else if (key === "ch") { const k = this.editing ? -1 : chipAt(x, right, PRESET_W, 6); if (k >= 0) this.ask(cx, PRESETS[k][1]); else this.focusInput(cx); }
-    else if (key === "ca") { const k = chipAt(x, right, this.editing ? ACT_W.slice(0, 2) : ACT_W, 6); if (k === 0) this.closeAsk(cx); else if (k === 1) this.addComment(cx); else if (k === 2) this.ask(cx); else this.focusInput(cx); }
-    else if (key.startsWith("bh")) { const c = this.comments.find((x0) => `bh${x0.id}` === key), k = c ? chipAt(x, right, BOX_W, 8) : -1; if (k === 0) this.editComment(c, cx); else if (k === 1) this.dropComment(c, cx); }
+    else if (key === "ch") { const b = hit("ch"); if (b) this.ask(cx, PRESETS[Number(b.split(":")[1])][1]); else this.focusInput(cx); }
+    else if (key === "ca") { const b = hit("ca"); if (b === "cancel") this.closeAsk(cx); else if (b === "comment") this.addComment(cx); else if (b === "ask") this.ask(cx); else this.focusInput(cx); }
+    else if (key.startsWith("bh")) { const c = this.comments.find((c0) => `bh${c0.id}` === key), b = c ? hit("bh") : null; if (b === "edit") this.editComment(c, cx); else if (b === "delete") this.dropComment(c, cx); }
     cx.notify();
   }
 
@@ -1322,13 +1353,19 @@ export default class PrReview extends View {
         this.finishQueued = true;
         cx.timer.after(0, (cx) => { this.finishQueued = false; setShared("pr.finish", null); if (this.reviewKey === fin.url && !this.finishOpen) { this.command("finish", cx); cx.notify(); } });
       }
-      return this.renderReview(cx);
+      // drawing: archL leaves a big map's layout for after the frame (firstLayouts), a frame has about 50 ms.
+      this.drawing = true;
+      const el = this.renderReview(cx);
+      this.drawing = false; this.firstLayouts(cx); this.layoutSoon(cx);
+      return el;
     }
     if (this.view === "walk" && this.walkModel && walkModel() !== this.walkModel && !this.walkBusy) this.openWalk(cx, false); // picker changed: that model's cache
     // Go to: a handed-over PR (outside render), and the reviews-in-progress items when that list changes.
     if (shared("pr.goto")?.url && !this.gotoQueued) { this.gotoQueued = true; cx.timer.after(0, (cx) => { this.gotoQueued = false; this.takeGoto(cx); }); }
     // shared() hands out a new object each time: compared by what the items are made of (views.js openSig), not by identity.
     if (openSig(shared("review.open")) !== this.gotoSig) { this.gotoSig = openSig(shared("review.open")); cx.timer.after(0, () => this.publishGoto()); }
+    // Worktrees came (or went), or the view shows other contexts: its list again (written only when it differs).
+    { const wk = `${Boolean(shared("worktrees.api"))}|${viewKey()}`; if (wk !== this.wtKey) { this.wtKey = wk; cx.timer.after(0, () => this.publishWorktrees()); } }
     if (this.spaceSeen !== undefined && location().space !== this.spaceSeen) { this.spaceSeen = location().space; cx.timer.after(0, (cx) => this.onSpace(cx)); }
     if (!this.scanQueued && this.scanDue()) { this.scanQueued = true; cx.timer.after(0, (cx) => { this.scanQueued = false; this.scanIfDue(cx); }); }
     // The selection is never dropped here: a PR the view hides gets a banner instead.
@@ -1434,7 +1471,7 @@ export default class PrReview extends View {
         // A virtual list, as the review's diff: only the lines on screen are built (diffItems, diffItem). The press is
         // kept here, outside the list, for onDiffItem: where it went down and whether shift was held.
         // The event is in logical px, the items are laid out in the person's zoom: both in the items' px (as panelW).
-        .on_mouse_down("left", (e) => { const z = settings().zoom || 1; this.press = { x: (e.local_position?.x ?? 0) / z, w: e.bounds?.width ? e.bounds.width / z : this.panelW ?? 380, shift: Boolean(e.modifiers?.shift) }; })
+        .on_mouse_down("left", (e) => { this.press = { ...panelPress(e.local_position?.x, e.bounds?.width, settings().zoom, this.panelW ?? 380), shift: Boolean(e.modifiers?.shift) }; })
         .child(list.items.length
           ? v_virtual_list(diffId, list.items.length, list.items.map((it) => it.h), (i) => list.items[i].k, (range) => list.items.slice(range.start, range.end).map((it) => this.diffItem(it, t, where)))
             .track_scroll(this.diffList).on_item_click((key, cx) => this.onDiffItem(key, cx)).size_full()

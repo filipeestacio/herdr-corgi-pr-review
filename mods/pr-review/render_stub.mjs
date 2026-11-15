@@ -6,16 +6,17 @@ import { registerHooks } from "node:module";
 
 // files: what readTextFile finds; clicks: an element's id → its on_click handler (from the last frame drawn);
 // overlays: what openOverlay was asked to show.
-export const S = (globalThis.__rv = { errs: [], lists: [], store: new Map(), files: new Map(), props: null, clicks: new Map(), overlays: [] });
+// n: how much a frame builds (el: elements made, call: builder calls on them), for the performance checks.
+export const S = (globalThis.__rv = { errs: [], lists: [], store: new Map(), files: new Map(), props: null, clicks: new Map(), overlays: [], n: { el: 0, call: 0 } });
 const where = () => new Error().stack.split("\n").slice(3, 6).map((s) => s.trim()).join(" | ");
 const bad = (v) => v === null || v === undefined || (typeof v === "number" && !Number.isFinite(v));
 S.el = () => {
-  S.made = (S.made ?? 0) + 1; // how many elements were built: a test sets S.made = 0 and reads it after a frame
-  let id = null, click = null;
+  let id = null, click = null; S.n.el++;
   const p = new Proxy(function () {}, {
     get(_, k) {
       if (k === "then") return undefined;
       return (...a) => {
+        S.n.call++;
         if (k === "id") id = a[0];
         if (k === "on_click") click = a[0];
         if ((k === "id" || k === "on_click") && id !== null && click) S.clicks.set(id, click);
