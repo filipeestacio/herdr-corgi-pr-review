@@ -481,7 +481,9 @@ export function stateView(L, t, id, onJump, marks = null) {
   const chips = bundleChips(marked).map((g, k) => {
     if (g.length === 1) return jump(chip(g[0].key, g[0].x, g[0].y, col(g[0].e), `${g[0].text}${findTip(g[0].m)}`, chipText(g[0].m)), g[0].e.at ?? g[0].e.evidence);
     const all = [...new Map(g.flatMap((c) => c.m.findings).map((f) => [f.id ?? f.title, f])).values()], sev = SEV_RANK.find((s) => g.some((c) => c.m.severity === s)) ?? g[0].m.severity;
-    return jump(chip(`mb${k}`, Math.min(...g.map((c) => c.x)), Math.min(...g.map((c) => c.y)), sevC({ severity: sev }),
+    // Right of the bundle's last arrow, so it covers no arrowhead (a self-loop's chip sits over its ring, not beside an arrow).
+    const arrows = g.filter((c) => c.key.startsWith("m")), bx = arrows.length ? Math.max(...arrows.map((c) => c.x)) : Math.min(...g.map((c) => c.x));
+    return jump(chip(`mb${k}`, bx, Math.min(...g.map((c) => c.y)), sevC({ severity: sev }),
       `${all.length} unresolved findings at ${g.length} transitions that end here:\n\n${g.map((c) => `${named(c.text)} (${c.m.severity})\n${c.m.findings.slice(0, 5).map((f) => `· ${f.title}`).join("\n")}`).join("\n\n")}`, `${all.length} findings`), g[0].e.at ?? g[0].e.evidence);
   });
   return div().id(id).relative().flex_none().w(L.width).h(L.height + 2).children([gridBg(t, L.width, L.height + 2), ...els, ...nodes, ...kids, ...loops, ...stubs, ...chips]);

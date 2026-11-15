@@ -5628,7 +5628,7 @@ export const ReviewMode = {
     });
     cx.notify();
   },
-  // The Overview's "Updated … ago ↻": how old the GitHub facts on this page are (CI checks, mergeability, related PRs),
+  // The Overview's "GitHub read … ago ↻": how old the GitHub facts on this page are (CI checks, mergeability, related PRs),
   // and the way to fetch them again, instead of asking GitHub on a timer.
   freshFact(fact) {
     const busy = Boolean(this.ctxIn), at = Date.parse(this.ctx.at);
