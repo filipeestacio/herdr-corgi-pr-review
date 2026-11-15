@@ -221,5 +221,27 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   await quiet(v);
   assert.deepEqual(drawn(), { layouts: 0, picture: true }, "also once the search for a better layout is through");
 }
+// ---- "Open in <Editor>": the installed editors are found by reading files, with no process; the frames that draw
+// the links (a file head's zones in the big diff, the cards' monogram) start none either, however many follow; a
+// click is one.
+{
+  const EV = await import("./editor-view.js"); EV.forgetEditors();
+  let procs = 0;
+  S.files.set("/Applications/Visual Studio Code.app/Contents/Info.plist", "<plist/>");
+  S.exec = async (cmd) => { if (cmd === "open") { procs++; return { code: 0, stdout: "", stderr: "" }; } throw new Error("stub"); };
+  const v = await openReview(PR2());
+  S.files.set("/Applications/Visual Studio Code.app/Contents/Info.plist", "<plist/>"); await EV.lookForEditors(true); // opening the review emptied the stand-in files
+  v.worktree = { url: v.prSel.url, head: v.head, path: "/h/w" };
+  v.tab = "files"; v.page = null; await quiet(v);
+  assert.deepEqual([procs, v.edOn, v.fileEditMark(v.patch[0])?.text], [0, true, "VS Code ↗"], "the editors are known without a process, and the file heads carry the link");
+  for (let k = 0; k < 30; k++) frame(v);
+  later(); await settle();
+  assert.equal(procs, 0, "30 frames with the links start no process");
+  for (const page of ["overview", "blast", "arch"]) { v.tab = "steps"; v.page = page; await quiet(v); for (let k = 0; k < 5; k++) frame(v); }
+  assert.equal(procs, 0, "nor do the pages with the cards' monogram");
+  v.command(`editor:${v.patch[0].path}:3`, cx); await settle();
+  assert.equal(procs, 1, "a click is one process");
+  later(); EV.forgetEditors(); S.exec = null;
+}
 await settle();
 console.log("perf ok");

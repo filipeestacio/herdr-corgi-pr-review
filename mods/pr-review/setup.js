@@ -20,6 +20,12 @@ export const TOOLS = [
     mac: null, linux: "sudo apt install bubblewrap" },
   { id: "acli", need: "optional", what: "The Jira ticket a PR names, in the task check (Atlassian CLI)",
     mac: "brew tap atlassian/homebrew-acli && brew install acli", linux: null },
+  // Editors for "Open in <Editor>" (editor.js): one is enough. apps: the macOS applications that count as installed
+  // without the command line tool (the links open through the app, not through the tool).
+  { id: "code", need: "optional", apps: ["Visual Studio Code"], what: "Open in VS Code: a file of a PR's checkout at its line, a definition, a card's place in the code, the checkout itself.",
+    mac: "brew install --cask visual-studio-code", linux: "sudo snap install code --classic" },
+  { id: "idea", need: "optional", apps: ["IntelliJ IDEA", "IntelliJ IDEA Ultimate", "IntelliJ IDEA CE", "IntelliJ IDEA Community Edition"], what: "Open in IntelliJ IDEA: the default for Java, Kotlin and Gradle files and for Maven and Gradle projects.",
+    mac: "brew install --cask intellij-idea-ce", linux: "sudo snap install intellij-idea-community --classic" },
   { id: "typescript-language-server", also: ["tsc"], need: "lsp", lang: "TypeScript and JavaScript",
     mac: "npm install -g typescript-language-server typescript", linux: "npm install -g typescript-language-server typescript" },
   { id: "pyright-langserver", need: "lsp", lang: "Python", mac: "npm install -g pyright", linux: "npm install -g pyright" },
@@ -39,6 +45,8 @@ export function checkScript(names = programs()) {
   return [
     'PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$HOME/go/bin:$HOME/.local/bin"',
     `for c in ${names.join(" ")}; do printf '%s=%s\\n' "$c" "$(command -v "$c" 2>/dev/null)"; done`,
+    // An editor's macOS app counts as that editor: a later line for the same name wins in parseCheck.
+    ...TOOLS.filter((t) => t.apps && names.includes(t.id)).map((t) => `for a in ${t.apps.map((a) => `"${a}"`).join(" ")}; do for d in /Applications "$HOME/Applications"; do [ -d "$d/$a.app" ] && printf '%s=%s\\n' ${t.id} "$d/$a.app"; done; done`),
     'if command -v gh >/dev/null 2>&1; then gh auth status >/dev/null 2>&1 && echo auth:gh=1 || echo auth:gh=0; fi',
     'if command -v claude >/dev/null 2>&1; then claude auth status 2>/dev/null | grep -q \'"loggedIn": *true\' && echo auth:claude=1 || echo auth:claude=0; fi',
   ].join("\n");

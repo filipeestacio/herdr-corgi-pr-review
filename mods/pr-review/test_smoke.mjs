@@ -913,6 +913,39 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     assert.equal(/Re-run it for the current view\. (\d+ of the|None of the)/.test(v.mdText(false)), old, `rules ${rules}: the Markdown's sentence counts`);
   }
 }
+// "Open in <Editor>" with editors installed (their Info.plist files are there; `open` is a stub, no editor starts):
+// the file heads' zones, the cards' monogram, the definition view, the panel's head and its file link, the state
+// "Opening …"; then a PR that is not trusted.
+{
+  const EV = await import("./editor-view.js"); EV.forgetEditors();
+  const started = [];
+  for (const app of ["/Applications/Visual Studio Code.app", "/Applications/IntelliJ IDEA.app"]) S.files.set(`${app}/Contents/Info.plist`, "<plist/>");
+  S.exec = async (cmd, args = []) => { if (cmd === "open") { started.push(args); return { code: 0, stdout: "", stderr: "" }; } throw new Error("stub"); };
+  for (const trusted of [true, false]) {
+    const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json"), trusted }), who = trusted ? "your PR" : "someone else's PR";
+    EV.forgetEditors(); // also the first round's "Opening …"
+    for (const app of ["/Applications/Visual Studio Code.app", "/Applications/IntelliJ IDEA.app"]) S.files.set(`${app}/Contents/Info.plist`, "<plist/>"); // open() cleared the files
+    v.worktree = { url: v.prSel.url, head: v.head, path: "/h/w" }; S.store.set("review.worktree", v.worktree);
+    draw(v, `editor, ${who}: the frame that asks for the editors`); EV.editorFor({ root: "/h/w" }, cx); await EV.lookForEditors(true); await settle();
+    for (const tab of ["files", "findings"]) act(v, tab, `editor, ${who}: ${tab} with the links`);
+    assert.equal(v.fileEditMark(v.patch[0])?.text, "VS Code ↗", "the file heads carry the link");
+    assert.deepEqual(["a/b.py:9-14", "a/b.py:9:3", "a/b.py", "a/b.py:9", "../x:1"].map((at) => v.editAt(S.theme, "x", at).length), [1, 1, 1, 1, 0], "a card's place gets its monogram; a path that leaves the checkout gets none");
+    S.files.set("/h/w/library/loans.py", "class Loan:\n    pass\n".repeat(8)); v.tab = "files"; v.goDef({ path: "library/loans.py", line: 9, inRoot: true }, cx); await settle();
+    assert.ok(v.defFile, "a file outside the diff is open"); draw(v, `editor, ${who}: the definition view with its link`); v.defFile = null; v.defAt = null;
+    for (const pg of ["overview", "blast", "arch"]) act(v, `page:${pg}`, `editor, ${who}: page ${pg} with the monogram`);
+    for (const nd of (v.ai?.arch?.nodes ?? []).slice(0, 3)) act(v, `card:${nd.id}`, `editor, ${who}: card ${nd.id}`);
+    started.length = 0; v.command(`editor:${v.patch[0].path}:3`, cx); await settle();
+    assert.deepEqual(started, [[`vscode://file/h/w/${v.patch[0].path}:3`]], `${who}: the file at its line, one process`);
+    act(v, "files", `editor, ${who}: the link says Opening`); assert.equal(v.fileEditMark(v.patch[0]) && EV.isOpening({ root: "/h/w", file: v.patch[0].path, line: 3 }), true);
+    started.length = 0; v.command("editor:", cx); await settle();
+    assert.equal(started.length, trusted ? 1 : 0, `${who}: its folder ${trusted ? "opens" : "does not open"}`);
+    EV.openEditorMenu(v, v.fileEditTarget(v.patch[0])); v.command("editor-use:idea", cx); await settle(); draw(v, `editor, ${who}: another editor picked for the project`);
+    assert.equal(S.store.get("editor.choice")?.repos?.["/h/w/.git"]?.main, "idea");
+    S.props = {}; const panel = new PrReview(); panel.init({}, cx); await settle(); panel.prSel = v.prSel; panel.context = panel.key(); panel.patch = v.patch; panel.files = v.patch; panel.open = v.patch[0].path; draw(panel, `editor, ${who}: the panel's head and its file link`);
+    S.props = null; S.store.set("editor.choice", null);
+  }
+  EV.forgetEditors(); S.exec = null;
+}
 await settle();
 assert.deepEqual(late, [], "a spawned task threw");
 console.log(`smoke ok: ${shown} frames`);

@@ -21,7 +21,7 @@ import { withProof, PROOF_WORDS } from "./pr.js"; // Verify with an agent
 import { overviewMd, findingMd, findingsMd, layerMd, architectureMd, securityMd, verifyContextMd, resilienceMd } from "./markdown.js"; // Copy this page as Markdown
 import { mdParts, mdJoin, mdHead, mdLines, codeStats } from "./markdown.js"; // its preview: the text in sections, the code context counted
 import { highlightJob, highlightStep, highlightLines, langOf, firstLineOf, colors, renderLine, refAt } from "./syntax.js";
-import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js";
+import { lookup, warm, contents, where, setTrusted } from "./defs.js";
 import { recommendModel, tierSteps } from "./pr.js";
 import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf, codeModel, priceOf, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch, withSecurity, securityStart } from "./pr.js";
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
@@ -33,7 +33,8 @@ import { visualPlan } from "./stack.js";
 import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCALE } from "./views.js";
 import { ghMd, mdBlocks } from "./views.js"; // GitHub comments as GitHub shows them
 import { wrapCode, codeCols, sliceSpans } from "./views.js"; // long lines wrap
-import { rowMarks, riskOfCounts } from "./views.js"; // the minimized chip's mark, from the registry entry
+import { rowMarks, riskOfCounts, placeOf, patchSymlink } from "./views.js"; // the minimized chip's mark, from the registry entry; a card's place
+import { editorFor, editorMark, editorLink, editorCommand, openEditorMenu, editorFull } from "./editor-view.js"; // "Open in <Editor>"
 import { pageBadge, signOf, signEl, markLabel } from "./views.js"; // one sign for severity and certainty: nav rows, the bar, rows, chips
 import { pairRows, pairSide, HALF_GUTTER, diffModeOf, oneSided, stackOf, chipAt, textW } from "./views.js"; // side by side; the bar's stack
 import { mdTarget, secPicture, secBlast, resNoPicture } from "./views.js"; // Copy as Markdown: what it copies on each page; the Security page's picture and lines
@@ -76,6 +77,7 @@ const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "�
 const FOLD_MARGIN = 1500 * 22; // px: open the files around the view again this close to a folded one
 const SPLIT = 6, ROW = 22, GUTTER = 4 + 48 + 48 + 22, GAP_SEG = 110, BTN = 110, BTN_GAP = 8, ACT = 44;
 const FILE_CHEV = 30, FILE_SEEN = 100, FILE_WHOLE = 124;
+const FILE_EDIT = 124, FILE_EDIT_MORE = 24; // a file head's "IntelliJ ↗" (or "Opening IntelliJ …") and its ▾: zones after "Whole file" (a list row holds no handler)
 const MORE = 20; // lines per ↑/↓ click
 const ONE_LINE = [0]; // a code line that fits: one visual line from its start (wrapsOf)
 // A fenced block in a GitHub comment (codeView): font size, line height, padding; GH_GAP between a comment's blocks (as
@@ -445,6 +447,7 @@ export const ReviewMode = {
   command(c, cx) {
     const [name, ...rest] = c.split(":"), arg = rest.join(":");
     this.note = null; // the next action ends a note that stays (an error); its own note follows
+    if (editorCommand(this, c, cx, copyText)) return cx.notify(); // editor:<path>[:<line>], and the ▾ menu's entries
     if (name === "steps" || name === "files" || name === "findings" || name === "comments") this.tab = name;
     else if (name === "analysis") this.tab = "steps"; // the tab's name; "steps" stays valid
     else if (name === "def") this.defineAt(arg, cx);
@@ -1479,7 +1482,7 @@ export const ReviewMode = {
           .child(div().w(40).flex_none().pr(8).text_right().text_color(t.muted).child(String(first + i))).children(renderLine(div, l, spans[i] ?? [], c)))))
       .child(h_flex().gap(BTN_GAP)
         .child(div().id("rv-di-go").tooltip("Open the file that defines this in the review").w(BTN + 40).h(26).flex().items_center().justify_center().rounded(6).border_1().border_color(def ? t.accent : t.border).text_size(TYPE.small).text_color(def ? t.foreground : t.muted).child("Go to definition"))
-        .child(div().id("rv-di-code").tooltip("Open the defining file in VS Code").w(BTN + 40).h(26).flex().items_center().justify_center().rounded(6).border_1().border_color(t.border).text_size(TYPE.small).text_color(def ? t.foreground : t.muted).child("Open in VS Code"))
+        .child(div().id("rv-di-code").tooltip(this.edOn ? "Open the defining file in your editor" : "No editor was found to open the file in").w(BTN + 40).h(26).flex().items_center().justify_center().rounded(6).border_1().border_color(t.border).text_size(TYPE.small).text_color(def && this.edOn ? t.foreground : t.muted).child(this.edOn ? "Open in editor" : "No editor"))
         .child(div().id("rv-di-x").tooltip("Close this definition preview").px(10).h(26).flex().items_center().text_size(TYPE.small).text_color(t.muted).child("Close"))));
   },
 
@@ -1489,7 +1492,8 @@ export const ReviewMode = {
     return v_flex().flex_1().min_h(0)
       .child(h_flex().flex_none().h(40).px(12).gap(10).items_center().bg(t.raised).border_b(1).border_color(t.border).text_size(TYPE.body)
         .child(pill("rv-def-back", t, this.exMode ? "← Back" : "← Back to the diff", (_e, cx) => { this.defFile = null; this.defAt = null; cx.notify(); }).tooltip("Return to the previous view (Esc)"))
-        .child(div().flex_1().min_w(0).truncate().font_family(mono).font_semibold().child(`${f.path}:${f.line}`)))
+        .child(div().flex_1().min_w(0).truncate().font_family(mono).font_semibold().child(`${f.path}:${f.line}`))
+        .children(editorLink(this, t, "def", { root: this.lspRoot(), file: f.path, line: f.line, foreign: this.editorForeign(), where: "in the checkout this view reads" }, null))) // the same root this view reads from
       .when(Boolean(this.defAt?.inView), (e) => { const d = this.defAt, def = d.res?.definitions?.[0];
         return e.child(h_flex().flex_none().px(12).py(6).gap(8).items_center().border_b(1).border_color(t.border).bg(t.surface).text_size(TYPE.small)
           .child(div().flex_1().min_w(0).truncate().child(!d.res ? `Looking up ${d.name}…` : def ? `${d.name} → ${where(def)}` : `${d.name}: ${this.defMessage(d.res)}`))
@@ -1824,7 +1828,7 @@ export const ReviewMode = {
       const d = it.d.res?.definitions?.[0];
       if (which === 2) this.defAt = null;
       else if (d && which === 0) this.goDef(d, cx);
-      else if (d && which === 1) { const a = vscodeArgs(this.lspRoot(), d); if (a) exec("code", a); else this.note = "Could not open: the definition is not a local file"; }
+      else if (d && which === 1) { if (d.inRoot && this.lspRoot() && this.edOn) this.openEditor({ root: this.lspRoot(), file: d.path, line: d.line, foreign: this.editorForeign() }, cx); else this.note = this.edOn ? "Could not open: the definition is not a file of this checkout" : "No editor was found to open the file in"; }
     } else if (it.t === "fact") {
       const b = x - GUTTER - 12, which = Math.floor(b / (BTN + BTN_GAP)), inside = b >= 0 && b % (BTN + BTN_GAP) < BTN;
       if (inside && which === 0) this.findingComment(it.f, cx);
@@ -1846,6 +1850,8 @@ export const ReviewMode = {
       this.fileFocus = p;
       if (x >= FILE_CHEV && x < FILE_CHEV + FILE_SEEN) this.toggleSeen(p, cx);
       else if (x >= FILE_CHEV + FILE_SEEN && x < FILE_CHEV + FILE_SEEN + FILE_WHOLE && this.shown().fileHunks?.has(p)) this.toggleWhole(p, cx);
+      else if (this.fileEditMark(it.f) && x >= FILE_CHEV + FILE_SEEN + FILE_WHOLE && x < FILE_CHEV + FILE_SEEN + FILE_WHOLE + FILE_EDIT) this.openEditor(this.fileEditTarget(it.f), cx);
+      else if (this.fileEditMark(it.f) && x >= FILE_CHEV + FILE_SEEN + FILE_WHOLE + FILE_EDIT && x < FILE_CHEV + FILE_SEEN + FILE_WHOLE + FILE_EDIT + FILE_EDIT_MORE) openEditorMenu(this, this.fileEditTarget(it.f));
       else if (this.collapsed.has(p) || this.overBudget?.has(p)) this.unfold(p); else this.collapsed.add(p);
     } else if (it.t === "fold") this.unfold(it.path);
     else if (it.t === "step") {
@@ -3402,7 +3408,7 @@ export const ReviewMode = {
       if (!this.drawing || m.cards.length <= LAYOUT_IN_FRAME) make(); else (this.layQueue ??= new Map()).set("infra", make);
     }
     const o = this.archOpts("infra");
-    return [["infra", infraSection(t, { model: m, pic: m.cards.length && this.infraMemo?.model === m ? this.infraMemo.pic : null, onJump: (at, cx) => this.jumpTo(at, cx), hl: o.hl, onHl: o.onHl,
+    return [["infra", infraSection(t, { model: m, pic: m.cards.length && this.infraMemo?.model === m ? this.infraMemo.pic : null, onJump: (at, cx) => this.jumpTo(at, cx), edit: (id, at) => this.editAt(t, id, at), hl: o.hl, onHl: o.onHl,
       canvas: (L, decorate, marks) => this.archCanvas(t, L, { ...o, onFocus: null, marks, zoom: settings().zoom || 1 }, { id: "rv-infra-canvas", pic: "rv-infra", wrap: false, decorate, notes: false }) })]];
   },
 
@@ -3466,7 +3472,7 @@ export const ReviewMode = {
         .child(div().text_size(TYPE.title).font_semibold().child(n.label ?? n.id))
         .child(div().text_size(TYPE.small).text_color(t.muted).child([g?.label, n.type, n.status === "new" ? "added" : n.status].filter(Boolean).join(" · ")))
         .child(div().flex_1())
-        .when(Boolean(at), (e) => e.child(pill("rv-arch-card-open", t, "Show in diff ↗", (_e, cx) => this.jumpTo(at, cx)).tooltip(`Show ${at} in the diff`)))
+        .when(Boolean(at), (e) => e.child(pill("rv-arch-card-open", t, "Show in diff ↗", (_e, cx) => this.jumpTo(at, cx)).tooltip(`Show ${at} in the diff`)).children(this.editAt(t, "rv-arch-card-ed", at)))
         .child(pill("rv-arch-card-explain", t, paid ? "Look inside" : `Look inside (${price})`, (_e, cx) => this.showDetails(item, `arch:${n.id}`, cx, false, true), false, n.details ? null : t.foreground)
           .tooltip(paid ? "Show what the model found inside this card (already paid for)" : `One ${modelLabel(model())} call reads the code: what this does overall, what the PR changes in it, and a picture of its inside`))
         .when(this.drawerState() !== "open", (e) => e.child(pill("rv-arch-card-ask", t, "Ask", (_e, cx) => this.setDrawer("open", cx, null)).tooltip("Ask one model question about this card")))
@@ -4426,6 +4432,7 @@ export const ReviewMode = {
         .child(div().flex_1().min_w(0).text_size(TYPE.title).font_semibold().whitespace_normal().line_height(1.4).child(plain(f.title)))
         .when(Boolean(cr), (e) => e.child(div().id(`rv-sec-card-${f.id}`).flex_none().text_size(TYPE.small).text_color(t.accent).cursor_pointer().hover((x) => x.underline()).tooltip("Open its crossing in the table above").on_click((_e, cx) => ctx.show(cr.key, cx)).child(`Crossing ${n} ↑`)))
         .child(div().id(`rv-sec-at-${f.id}`).flex_none().text_size(TYPE.small).text_color(t.accent).cursor_pointer().hover((x) => x.underline()).tooltip("Show this line in the diff").on_click((_e, cx) => this.jumpTo(at, cx)).child(`${f.file.split("/").pop()}:${f.line} ↗`))
+        .children(this.editAt(t, `rv-sec-ed-${f.id}`, at))
         .child(div().flex_none().text_size(TYPE.small).font_semibold().text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(FSTATUS[st]?.[0] ?? st)))
       .child(v_flex().gap(3).children(facts.map(([label, text]) => h_flex().gap(8).items_start().text_size(TYPE.small).line_height(1.5)
         .child(div().w(98).flex_none().text_color(t.muted).child(label)).child(div().flex_1().min_w(0).whitespace_normal().child(text)))))
@@ -4933,6 +4940,7 @@ export const ReviewMode = {
       extra: ["+", "extra", t.ansi4, "The diff does this, but the task did not ask for it"] };
     const place = (id, at) => div().id(id).tooltip("Jump to this line in the diff").flex_none().text_size(TYPE.small).text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.accent))
       .on_click((_e, cx) => { this.jumpTo(at, cx); cx.stop_propagation(); }).child(`${at.split("/").pop()} ↗`);
+    const placeEd = (id, at) => this.editAt(t, `${id}-ed`, at);
     // How sure a finding is, as words: a security finding in two parts (the flaw in the code, the way from outside),
     // another one only when it rests on an assumption.
     // The words of the Findings tab ("derived") and of the verdict line ("assumed reachable"), not a second pair.
@@ -4946,7 +4954,7 @@ export const ReviewMode = {
         .child(f.security ? rowSign(t, "⛨", [f]) : div().w(SIGN_W).flex_none())
         .child(div().flex_1().min_w(0).truncate().text_color(settled ? t.muted : t.foreground).child(f.title))
         .when(Boolean(note), (e) => e.child(div().flex_none().text_size(TYPE.small).text_color(t.muted).child(note)))
-        .child(place(`${id}-at`, `${f.file}:${f.line}`));
+        .child(place(`${id}-at`, `${f.file}:${f.line}`)).children(placeEd(`${id}-at`, `${f.file}:${f.line}`));
     };
     // A criterion: symbol, short name and how many findings break it; one not met has its reason under it. A click
     // unfolds the whole wording, the reason and the findings.
@@ -4984,7 +4992,7 @@ export const ReviewMode = {
         .child(div().flex_1().min_w(0).truncate().child(r.kind === "ask" ? `${r.title}: ${r.ask.state === "not_done" ? "not done" : r.ask.state}` : r.title))
         .when(breaks.length > 0 && r.kind !== "ask", (e) => e.child(div().flex_none().max_w(200).truncate().text_size(TYPE.small).text_color(t.muted).child(`breaks ${breaks[0]}${breaks.length > 1 ? ` +${breaks.length - 1}` : ""}`)))
         .when(Boolean(f && sure(f)), (e) => e.child(div().flex_none().text_size(TYPE.small).text_color(t.muted).child(sure(f))))
-        .when(Boolean(r.where), (e) => e.child(place(`${id}-at`, r.where)));
+        .when(Boolean(r.where), (e) => e.child(place(`${id}-at`, r.where)).children(placeEd(`${id}-at`, r.where)));
     };
     const head = (id, title, tip, right = null) => h_flex().id(id).tooltip(tip).pb(6).gap(8).items_center()
       .child(div().flex_1().min_w(0).text_size(TYPE.body).font_semibold().text_color(t.foreground).child(title)).when(Boolean(right), (e) => e.child(right));
@@ -5350,6 +5358,9 @@ export const ReviewMode = {
         .child(div().id(`rv-fh-seen-${f.path}`).tooltip("Mark this file as viewed; it collapses and counts in your progress").accessibility_label("Viewed").w(FILE_SEEN).flex_none().flex().items_center().text_size(TYPE.small).text_color(seen ? t.ansi2 : t.muted).child(fileAct(t).child(viewedBox(t, seen)).child("Viewed")))
         .child(div().id(`rv-fh-whole-${f.path}`).when(this.shown().fileHunks?.has(f.path), (e) => e.tooltip("Show the whole file instead of only the changed hunks")).w(FILE_WHOLE).flex_none().flex().items_center().text_size(TYPE.small).text_color(whole ? t.foreground : t.muted).children(this.shown().fileHunks?.has(f.path) ? [fileAct(t).child(tickBox(t, whole)).child("Whole file")] : []))
 
+        // "IntelliJ ↗" and its ▾ as zones of fixed width (onItem finds them by x); "Opening IntelliJ …" for three seconds after a click.
+        .children(((m) => (m ? [div().id(`rv-fh-ed-${f.path}`).tooltip(m.tip).accessibility_label(`Open in ${editorFull(m.id)}`).w(FILE_EDIT).flex_none().truncate().text_size(TYPE.small).text_color(m.busy ? t.dim : t.muted).child(m.text),
+          div().id(`rv-fh-edm-${f.path}`).tooltip("Other editors, Copy path, Look again").accessibility_label("Other editors").w(FILE_EDIT_MORE).flex_none().text_size(TYPE.small).text_color(t.muted).child("▾")] : []))(this.fileEditMark(f)))
         .child(div().id(`rv-fh-st-${f.path}`).tooltip(`File ${f.status} (${letter} in the file tree)`).w(70).flex_none().text_size(TYPE.small).font_semibold().text_color(t[col]).child(`${String(f.status ?? "")[0]?.toUpperCase() ?? ""}${String(f.status ?? "").slice(1)}`))
         .child(mono(div()).flex_1().min_w(0).truncate().font_semibold().text_size(TYPE.body).child(f.status === "renamed" ? `${f.from} → ${f.path}` : f.path))
         .when(n > 0, (e) => e.child(div().id(`rv-fh-cm-${f.path}`).tooltip(`${n} pending comments in this file`).px(8).text_size(TYPE.small).text_color(t.accent).child(`● ${n}`)))
@@ -5517,6 +5528,7 @@ export const ReviewMode = {
 
   renderReview(cx) {
     const t = theme(), target = shared("review.target") ?? null, ex = shared("review.explore");
+    this.edOn = Boolean(editorFor({ root: this.checkoutRoot() ?? this.lspRoot() }, cx)); // an editor is installed (the first ask looks, by reading files); the links of this frame name theirs
     if (ex) {
       if (this.exStart !== ex) { if (ex.start && this.exStart?.at !== ex.at) this.exRoot = null; this.enterExplore(ex, cx); }
       const root = v_flex().id("rv-root").size_full().bg(t.background).text_color(t.foreground).text_size(TYPE.body)
@@ -6125,6 +6137,24 @@ export const ReviewMode = {
     const label = busy ? "Reading GitHub…" : Date.now() - at < 60000 ? "GitHub read just now ↻" : `GitHub read ${ago(this.ctx.at)} ↻`; // it names what is as old as it says
     return fact("rv-ov-fresh", label, "When CI checks, mergeability and related PRs were read from GitHub. New commits and review comments are checked every 5 minutes while this window is in front. Click to read all of it again now.",
       busy ? null : (_e, cx) => { this.ghTick(cx, true); cx.stop_propagation(); });
+  },
+
+  // ---- "Open in <Editor>" in the review (editor-view.js; main.js checkoutRoot, editorForeign, openEditor)
+  // A file head's target: the file in the review's checkout at the topmost line of it the list shows (else its first
+  // changed line). Null without a checkout, for a file the PR deletes and for a symlink the PR adds or changes.
+  fileEditTarget(f) {
+    const root = this.checkoutRoot();
+    if (!root || f.status === "deleted" || patchSymlink(f.lines)) return null;
+    const seen = (this.items ?? []).slice(this.vis?.start ?? 0, this.vis?.end ?? 0).find((it) => it.t === "row" && it.path === f.path && it.src?.[it.ri]?.n);
+    const line = seen?.src[seen.ri].n ?? (this.shown().fileHunks?.get(f.path)?.[0]?.rows ?? []).find((r) => r.kind === "+" && r.n)?.n ?? null;
+    return { root, file: f.path, line, foreign: this.editorForeign(), where: "in the checkout of this PR" };
+  },
+  fileEditMark(f) { const target = this.edOn ? this.fileEditTarget(f) : null; return target ? editorMark(target, null) : null; },
+  // The monogram next to a place that jumps inside the mod ("file:line"): the same line in the person's editor.
+  // Nothing without a checkout or an editor.
+  editAt(t, id, at) {
+    const root = this.checkoutRoot(), place = placeOf(at);
+    return root && this.edOn && place ? editorLink(this, t, id, { root, ...place, foreign: this.editorForeign(), where: "in the checkout of this PR" }, null, true) : [];
   },
 
   // ---- fix worktrees left on disk (~/.herdr/worktrees/<repo>/fix-…): nothing removes them by age, because one may

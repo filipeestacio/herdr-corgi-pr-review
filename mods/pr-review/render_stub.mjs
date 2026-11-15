@@ -56,7 +56,7 @@ const STUBS = {
     export const spaces = () => S.spaces ?? [], panes = () => S.panes ?? [], agents = () => [], terminals = () => S.terminals ?? [], focused = () => S.focused ?? null, layout = () => null;
     export const theme = () => S.theme, settings = () => ({}), props = () => S.props ?? { part: "review" };
     export const shared = (k) => S.store.get(k), setShared = (k, v) => S.store.set(k, v), appHome = () => "/h", home = () => "/h";
-    export const nextCommand = never, watchFolder = never, openOverlay = (o) => { S.overlays.push(o); }, closeOverlay = () => {};`,
+    export const nextCommand = never, watchFolder = never, openOverlay = (o) => { S.overlays.push(o); }, closeOverlay = () => {}, notify = (n) => { (S.toasts ??= []).push(n); return "n"; };`,
 };
 registerHooks({
   resolve: (spec, ctx, next) => (STUBS[spec] ? { url: `stub:${spec}`, shortCircuit: true } : next(spec, ctx)),

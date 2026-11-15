@@ -1773,3 +1773,13 @@ export const panelHit = (kind, x, w, o) => panelZones(kind, w, o).find((z) => x 
 // A press as the list's own handler gets it (logical px) in the items' px: the items are laid out in the person's zoom.
 export const panelPress = (x, width, zoom, fallback) => { const z = zoom || 1; return { x: (x ?? 0) / z, w: width ? width / z : fallback }; };
 
+
+// A place as the analysis writes it ("file", "file:9", "file:9-14", "file:9:3") as {file, line}: what "↗ editor" opens.
+export function placeOf(at) {
+  const m = /^(.*?)(?::(\d+)(?:[-:]\d+)?)?$/.exec(String(at ?? "").trim());
+  return m?.[1] ? { file: m[1], line: m[2] ? Number(m[2]) : null } : null;
+}
+
+// A file's patch (its lines, header first) is about a symbolic link (git mode 120000): what it points at comes from
+// the PR, so no editor link is offered for it.
+export const patchSymlink = (lines) => (lines ?? []).slice(0, 8).some((l) => /^(new file mode|deleted file mode|old mode|new mode) 120000$/.test(l) || /^index [0-9a-f]+\.\.[0-9a-f]+ 120000$/.test(l));

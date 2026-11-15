@@ -471,4 +471,73 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   assert.deepEqual([n.writes, wl.prs, wl.view, wl.at > 1], [["worktrees.prs.review"], [], "all", true], "a list of another view is emptied with a new time, once");
   S.props = {};
 }
+
+// ---- "Open in <Editor>": which file with which line, the editor by the file's ending and by the kind of project, a PR
+// that is not trusted, no link without a checkout or an editor, one process per click and none to find the editors
+// (their files are read; a stub stands for `open`), the state "Opening …" and the lock per target.
+{
+  const EV = await import("./editor-view.js");
+  EV.forgetEditors(); S.toasts = [];
+  const runs = [], opens = () => runs.filter((r) => r[0] === "open");
+  S.exec = async (cmd, args = []) => { runs.push([cmd, ...args]); return { code: cmd === "open" ? 0 : 1, stdout: "", stderr: "" }; };
+  const VS = "/Applications/Visual Studio Code.app", IJ = "/h/Applications/IntelliJ IDEA Ultimate.app";
+  for (const app of [VS, IJ]) S.files.set(`${app}/Contents/Info.plist`, "<plist/>");
+  const mine = { url: "https://github.com/o/r/pull/3", repo: "o/r", number: 3, title: "t", headSha: "abc", base: "main" }, other = { ...mine, url: "https://github.com/x/y/pull/9", repo: "x/y", number: 9, source: "repo", author: "someone" };
+  for (const k of ["pr.selected", "pr.sourceBy", "pr.fromReview", "pr.pick", "editor.choice", "worktrees.api", "review.minimized"]) Map.prototype.set.call(S.store, k, null);
+  Map.prototype.set.call(S.store, "review.worktree", { url: mine.url, head: "abc", path: "/co/r" });
+  S.files.set("/co/r/pom.xml", "<project/>"); S.files.set("/co/r/.git", "gitdir: /clones/r/.git/worktrees/review\n"); S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOString(), prs: [] }));
+  S.props = {}; S.spaces = [{ id: "s1", active: true, folder: "/repo", tabs: [] }];
+  const v = new PrReview(); v.init({}, cx); await flush(); v.prSel = mine; v.context = v.key(); v.open = "src/A.java"; v.rows = [{ kind: "+", number: 12, text: "x" }]; v.sel = 0;
+  assert.deepEqual([v.checkoutRoot(), v.editorForeign()], ["/co/r", false], "the checkout the review made for this PR");
+  assert.equal(EV.editorLink(v, S.theme, "k", { root: "/co/r" }, cx).length, 0, "before the editors are known: no link");
+  await flush(); await flush();
+  assert.deepEqual([runs.length, EV.editorFor({ root: "/co/r", file: "src/A.java" }, cx)?.id, EV.editorFor({ root: "/co/r", file: "docs/a.md" }, cx)?.id], [0, "idea", "vscode"], "found by reading files, no process; a file goes by its ending");
+  assert.deepEqual([EV.editorFor({ root: "/co/r" }, cx)?.id, EV.editorFor({ root: "/co/plain" }, cx)?.id], ["vscode", "vscode"], "the review's checkout is a linked worktree: its folder opens in VS Code");
+  S.files.set("/main/pom.xml", "<project/>"); EV.editorFor({ root: "/main" }, cx); await flush();
+  assert.equal(EV.editorFor({ root: "/main" }, cx).id, "idea", "a main checkout with pom.xml: IntelliJ");
+  assert.deepEqual([EV.editorLink(v, S.theme, "k", { root: "/co/r" }, cx).length, EV.editorMark({ root: "/co/r", file: "src/A.java", line: 12, where: "in the checkout of this PR" }, cx)],
+    [1, { id: "idea", busy: false, text: "IntelliJ ↗", tip: "Open src/A.java at line 12 in IntelliJ IDEA, in the checkout of this PR." }], "the link names the editor, the tooltip the rest");
+  assert.equal(EV.editorMark({ root: "/co/r", file: "src/A.java" }, cx, true).text, "IJ ↗", "a row's short form");
+  for (let k = 0; k < 10; k++) { v.render(cx); await flush(); }
+  assert.equal(opens().length, 0, "frames start no process");
+  // The command is the click: one process, the file at that line. The link says "Opening …" and takes no second click.
+  v.panelCommand("editor:src/A.java:12", cx); await settle();
+  assert.deepEqual(opens(), [["open", `idea://open?file=${encodeURIComponent("/co/r/src/A.java")}&line=12`]], "one process: the file at its line");
+  assert.deepEqual([EV.isOpening({ root: "/co/r", file: "src/A.java", line: 12 }), EV.editorMark({ root: "/co/r", file: "src/A.java", line: 12 }, cx).text, EV.isOpening({ root: "/co/r", file: "docs/a.md" })], [true, "Opening IntelliJ …", false], "the lock is this target's");
+  v.panelCommand("editor:src/A.java:12", cx); await settle();
+  assert.equal(opens().length, 1, "a second click while it opens starts nothing");
+  timers.length = 0; runs.length = 0; v.panelCommand("editor:", cx); await settle();
+  assert.deepEqual(opens(), [["open", "-a", VS, "/co/r"]], "without a path: the checkout");
+  // The ▾ menu's pick: that editor, kept for this project's worktrees in the shared choice, written once.
+  runs.length = 0; reset(); v.editorTarget = { root: "/co/r", file: "src/B.java", line: 2 }; v.panelCommand("editor-use:vscode", cx); await settle();
+  assert.deepEqual([opens(), S.store.get("editor.choice"), n.writes.filter((k) => k === "editor.choice").length],
+    [[["open", "vscode://file/co/r/src/B.java:2"]], { default: null, repos: { "/clones/r/.git": { worktree: "vscode" } } }, 1], "kept under the shared git folder, for its worktrees");
+  reset(); v.editorTarget = { root: "/co/r", file: "src/C.java" }; v.panelCommand("editor-use:vscode", cx); await settle();
+  assert.equal(n.writes.filter((k) => k === "editor.choice").length, 0, "the same pick again writes nothing");
+  assert.equal(EV.editorFor({ root: "/co/r", file: "src/A.java" }, cx).id, "vscode", "and beats the file's ending from now on");
+  let copied = null; v.editorTarget = { root: "/co/r", file: "src/A.java", line: 7 }; EV.editorCommand(v, "editor-copy", cx, (x) => { copied = x; });
+  assert.equal(copied, "src/A.java:7", "Copy path");
+  // A PR from a source that is not trusted: a file alone; not its folder, not a build file, nothing outside the checkout.
+  Map.prototype.set.call(S.store, "review.worktree", { url: other.url, head: "h", path: "/co/y" }); v.prSel = other;
+  assert.equal(v.editorForeign(), true);
+  assert.deepEqual([EV.editorMark({ root: "/co/y", foreign: true }, cx), EV.editorMark({ root: "/co/y", file: "pom.xml", foreign: true }, cx), EV.editorMark({ root: "/co/y", file: "../../etc/passwd" }, cx)], [null, null, null], "no link for its folder, a build file, or a path that leaves the checkout");
+  assert.match(EV.editorMark({ root: "/co/y", file: "a.py", line: 5, foreign: true }, cx).tip, /Only the file is opened, not its folder/);
+  timers.length = 0; runs.length = 0; S.toasts.length = 0; v.panelCommand("editor:a.py:5", cx); await settle();
+  assert.deepEqual(opens(), [["open", "vscode://file/co/y/a.py:5"]], "only the file");
+  runs.length = 0; v.panelCommand("editor:", cx); await settle(); v.panelCommand("editor:pom.xml", cx); await settle(); v.panelCommand("editor:../x", cx); await settle();
+  assert.deepEqual([opens(), S.toasts.map((t) => t.level)], [[], ["error", "error", "error"]], "none of these starts a process; each says why, as a toast");
+  // No checkout: nothing to open, and no process.
+  Map.prototype.set.call(S.store, "review.worktree", null); runs.length = 0; S.toasts.length = 0; v.panelCommand("editor:a.py:5", cx); await settle();
+  assert.deepEqual([v.checkoutRoot(), opens(), S.toasts.length], [null, [], 1]);
+  // An editor that could not be started: said once, and the remembered answer is dropped.
+  Map.prototype.set.call(S.store, "review.worktree", { url: mine.url, head: "abc", path: "/co/r" }); v.prSel = mine;
+  S.exec = async (cmd, args = []) => { runs.push([cmd, ...args]); return { code: 1, stdout: "", stderr: "no such app" }; };
+  timers.length = 0; S.toasts.length = 0; v.panelCommand("editor:docs/b.md:1", cx); await settle();
+  assert.match(S.toasts[0]?.body ?? "", /VS Code could not be started/);
+  // No editor installed: no link anywhere.
+  EV.forgetEditors(); for (const app of [VS, IJ]) S.files.delete(`${app}/Contents/Info.plist`);
+  EV.editorFor({ root: "/co/r" }, cx); await flush(); await flush();
+  assert.deepEqual([EV.editorFor({ root: "/co/r" }, cx), EV.editorLink(v, S.theme, "k", { root: "/co/r" }, cx).length], [null, 0]);
+  EV.forgetEditors(); S.exec = null; timers.length = 0;
+}
 console.log("panel ok");
