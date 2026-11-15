@@ -42,9 +42,10 @@ import { archMarks, transitionText, MARK_CARD_ROWS } from "./arch.js";
 import { resStartOf, resOrder, resPicture, budgetBar, resPathView, resCardOf, resSentence, resMarksOn } from "./views.js";
 import { resWord, resToolText, resVerdict, resWatch, resTwice, PROBE_TYPICAL, resEdgeMarks, resByProbe, RES_MARK_ROW, resMarkRows, resVerdictParts, resStartCard } from "./views.js";
 import { withProbes, certaintyText, probedText } from "./views.js"; // wave C2 V3: a reproduced probe confirms its findings // wave R2: words, verdict, watch, doubled ways
+import { withThreats, secNote } from "./pr.js"; // the Security page: one count, and a run from before its current rules
 import { withResilience, resilienceStart, RUN_TYPICAL } from "./pr.js"; // the Resilience run's data // the Resilience page
 import { wayOf, wayText, passZones, runsIn } from "./views.js"; // panel round 3: ways through every gate, zones passed on
-import { transitionMarks, effectiveFrom, inProcess, mapArch, crossingsOf, crossingChanged, secSentence, TRUST_ORDER, asideOf, threatCited, blastOf, skipText } from "./views.js";
+import { transitionMarks, effectiveFrom, inProcess, mapArch, crossingsOf, crossingChanged, secSentence, TRUST_ORDER, asideOf, threatCited, blastOf, skipText, guardLine } from "./views.js";
 import { trustLegend, hasTrust } from "./stack.js";
 import { scopeTable, scopeConflicts, runSummary, AREA_NAME, areaFindings, surfaceOf, EXPOSURE, reachLevel, secOrder, extraWays } from "./views.js";
 import * as TH from "./threads.js";
@@ -1065,7 +1066,7 @@ export const ReviewMode = {
     const [doc, rep] = await Promise.all([readTextFile(`${base}.json`).catch(() => null), readTextFile(`${base}.jsonl`).catch(() => null)]);
     if (this.prSel?.url !== url) return;
     const d = doc ? JSON.parse(doc) : {};
-    this.find = { ...this.find, list: d.findings ?? [], runs: runsOf(d.runs), status: d.status ?? {}, reports: parseReports(rep), security: d.security ?? null, resilience: d.resilience ?? null, loaded: url };
+    this.find = { ...this.find, list: withThreats(d.findings ?? [], d.security), runs: runsOf(d.runs), status: d.status ?? {}, reports: parseReports(rep), security: d.security ?? null, resilience: d.resilience ?? null, loaded: url };
     for (const r of Object.values(this.find.runs)) if (r.busy && Date.now() - Date.parse(r.started) > 30 * 60000) { r.busy = false; r.state = "failed"; r.error = "Stopped without a result"; }
     setShared("review.reviewers", this.find.runs);
     this.securityNow(cx);
@@ -2921,7 +2922,8 @@ export const ReviewMode = {
     const sec = this.prSel ? this.openFindings().filter((f) => f.security) : [], changed = (this.ai?.arch?.nodes ?? []).some((n) => n.status && n.status !== "unchanged");
     const worstSec = ["high", "medium", "low"].find((s) => sec.some((f) => f.severity === s));
     const plain = (id, tip, color, text) => div().id(id).tooltip(tip).flex_none().text_size(12.5).font_semibold().text_color(color).child(text);
-    const mark = { blast: sec.length > 0 && plain("rv-nav-sec", `${sec.length} unresolved security ${sec.length === 1 ? "finding" : "findings"}`, t[SEV[worstSec]] ?? t.ansi1, `⛨ ${sec.length}`),
+    const secN = this.prSel ? this.counts().security : 0; // once per cause, as the verdict, the chip and the sentence of the Security page count
+    const mark = { blast: secN > 0 && plain("rv-nav-sec", `${secN} unresolved security ${secN === 1 ? "cause" : "causes"}`, t[SEV[worstSec]] ?? t.ansi1, `⛨ ${secN}`),
       arch: changed && plain("rv-nav-arch", "The architecture picture differs before and after this PR", t.accent, "Changed"),
       res: (this.resNow()?.paths ?? []).some((p) => p.blocker) && plain("rv-nav-res", "Paths that stand before the merge", t.foreground, String(this.resNow().paths.filter((p) => p.blocker).length)) };
     return v_flex().flex_none().px(8).pt(8).gap(2)
@@ -2937,7 +2939,7 @@ export const ReviewMode = {
   // The Analysis tab's label: its layers, and "⛨ n" while security findings are unresolved (the one security signal
   // that shows from every tab, since the pages are inside this tab).
   analysisLabel(t) {
-    const sec = this.prSel ? this.openFindings().filter((f) => f.security).length : 0;
+    const sec = this.prSel ? this.counts().security : 0; // once per cause, the number of the verdict
     return h_flex().gap(6).items_center().child(`Analysis${this.ai ? ` · ${this.ai.steps.filter((s) => !s.pseudo).length}` : ""}`)
       .when(sec > 0, (e) => e.child(div().text_color(t.ansi1).child(`⛨ ${sec}`)));
   },
@@ -3851,6 +3853,7 @@ export const ReviewMode = {
     // Security findings: ⛨ ones (pr.js isSecurity) and the category's own (a right granted and not used, low).
     const sec = this.findings().filter((f) => f.security || f.category === "security"), open = sec.filter((f) => OPEN_ST.includes(this.fstatus(f)));
     const runs = this.find.runs, sr = runs.security, title = (text) => div().text_size(14).font_semibold().child(text);
+    const secN = this.counts().security; // the one number: ⛨ findings once per cause (the verdict, the navigation and "Before merge" name the same)
     // The unresolved findings a named threat stands on that are no ⛨ finding (a flood, a script that leaves a guardrail
     // off): listed and marked here too, counted apart ("⛨" stays what pr.js isSecurity says).
     const threats = this.ai?.threats ?? [], cited = threatCited(threats, this.openFindings()).filter((f) => !open.includes(f)), shown = [...open, ...cited];
@@ -3867,7 +3870,7 @@ export const ReviewMode = {
       const stated = (f.reachable_from ?? []).map((id) => all.find((x) => x.id === id)).filter(Boolean);
       return stated.length ? { ways: stated, stated: true } : { ways: surface.entries.filter((x) => (x.node && x.node === cardOf.get(f.id)) || x.at === `${f.file}:${f.line}`), stated: false };
     };
-    const LEVEL = { public: "public", authenticated: "authenticated", internal: "internal_only", data: "internal_only" }, zoned = (a?.zones ?? []).length > 0;
+    const LEVEL = { public: "public", operator: "internal_only", authenticated: "authenticated", internal: "internal_only", data: "internal_only" }, zoned = (a?.zones ?? []).length > 0;
     const order = secOrder(shown.map((f) => { const r = rowOf(f); return r ? { f, level: r.kind === "entry" ? "public" : LEVEL[r.from.trust] ?? "unknown", crosses: r.kind !== "bypass" && r.kind !== "operator" }
       : { f, level: reachLevel(f, waysOf(f).ways), crosses: zoned ? (a.edges ?? []).some((e) => e.crosses && !inProcess(e) && e.to === cardOf.get(f.id)) : null }; }));
     const ctx = { open, marks, surface, cardOf, waysOf, rowOf, crossings, why: new Map(order.map((r) => [r.f.id, r.why])), focus: this.blastFocus ?? null, name: (id) => a?.nodes.find((n) => n.id === id)?.label ?? (a?.groups ?? []).find((g) => g.id === id)?.label ?? (id === "internet" ? "Internet" : id),
@@ -3885,9 +3888,12 @@ export const ReviewMode = {
     const head = v_flex().gap(6)
       .on_size_change((_s, cx) => this.loadVisibility(cx)) // once the page is laid out: is the repo public
       .child(h_flex().gap(10).items_center().flex_wrap().child(div().flex_1().text_size(20).font_semibold().child("Security"))
-        .child(chip(t, `⛨ Security · ${open.length}`, open.length ? t.ansi1 : t.muted, true, "rv-bl-secn", "Unresolved security findings, from every source"))
+        .child(chip(t, `⛨ Security · ${secN}`, secN ? t.ansi1 : t.muted, true, "rv-bl-secn", "Unresolved security findings from every source, counted once per cause: access or data, or what a named threat stands on"))
         .when(data && sr?.state === "running", (e) => e.child(pill("rv-bl-run", t, "Security review running…", () => {}).tooltip("The security reviewer is reading the PR head"))))
       .when(data && sr?.state !== "running", (e) => e.child(this.runOffer("security", t)))
+      // pr.js secNote: a run from before the current rules of the security view; what it left open may be the old prompt's.
+      .when(data && sr?.state === "done" && Boolean(secNote(this.ai)), (e) => e.child(div().id("rv-sec-rules").text_size(12.5).text_color(t.ansi3).whitespace_normal().line_height(1.5)
+        .child("This security review is older than the current rules for guards, operators and taken-over roles, so a crossing it calls not assessed may only be left open by the old prompt. Re-run it for the current view.")))
       // Someone else's PR with reasons (pr.js securityStart offer): why the Run button is there, with its cap.
       .when(data && Boolean(this.secOfferText()), (e) => e.child(div().id("rv-sec-offer").text_size(13).whitespace_normal().line_height(1.5).text_color(t.ansi3)
         .child(`${this.secOfferText()} Run security review: capped at $${REVIEW_CAP[tierOf(model())]}.`)));
@@ -3895,7 +3901,7 @@ export const ReviewMode = {
     // A picture only from three changed crossings on: below that the table says it all.
     const map = data && a && changed.length >= 3 ? this.secMap(t, a, ctx, changed) : null;
     return [["head", head], ...(data ? [] : [["empty", this.secEmpty(t)]]),
-      ...(data ? [["sentence", div().id("rv-sec-sentence").text_size(14).line_height(1.5).whitespace_normal().max_w(1000).child(secSentence(crossings, open.length, cited.length))], ["crossings", this.secCrossings(t, title, crossings)]] : []),
+      ...(data ? [["sentence", div().id("rv-sec-sentence").text_size(14).line_height(1.5).whitespace_normal().max_w(1000).child(secSentence(crossings, secN, cited.length, asideOf({ arch: a, access: this.ai?.access ?? [] }).guards.filter((g) => g.loosened).length))], ["crossings", this.secCrossings(t, title, crossings)]] : []),
       ...(map ? [["map", map]] : []), ["findings", this.secIntro(t, sec, open, cited)], ...order.map(({ f }) => [`f:${f.id}`, this.secFinding(t, f, ctx)]),
       ["scope", this.secScope(t, title)]];
   },
@@ -3914,7 +3920,7 @@ export const ReviewMode = {
       const nodes = new Map(), edges = [], card = (id) => a.nodes.find((n) => n.id === id);
       // A frame per zone (two zones of one trust level, e.g. in two cloud accounts, stay apart); whoever arrives from
       // outside stands outside every zone, an operator's script with the operators.
-      const lane = (r, side) => { const z = side === "from" ? r.from : r.to; return side === "from" && r.kind === "operator" ? "operator" : side === "from" && r.kind === "entry" ? "outside" : z.trust ? `z:${z.name}` : "unknown"; };
+      const lane = (r, side) => { const z = side === "from" ? r.from : r.to; return side === "from" && r.kind === "operator" && !z.trust ? "operator" : side === "from" && r.kind === "entry" ? "outside" : z.trust ? `z:${z.name}` : "unknown"; };
       const put = (id, label, type, trust) => { if (!nodes.has(id)) nodes.set(id, { id, label, type, group: `t:${trust}`, status: undefined, description: "" }); return id; };
       for (const r of rows) {
         const from = r.ends.from ? put(r.ends.from, card(r.ends.from)?.label ?? r.ends.from, card(r.ends.from)?.type, lane(r, "from")) : put(`\0who:${r.kind}:${r.identity}`, r.kind === "operator" ? r.from.name : r.identity ?? "unnamed", r.kind === "entry" ? "external" : "component", lane(r, "from"));
@@ -3926,10 +3932,12 @@ export const ReviewMode = {
         const tip = [`${num(r)}. ${r.what || over}`, r.kind === "bypass" ? "A call in one process: it bypasses the boundary of the code it reaches." : r.check ? `Checked by ${r.check}${r.expects ? `, expects ${r.expects}` : ""}${r.holds_if ? `; holds only if ${r.holds_if}` : ""}.` : r.result === "not_assessed" ? "Not assessed: no threat names this crossing." : "No check on this crossing.", r.result !== "not_assessed" ? `Result: ${r.result}.` : null].filter(Boolean).join("\n");
         if (to) edges.push({ from, to, label: `${num(r)}. ${[check, over].filter(Boolean).join(" · ")}`, tip, crosses: r.kind !== "bypass", dashed: r.result === "not_assessed", evidence: r.at ?? undefined });
       }
-      const zs = TRUST_ORDER.flatMap((tr) => (a.zones ?? []).filter((z) => z.trust === tr)), zoneNamed = (g) => zs.find((z) => `z:${z.name ?? z.id}` === g);
-      const used = new Set([...nodes.values()].map((n) => n.group)), groups = ["operator", "outside", ...zs.map((z) => `z:${z.name ?? z.id}`), "unknown"].filter((g) => used.has(`t:${g}`))
-        .map((g) => (zoneNamed(g) ? { id: `t:${g}`, label: zoneNamed(g).trust[0].toUpperCase() + zoneNamed(g).trust.slice(1), kind: zoneNamed(g).name ?? zoneNamed(g).id, trust: zoneNamed(g).trust }
-          : { id: `t:${g}`, label: g === "operator" ? "Operators and CI" : g === "outside" ? "Outside" : "Zone not named", kind: g === "outside" ? "internet" : "", trust: g === "outside" ? "public" : undefined }));
+      // The frames from the left: operators (their zones, then whoever deploys), callers from outside, then inwards.
+      const zs = ["operator", ...TRUST_ORDER.filter((x) => x !== "operator")].flatMap((tr) => (a.zones ?? []).filter((z) => z.trust === tr)), zoneNamed = (g) => zs.find((z) => `z:${z.name ?? z.id}` === g);
+      const used = new Set([...nodes.values()].map((n) => n.group)), groups = [...zs.filter((z) => z.trust === "operator").map((z) => `z:${z.name ?? z.id}`), "operator", "outside", ...zs.filter((z) => z.trust !== "operator").map((z) => `z:${z.name ?? z.id}`), "unknown"].filter((g) => used.has(`t:${g}`))
+        // A zone's frame: its name (cut when long, whole on hover) and its level, which always stays (stack.js).
+        .map((g) => (zoneNamed(g) ? { id: `t:${g}`, label: zoneNamed(g).name ?? zoneNamed(g).id, kind: zoneNamed(g).trust, trust: zoneNamed(g).trust }
+          : { id: `t:${g}`, label: g === "operator" ? "Operators and CI" : g === "outside" ? "Outside" : "Zone not named", kind: g === "operator" ? "operator" : g === "outside" ? "public" : "", trust: g === "operator" ? "operator" : g === "outside" ? "public" : undefined }));
       const marks = { nodes: new Map([...marksAll.nodes].filter(([id]) => nodes.has(id))), edges: new Map() };
       // Fit: narrow cards, so the zones fit the page's width more often (the Data column was cut off).
       this.secMemo = { key, marks, L: archLayout({ groups, nodes: [...nodes.values()], edges }, "diff", (n) => (marks.nodes.has(n.id) ? MARK_CARD_ROWS : 0) + (eff.has(n.id) ? 1 : 0), true, { labels: true, lines: () => true }) };
@@ -4055,8 +4063,8 @@ export const ReviewMode = {
       .children(blast.map((s, i) => h_flex().id(`rv-sec-blast-${i}`).gap(8).items_start().text_size(12.5).line_height(1.5).child(div().flex_none().text_color(t.ansi3).child("⚠")).child(div().flex_1().min_w(0).whitespace_normal().child(s))))
       // No crossings: a rule that takes a right away guards its resource (with the threat it holds against), and a
       // right on something the map does not show.
-      .children(aside.guards.map((g, i) => h_flex().id(`rv-sec-guard-${i}`).gap(8).items_start().text_size(12.5).line_height(1.5).child(div().flex_none().text_color(t.ansi2).child("⛨"))
-        .child(div().flex_1().min_w(0).whitespace_normal().child(`${g.text}${g.threats.map((x) => ` Holds against: ${plain(x.threat ?? "")} (${String(x.result ?? "").replace(/_/g, " ")}${x.evidence ? `, ${x.evidence}` : ""}).`).join("")}`))))
+      .children(aside.guards.map((g, i) => h_flex().id(`rv-sec-guard-${i}`).gap(8).items_start().text_size(12.5).line_height(1.5).child(div().flex_none().text_color(g.loosened ? t.ansi1 : t.ansi2).child(g.loosened ? "⚠" : "⛨"))
+        .child(div().flex_1().min_w(0).whitespace_normal().when(Boolean(g.loosened), (e) => e.text_color(t.ansi1)).child(plain(guardLine(g))))))
       .when(aside.rights.length > 0, (e) => e.child(div().id("rv-sec-offmap").text_size(12).text_color(t.muted).whitespace_normal().line_height(1.5)
         .child(`Also granted, on nothing the map shows: ${aside.rights.map((r) => r.text).join(" ")}`)))
       .when(!rows.some((r) => r.kind === "operator"), (e) => e.child(div().text_size(12).text_color(t.dim).child("Operator and CI ways (admin scripts, deploys, guardrails): none named by the data, not assessed.")));

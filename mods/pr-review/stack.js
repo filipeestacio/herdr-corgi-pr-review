@@ -141,7 +141,7 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
   const groups = L.groups.flatMap((g, i) => (g.bare ? [] : [div().id(`${id}-g${i}`).absolute().left(g.x).top(g.y).w(g.w).h(g.h).rounded(12).border_1().border_dashed()
     // Opaque: the grid stays in the space between systems, never behind a frame's cards and call labels.
     .border_color(g.trust ? trustColor(t, g.trust) : t.border).bg(g.trust ? solidOver(t.background, trustColor(t, g.trust) + "0f") : t.background).child(h_flex().px(PAD_IN).h(26).items_center().gap(6).text_size(11.5)
-      .child(div().flex_1().min_w(0).truncate().font_semibold().text_color(t.foreground).child(g.label ?? ""))
+      .child(div().id(`${id}-gl${i}`).flex_1().min_w(0).truncate().font_semibold().text_color(t.foreground).tooltip(g.label ?? "").child(g.label ?? "")) // the name gives way, the level (kind) stays
       .child(div().flex_none().text_color(g.trust ? trustColor(t, g.trust) : t.muted).child(g.kind ?? "")))]));
   // A call over a trust boundary: two bars across its line, before the arrow; the tooltip names both zones (opts.zones).
   const zoneById = new Map((opts.zones ?? []).map((z) => [z.id, z])), zoneOfN = (nid) => zoneById.get(L.nodes.find((x) => x.id === nid)?.zone);
@@ -219,7 +219,7 @@ function flowModel(v, fit = true) {
 }
 const cap = (s) => String(s ?? "").replace(/^./, (c) => c.toUpperCase());
 // Trust zones (arch.js zoneArch): a colour per trust level, none of them the severity red.
-const TRUST = { public: "ansi3", authenticated: "ansi4", internal: "ansi6", data: "ansi5" };
+const TRUST = { public: "ansi3", operator: "ansi2", authenticated: "ansi4", internal: "ansi6", data: "ansi5" };
 const trustColor = (t, trust) => t[TRUST[trust] ?? "ansi6"];
 // Whether a picture has something about trust to explain: zones as frames or as dots on cards, or a call over a boundary.
 export const hasTrust = (L) => Boolean(L) && (L.groups.some((g) => g.trust) || L.nodes.some((n) => n.zone) || L.paths.some((p) => p.crosses));

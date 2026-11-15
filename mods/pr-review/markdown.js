@@ -5,7 +5,7 @@
 // GitHub draws it. A security finding is in here in full: this is for the person's own use, nothing is posted.
 import { taskList, taskHead, verdictParts, findingCounts, componentLine, CERTAINTY, SEVERITY_SCALE, levels, isGuard } from "./pr.js";
 import { transitionText } from "./arch.js";
-import { resPathView, crossingsOf, crossingChanged, asideOf, threatCited, skipText } from "./views.js";
+import { resPathView, crossingsOf, crossingChanged, asideOf, threatCited, skipText, guardLine } from "./views.js";
 import { resWord, resToolText, resVerdict, resWatch } from "./views.js"; // wave R2: the page's words, verdict and watch list
 
 const STATE = { open: "Unresolved", progress: "Fix sent", fixed: "Fixed", dismissed: "Dismissed", recheck: "Unresolved, line changed" };
@@ -241,6 +241,8 @@ export function securityMd({ pr, head, ai = null, findings = [], statusOf = () =
       r.scope?.read?.length > 0 && `Read: ${r.scope.read.map(flat).join("; ")}`, "", ...scopeRows(r.scope?.checked), skipped.length > 0 && ["Skipped:", ...skipped.map((s) => `- ${flat(s)}`)], ""]; };
   const ordered = byReach(list, ai), body = (f) => findingBody(f, { status: statusOf(f), asks: ai?.asks ?? [], h: "####", extra: reachLines(f, ai) });
   return doc(prLine({ pr, head }), "", "# Security", "", `${count(list.length, "unresolved security finding")}${list.length ? `: ${sevCount(list)}` : cited.length ? " about access or data" : ""}.${list.length > 1 ? " Most reachable first: from the internet before signed-in callers before inside only, then over a trust boundary, then severity." : ""}${cited.length ? ` ${count(cited.length, "other unresolved finding backs", "other unresolved findings back")} a threat of the threat model (${sevCount(cited)}).` : ""}`, "",
+    // pr.js secNote: a run from before the current rules of the security view.
+    Boolean(ai?.securityFrom?.predates) && ["This security review is older than the current rules for guards, operators and taken-over roles: a crossing it calls not assessed may only be left open by the old prompt. Re-run it for the current view.", ""],
     ordered.length > 0 && ["## Findings", "", ...ordered.flatMap((f, k) => [`### ${k + 1}. ${flat(f.title)}`, "", body(f)])],
     cited.length > 0 && ["## Findings behind a threat", "", "Not about access or data, but a named threat stands on each of them.", "", ...cited.flatMap((f, k) => [`### ${k + 1}. ${flat(f.title)}`, "", body(f)])],
     crossingsMd(ai, open, "##"), exposureMd(ai, "##"), blastMd(ai, "##"),
@@ -268,7 +270,7 @@ function crossingsMd(ai, open, h) {
       threats.length > 0 && ["", "Threats named at these crossings:", "", ...table(["Crossing", "Id", "STRIDE", "Threat", "Result", "Evidence or note"],
         threats.map(([n, x]) => [n, x.id ?? "", x.stride ?? "", x.threat, String(x.result ?? "").replace(/_/g, " "), [x.evidence && `\`${x.evidence}\``, x.note].filter(Boolean).join("; ")]))], ""],
     aside.guards.length > 0 && [`${h} Guards`, "", "Rules that take a right away: they protect their resource and are no way in.", "",
-      ...aside.guards.map((g) => `- ${flat(g.text)}${g.threats.map((x) => ` Holds against: ${flat(x.threat)} (${String(x.result ?? "").replace(/_/g, " ")}${x.evidence ? `, \`${x.evidence}\`` : ""}).`).join("")}`), ""]];
+      ...aside.guards.map((g) => `- ${flat(guardLine(g, (s) => `\`${s}\``))}`), ""]];
 }
 
 // ---- ways in, the way to a finding, what a taken-over zone may do
