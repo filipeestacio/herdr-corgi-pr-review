@@ -143,12 +143,14 @@ assert "signal_said" not in sig(raises=True, signal="log")
 # A part is judged by its purpose; a bug that keeps it from working today is works_today and broken_by.
 q = resilience.view({"additions": [{"what": "LoanEvents queue", "kind": "queue", "result": "justified", "works_today": False, "broken_by": "nothing publishes"}]}, [], pic, [])["additions"][0]
 assert (q["result"], q["works_today"], q["broken_by"]) == ("justified", False, "nothing publishes")
+_pt = resilience.view({"paths": [{"kind": "effect", "steps": ["queue"], "result": "not_assessed", "possible_today": False, "note": "see p4"}, {"kind": "effect", "steps": [], "result": "not_assessed"}]}, [], pic, [])["paths"]
+assert [x["possible_today"] for x in _pt] == [False, None]
 sch = reviewers.findings_schema("resilience")
 assert "node" in sch["properties"]["deps"]["items"]["required"] and {"signal", "seen_as"} <= set(sch["properties"]["paths"]["items"]["required"])
 pr2 = reviewers.PLAIN["resilience"].format(base="b", number=2)
 for part in ("every public route's request, always", "answers 202 while the mail is lost", "per field or row that two or more places write", "a retry layer under another one",
              "measured by its purpose, not by a bug in it"):
     assert part in pr2, part
-for part in ("raises (true when the failure ends in an exception", "never result)", "never cannot_happen because of a bug in the part", "for a queue trigger the consumer", "only when a protection stands behind it", "not possible today, see p6", "seen_as (one sentence", "oncall (one sentence", "next (one sentence with a verb"):
+for part in ("possible_today (false when the path cannot happen until", "raises (true when the failure ends in an exception", "never result)", "never cannot_happen because of a bug in the part", "for a queue trigger the consumer", "only when a protection stands behind it", "not possible today, see p4", "seen_as (one sentence", "oncall (one sentence", "next (one sentence with a verb"):
     assert part in resilience.ASK, part
 print("ok")

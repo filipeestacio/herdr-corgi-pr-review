@@ -326,7 +326,8 @@ export const showCounts = ({ rows, findings = 0, agents = 0 }) => ({ mine: rows.
 // input: nothing starts), "resume" (the PR's session, resumed in a new tab), anything else: a live session.
 // model: the label of the model a new agent ("sub", "new") runs on; a live session keeps its own.
 // "verify": an agent in its own checkout of the PR head that tries to show or refute findings (Verify with an agent).
-export function sendFacts({ kind, account, trusted = false, branch = null, name = null, chat = false, where = null, model = null }) {
+// estimate: what one finding usually costs a fix agent (views.js fixEstimate), for kind "sub"; else null.
+export function sendFacts({ kind, account, trusted = false, branch = null, name = null, chat = false, where = null, model = null, estimate = null }) {
   const own = kind === "sub" || kind === "new" || kind === "verify", who = name ?? "the agent";
   const starts = { new: `A new agent in a new tab, in the review's checkout of the PR head${where ? ` (${where})` : ""}.`,
     live: `Nothing new. The text goes into the ${chat ? "chat box" : "terminal"} of ${who} as a draft, and you send it there.`,
@@ -347,7 +348,8 @@ export function sendFacts({ kind, account, trusted = false, branch = null, name 
     ["May", may],
     ["Push", own && kind !== "new" ? `Not through git: the agent's git cannot push anywhere, however it is called, and git push and gh pr create are denied${kind === "verify" ? ", as are web tools and the plain network commands (curl, wget, git fetch, installs)" : ""}. The task forbids it too. Not covered: a program that clears its environment, or a push through the GitHub API (gh api, curl)${kind === "sub" && trusted ? ", which auto mode may run without asking" : ""}.` : kind === "new" ? "Only if you approve the command." : "Possible. Nothing here prevents it."],
     ["Result", result],
-    ["Cost", own ? `Not capped and not estimated; billed to that account.${kind === "sub" || kind === "verify" ? " One finding usually takes a few minutes." : ""}` : "Billed to that session's account."],
+    // The CLI caps spending only for non-interactive runs (--max-budget-usd needs --print); these agents work in a tab.
+    ["Cost", own ? `No spending limit: the CLI caps only non-interactive runs, and this agent works in a tab. Stop it there.${estimate ? ` One finding usually costs ${estimate}${model ? ` on ${model}` : ""}.` : kind === "verify" ? " One finding usually takes a few minutes." : ""} Billed to that account.` : "Billed to that session's account."],
   ].filter(Boolean);
 }
 
