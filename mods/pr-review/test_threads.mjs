@@ -385,3 +385,19 @@ console.log("threads ok");
   console.log("agents with PR text ok");
 }
 
+
+// Fix worktrees left on disk: only Herdr's folder for this repo and fix/ or verify/ branches; what removing would lose.
+{
+  const { leftWorktrees, worktreeRisky, worktreeLine } = await import("./threads.js");
+  const out = ["worktree /code/demo\nHEAD 111\nbranch refs/heads/main", "worktree /h/.herdr/worktrees/demo/fix-2-a1\nHEAD 222\nbranch refs/heads/fix/2-a1",
+    "worktree /h/.herdr/worktrees/demo/verify-2-a1\nHEAD 333\nbranch refs/heads/verify/2-a1", "worktree /h/.herdr/worktrees/demo/mine\nHEAD 444\nbranch refs/heads/feature",
+    "worktree /h/.herdr/worktrees/other/fix-9-x\nHEAD 555\nbranch refs/heads/fix/9-x", "worktree /h/.herdr/worktrees/demo/loose\nHEAD 666\ndetached"].join("\n\n") + "\n";
+  assert.deepEqual(leftWorktrees(out, "/h", "o/demo"), [{ path: "/h/.herdr/worktrees/demo/fix-2-a1", branch: "fix/2-a1" }, { path: "/h/.herdr/worktrees/demo/verify-2-a1", branch: "verify/2-a1" }]);
+  assert.deepEqual(leftWorktrees("", "/h", "o/demo"), []);
+  const w = { branch: "fix/2-a1", only: 0, dirty: false, unknown: false };
+  assert.deepEqual([w, { ...w, only: 2 }, { ...w, dirty: true }, { ...w, unknown: true }].map(worktreeRisky), [false, true, true, true]);
+  assert.equal(worktreeLine(w), "Remove fix/2-a1 · nothing only there");
+  assert.equal(worktreeLine({ ...w, only: 1, dirty: true }), "Remove fix/2-a1 · 1 commit only there · uncommitted changes");
+  assert.equal(worktreeLine({ ...w, only: 2 }, true), "Remove anyway fix/2-a1 · 2 commits only there");
+  console.log("ok fix worktrees");
+}

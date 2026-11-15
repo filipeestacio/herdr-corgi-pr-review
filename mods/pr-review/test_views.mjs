@@ -377,6 +377,12 @@ assert.equal(rangeMarks(mr, [{ line: 7.5, end: 9, mark: "x" }, { line: 9, end: 7
 // The height of a Markdown text: paragraphs, a list and a fenced code block each count, with a gap between blocks.
 import { mdHeight, MD } from "./views.js";
 assert.equal(mdHeight("", 600), 21);
+{ // a height is counted once per text and place, then remembered; another width is another place
+  const text = "A paragraph long enough to wrap in a narrow card, with some more words after it.\n\n- one\n- two", was = mdHeight.counted;
+  const a = mdHeight(text, 300), n = mdHeight.counted;
+  assert.equal(n, was + 1); assert.equal(mdHeight(text, 300), a); assert.equal(mdHeight.counted, n, "the second ask counts nothing");
+  assert.ok(mdHeight(text, 120) > a && mdHeight.counted === n + 1, "a narrower place is counted anew");
+}
 assert.equal(mdHeight("One line with `code`.", 600), 21);
 assert.equal(mdHeight("One.\n\nTwo.\n\nThree.", 600), 3 * 21 + 2 * MD.GAP);
 assert.equal(mdHeight("Do this:\n\n- one\n- two\n- three", 600, 20), 20 + MD.GAP + 3 * (20 + MD.ITEM_GAP));
@@ -930,8 +936,26 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   const r = (url, repo, lastDays, progress = {}, status = "in-progress") => ({ url, repo, status, lastTouched: now - lastDays * 86400000, progress });
   const reg = [r("opened", "o/here", 0, { files: 9, steps: 6 }), r("viewed", "o/else", 1, { filesViewed: 2 }), r("here", "o/here", 2, { comments: 1 }),
     r("merged", "o/here", 0, { stepsChecked: 1 }), r("old", "o/here", 20, { filesViewed: 1 }), r("sent", "o/else", 3, {}, "sent"), r("done", "o/here", 0, { filesViewed: 1 }, "done")];
-  assert.deepEqual(inProgressNow(reg, { states: new Map([["merged", "merged"]]), slug: "o/here", now }).map((x) => x.url), ["here", "viewed", "sent"],
-    "only opened, merged, untouched for 14 days and done ones are not in progress; the space's repo first");
+  assert.deepEqual(inProgressNow(reg, { states: new Map([["merged", "merged"]]), slug: "o/here", now }).map((x) => x.url), ["here"],
+    "in a space on a repo: its reviews; only opened, merged, untouched for 14 days and done ones are not in progress");
+  assert.deepEqual(inProgressNow(reg, { states: new Map([["merged", "merged"]]), now }).map((x) => x.url), ["viewed", "here", "sent"], "outside a GitHub repo: every repo's, by last touch");
+  // "Show all" adds the older ones; the merged one is listed apart with its state; nothing with work in it is lost.
+  const { progressRows, inProgressLeft, removedText } = await import("./views.js");
+  const states = new Map([["merged", "merged"]]), rows = progressRows(reg, { states, slug: "o/here", now });
+  assert.deepEqual([rows.shown.map((x) => x.url), rows.more, rows.total], [["here"], 3, 4], "the other repos' reviews and the old one wait behind Show all");
+  const all = progressRows(reg, { states, slug: "o/here", now, all: true });
+  assert.deepEqual([all.shown.map((x) => x.url), all.more], [["here", "old", "viewed", "sent"], 3], "all: the one untouched for 20 days and the other repos too; more says what Show fewer hides");
+  assert.deepEqual(inProgressLeft(reg, states).map((x) => [x.url, x.state]), [["merged", "merged"]]);
+  assert.equal([...rows.shown, ...progressRows(reg, { states, now, all: true }).shown, ...rows.left].some((x) => x.url === "opened" || x.url === "done"), false, "only opened or done: nowhere");
+  assert.equal(removedText({ number: 2, progress: { comments: 2 } }), "#2 removed from In progress. Its 2 pending comments and your progress are kept.");
+  assert.equal(removedText({ number: 7, progress: {} }), "#7 removed from In progress. Your progress is kept.");
+  // The layout shows the panel: its block not hidden, no hidden column around it, up in its stack; null without a block.
+  const { panelShown } = await import("./views.js");
+  const block = { id: "pr", type: "block", content: { mod: "pr-review" } }, bar = { id: "bar", type: "block", content: { mod: "pr-review", props: { part: "bar" } } };
+  const side = (hidden) => ({ id: "root", type: "row", children: [{ id: "main", type: "block" }, { id: "review", type: "column", hidden, children: [block] }] });
+  const stack = (active) => ({ id: "root", children: [{ id: "panel", type: "column", children: [{ id: "panel-body", type: "stack", active, children: [{ id: "files", content: { mod: "files" } }, block] }] }] });
+  assert.deepEqual([panelShown(side(false)), panelShown(side(true)), panelShown(stack("pr")), panelShown(stack("files")), panelShown({ id: "root", children: [bar] }), panelShown(null)],
+    [true, false, true, false, null, null]);
   const sel = withPick(withPick({ a: 1, b: 2 }, "a", 3), "c", 4, 2);
   assert.deepEqual(sel, { a: 3, c: 4 }, "set again moves to the end; the newest kept");
   console.log("ok panel relevance");

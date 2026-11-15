@@ -526,6 +526,8 @@ export const ReviewMode = {
     else if (name === "trust") this.trust("pr", cx);
     else if (name === "cmenu") { const [k, ...key] = arg.split("|"), card = this.cardByKey(key.join("|")); card?.menu[Number(k)]?.[2]?.(cx); }
     else if (name === "ask") this.setDrawer(arg === "close" ? null : arg === "fold" ? "collapsed" : "open", cx); // the Ask drawer: open | fold | close
+    else if (name === "worktrees") { const [x, y] = arg.split(",").map(Number); this.listWorktrees(cx, Number.isFinite(y) ? { x, y } : null); } // the ⋯ menu's "Fix worktrees…"; worktrees:<x>,<y>: where the list opens (default: the pointer)
+    else if (name === "wt-remove") this.removeWorktree(Number(arg), cx); // wt-remove:<index>: a row of that list
     else if (name === "apply") { const j = this.fixes().find((f) => f.id === arg) ?? this.fixes().filter((f) => f.state === "running").at(-1); if (j) this.applyFix(j, cx); }
     else if (name === "open") {
       cx.spawn(async () => {
@@ -2767,7 +2769,7 @@ export const ReviewMode = {
           .tooltip(this.wrapOn() ? "Long lines wrap. Click to keep them on one line and scroll sideways." : "Long lines stay on one line: scroll sideways with shift+wheel or the bar under the diff. Click to wrap them.")).child(sep()))
       .child(link("rv-values", div().text_color(valuesOn() ? t.foreground : t.muted).child(`Example values ${valuesOn() ? "on" : "off"}`), () => setShared("review.values", !valuesOn())).tooltip("Example values from the flow traces, shown inline in the diff: click to switch"))
       .child(link("rv-keys", div().child("?"), () => openOverlay({ mod: "pr-review", props: { part: "keys" }, kind: "popup", ...KEYS_POP })).tooltip("Keyboard shortcuts").accessibility_label("Keyboard shortcuts"))
-      .child(link("rv-more", div().child("⋯"), menu("more", [["Explore a topic…", false, "explore"], ["Mark done", false, "done"], ["Copy link", false, "copy-link"], ["Copy review state", false, "copy-state"], ["Copy this page as Markdown", false, "copy-md"], ...(this.checkList().length ? [["Copy context to check findings", false, "copy-md:verify"]] : []), ...(this.prSel?.url?.startsWith("https://github.com") ? [["Open on GitHub", false, "open-gh"]] : [])])).tooltip("Explore a topic, mark done, copy the link, the review's state, this page or the context to check findings as text, open on GitHub").accessibility_label("More actions"));
+      .child(link("rv-more", div().child("⋯"), menu("more", [["Explore a topic…", false, "explore"], ["Mark done", false, "done"], ...(this.fixBase() ? [["Fix worktrees…", false, "worktrees"]] : []), ["Copy link", false, "copy-link"], ["Copy review state", false, "copy-state"], ["Copy this page as Markdown", false, "copy-md"], ...(this.checkList().length ? [["Copy context to check findings", false, "copy-md:verify"]] : []), ...(this.prSel?.url?.startsWith("https://github.com") ? [["Open on GitHub", false, "open-gh"]] : [])])).tooltip("Explore a topic, mark done, list the fix worktrees left on disk, copy the link, the review's state, this page or the context to check findings as text, open on GitHub").accessibility_label("More actions"));
   },
 
   // ---- render: the left column
@@ -5611,13 +5613,15 @@ export const ReviewMode = {
     this.ghBusy = true;
     if (force) this.loadContext(cx, true);
     cx.spawn(async (cx) => {
-      const [gh, sha] = await Promise.all([this.ghComments(), pr.url.startsWith("https://") ? this.headOf(pr.url) : null]);
+      // The head as just asked (the panel, or this review's own load): not asked again within GH_MS, except by ↻.
+      const seen = this.heads.get(pr.url), known = !force && seen?.sha && Date.now() - seen.at < GH_MS ? seen.sha : null;
+      const [gh, sha] = await Promise.all([this.ghComments(), known ?? (pr.url.startsWith("https://") ? this.headOf(pr.url) : null)]);
       this.ghBusy = false;
       this.ghPoll = pollAfter(this.ghPoll, gh !== false && (sha !== null || !pr.url.startsWith("https://")), Date.now());
       if (this.prSel?.url !== pr.url) return;
       if (gh) this.gh = gh;
       await this.loadThreads(cx);
-      if (sha) this.heads.set(pr.url, { at: Date.now(), sha });
+      if (sha && !known) this.heads.set(pr.url, { at: Date.now(), sha });
       if (sha && sha !== this.prSel.headSha) { this.prSel = { ...this.prSel, headSha: sha }; this.refresh(cx, true); }
       cx.notify();
     });
@@ -5630,6 +5634,46 @@ export const ReviewMode = {
     const label = busy ? "Updating…" : Date.now() - at < 60000 ? "Updated just now ↻" : `Updated ${ago(this.ctx.at)} ↻`;
     return fact("rv-ov-fresh", label, "When CI checks, mergeability and related PRs were read from GitHub. New commits and review comments are checked every 5 minutes while this window is in front. Click to read all of it again now.",
       busy ? null : (_e, cx) => { this.ghTick(cx, true); cx.stop_propagation(); });
+  },
+
+  // ---- fix worktrees left on disk (~/.herdr/worktrees/<repo>/fix-…): nothing removes them by age, because one may
+  // hold a fix that exists nowhere else. "Fix worktrees…" lists them with what would be lost; a click removes one,
+  // and one with commits or changes only there asks for a second click.
+  listWorktrees(cx, at = null) {
+    const base = this.fixBase();
+    if (!base) { this.note = "This PR has no local checkout, so there are no fix worktrees to list."; return cx.notify(); }
+    const git = (cwd, args) => exec("git", ["-C", cwd, ...args], { timeout: 30000 }).catch(() => ({ code: 1, stdout: "" }));
+    cx.spawn(async (cx) => {
+      const list = TH.leftWorktrees((await git(base, ["worktree", "list", "--porcelain"])).stdout, home(), this.prSel?.repo);
+      this.wts = await Promise.all(list.map(async (w) => {
+        // Commits of its branch that no other branch, tag or remote has (not --all: that counts this worktree's own
+        // HEAD as a ref, and nothing would ever be "only there"); changes not committed.
+        const [only, st] = await Promise.all([git(base, ["rev-list", "--count", w.branch, "--not", `--exclude=${w.branch}`, "--branches", "--tags", "--remotes"]), git(w.path, ["--no-optional-locks", "status", "--porcelain"])]);
+        return { ...w, only: Number(only.stdout.trim()) || 0, dirty: st.stdout.trim().length > 0, unknown: only.code !== 0 || st.code !== 0 };
+      }));
+      if (!this.wts.length) this.note = "No fix worktrees are left on disk for this repository.";
+      else openOverlay({ mod: "pr-review", props: { part: "cmenu", key: "wt", items: this.wts.map((w, k) => [TH.worktreeLine(w, this.wtAsk === w.path), TH.worktreeRisky(w), `wt-remove:${k}`]) }, kind: "popup", width: 520, height: 12 + 30 * this.wts.length, ...(at ? { at } : {}) });
+      cx.notify();
+    });
+  },
+  removeWorktree(k, cx) {
+    const w = this.wts?.[k], base = this.fixBase();
+    if (!w || !base) return;
+    if (TH.worktreeRisky(w) && this.wtAsk !== w.path) {
+      this.wtAsk = w.path;
+      this.note = `${w.branch} holds work that exists only there. Nothing was removed. Open "Fix worktrees…" again and choose "Remove anyway" to delete it.`;
+      return cx.notify();
+    }
+    this.wtAsk = null;
+    const job = this.fixes().find((j) => j.path === w.path && j.state === "running");
+    if (job) return this.discardFix(job, cx); // a fix job of this review: its agent ends and its state follows
+    cx.spawn(async (cx) => {
+      const git = (args) => exec("git", ["-C", base, ...args], { timeout: 60000 }).catch((e) => ({ code: 1, stderr: String(e) }));
+      const r = await git(["worktree", "remove", "--force", w.path]);
+      if (r.code === 0) await git(["branch", "-D", w.branch]);
+      this.note = r.code === 0 ? `Removed ${w.branch} and its worktree.` : `Could not remove ${w.branch}: ${String(r.stderr ?? "").trim().slice(0, 160)}`;
+      cx.notify();
+    });
   },
 };
 

@@ -555,3 +555,20 @@ export const TRUST_TURNS_ON = [
   "Language servers for go-to-definition run code from the repository: build scripts, proc macros, its own TypeScript, downloads.",
 ];
 
+
+// ---- fix worktrees left on disk (review.js "Fix worktrees…": listed on a click, removed on a click, never on their own)
+// `git worktree list --porcelain` → the worktrees under Herdr's folder for this repo (<home>/.herdr/worktrees/<repo>/)
+// that sit on a fix/ or verify/ branch: [{path, branch}].
+export function leftWorktrees(porcelain, home, repo) {
+  const root = `${home}/.herdr/worktrees/${String(repo ?? "").split("/").pop()}/`;
+  return String(porcelain ?? "").split(/\n\n+/).map((b) => ({ path: /^worktree (.+)$/m.exec(b)?.[1], branch: /^branch refs\/heads\/(.+)$/m.exec(b)?.[1] }))
+    .filter((w) => w.path?.startsWith(root) && /^(fix|verify)\//.test(w.branch ?? ""));
+}
+// Removing it would lose work: commits no other branch or remote has (only), changes not committed (dirty), or git
+// could not say (unknown). Such a worktree takes a second click.
+export const worktreeRisky = (w) => Boolean(w.only || w.dirty || w.unknown);
+// Its line in the menu: "Remove fix/2-a1 · 2 commits only there · uncommitted changes"; asked: the second click.
+export function worktreeLine(w, asked = false) {
+  const facts = [w.only ? `${w.only} ${w.only === 1 ? "commit" : "commits"} only there` : null, w.dirty ? "uncommitted changes" : null, w.unknown ? "could not be checked" : null].filter(Boolean);
+  return `${asked ? "Remove anyway" : "Remove"} ${w.branch}${facts.length ? ` · ${facts.join(" · ")}` : " · nothing only there"}`;
+}
