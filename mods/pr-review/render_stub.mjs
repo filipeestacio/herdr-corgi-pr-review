@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 
-// files: what readTextFile finds (and, with S.writes set, what writeTextFile wrote); clicks: an element's id → its on_click handler (from the last frame drawn);
+// files: what readTextFile finds (and, with S.writes set, what writeTextFile wrote: as Herdr, only over the text it is told is there); clicks: an element's id → its on_click handler (from the last frame drawn);
 // overlays: what openOverlay was asked to show.
 // n: how much a frame builds (el: elements made, call: builder calls on them), for the performance checks.
 export const S = (globalThis.__rv = { errs: [], lists: [], store: new Map(), files: new Map(), props: null, clicks: new Map(), overlays: [], n: { el: 0, call: 0 }, live: {} });
@@ -53,7 +53,7 @@ const STUBS = {
     export const HoverCard = { new: f };
     export const VirtualListScrollHandle = n, ScrollHandle = n, TextareaState = n, InputState = n, EditorState = n;`,
   herdr: `const S = globalThis.__rv, no = async () => { throw new Error("stub"); }, never = () => new Promise(() => {});
-    export const exec = (...a) => (S.exec ? S.exec(...a) : no()), hc = no, readTextFile = async (p) => { if (S.files.has(p)) return S.files.get(p); throw new Error("stub"); }, pickFolder = no, writeTextFile = async (p, text) => { if (S.writes) S.files.set(p, text); }, run = (...a) => { S.runs?.push(a); return null; }; // a test that asks which commands ran sets S.runs = []
+    export const exec = (...a) => (S.exec ? S.exec(...a) : no()), hc = no, readTextFile = async (p) => { if (S.files.has(p)) return S.files.get(p); throw new Error("stub"); }, pickFolder = no, writeTextFile = async (p, text, expected) => { if (!S.writes) return; if ((S.files.get(p) ?? null) !== (expected ?? null)) throw new Error("stale"); S.files.set(p, text); }, run = (...a) => { S.runs?.push(a); return null; }; // a test that asks which commands ran sets S.runs = []
     const live = (k, v) => { S.live[k] = (S.live[k] ?? 0) + 1; return v; }; // how often a frame reads Herdr's live data (a mod is drawn again when what it read changes)
     export const spaces = () => live("spaces", S.spaces ?? []), panes = () => live("panes", S.panes ?? []), agents = () => live("agents", []), terminals = () => live("terminals", S.terminals ?? []), focused = () => live("focused", S.focused ?? null), layout = () => live("layout", S.layout === undefined ? { id: "root", type: "row", children: [] } : S.layout); // null: as in a copy's init, before Herdr has a layout
     export const theme = () => S.theme, settings = () => ({}), props = () => S.props ?? { part: "review" };

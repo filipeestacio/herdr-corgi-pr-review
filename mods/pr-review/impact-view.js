@@ -129,7 +129,9 @@ export const ImpactMode = {
       const hint = (m) => installHint(m, shared(SETUP_KEY)?.os);
       if (r.status !== "ok") { st.state = "error"; st.message = hint(r.message || "the language server did not answer"); return cx.notify(); }
       st.state = "ok"; st.model = { ...r.model, failed: (r.model.failed ?? []).map(hint), head: this.worktree?.head ?? this.head ?? null, at: new Date().toISOString() };
-      writeTextFile(this.impactFile(key), JSON.stringify(st.model)).catch(() => null);
+      // Over what is there (a model of an older version, a run before this one): writeTextFile replaces a file only
+      // when told its text; told nothing, it writes a new file and leaves an existing one as it is.
+      { const file = this.impactFile(key); readTextFile(file).catch(() => null).then((before) => writeTextFile(file, JSON.stringify(st.model), before)).catch(() => null); }
       cx.notify();
     });
     cx.notify();

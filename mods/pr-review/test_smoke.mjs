@@ -761,7 +761,10 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
       : { status: "ok", references: [{ path: "library/api.py", line: 3, character: 0, end: 3, text: "send_reminders(store, mailer)" }], outside: 0, more: 0 }) }; };
   try {
     v.worktree = { url: v.prSel.url, head: v.head, path: "/h/w" }; v.impactSt = { key: v.impactKey(), state: "idle" };
+    // The result is saved over what the file held (a model of an older version): Herdr writes over a file only when told its text.
+    S.writes = true; S.files.set(v.impactFile(v.impactKey()), '{"v":0}');
     draw(v, "Impact: about to start"); v.impactRun(cx); draw(v, "Impact: started"); await settle(); await settle(); draw(v, "Impact: its own result");
+    S.writes = false; assert.equal(JSON.parse(S.files.get(v.impactFile(v.impactKey()))).functions?.[0]?.name, "send_reminders", "the run's result replaced the older file");
     assert.deepEqual(v.impactNow()?.functions.map((f) => [f.name, Boolean(f.sig), f.callers.map((c) => [c.path, c.mark])]), [["send_reminders", true, [["library/api.py", "outside"]]]], "the run asks the bridge and keeps what it finds");
     assert.ok(asked.includes("references library/reminders.py") && asked.every((x) => !x.includes("template.yaml")), "only files with a language server are asked");
     // Someone else's PR: nothing starts by itself; the button does.

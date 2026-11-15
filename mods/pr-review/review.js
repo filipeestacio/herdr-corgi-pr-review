@@ -4968,7 +4968,7 @@ export const ReviewMode = {
       busy.delete(id);
       const doc = { ...modelsDoc(), [id]: { at: Date.now(), claude: out.claude ?? [], codex: out.codex ?? [] } };
       setShared("review.models", doc);
-      writeTextFile(modelsFile(), JSON.stringify(doc)).catch(() => null);
+      readTextFile(modelsFile()).catch(() => null).then((before) => writeTextFile(modelsFile(), JSON.stringify(doc), before)).catch(() => null); // over the list from before (told nothing, writeTextFile leaves an existing file as it is)
       cx.notify();
     });
   },
