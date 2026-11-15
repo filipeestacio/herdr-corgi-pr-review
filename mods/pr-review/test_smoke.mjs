@@ -339,6 +339,24 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   act(v, "page:blast", "Security with a guard");
   await tour(v, "PR #2 with a guard, a right off the map and an operator's script");
 }
+// The Security page's map shows archLayout's picture at once; its better layout (arch.js archSearch: a full layout per
+// try, too much for a render) comes after the render, in slices (layoutMore): the memo's layout is replaced once, the
+// view is told, and the page draws with it.
+{
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json") });
+  act(v, "page:blast", "Security, the map at once");
+  const { lineStats, archLayout } = await import("./arch.js"), quick = v.secMemo.L, jobs = v.layoutJobs.length;
+  let told = 0;
+  const later = { ...cx, notify() { told++; }, timer: { ...cx.timer, after: (_ms, f) => setImmediate(() => f(later)) }, spawn: (fn) => cx.spawn(() => fn(later)) };
+  v.layoutMore(later); await settle();
+  const s = lineStats(v.secMemo.L), q = lineStats(quick);
+  assert.ok(jobs > 0 && v.secMemo.L !== quick && told >= 1 && !v.layoutBusy && v.layoutJobs.length === 0, "searched after the render");
+  assert.ok(s.crossings <= q.crossings && s.bends < q.bends && s.around < q.around, `${JSON.stringify(s)} was ${JSON.stringify(q)}`);
+  draw(v, "Security, the map after its search");
+  // A memo replaced meanwhile is not searched on: its job ends without a layout.
+  const gone = { key: "x", L: quick }; v.layoutLater(gone, [null], () => null); v.layoutMore(later); await settle();
+  assert.ok(gone.L === quick && !v.layoutBusy && archLayout(null).nodes.length === 0);
+}
 // Someone else's PR with reasons for a security review: the offers instead of a start.
 {
   const ctx = { ...JSON.parse(fx("ctx.json")), security_trigger: { run: true, reasons: [{ text: "New route /remind" }, { text: "Token check changed" }] } };
