@@ -332,9 +332,12 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
 // ---- the diff as a virtual list: a frame builds the lines on screen, however long the file is
 {
   const v = new PrReview(); v.init({}, cx); await flush();
+  v.branchPicked = true; v.picking = false; // the branch's diff is chosen: the diff is shown, the list of PRs is not
+  v.render(cx); await flush(); // the new context is taken in (and finds no git here)
   const file = (n) => Object.assign(Array.from({ length: n }, (_x, i) => (i % 50 === 0 ? { kind: "@", text: `@@ -${i},50 +${i},50 @@` } : { kind: i % 3 ? "+" : " ", number: i, n: i, text: `import os${i}  # line ${i}` })), { sig: `f${n}` });
   // One frame: the render, then the list asked for the 40 lines the panel shows (as Herdr asks it while laying out).
   const frame = (range = { start: 100, end: 140 }) => {
+    v.error = null; v.files = [{ path: "a.py", add: 1, del: 0 }]; // git is a stand-in here: the diff's rows are given
     S.lists.length = 0; const el0 = S.n.el; v.render(cx);
     const list = S.lists.find((l) => String(l.id).startsWith("pr-diff-"));
     assert.ok(list, "the diff is a virtual list");
@@ -381,9 +384,42 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   press("bhc1", right - 10); press("bhc1", right - 46 - 8 - 10); press("bhc1", 40); // Delete, Edit, the label
   press("ch", right - 10); // the last preset
   assert.deepEqual(did, [["ask", null], ["addComment", null], ["closeAsk", null], ["dropComment", "c1"], ["editComment", "c1"], ["ask", "preset"]]);
+  // What is drawn follows the same description as what is hit: every button of a card's row is there, by its id.
+  {
+    const { panelButtons } = await import("./views.js");
+    const ID = { cancel: `pr-cancel-${v.uid}`, comment: `pr-comment-${v.uid}`, ask: `pr-ask-${v.uid}`, "preset:0": `preset-0-${v.uid}`, "preset:1": `preset-1-${v.uid}`, edit: "ce-c1", delete: "cd-c1" };
+    const drawnIds = (it) => { S.ids = new Set(); v.diffItem(it, S.theme, "a.py line 3"); const got = S.ids; S.ids = null; return got; };
+    for (const editing of [null, { id: "c1" }]) {
+      v.editing = editing;
+      for (const [it, kind] of [[{ t: "ca", h: 42 }, "ca"], [{ t: "ch", h: 34 }, "ch"], [{ t: "bh", c: at.get(2)[0], h: 24 }, "bh"]]) {
+        const want = panelButtons(kind, v.buttonOpts()).list.map((b) => ID[b.key]), got = drawnIds(it);
+        assert.deepEqual(want.filter((id) => !got.has(id)), [], `${kind}${editing ? ", editing" : ""}: every button of the description is drawn`);
+        assert.deepEqual(Object.values(ID).filter((id) => got.has(id) && !want.includes(id)), [], `${kind}${editing ? ", editing" : ""}: and no button that it does not name`);
+      }
+    }
+    v.editing = null;
+  }
+  // With Wrap on a press on a wrapped line's second visual line selects that line.
+  Map.prototype.set.call(S.store, "review.wrap", true);
+  v.rows = Object.assign([{ kind: "+", number: 1, n: 1, text: "x = " + "abcdefgh ".repeat(30) }, { kind: "+", number: 2, n: 2, text: "y = 1" }], { sig: "w2" }); v.sel = null;
+  press("r0.2", 200); assert.equal(v.sel, 0); press("r1", 200); assert.equal(v.sel, 1); v.sel = null;
+  Map.prototype.set.call(S.store, "review.wrap", false); v.rows = file(60);
+  // With a diff shown the list of PRs is not built, and the other way round.
+  const ids = (go) => { go(); v.error = null; S.ids = new Set(); S.lists.length = 0; v.render(cx); const got = [...S.ids]; S.ids = null; return got; };
+  const diffShown = ids(() => { v.picking = false; }), listShown = ids(() => { v.picking = true; });
+  assert.ok(diffShown.some((id) => id.startsWith("pr-files-")) && !diffShown.some((id) => id.startsWith("pr-pick-")), "a diff: its files, no list of PRs");
+  assert.ok(listShown.some((id) => id.startsWith("pr-pick-")) && !listShown.some((id) => id.startsWith("pr-files-")), "the list of PRs: no files, no diff");
+  v.picking = false;
+  // More than 200 files: the first 200 and one line for the rest; the open file is always listed.
+  const many = Array.from({ length: 450 }, (_x, k) => ({ path: `src/f${k}.py`, add: 1, del: 0 })), rowsOf = () => { S.ids = new Set(); v.error = null; v.render(cx); const got = [...S.ids]; S.ids = null; return got; };
+  const fileIds = (got) => got.filter((id) => /^f-src\//.test(id)).length;
+  v.open = "src/f3.py"; v.files = many; let got = rowsOf(); assert.deepEqual([fileIds(got), got.includes(`pr-files-more-${v.uid}`)], [200, true]);
+  S.clicks.get(`pr-files-more-${v.uid}`)(null, cx); v.files = many; got = rowsOf(); assert.deepEqual([fileIds(got), got.includes(`pr-files-more-${v.uid}`)], [450, false], "Show 250 more files lists them all");
+  v.moreFiles = null; v.open = "src/f300.py"; v.files = many; assert.equal(fileIds(rowsOf()), 450, "the open file is past the 200th: all are listed");
+  v.files = [{ path: "a.py", add: 1, del: 0 }]; v.open = "a.py";
   // A line to bring into view: j goes to the next change and asks the list for it; a new file starts at the top.
   const asked = []; v.diffList = { scroll_to_item: (i, how) => asked.push([i, how]) };
-  v.comments = []; v.scrollRow = 30; v.sel = null; v.askTop = false; v.render(cx); v.scrollRow = "top"; v.render(cx);
+  v.comments = []; v.error = null; v.scrollRow = 30; v.sel = null; v.askTop = false; v.render(cx); v.scrollRow = "top"; v.render(cx);
   assert.deepEqual([asked, v.scrollRow], [[[31, "center"], [0, "top"]], null]);
 }
 
@@ -411,5 +447,9 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   Map.prototype.set.call(S.store, "pr.source", "review"); v.srcLists.review = { key: "review", prs: [] };
   v.panelCommand("pick:o/r#8", cx); await flush();
   assert.deepEqual([v.prSel?.number, v.sourceNow()], [8, "review"], "the PR is picked, the source stays");
+  // The same for a review in progress whose PR no list shows: pick:<number> is the click on its row in "In progress".
+  Map.prototype.set.call(S.store, "review.open", [{ ...pr(31, "open"), url: "https://github.com/o/r/pull/31", lastTouched: Date.now(), progress: { comments: 1 }, target: { ...pr(31, "open") } }]);
+  v.panelCommand("pick:31", cx); await flush();
+  assert.equal(v.prSel?.number, 31, "a review in progress is picked by its number");
 }
 console.log("panel ok");

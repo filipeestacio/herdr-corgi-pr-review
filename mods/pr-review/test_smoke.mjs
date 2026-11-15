@@ -505,7 +505,7 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   // dimmed with its state; ✕ removes one (its minimized chip too) and offers Undo, which puts it back.
   S.store.set("review.open", [reg(prs[0], { filesViewed: 2, files: 9, comments: 1 }), reg(prs[1], { filesViewed: 1 }, now - 1000), reg(prs[3], { stepsChecked: 1 }, now - 2000), reg(prs[2], { comments: 2 }, now - 20 * 86400000)]);
   S.store.set("review.minimized", { target: prs[0], at: now });
-  v.spaceSlug = { root: "/h/a", slug: "saefty/corgi-demo" }; v.picking = true; draw(v, "panel: In progress with more behind Show all");
+  v.spaceSlug = { root: "/h/a", slug: "saefty/corgi-demo" }; v.view = "diff"; v.picking = true; draw(v, "panel: In progress with more behind Show all"); // the list itself: it is only built while it is shown
   assert.deepEqual([v.panelProgress().shown.map((r) => r.number), v.panelProgress().more], [[2], 2]);
   v.allOpen = true; draw(v, "panel: In progress, all shown");
   // A review listed a moment ago whose PR is merged now: the line that says so, once.

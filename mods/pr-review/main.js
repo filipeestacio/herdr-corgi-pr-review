@@ -66,6 +66,7 @@ const BRANCH = "branch"; // shared "pr.selected": the current branch was picked 
 const ONE_LINE = [0]; // a line that does not wrap
 const DIFF_MAX = 9000; // lines of one file's diff; the list itself holds at most 10000 items
 const LINE_H = 20; // a line's height
+const FILES_MAX = 200; // files listed at once in the panel; "Show n more files" lists the rest
 const HL_STALE = 2000; // ms a highlight slice may be busy before it counts as stopped (Herdr stops one after ~50 ms)
 const SEC_MARK = "⛨"; // security's own mark in a PR row (a shield), next to the word
 // A PR's head as GitHub last gave it ({at, sha} by url) and the asks under way: one for every copy of the mod (the
@@ -1434,8 +1435,10 @@ export default class PrReview extends View {
         .child(pill(`mode-${this.uid}`, t, this.mode === "file" ? "Diff view" : "File view", (_e, cx) => this.setMode(this.mode === "file" ? "diff" : "file", cx), false, "Switch between the diff and the whole file"))
         .child(pill(`vscode-${this.uid}`, t, "VS Code ↗", () => exec("code", ["-g", `${this.root}/${this.open}:${(this.sel !== null && this.rows[this.sel]?.number) || 1}`]), false, "Open this file at the selected line in VS Code")));
     // Picking: reviews in progress and the sources' list in one scroll, so nothing stacks over anything.
+    // The bodies are built only when they are shown (pickBody, files, diffBody are asked for below): a frame with a
+    // PR chosen built the whole list of PRs before, and one with the list shown every file and diff line.
     const pickId = `pr-pick-${this.uid}`;
-    const pickBody = div().flex_1().min_h(0).relative()
+    const pickBody = () => div().flex_1().min_h(0).relative()
       .child(v_flex().id(pickId).absolute().inset_0().overflow_y_scroll()
         .when((({ shown, left }) => shown.length + left.length > 0 || Boolean(this.undo))(this.panelProgress()), (e) => e.child(this.openReviews(t)))
         .child(this.picker(t)))
@@ -1443,14 +1446,24 @@ export default class PrReview extends View {
     // The composer: under the selected lines, at the top for the whole file, or in place of the comment being edited.
     const lo = Math.min(this.sel ?? -1, this.selEnd ?? this.sel ?? -1), hi = Math.max(this.sel ?? -1, this.selEnd ?? this.sel ?? -1);
     const composeAt = this.editing || this.mode === "file" ? null : this.askTop ? "top" : this.sel !== null ? hi : null;
-    const list = this.mode === "file" ? { items: [], rowAt: [] } : this.diffItems({ composeAt, at, loose, lo });
-    // A line to bring into view (j/k, a file just opened, a context come back to): asked of the list once it has its items.
-    if (this.scrollRow !== null && this.scrollRow !== undefined && list.items.length) {
-      if (this.scrollRow === "top") this.diffList.scroll_to_item(0, "top"); else this.diffList.scroll_to_item(list.rowAt[this.scrollRow] ?? 0, "center");
-      this.scrollRow = null;
-    }
-    const files = div().flex_none().h(Math.max(44, Math.min(this.files.length * 28 + 12, Math.max(200, Math.floor((this.panelH ?? 0) * 0.4))))).relative() // every file, up to 40 % of the panel.border_b(1).border_color(t.border)
-      .child(v_flex().id(`pr-files-${this.uid}`).absolute().inset_0().overflow_y_scroll().p(6).children(this.files.map((f) => {
+    const diffLines = () => {
+      const list = this.diffItems({ composeAt, at, loose, lo });
+      // A line to bring into view (j/k, a file just opened, a context come back to): asked of the list once it is
+      // drawn with its items.
+      if (this.scrollRow !== null && this.scrollRow !== undefined && list.items.length) {
+        if (this.scrollRow === "top") this.diffList.scroll_to_item(0, "top"); else this.diffList.scroll_to_item(list.rowAt[this.scrollRow] ?? 0, "center");
+        this.scrollRow = null;
+      }
+      return list.items.length
+        ? v_virtual_list(diffId, list.items.length, list.items.map((it) => it.h), (i) => list.items[i].k, (range) => list.items.slice(range.start, range.end).map((it) => this.diffItem(it, t, where)))
+          .track_scroll(this.diffList).on_item_click((key, cx) => this.onDiffItem(key, cx)).size_full()
+        : div();
+    };
+    // At most FILES_MAX files at once, the rest behind one line: 2000 files would be 12000 elements in every frame.
+    // The open file is always among the shown ones.
+    const allFiles = this.files.length <= FILES_MAX || this.moreFiles === this.files || this.files.findIndex((f) => f.path === this.open) >= FILES_MAX, listed = allFiles ? this.files : this.files.slice(0, FILES_MAX);
+    const files = () => div().flex_none().h(Math.max(44, Math.min(this.files.length * 28 + 12, Math.max(200, Math.floor((this.panelH ?? 0) * 0.4))))).relative() // every file, up to 40 % of the panel.border_b(1).border_color(t.border)
+      .child(v_flex().id(`pr-files-${this.uid}`).absolute().inset_0().overflow_y_scroll().p(6).children(listed.map((f) => {
         const parts = f.path.split("/"), name = parts.pop(), n = this.comments.filter((c) => c.file === f.path).length;
         return h_flex().id(`f-${f.path}`).h(28).flex_none().px(8).gap(8).items_center().rounded(7).cursor_pointer().tooltip(f.path)
           .when(this.open === f.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.fh.focus(); this.askTop = false; this.pick(f.path, cx); })
@@ -1460,9 +1473,11 @@ export default class PrReview extends View {
           .when(n > 0, (e) => e.child(div().id(`f-c-${f.path}`).tooltip(`${n} pending ${n === 1 ? "comment" : "comments"} on this file`).text_size(TYPE.micro).text_color(t.accent).child(`● ${n}`)))
           .when(f.add > 0, (e) => e.child(div().id(`f-a-${f.path}`).tooltip("Lines added in this file").text_size(TYPE.panel).text_color(t.ansi2).child(`+${f.add}`)))
           .when(f.del > 0, (e) => e.child(div().id(`f-d-${f.path}`).tooltip("Lines removed in this file").text_size(TYPE.panel).text_color(t.ansi1).child(`−${f.del}`)));
-      })).when(!this.files.length, (e) => e.child(div().p(8).whitespace_normal().text_color(this.error ? t.ansi1 : t.dim).child(this.error || ((this.loading && !this.quietLoad) || this.restoring ? Spin(t, "Loading…") : "No changes against the base")))))
+      })).when(!allFiles, (e) => e.child(div().id(`pr-files-more-${this.uid}`).h(28).flex_none().px(8).flex().items_center().rounded(7).text_size(TYPE.panel).text_color(t.accent).cursor_pointer()
+        .tooltip("List every changed file").hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => { this.moreFiles = this.files; cx.notify(); }).child(`Show ${this.files.length - FILES_MAX} more files`)))
+        .when(!this.files.length, (e) => e.child(div().p(8).whitespace_normal().text_color(this.error ? t.ansi1 : t.dim).child(this.error || ((this.loading && !this.quietLoad) || this.restoring ? Spin(t, "Loading…") : "No changes against the base")))))
       .child(Scrollbar.vertical(`pr-files-${this.uid}`).absolute().inset_0());
-    const diffBody = this.mode === "file"
+    const diffBody = () => (this.mode === "file"
       ? div().flex_1().min_h(0).relative()
         .child(this.code ? Editor.new(this.code).size_full()
           : this.md !== null ? v_flex().id(`pr-md-${this.uid}`).absolute().inset_0().overflow_y_scroll().p(14).child(TextView.markdown(`pr-mdv-${this.uid}`, this.md))
@@ -1472,18 +1487,15 @@ export default class PrReview extends View {
         // kept here, outside the list, for onDiffItem: where it went down and whether shift was held.
         // The event is in logical px, the items are laid out in the person's zoom: both in the items' px (as panelW).
         .on_mouse_down("left", (e) => { this.press = { ...panelPress(e.local_position?.x, e.bounds?.width, settings().zoom, this.panelW ?? 380), shift: Boolean(e.modifiers?.shift) }; })
-        .child(list.items.length
-          ? v_virtual_list(diffId, list.items.length, list.items.map((it) => it.h), (i) => list.items[i].k, (range) => list.items.slice(range.start, range.end).map((it) => this.diffItem(it, t, where)))
-            .track_scroll(this.diffList).on_item_click((key, cx) => this.onDiffItem(key, cx)).size_full()
-          : div())
-        .child(Scrollbar.vertical(diffId).absolute().inset_0());
+        .child(diffLines())
+        .child(Scrollbar.vertical(diffId).absolute().inset_0()));
     return dock(this, v_flex(), inView(), cx).on_size_change((size, cx) => { const z = settings().zoom || 1, h = size.height / z, w = size.width / z; if (Math.abs((this.panelH ?? 0) - h) > 8 || Math.abs((this.panelW ?? 0) - w) > 8) { this.panelH = h; this.panelW = w; cx.notify(); } })
       .size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(TYPE.body)
       .track_focus(this.fh).on_key_down((e, cx) => this.onKey(e, cx))
       .child(header)
       .when(Boolean(setupBanner(this, t)), (e) => e.child(setupBanner(this, t)))
       .when(state === "setup", (e) => e.child(renderSetup(this, t)))
-      .when(state === "picking", (e) => e.child(pickBody))
+      .when(state === "picking", (e) => e.child(pickBody()))
       .when(state === "selected", (e) => e
         .when(Boolean(this.prSel && !shownIn(this.prSel)), (e) => e.child(h_flex().flex_none().flex_wrap().px(14).py(6).gap(8).items_center().bg(t.ansi3 + "1c").border_b(1).border_color(t.border).text_size(TYPE.small)
           .child(div().flex_1().min_w(0).child(`This PR belongs to ${C.nameOf(ctxDoc(), prCtx(this.prSel))}.`))
@@ -1497,7 +1509,7 @@ export default class PrReview extends View {
           .child(h_flex().gap(8)
             .child(pill(`pr-retry-${this.uid}`, t, "Retry", (_e, cx) => { if (this.prSel) this.heads.delete(this.prSel.url); this.refresh(cx, true); }, false, "Load this diff again"))
             .when(Boolean(named?.url), (e) => e.child(pill(`pr-err-web-${this.uid}`, t, "Open on GitHub ↗", () => openUrl(named.url), false, "Open this PR on GitHub in the browser"))))))
-        .when(tab === "diff" && !(this.error && !this.files.length), (e) => e.child(files).child(diffBody)))
+        .when(tab === "diff" && !(this.error && !this.files.length), (e) => e.child(files()).child(diffBody())))
       .when(Boolean(this.note), (e) => e.child(div().flex_none().px(10).pt(6).text_size(TYPE.panel).whitespace_normal().text_color(/Could not|Not sent|Not a PR/.test(this.note ?? "") ? t.ansi1 : t.dim).child(this.note)))
       // The pending comments: a count, not a main button. For a PR it opens the review's "Finish your review" (post to
       // GitHub or send to an agent, after a preview); a branch without a PR has no review, so its comments go to the agent.

@@ -4,7 +4,7 @@
 // it so must give what a fresh computation gives after everything that changes their inputs. Counts, not times: the
 // one time check is generous and takes the best of three. perf_bench.mjs prints the numbers.)
 import assert from "node:assert/strict";
-import { hasFixtures, openReview, PR2, BIG, STATES, measure, counted, frame, later, settled, quiet, cx, settle } from "./perf_bench.mjs";
+import { hasFixtures, openReview, openPanel, PR2, BIG, STATES, measure, counted, frame, later, settled, quiet, cx, settle } from "./perf_bench.mjs";
 import { S } from "./render_stub.mjs";
 
 if (!hasFixtures) {
@@ -144,6 +144,23 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   STATES.Architecture(small); await settle(); small.fitMemos = null;
   const first = drawn(small);
   assert.ok(first.layouts > 0 && first.map.includes("rv-arch-canvas"), "9 cards: laid out and drawn in the first frame, as before");
+}
+// ---- the panel beside the chat builds what it shows
+// With a PR chosen the list of PRs is not built (it was: 390 elements a frame without a single diff line, now 76), and
+// the open file's diff is a virtual list: a frame builds the 60 lines on screen, for 200 lines as for 5000 (it built
+// up to 1500 lines, about 10 000 elements, and with colors that frame was stopped by Herdr's 50 ms).
+{
+  const { v: p, prs } = await openPanel(PR2());
+  const file = (n) => Object.assign(Array.from({ length: n }, (_x, i) => (i % 50 === 0 ? { kind: "@", text: `@@ -${i},50 +${i},50 @@` } : { kind: i % 3 ? "+" : " ", number: i, n: i, text: `    records = event.get("Records", [])  # line ${i}` })), { sig: `f${n}` });
+  const at = (go) => { go(); p.view = "diff"; settled(p); p.view = "diff"; return frame(p); }; // without the tools Setup opens by itself here: the diff is what is counted
+  p.memo.clear(); p.context = null; p.choose(prs[0], cx); await settle();
+  const first = p.open, bare = at(() => { p.open = null; p.rows = Object.assign([], { sig: "" }); });
+  assert.ok(bare.el <= 120 && bare.items === 0, `a PR chosen, no file open: ${bare.el} elements in a frame, at most 120`);
+  const small = at(() => { p.open = first; p.rows = file(200); }), big = at(() => { p.open = first; p.rows = file(5000); });
+  assert.deepEqual([small.items, big.items], [201, 5001], "every line is an item of the list");
+  assert.equal(big.el, small.el, `a frame builds as much for 5000 lines as for 200: ${big.el} and ${small.el} elements`);
+  assert.ok(big.el <= 1300 && big.call <= 6500, `the open file's frame: ${big.el} elements and ${big.call} builder calls, at most 1300 and 6500`);
+  S.exec = null;
 }
 await settle();
 console.log("perf ok");
