@@ -276,4 +276,44 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   assert.equal(S.store.get("review.minimized"), null, "resuming it takes its chip away");
   S.exec = null; S.props = {}; S.spaces = [{ id: "s1", active: true, folder: "/repo", tabs: [] }];
 }
+
+// ---- "This space": the PRs of the branches checked out in the space's panes and its agents' worktrees
+{
+  const { spaceOrder, focusedPr } = await import("./views.js");
+  const ok = (stdout) => ({ code: 0, stdout, stderr: "" }), calls = [];
+  const node = (number, branch, state = "OPEN", extra = {}) => ({ number, title: `PR ${number}`, url: `https://github.com/o/a/pull/${number}`, state, isDraft: false, headRefName: branch, headRefOid: `h${number}`, baseRefName: "main",
+    updatedAt: new Date().toISOString(), mergedAt: null, isCrossRepository: false, author: { login: "me" }, reviewDecision: null, additions: 1, deletions: 0, ...extra });
+  S.props = {}; S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOString(), prs: [] }));
+  for (const k of ["pr.selected", "pr.sourceBy", "pr.fromReview"]) Map.prototype.set.call(S.store, k, null);
+  Map.prototype.set.call(S.store, "pr.source", "repo"); // the last pick anywhere
+  S.spaces = [{ id: "sp", active: true, folder: "/a", tabs: [{ id: "t1", active: true }] }];
+  S.panes = [{ pane: "p1", tab: "t1", cwd: "/a" }, { pane: "p2", tab: "t1", cwd: "/wt/fix" }];
+  S.terminals = [{ address: "t9", labels: { "herdr.space": "sp" }, cwd: "/a", state: "live" }, { address: "t10", parent: "t9", cwd: "/wt/sub", state: "live" }];
+  S.focused = { space: "sp", tab: "t1", pane: "p2", cwd: "/wt/fix" };
+  for (const [dir, ref] of [["/a", "main"], ["/wt/fix", "fix/1"], ["/wt/sub", "feat/x"]]) S.files.set(`${dir}/.git/HEAD`, `ref: refs/heads/${ref}\n`);
+  S.exec = async (cmd, args, opt) => { calls.push(`${cmd} ${args.slice(0, 3).join(" ")}`);
+    if (cmd === "git" && args.includes("--show-toplevel")) return ok(`${opt.cwd}\n${opt.cwd}/.git\norigin/main\n`);
+    if (cmd === "git" && args[0] === "remote") return ok("git@github.com:o/a.git\n");
+    if (cmd === "gh" && args[1] === "graphql") { const q = args[3]; assert.ok(q.includes('"feat/x"') && q.includes('"fix/1"') && !q.includes('"main"'), "both branches in one query, not the default branch");
+      return ok(JSON.stringify({ data: { repository: { b0: { nodes: [node(11, "feat/x")] }, b1: { nodes: [node(10, "fix/1", "MERGED", { mergedAt: new Date().toISOString() }), node(12, "fix/1")] } } } })); }
+    return { code: 1, stdout: "", stderr: "stub" }; };
+  const v = new PrReview(); v.init({}, cx); await flush(); v.loadSource(cx); await flush();
+  assert.equal(calls.filter((c) => c.startsWith("gh api graphql")).length, 1, "one gh call for the repo, however many branches");
+  assert.deepEqual([v.sourceNow(), v.srcLists.space.prs.map((p) => [p.number, p.state, p.cwd])], ["space", [[11, "open", "/wt/sub"], [12, "open", "/wt/fix"], [10, "merged", "/wt/fix"]]],
+    "no source picked in this space and a branch here has a PR: This space is shown; each PR knows its checkout");
+  const focus = v.spaceHeads.get("/wt/fix"), order = spaceOrder(v.listNow(), focus);
+  assert.deepEqual([order.map((p) => p.number), focusedPr(order[0], focus)], [[12, 11, 10], true], "the focused pane's PR first, the merged one last");
+  v.picking = true; v.render(cx); // the list draws
+  // A pick is kept per space; another space falls back to the last pick anywhere.
+  v.pickSource("review"); assert.deepEqual([v.sourceNow(), S.store.get("pr.sourceBy").sp, S.store.get("pr.source")], ["review", "review", "review"]);
+  S.spaces = [{ id: "other", active: true, folder: "/a", tabs: [] }]; S.focused = null; v.spaceAuto = false;
+  assert.equal(v.sourceNow(), "review", "no pick in that space: the last one");
+  // Only default branches: nothing is asked of GitHub, the list says why, and the source stays what it was.
+  Map.prototype.set.call(S.store, "pr.sourceBy", null); Map.prototype.set.call(S.store, "pr.source", "repo");
+  S.spaces = [{ id: "sp", active: true, folder: "/a", tabs: [{ id: "t1", active: true }] }]; S.panes = [{ pane: "p1", tab: "t1", cwd: "/a" }]; S.terminals = [];
+  const w = new PrReview(); w.init({}, cx); await flush(); calls.length = 0; await w.loadList("space", cx, { space: "sp", stale: () => false, force: true });
+  assert.deepEqual([calls.filter((c) => c.startsWith("gh")).length, w.srcLists.space.why], [0, "Every checkout in this space is on its default branch, so there is no branch to look up a PR for."]);
+  w.loadSource(cx); await flush(); assert.equal(w.sourceNow(), "repo", "no PR on a branch here: the source it was");
+  S.exec = null; S.panes = null; S.terminals = null; S.focused = null; S.spaces = [{ id: "s1", active: true, folder: "/repo", tabs: [] }];
+}
 console.log("panel ok");
