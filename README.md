@@ -46,6 +46,9 @@ Elements that only the PR description or ticket mentions, and that the diff does
 Below the map, **Impact** shows the functions and classes the PR changes and who calls them, from the language
 servers and without a model: each caller is marked as changed in this PR, in the diff with its call untouched, or
 not in this PR, and a caller that still calls a changed signature the old way stands out. Tests are counted apart.
+With more than 12 changed symbols, 12 callers or 15 calls there is no picture with lines: each changed symbol is a
+row with its callers by file, a changed signature whose callers did not change first, and a file you point at or
+click shows every changed symbol it calls.
 
 When the PR changes Terraform, CloudFormation or SAM files, **Infrastructure changes** shows the resources it adds,
 changes, removes or may replace as cards with their changed arguments and the references between them, and lists
