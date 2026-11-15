@@ -47,7 +47,7 @@ corners and a 1 px `border`:
 - **Walkthrough** replaces the diff with the AI analysis in reading order, one layer at a time.
 - **Setup** replaces the diff with three groups (Required, Optional, Go to definition): each program with ✓ in
   `ansi2`, `missing` in `ansi1`, `not installed` in `muted` or `logged out` in `ansi3`, what it enables
-  ("Go to definition in Java needs jdtls"), the install command in mono, `Copy` and `Install in terminal`.
+  ("Go to definition and Impact in Java need jdtls"), the install command in mono, `Copy` and `Install in terminal`.
 
 **The review layout** (`mods/pr-review/review-layout.json`, written to `layouts/` on first use): a column, no system
 title bar (traffic lights at 12, 16):
@@ -177,7 +177,8 @@ big PRs into cohort passes and a merge pass under one cap.
   `agentbar` window title), `pr.js` (pure: diff parsing, prompts, registry, triage, pre-merge checks),
   `arch.js` (pure: the diagram layout with lanes, ports, hops and badges), `stack.js` (diagram and card
   drawing), `syntax.js` (highlighting), `defs.js` + `lsp_bridge.py` (go-to-definition through language
-  servers kept warm by one local bridge), `context.js` (optional contexts), `setup.js` + `setup-view.js`
+  servers kept warm by one local bridge), `impact.js` + `impact-view.js` (the Impact picture: changed functions
+  and their callers, from the bridge's `/symbols` and `/references`), `context.js` (optional contexts), `setup.js` + `setup-view.js`
   (Setup), and Python helpers: `prs.py` (PRs from Claude transcripts + `gh pr view`), `worktree.py` (a reusable
   checkout of the PR head), `review.py` (the analysis), `reviewers.py`, `verify.py`, `triage.py`, `related.py`
   (related PRs, CI checks, mergeability), `llm.py` (`claude -p` with a JSON schema and a budget cap, optional
