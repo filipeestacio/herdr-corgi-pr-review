@@ -206,7 +206,7 @@ export function architectureMd({ pr, head, ai, findings = [], statusOf = () => "
   const a = ai?.arch, nodes = a?.nodes ?? [], name = (id) => flat(nodes.find((n) => n.id === id)?.label ?? id);
   // With trust zones the diagram's frames are the zones: each card names its group and zone here instead.
   const zones = a?.zones ?? [], group = (n) => flat((a.groups ?? []).find((g) => g.id === n.group)?.label ?? ""), zone = (n) => { const z = zones.find((x) => x.id === n.zone); return z ? `${flat(z.name ?? z.id)} (${z.trust ?? "trust not stated"})` : "none"; };
-  const breaks = bySeverity(findings.filter((f) => f.breaks && unresolved(statusOf(f))));
+  const breaks = bySeverity(findings.filter((f) => (f.breaks?.node || f.breaks?.from) && unresolved(statusOf(f)))); // a place on the map; breaks.transition alone is a move of a state diagram
   const st = (k) => nodes.filter((n) => cardStatus(n) === k).length;
   const sums = [["new", st("new")], ["changed", st("changed")], ["removed", st("removed")]].filter(([, n]) => n).map(([k, n]) => `${n} ${k}`).join(", ");
   return doc(prLine({ pr, head }), "", "# Architecture impact", "",
