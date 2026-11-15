@@ -8,6 +8,7 @@ import { markLine } from "./arch.js";
 import { archLayout, archFocus, stateLayout, transitionText, sourceStyle, hasSources, pathMark, SPEC_TIP, ARCH, LABEL } from "./arch.js";
 import { clampText, MARK_CARD_H } from "./arch.js"; // wave C2: a mark's finding in two lines
 import { bundleChips, markRoom } from "./arch.js"; // finding chips of a state diagram that would touch are one; a card's mark takes one or two lines
+import { transitionLabel, SM } from "./arch.js"; // a state diagram's labels: number and trigger, their width, the loop's room
 import { flowArch, seqLayout, wrapCount, SEQ, solidOver } from "./views.js";
 import { readableFade } from "./views.js"; // wave R2: dimmed text stays readable
 import { TYPE } from "./views.js"; // the text sizes (U34)
@@ -301,16 +302,23 @@ const edgeText = (v, e, prefix = "") => { const name = (id) => v.nodes.find((n) 
 // transitions as a list beside it (below it when there is no room), each with its whole text; a flow the usual cards
 // when they fit, else the narrow ones; a sequence a sequence diagram (views.js seqLayout).
 const planMemo = new Map();
-export function visualPlan(v, wide, bare = false) {
-  const key = `${wide}|${bare}|${JSON.stringify(v)}`;
+const isErr = (e) => e.error === "catch" || e.error === "retry" || (!e.event && /^(catch|retry)\b/i.test(String(e.label ?? "")));
+// What stateLayout gets: every transition with the room its finding's chip takes after its label (marks: views.js
+// transitionMarks). numbered: its label is its number and trigger, the bare number where the picture has no room (a
+// Catch or Retry keeps its chip), and its whole line is its tooltip.
+const stateModel = (v, marks, numbered = false) => ({ ...v, edges: [], transitions: edgesOf(v).map((e, k) => ({
+  ...(numbered && !isErr(e) ? { ...e, event: undefined, guard: undefined, action: undefined, label: transitionLabel(e, k), short: String(k + 1), tip: edgeText(v, e, `${k + 1}. `) } : e),
+  pad: marks?.get(k) ? markW(marks.get(k)) + 6 : 0 })) });
+// marks: only for a state diagram; they widen it, its height stays (review.js sizes the row without them).
+export function visualPlan(v, wide, bare = false, marks = null) {
+  const key = `${wide}|${bare}|${[...(marks ?? [])].map(([k, m]) => `${k}:${m.severity}${m.findings.length}`).join()}|${JSON.stringify(v)}`;
   if (planMemo.has(key)) return planMemo.get(key);
   const inner = wide - 22, edges = edgesOf(v), rowsH = (texts, w, size, lh, gap) => texts.reduce((n, x) => n + gap + lh * wrapCount(x, w, size), 0);
   let P;
   if (v.kind === "state_machine") {
-    // In the diagram a transition carries its number, which never gets cut; its text is in the list (a Catch or
-    // Retry keeps its chip). w: stateLayout's width, which holds the lines and their labels.
-    const isErr = (e) => e.error === "catch" || e.error === "retry" || (!e.event && /^(catch|retry)\b/i.test(String(e.label ?? "")));
-    const S = stateLayout({ ...v, edges: [], transitions: edges.map((e, k) => (isErr(e) ? e : { ...e, event: undefined, guard: undefined, action: undefined, label: String(k + 1) })) });
+    // In the diagram a transition carries its number and what triggers it; its whole text is in the list.
+    // w: stateLayout's width, which holds the lines and their labels.
+    const S = stateLayout(stateModel(v, marks, true), 0, inner);
     const w = S.width;
     const side = inner - w - 24 >= 320, texts = edges.map((e, k) => edgeText(v, e, `${k + 1}. `)), listH = rowsH(texts, (side ? inner - w - 24 : inner) - 4, 12, 18, 4);
     P = bare ? { S, w, side: false, bare, texts, h: S.height + 2 } : { S, w, side, texts, h: side ? Math.max(S.height + 2, listH) : S.height + 2 + 8 + listH };
@@ -344,7 +352,7 @@ export function visualCard(v, t, id, onJump, wrapX = null, wide = null, opts = {
   const edge = (e, k, prefix = "") => h_flex().id(`${id}-x${k}`).gap(4).items_start().text_size(TYPE.small).text_color(e.changed && e.source !== "existing" ? t.accent : t.muted)
     .when(e.source === "spec", (x) => x.child(specTag(t, `${id}-x${k}-sp`)))
     .child(div().flex_1().min_w(0).whitespace_normal().child(`${prefix}${name.get(e.from) ?? e.from} → ${name.get(e.to) ?? e.to}${transitionText(e) ? ` · ${transitionText(e)}` : ""}`));
-  const edges = edgesOf(v), P = wide ? visualPlan(v, wide, Boolean(opts.bare)) : null, place = (x) => x?.at ?? x?.evidence;
+  const edges = edgesOf(v), P = wide ? visualPlan(v, wide, Boolean(opts.bare), v.kind === "state_machine" ? opts.marks : null) : null, place = (x) => x?.at ?? x?.evidence;
   let body;
   if (v.kind === "sequence" && P) {
     body = seqView(P.Q, t, `${id}-sq`, onJump);
@@ -359,14 +367,15 @@ export function visualCard(v, t, id, onJump, wrapX = null, wide = null, opts = {
         .child(open ? "▾" : "▸").child(`${edges.length} numbered ${edges.length === 1 ? "call" : "calls"}`))
       .when(open, (e) => e.children(edges.map((x, k) => edge(x, k, `${k + 1}. `))));
   } else if (v.kind === "state_machine" && P) {
-    // Every transition with its whole text: the diagram cuts a label where its line leaves no room.
+    // Every transition with its whole text: the diagram has its number and what triggers it.
     const list = v_flex().flex_1().min_w(0).children(edges.map((e, k) => div().id(`${id}-tr${k}`).flex_none().pt(4).text_size(TYPE.small).line_height(1.5).whitespace_normal()
       .text_color(e.changed && e.source !== "existing" ? t.foreground : t.muted).when(Boolean(e.evidence), (x) => x.tooltip(e.evidence))
       .when(Boolean(place(e) && onJump), (x) => x.cursor_pointer().hover((s) => s.text_color(t.accent)).on_click((_e, cx) => { onJump(place(e), cx); cx.stop_propagation(); })).child(P.texts[k])));
     const pic = div().w(P.w).flex_none().child(stateView(P.S, t, `${id}-sv`, onJump, opts.marks));
     body = P.bare ? nativeX(`${id}-sm`, 0, 0, pic) : P.side ? h_flex().gap(24).items_start().child(pic).child(list) : v_flex().gap(8).child(nativeX(`${id}-sm`, 0, 0, pic)).child(list);
   } else if (v.kind === "state_machine") {
-    const S = stateLayout(v);
+    // The same labels as over a layer's code (number and trigger, the whole line in the tooltip); it scrolls sideways where it is wider than its room.
+    const S = stateLayout(stateModel(v, opts.marks, true));
     body = (wrapX ?? nativeX)(`${id}-sm`, S.width, S.height + 2, stateView(S, t, `${id}-sv`, onJump, opts.marks));
   } else if (v.kind === "steps") {
     const lv = levels(v.nodes, edges), order = [...v.nodes].sort((a, b) => lv.get(a.id) - lv.get(b.id));
@@ -382,7 +391,8 @@ export function visualCard(v, t, id, onJump, wrapX = null, wide = null, opts = {
   return v_flex().id(id).flex_none().mt(4).p(10).gap(8).rounded(8).border_1().border_color(t.border).bg(t.surface).when(Boolean(P), (e) => e.h(P.h - 4).overflow_hidden())
     .child(h_flex().h(16).flex_none().gap(8).items_center().text_size(TYPE.small).child(div().flex_none().font_semibold().text_color(t.muted).child((KIND_NAME[v.kind] ?? v.kind).toUpperCase()))
       .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(v.title ?? ""))
-      .when(Boolean(P) && hasSources(v), (e) => e.child(sourceLegend(t))))
+      .when(v.kind === "state_machine", (e) => e.child(stateLegend(t, v, opts.marks)))
+      .when(Boolean(P) && v.kind !== "state_machine" && hasSources(v), (e) => e.child(sourceLegend(t))))
     .child(body);
 }
 
@@ -412,37 +422,51 @@ function seqView(Q, t, id, onJump = null) {
 }
 
 // A state diagram at stateLayout's positions: start dot, end ring, state cards (Parallel/Map blocks with their
-// branches), transitions down with their "event [guard] / action" beside the last stretch, return lanes on the left
-// with rounded corners, self-loops on the card's edge, Catch/Retry stubs with chips. Changed in the accent colour.
+// branches), transitions down and through their lanes beside the states, return lanes on the left with rounded
+// corners, self-loops as an arc on the card's right edge, Catch/Retry stubs with chips. A transition's label sits on
+// a plate in the card's colour, so neither the grid nor a line runs through its text.
+// A line says what happened to its transition: unchanged thin and grey, changed in this PR in the accent colour,
+// with a finding heavier and in its severity's colour (stateLegend).
 const SM_GLYPH = { task: "▭", choice: "◇", parallel: "⫴", map: "⧉", wait: "⏱", pass: "↓", fail: "✕", succeed: "✓" };
-// marks: views.js transitionMarks (Map(transition index -> {findings, severity})): such a transition is drawn in its
-// severity's colour with a chip at its arrow, the titles in its tooltip. onJump(place, cx): a card, a label or a chip
-// opens its place (at, else evidence).
+const markText = (m) => `${cap(m.severity)} · ${m.findings.length}`, markW = (m) => Math.ceil(markText(m).length * 6) + 10;
+// marks: views.js transitionMarks (Map(transition index -> {findings, severity})): such a transition has a chip after
+// its label, the titles in its tooltip. onJump(place, cx): a card, a label or a chip opens its place (at, else evidence).
 export function stateView(L, t, id, onJump, marks = null) {
   // A transition's index, from its key: "f<i>:…" forward, "b<i>" a return lane, "l<i>" a self-loop.
   const idx = (e) => { const m = /^[fbl](\d+)/.exec(e.key ?? ""); return m ? Number(m[1]) : -1; };
   const sevC = (m) => t[SEVERITY_COLOR[m.severity]] ?? t.ansi1, mk = (e) => marks?.get(idx(e)) ?? null;
-  const col = (x) => (mk(x) ? sevC(mk(x)) : x.changed && x.source !== "existing" ? t.accent : t.muted), els = [];
+  const fresh = (x) => x.changed && x.source !== "existing";
+  const col = (x) => (mk(x) ? sevC(mk(x)) : fresh(x) ? t.accent : t.muted), wt = (x) => (mk(x) ? 2.5 : fresh(x) ? 1.5 : 1), els = [];
   const findTip = (m) => (m ? `\n\n${m.findings.length} unresolved ${m.findings.length === 1 ? "finding" : "findings"} at this transition:\n${m.findings.slice(0, 5).map((f) => `· ${f.title}`).join("\n")}` : "");
   const jump = (el, place) => el.when(Boolean(place && onJump), (x) => x.cursor_pointer().on_click((_e, cx) => { onJump(place, cx); cx.stop_propagation(); }));
-  const hline = (k, x1, x2, y, c, d = false) => div().id(k).absolute().left(Math.min(x1, x2)).top(y).w(Math.abs(x2 - x1)).h(0).border_t(1.5).border_color(c).when(d, (e) => e.border_dashed());
-  const vline = (k, x, y1, y2, c, d = false) => div().id(k).absolute().left(x).top(Math.min(y1, y2)).w(0).h(Math.abs(y2 - y1)).border_l(1.5).border_color(c).when(d, (e) => e.border_dashed());
+  // A level line runs its own weight further, so a corner has no notch.
+  const hline = (k, x1, x2, y, c, d = false, w = 1.5) => div().id(k).absolute().left(Math.min(x1, x2)).top(y).w(Math.abs(x2 - x1) + w).h(0).border_t(w).border_color(c).when(d, (e) => e.border_dashed());
+  const vline = (k, x, y1, y2, c, d = false, w = 1.5) => div().id(k).absolute().left(x).top(Math.min(y1, y2)).w(0).h(Math.abs(y2 - y1)).border_l(w).border_color(c).when(d, (e) => e.border_dashed());
+  const tipOf = (e, none = "") => [e.tip || e.text || none, sourceStyle(e.source).tip, e.evidence].filter(Boolean).join("\n") + findTip(mk(e));
+  const chip = (key, c, tip, text) => div().id(key).flex_none().px(4).h(16).flex().items_center().rounded(4).border_1().border_color(c).bg(t.background).text_size(TYPE.micro).text_color(t.foreground).tooltip(tip).child(text);
+  // A transition's text with its finding's chip behind it (stateLayout keeps `pad` free for it), so the chip stands
+  // at the transition and off the state. at: {x, y, w, left}: w wide from x to the right, or right-aligned so that
+  // the text ends at x + w and the chip stands before it.
+  const label = (key, e, at = e.labelAt) => {
+    const m = mk(e), text = div().min_w(0).truncate().text_color(col(e)).child(e.text), parts = m ? [text, chip(`${key}-m`, col(e), tipOf(e), markText(m))] : [text];
+    return jump(h_flex().id(key).absolute().top(at.y - (m ? 1.5 : 0)).h(m ? 16 : 13).px(2).gap(4).items_center().max_w(at.w + 4).bg(t.surface).text_size(TYPE.micro).tooltip(tipOf(e))
+      .when(Boolean(at.left), (x) => x.right(L.width - at.x - at.w - 2)).when(!at.left, (x) => x.left(at.x - 2)).children(at.left ? parts.reverse() : parts), e.at ?? e.evidence);
+  };
   L.edges.forEach((e, i) => {
-    const c = col(e);
+    const c = col(e), w = wt(e);
     e.segments.forEach((s, k) => {
-      els.push(s.y1 === s.y2 ? hline(`${id}-e${i}-${k}`, s.x1, s.x2, s.y1, c, e.dashed) : vline(`${id}-e${i}-${k}`, s.x1, s.y1, s.y2, c, e.dashed));
+      els.push(s.y1 === s.y2 ? hline(`${id}-e${i}-${k}`, s.x1, s.x2, s.y1, c, e.dashed, w) : vline(`${id}-e${i}-${k}`, s.x1, s.y1, s.y2, c, e.dashed, w));
     });
     els.push(div().id(`${id}-a${i}`).absolute().left(e.arrow.x - 5).top(e.arrow.y - 11).text_size(9).text_color(c).child("▼"));
-    if (e.text && e.labelAt) els.push(jump(div().id(`${id}-l${i}`).absolute().left(e.labelAt.x).top(e.labelAt.y).w(e.labelAt.w).h(13).text_size(TYPE.micro).text_color(mk(e) ? c : e.changed ? t.accent : t.muted)
-      .tooltip([e.text, sourceStyle(e.source).tip, e.evidence].filter(Boolean).join("\n") + findTip(mk(e))).child(div().truncate().when(Boolean(e.labelAt.left), (x) => x.text_right()).child(e.text)), e.at ?? e.evidence));
+    if (e.text && e.labelAt) els.push(label(`${id}-l${i}`, e));
   });
   L.backs.forEach((b, i) => {
-    const c = col(b), near = Math.min(b.sx, b.tx);
-    els.push(div().id(`${id}-r${i}`).absolute().left(b.laneX).top(b.ty).w(near - b.laneX).h(b.sy - b.ty).border_l(1.5).border_t(1.5).border_b(1.5).rounded_l(8).border_color(c).when(b.dashed, (e) => e.border_dashed()).tooltip(`${b.text || "back"}${findTip(mk(b))}`));
-    if (b.tx > near) els.push(hline(`${id}-rt${i}`, near, b.tx, b.ty, c, b.dashed));
-    if (b.sx > near) els.push(hline(`${id}-rs${i}`, near, b.sx, b.sy, c, b.dashed));
+    const c = col(b), w = wt(b), near = Math.min(b.sx, b.tx);
+    els.push(div().id(`${id}-r${i}`).absolute().left(b.laneX).top(b.ty).w(near - b.laneX).h(b.sy - b.ty).border_l(w).border_t(w).border_b(w).rounded_l(8).border_color(c).when(b.dashed, (e) => e.border_dashed()).tooltip(tipOf(b, "back")));
+    if (b.tx > near) els.push(hline(`${id}-rt${i}`, near, b.tx, b.ty, c, b.dashed, w));
+    if (b.sx > near) els.push(hline(`${id}-rs${i}`, near, b.sx, b.sy, c, b.dashed, w));
     els.push(div().id(`${id}-ra${i}`).absolute().left(b.tx - 8).top(b.ty - 8).text_size(9).text_color(c).child("▶"));
-    if (b.text) els.push(div().id(`${id}-rl${i}`).absolute().left(b.laneX + 4).top(b.ty + 3).max_w(near - b.laneX - 6).text_size(TYPE.micro).text_color(b.changed ? t.accent : t.muted).tooltip(b.text).child(div().truncate().child(b.text)));
+    if (b.text && b.labelAt) els.push(label(`${id}-rl${i}`, b));
   });
   const nodes = L.nodes.map((n, i) => {
     if (n.kind === "start") return div().id(`${id}-n${i}`).absolute().left(n.x + 1).top(n.y + 1).w(12).h(12).rounded_full().bg(t.foreground).tooltip("Start state").accessibility_label("Start state");
@@ -466,31 +490,43 @@ export function stateView(L, t, id, onJump, marks = null) {
     if (nxt && nxt.branch === k.branch) out.push(vline(`${id}-kl${i}-${j}`, k.x + k.w / 2, k.y + k.h, nxt.y, t.muted));
     return out;
   }));
-  const loops = L.loops.flatMap((l, i) => [div().id(`${id}-o${i}`).absolute().left(l.x).top(l.y).w(14).h(12).rounded(6).border(1.5).border_color(col(l)).when(l.dashed, (e) => e.border_dashed()).tooltip(`${l.text || "self-transition"}${findTip(mk(l))}`),
-    ...(l.text ? [div().id(`${id}-ol${i}`).absolute().left(l.x + 17).top(l.y - 1).max_w(l.w).text_size(TYPE.micro).text_color(l.changed ? t.accent : t.muted).tooltip(l.text).child(div().truncate().child(`↺ ${l.text}`))] : [])]);
+  // A self-loop: an arc out of the card's right edge and back into it (the arrowhead at its lower end), then its text.
+  const loops = L.loops.flatMap((l, i) => {
+    const c = col(l), w = wt(l);
+    return [div().id(`${id}-o${i}`).absolute().left(l.x).top(l.y).w(14).h(12).border_t(w).border_r(w).border_b(w).rounded_r(6).border_color(c).when(l.dashed, (e) => e.border_dashed()).tooltip(tipOf(l, "self-transition")),
+      div().id(`${id}-oa${i}`).absolute().left(l.x + 1).top(l.y + 4).text_size(9).text_color(c).child("◀"),
+      ...(l.text ? [label(`${id}-ol${i}`, l, { x: l.x + SM.LOOP, y: l.y - 1, w: l.w })] : [])];
+  });
   const stubs = L.stubs.flatMap((s, i) => {
     const c = /retry/i.test(s.text) ? t.ansi3 : t.ansi1;
     return [hline(`${id}-sl${i}`, s.x1, s.x2, s.y, c, s.dashed), div().id(`${id}-sc${i}`).absolute().left(s.chip.x).top(s.chip.y).w(s.chip.w).h(s.chip.h).px(5).flex().items_center()
       .rounded(5).border_1().border_color(c).when(s.dashed, (e) => e.border_dashed()).bg(t.background).text_size(TYPE.micro).text_color(t.foreground).tooltip(s.text).child(div().truncate().child(s.text))];
   });
-  // The finding chips, one per marked transition at its arrow (a self-loop: over its ring). Chips that would touch
-  // (several transitions end side by side at one state) are one chip, "5 findings" in the highest severity's colour,
-  // with every transition and its findings in the tooltip; the lines keep their own colours and the list of
-  // transitions under the diagram its severity per row.
-  const SEV_RANK = ["high", "medium", "low"], chipText = (m) => `${cap(m.severity)} · ${m.findings.length}`, named = (s) => (/^\d+$/.test(s) ? `Transition ${s}` : s);
-  const marked = [...L.edges.map((e, i) => ({ e, key: `m${i}`, x: e.arrow.x + 7, y: e.arrow.y - 16, text: e.text || "Transition" })),
-    ...L.loops.map((l, i) => ({ e: l, key: `om${i}`, x: l.x - 2, y: l.y - 16, text: l.text || "Self-transition" }))].filter((c) => mk(c.e))
-    .map((c) => ({ ...c, m: mk(c.e), w: Math.ceil(chipText(mk(c.e)).length * 6) + 10 }));
-  const chip = (key, x, y, c, tip, text) => div().id(`${id}-${key}`).absolute().left(x).top(y - 1).px(4).h(16).flex().items_center().rounded(4).border_1().border_color(c).bg(t.background).text_size(TYPE.micro).text_color(t.foreground).tooltip(tip).child(text);
+  // A marked transition without a text has its chip at its arrow (a return lane beside the lane, a self-loop beside
+  // its arc). Such chips that would touch are one chip, "5 findings" in the highest severity's colour, with every
+  // transition and its findings in the tooltip; the lines keep their own colours.
+  const SEV_RANK = ["high", "medium", "low"], at = (x, y) => div().absolute().left(x).top(y - 1);
+  const marked = [...L.edges.map((e, i) => ({ e, key: `m${i}`, x: e.arrow.x + 7, y: e.arrow.y - 16, text: "Transition" })),
+    ...L.backs.map((b, i) => ({ e: b, key: `rm${i}`, x: b.laneX + 5, y: (b.sy + b.ty) / 2 - 8, text: "Transition back" })),
+    ...L.loops.map((l, i) => ({ e: l, key: `om${i}`, x: l.x + SM.LOOP, y: l.y - 2, text: "Self-transition" }))].filter((c) => mk(c.e) && !c.e.text)
+    .map((c) => ({ ...c, m: mk(c.e), w: markW(mk(c.e)) }));
   const chips = bundleChips(marked).map((g, k) => {
-    if (g.length === 1) return jump(chip(g[0].key, g[0].x, g[0].y, col(g[0].e), `${g[0].text}${findTip(g[0].m)}`, chipText(g[0].m)), g[0].e.at ?? g[0].e.evidence);
+    if (g.length === 1) return jump(at(g[0].x, g[0].y).child(chip(`${id}-${g[0].key}`, col(g[0].e), `${g[0].text}${findTip(g[0].m)}`, markText(g[0].m))), g[0].e.at ?? g[0].e.evidence);
     const all = [...new Map(g.flatMap((c) => c.m.findings).map((f) => [f.id ?? f.title, f])).values()], sev = SEV_RANK.find((s) => g.some((c) => c.m.severity === s)) ?? g[0].m.severity;
-    // Right of the bundle's last arrow, so it covers no arrowhead (a self-loop's chip sits over its ring, not beside an arrow).
-    const arrows = g.filter((c) => c.key.startsWith("m")), bx = arrows.length ? Math.max(...arrows.map((c) => c.x)) : Math.min(...g.map((c) => c.x));
-    return jump(chip(`mb${k}`, bx, Math.min(...g.map((c) => c.y)), sevC({ severity: sev }),
-      `${all.length} unresolved findings at ${g.length} transitions that end here:\n\n${g.map((c) => `${named(c.text)} (${c.m.severity})\n${c.m.findings.slice(0, 5).map((f) => `· ${f.title}`).join("\n")}`).join("\n\n")}`, `${all.length} findings`), g[0].e.at ?? g[0].e.evidence);
+    return jump(at(Math.min(...g.map((c) => c.x)), Math.min(...g.map((c) => c.y))).child(chip(`${id}-mb${k}`, sevC({ severity: sev }),
+      `${all.length} unresolved findings at ${g.length} transitions:\n\n${g.map((c) => `${c.text} (${c.m.severity})\n${c.m.findings.slice(0, 5).map((f) => `· ${f.title}`).join("\n")}`).join("\n\n")}`, `${all.length} findings`)), g[0].e.at ?? g[0].e.evidence);
   });
   return div().id(id).relative().flex_none().w(L.width).h(L.height + 2).children([gridBg(t, L.width, L.height + 2), ...els, ...nodes, ...kids, ...loops, ...stubs, ...chips]);
+}
+
+// What a state diagram's lines say, for the card's title row: only the kinds this picture has.
+export function stateLegend(t, v, marks = null) {
+  const es = edgesOf(v), lit = (e) => (e.changed || e.status === "new" || e.status === "changed") && e.source !== "existing";
+  const top = ["high", "medium", "low"].find((s) => [...(marks?.values() ?? [])].some((m) => m.severity === s));
+  const rows = [es.some(lit) && ["Changed in this PR", t.accent, 1.5], es.some((e) => !lit(e)) && ["Unchanged", t.muted, 1],
+    marks?.size > 0 && ["Has a finding", t[SEVERITY_COLOR[top]] ?? t.ansi1, 2.5], es.some((e) => e.source === "spec") && ["Spec only", t.ansi5, 1.5, true]].filter(Boolean);
+  return h_flex().flex_none().gap(10).text_size(TYPE.small).text_color(t.muted)
+    .children(rows.map(([label, c, w, dashed]) => h_flex().gap(4).items_center().child(div().w(16).h(0).border_t(w).border_color(c).when(Boolean(dashed), (e) => e.border_dashed())).child(label)));
 }
 
 // The PR triage card (pr.js triageOf): priority, title, the why in an accent quote bar, chips, repo and number.
