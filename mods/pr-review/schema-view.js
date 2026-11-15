@@ -6,13 +6,14 @@ import { div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { exec, readTextFile, appHome, settings } from "herdr";
 import { TYPE } from "./views.js";
-import { SCHEMA_SOURCE, SCHEMA_MARKS, SCHEMA_STATES, schemaFiles, schemaWants, schemaSteps, schemaPicture, schemaSummary, foldText, unreadText, edgeText } from "./schema.js";
+import { SCHEMA_SOURCE, SCHEMA_MARKS, SCHEMA_STATES, schemaFiles, schemaWants, schemaSteps, schemaPicture, schemaMarks, SCHEMA_MAX, schemaSummary, foldText, unreadText, edgeText } from "./schema.js";
 
 const ROW = 18; // a row of a card, as the layout counts it
 const MAX_FILES = 200; // older migrations read from the checkout
 
 /**
- * The section. o: {model: schema.js schemaModel, pic: schema.js schemaPicture (null without cards), canvas(L,
+ * The section as the page's parts: [["schema", the picture with what it says about itself], ["schema-risks", the risk
+ * hints, when a rule holds]]. o: {model: schema.js schemaModel, pic: schema.js schemaPicture (null without cards), canvas(L,
  * decorate, marks): the picture in the page's sideways scroller (review.js archCanvas), onJump(at, cx), hl: the
  * highlighted line's number, onHl(num | null, cx)}.
  */
@@ -42,7 +43,10 @@ export function schemaSection(t, o) {
   const line = (id, text, at, color = t.muted) => div().id(id).text_size(TYPE.small).line_height(1.5).whitespace_normal().text_color(color)
     .when(Boolean(at), (e) => e.cursor_pointer().hover((s) => s.text_color(t.foreground)).tooltip("Show this place in the diff").on_click((_e, cx) => o.onJump(at, cx))).child(text);
   const key = (sign, word, color = t.muted) => h_flex().flex_none().gap(4).child(div().text_color(color).child(sign)).child(div().child(word));
-  return v_flex().w_full().gap(8).pt(6)
+  const risks = m.risks.length ? [["schema-risks", v_flex().id("rv-schema-risks").w_full().gap(2).child(div().text_size(TYPE.small).font_semibold().text_color(t.muted).child(`May be risky for live data · ${m.risks.length}`))
+    .child(div().text_size(TYPE.small).text_color(t.muted).child("From fixed rules over the changes above, not from a review."))
+    .children(m.risks.map((r, k) => h_flex().gap(8).items_start().child(div().flex_none().text_size(TYPE.small).line_height(1.5).text_color(t.ansi3).child("⚠")).child(line(`rv-schema-risk${k}`, r.text, r.at, t.foreground))))]] : [];
+  return [["schema", v_flex().id("rv-schema").w_full().gap(8).pt(6)
     .child(div().text_size(TYPE.body).font_semibold().text_color(t.muted).child(`Schema changes · ${m.total}`))
     .child(div().text_size(TYPE.small).text_color(t.muted).whitespace_normal().child(SCHEMA_SOURCE))
     .when(Boolean(P), (e) => e.child(div().text_size(TYPE.body).text_color(t.muted).whitespace_normal().child(`${schemaSummary(m)}${P.arch.folded ? ` ${foldText(P.arch.folded)}` : ""}`))
@@ -50,15 +54,12 @@ export function schemaSection(t, o) {
         .children(SCHEMA_STATES.map(([word, sign]) => key(sign, word, tone(word)))).children(SCHEMA_MARKS.map(([k, word]) => key(k, word, t.foreground)))
         .when(m.risks.length > 0, (x) => x.child(key("⚠", "may be risky", t.ansi3))))
       .child(o.canvas(P.L, decorate, P.marks)))
-    .when(m.risks.length > 0, (e) => e.child(v_flex().gap(2).child(div().text_size(TYPE.small).font_semibold().text_color(t.muted).child(`May be risky for live data · ${m.risks.length}`))
-      .child(div().text_size(TYPE.small).text_color(t.muted).child("From fixed rules over the changes above, not from a review."))
-      .children(m.risks.map((r, k) => h_flex().gap(8).items_start().child(div().flex_none().text_size(TYPE.small).line_height(1.5).text_color(t.ansi3).child("⚠")).child(line(`rv-schema-risk${k}`, r.text, r.at, t.foreground))))))
     .when(loose.length > 0, (e) => e.child(v_flex().gap(2).child(div().text_size(TYPE.small).font_semibold().text_color(t.muted).child("Relations without their text in the picture"))
       .children(loose.map((p) => h_flex().id(`rv-schema-ref${p.num}`).gap(8).items_center().px(4).rounded(6).text_size(TYPE.small).text_color(t.muted).when(o.hl === p.num, (x) => x.bg(t.selected)).hover((x) => x.bg(t.hover)).on_hover((on, cx) => o.onHl(on ? p.num : null, cx))
         .child(div().flex_none().w(18).h(18).flex().items_center().justify_center().rounded_full().border_1().border_color(o.hl === p.num ? t.accent : t.muted).text_size(TYPE.micro).text_color(t.foreground).child(String(p.num)))
         .child(div().flex_1().min_w(0).whitespace_normal().line_height(1.4).child(edgeOf(p) && p.from.length === 1 ? edgeText(edgeOf(p), nameOf) : `${p.from.map(nameOf).join(", ")} → ${nameOf(p.to)}${p.label ? `, ${p.label}` : ""}`))))))
     .children(m.notes.map((n, k) => line(`rv-schema-note${k}`, n, null)))
-    .children(m.unread.map((u, k) => line(`rv-schema-unread${k}`, unreadText(u), null)));
+    .children(m.unread.map((u, k) => line(`rv-schema-unread${k}`, unreadText(u), null)))], ...risks];
 }
 
 export const SchemaMode = {
@@ -70,7 +71,7 @@ export const SchemaMode = {
   schemaTick(cx) {
     const patch = this.patch, root = this.worktree?.path ?? null, st = this.schemaSt;
     if (this.exMode || this.tab !== "steps" || this.page !== "arch" || !patch || (st?.patch === patch && st.root === root)) return;
-    const mine = (this.schemaSt = { patch, root, model: st?.patch === patch ? st.model : null, pic: st?.patch === patch ? st.pic : null, key: st?.key ?? null });
+    const same = st?.patch === patch, mine = (this.schemaSt = { patch, root, model: same ? st.model : null, pic: same ? st.pic : null, sig: same ? st.sig : null, open: same ? st.open : null });
     if (schemaFiles(patch).length) cx.timer.after(0, (cx) => cx.spawn((cx) => this.schemaLoad(mine, cx)));
   },
   // Without a checkout: what the patch itself holds (added and deleted files). With one: the changed files at the PR
@@ -92,17 +93,25 @@ export const SchemaMode = {
     const own = new Set(files.map((f) => f.path)), steps = schemaSteps(files.map((f) => ({ ...f, head: texts?.get(f.path) })), texts ? [...texts].filter(([p]) => !own.has(p)).map(([path, text]) => ({ path, text })) : null);
     let step = steps.next();
     for (let t = Date.now(); !step.done; step = steps.next()) if (Date.now() - t > 12) { await new Promise((ok) => cx.timer.after(0, ok)); t = Date.now(); if (this.schemaSt !== mine) return; }
-    mine.model = step.value; mine.pic = null; cx.notify();
+    mine.model = step.value; mine.pic = mine.open = null; cx.notify();
   },
 
-  /** The Architecture page's part: [["schema", element]], or none when the diff has no schema change (review.js archPage). */
+  /** The Architecture page's parts "schema" and "schema-risks", or none when the diff has no schema change (review.js archPage). */
   schemaParts(t) {
     const m = this.schemaNow(), st = this.schemaSt;
     if (!m) return [];
-    const fs = this.openFindings(), key = fs.map((f) => `${f.id}|${f.severity}`).join();
-    if (m.cards.length && (!st.pic || st.key !== key)) { st.key = key; st.pic = schemaPicture(m, fs); }
+    // The layout is kept per model and per marks: a frame that changes nothing lays nothing out (openFindings gives
+    // the same list while nothing changed). A picture of more than SCHEMA_MAX tables is laid out after the frame
+    // (review.js firstLayouts, as a big map is); until then the section shows without it, or with the one before.
+    const fs = this.openFindings();
+    if (m.cards.length && (!st.pic || st.open !== fs)) {
+      const sig = [...schemaMarks(m, fs).nodes].map(([id, k]) => `${id}:${k.severity}:${k.findings.map((f) => f.id)}`).join("|");
+      const make = () => { if (this.schemaSt === st && st.model === m) { st.pic = schemaPicture(m, fs); st.sig = sig; } };
+      if (!st.pic || st.sig !== sig) { if (!this.drawing || m.cards.length <= SCHEMA_MAX) make(); else (this.layQueue ??= new Map()).set("schema", make); }
+      st.open = fs;
+    }
     const o = this.archOpts("schema");
-    return [["schema", schemaSection(t, { model: m, pic: m.cards.length ? st.pic : null, onJump: (at, cx) => this.jumpTo(at, cx), hl: o.hl, onHl: o.onHl,
-      canvas: (L, decorate, marks) => this.archCanvas(t, L, { ...o, onFocus: null, marks, zoom: settings().zoom || 1 }, { id: "rv-schema-canvas", pic: "rv-schema", wrap: false, decorate, notes: false }) })]];
+    return schemaSection(t, { model: m, pic: m.cards.length ? st.pic : null, onJump: (at, cx) => this.jumpTo(at, cx), hl: o.hl, onHl: o.onHl,
+      canvas: (L, decorate, marks) => this.archCanvas(t, L, { ...o, onFocus: null, marks, zoom: settings().zoom || 1 }, { id: "rv-schema-canvas", pic: "rv-schema", wrap: false, decorate, notes: false }) });
   },
 };

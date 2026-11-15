@@ -4,7 +4,7 @@
 // it so must give what a fresh computation gives after everything that changes their inputs. Counts, not times: the
 // one time check is generous and takes the best of three. perf_bench.mjs prints the numbers.)
 import assert from "node:assert/strict";
-import { hasFixtures, openReview, PR2, BIG, STATES, measure, counted, frame, later, settled, quiet, cx, settle } from "./perf_bench.mjs";
+import { hasFixtures, openReview, PR2, BIG, STATES, measure, counted, frame, later, settled, quiet, cx, settle, N } from "./perf_bench.mjs";
 import { S } from "./render_stub.mjs";
 
 if (!hasFixtures) {
@@ -144,6 +144,41 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   STATES.Architecture(small); await settle(); small.fitMemos = null;
   const first = drawn(small);
   assert.ok(first.layouts > 0 && first.map.includes("rv-arch-canvas"), "9 cards: laid out and drawn in the first frame, as before");
+}
+// ---- "Schema changes" (schema.js): read once per patch and checkout, after the frame; laid out once per marks
+{
+  const { readFileSync } = await import("node:fs");
+  const v = await openReview({ ...PR2(), diff: PR2().diff + readFileSync(new URL("../../demo/fixtures/schema/pr.diff", import.meta.url), "utf8") });
+  const SCHEMA = ["schema.readSql", "schema.sqlStatements", "schema.schemaModel", "schema.diffSeries", "schema.schemaArch", "schema.cardRows", "schema.schemaMarks", "schema.schemaPicture", "schema.schemaMermaid"];
+  const quietFrame = (what) => { for (const k of Object.keys(N)) N[k] = 0; const ran = counted(() => frame(v));
+    assert.deepEqual([SCHEMA.filter((f) => ran(f) > 0), ran("arch.archLayout"), { ...N }], [[], 0, { notify: 0, after: 0, every: 0, spawn: 0, exec: 0, read: 0, shared: 0 }], `${what}: a frame that changes nothing reads no migration, lays nothing out and asks Herdr for nothing`);
+    return ran; };
+  STATES.Architecture(v); await settle(); await quiet(v); // the map's own layout and its search are through
+  for (const k of Object.keys(N)) N[k] = 0;
+  v.schemaSt = null; // as a new diff: the next frame only asks for a task
+  const first = counted(() => frame(v));
+  assert.deepEqual([SCHEMA.filter((f) => first(f) > 0), N.after, v.schemaNow()], [[], 1, null], "the frame that meets the diff reads nothing itself: one timer for the task that does");
+  later(); await settle();
+  assert.equal(v.schemaNow()?.cards.length, 5, "the task read the three migrations (no checkout: what the patch holds)");
+  const laid = counted(() => frame(v));
+  assert.deepEqual([laid("schema.schemaPicture"), laid("arch.archLayout"), v.pageParts.includes("schema")], [1, 1, true], "five cards: laid out once, in the first frame that shows them");
+  await quiet(v);
+  const ran = quietFrame("Schema changes shown");
+  const own = ["schemaSummary", "schemaSection", "unreadText", "foldText"].reduce((n, f) => n + ran(`schema.${f}`) + ran(`schema-view.${f}`), 0);
+  assert.ok(own <= 12, `${own} calls of the section's own functions in a frame that changes nothing, at most 12`);
+  // A finding dismissed elsewhere changes no mark of a table: the marks are counted once, the picture stays.
+  const f = v.openFindings()[0];
+  v.find.status = { ...v.find.status, [f.id]: { s: "dismissed", at: "2026-11-15T10:00:00Z", ids: f.ids } };
+  const after = counted(() => frame(v));
+  assert.deepEqual([after("schema.schemaMarks"), after("schema.schemaPicture"), after("arch.archLayout")], [1, 0, 0], "other findings changed: the tables' marks are looked at once, nothing is laid out");
+  await quiet(v); quietFrame("after a finding was dismissed");
+  // A big schema (over 20 tables) is laid out after the frame, like a big map.
+  const { SCHEMA_MAX } = await import("./schema.js"), st = v.schemaSt, card = st.model.cards[0];
+  st.model = { ...st.model, cards: Array.from({ length: SCHEMA_MAX + 4 }, (_x, k) => ({ ...card, id: `${card.group}|t${k}`, name: `area${k % 3}_t${k}` })), edges: [], risks: [] }; st.pic = st.open = null;
+  const big = counted(() => frame(v));
+  assert.deepEqual([big("schema.schemaPicture"), st.pic, v.layQueue?.has("schema")], [0, null, true], "24 tables: the frame lays nothing out and shows the section without its picture");
+  later(); assert.ok(st.pic && !v.layQueue.size, "the picture is there after the frame");
+  await quiet(v); quietFrame("a big schema shown");
 }
 await settle();
 console.log("perf ok");

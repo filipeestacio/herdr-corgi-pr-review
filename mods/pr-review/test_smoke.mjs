@@ -766,7 +766,7 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     act(w, "steps", "Schema changes: the Analysis tab");
     assert.ok(!parts("Schema changes: not read yet").includes("rv-schema-legend") && w.schemaSt?.root === null, "nothing shows before the files are read");
     await w.schemaLoad(w.schemaSt, timed);
-    assert.ok(parts("Schema changes: from the patch alone").includes("rv-schema-note0") && w.pageParts.includes("schema") && w.schemaNow().cards.filter((c) => c.partial).length === 4, "without a checkout the tables show what the PR changes, and a line says so");
+    assert.ok(parts("Schema changes: from the patch alone").includes("rv-schema-note0") && String(w.pageParts.filter((x) => x.startsWith("schema"))) === "schema,schema-risks" && w.schemaNow().cards.filter((c) => c.partial).length === 4, "without a checkout the tables show what the PR changes, and a line says so");
     for (const n of readdirSync(new URL(`head/${dir}/`, SF))) S.files.set(`/h/w/${dir}/${n}`, sfx(`head/${dir}/${n}`));
     let asked = null;
     S.exec = async (_c, args) => { asked = args; return { code: 0, stdout: [...S.files.keys()].filter((p) => p.startsWith("/h/w/")).map((p) => `100644 0000000 0\t${p.slice(5)}`).join("\n"), stderr: "" }; };

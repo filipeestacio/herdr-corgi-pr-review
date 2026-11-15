@@ -652,7 +652,7 @@ function diffSeries(s, B, H) {
     cards.push(card); ofBase.set(name, card); };
   for (const b of B.tables.values()) if (!ofBase.has(b.name)) removed(b.name, b, H.drops.get(b.name));
   for (const [name, d] of H.drops) if (d.fresh && !ofBase.has(name) && !H.tables.has(name)) removed(name, null, d);
-  const edges = [], label = (cols, how) => [cols.join(", "), how].filter(Boolean).join(", ");
+  const edges = [], label = (cols, ...more) => [cols.join(", "), ...more].filter(Boolean).join(", ");
   for (const c of cards) {
     for (const f of c.fks) if (twin.has(f.ref) && f.ref !== c.name) edges.push({ from: c.id, to: twin.get(f.ref).id, cols: f.cols, refCols: f.refCols, how: f.one === null ? "" : f.one ? "1 to 1" : "n to 1", status: f.isNew ? "new" : "unchanged", at: f.at });
     for (const f of c.lost) if (ofBase.has(f.ref) && ofBase.get(f.ref) !== c) edges.push({ from: c.id, to: ofBase.get(f.ref).id, cols: f.cols, refCols: f.refCols, how: "", status: "removed", at: c.at });
@@ -660,7 +660,7 @@ function diffSeries(s, B, H) {
     for (const [list, by, status] of [[c.links, twin, "new"], [c.unlinked, ofBase, "removed"]]) for (const l of list) if (by.has(l) && c.name < l) edges.push({ from: c.id, to: by.get(l).id, cols: [], refCols: [], how: "n to m", status, at: c.at });
   }
   for (const T of H.tables.values()) for (const l of T.links) { const a = twin.get(T.name), b = twin.get(l); if (b && T.name < l && !edges.some((e) => e.from === a.id && e.to === b.id && e.how === "n to m")) edges.push({ from: a.id, to: b.id, cols: [], refCols: [], how: "n to m", status: "unchanged", at: a.at }); }
-  for (const e of edges) e.label = label(e.cols, e.how);
+  for (const e of edges) e.label = label(e.cols, e.how, e.status === "new" ? "added" : e.status === "removed" ? "removed" : ""); // a relation's state is a word on its line
   return { cards, edges, orphans: H.orphans };
 }
 
@@ -829,7 +829,7 @@ const areaOf = (name) => (name.includes(".") ? name.slice(0, name.indexOf(".")) 
 export function schemaArch(model, max = SCHEMA_MAX) {
   const alias = new Map(), nodes = [];
   let folded = null;
-  const node = (c) => ({ id: c.id, label: c.name, description: `${c.file.slice(c.file.lastIndexOf("/") + 1)}${c.status === "removed" ? "" : `:${c.line}`}`, group: c.group, type: "data", at: c.at, status: STATUS[c.status] ?? c.status, source: c.status === "unchanged" ? "existing" : undefined, rows: cardRows(c, model.risks) });
+  const node = (c) => ({ id: c.id, label: c.name, description: c.at.slice(c.at.lastIndexOf("/") + 1), group: c.group, type: "data", at: c.at, status: STATUS[c.status] ?? c.status, source: c.status === "unchanged" ? "existing" : undefined, rows: cardRows(c, model.risks) });
   if (model.cards.length > max) {
     const by = new Map();
     for (const c of model.cards) { const k = `${c.group}|${areaOf(c.name)}`; by.set(k, [...(by.get(k) ?? []), c]); }
@@ -887,7 +887,7 @@ export function schemaMermaid(model) {
       out.push(`    ${erWord(x.type, "unknown")} ${erWord(x.name, "column")}${keys ? ` ${keys}` : ""}${say ? ` "${say}"` : ""}`); }
     out.push("  }");
   }
-  for (const e of model.edges) out.push(`  ${name.get(e.from)} ${e.how === "n to m" ? "}o" : e.how === "1 to 1" ? "|o" : "}o"}${e.status === "removed" ? ".." : "--"}${e.how === "n to m" ? "o{" : "||"} ${name.get(e.to)} : "${[e.label, e.status === "new" ? "added" : e.status === "removed" ? "removed" : ""].filter(Boolean).join(", ").replace(/"/g, "'") || "references"}"`);
+  for (const e of model.edges) out.push(`  ${name.get(e.from)} ${e.how === "n to m" ? "}o" : e.how === "1 to 1" ? "|o" : "}o"}${e.status === "removed" ? ".." : "--"}${e.how === "n to m" ? "o{" : "||"} ${name.get(e.to)} : "${e.label.replace(/"/g, "'")}"`);
   return out;
 }
 export function schemaMd(model, { table, findings = [], h = "##" } = {}) {
@@ -901,7 +901,7 @@ export function schemaMd(model, { table, findings = [], h = "##" } = {}) {
       ...table(["Table", "State", "Column", "Change", "Risk", "Where"], model.cards.flatMap(rowsOf)),
       ...(model.cards.some(found) ? [...table(["Table", "Unresolved findings"], model.cards.filter(found).map((c) => [c.name, found(c)]))] : []),
       ...(model.edges.length ? [`${h}# Relations (${model.edges.length})`, "", ...model.edges.map((e) => `- ${edgeText(e, (id) => name.get(id))} (\`${e.at}\`)`), ""] : [])] : []),
-    ...(model.risks.length ? [`${h}# May be risky for live data (${model.risks.length})`, "", "From fixed rules over the changes above, not from a review.", "", ...model.risks.map((r) => `- ${r.text} (\`${r.at}\`)`), ""] : []),
     ...(model.notes.length ? [...model.notes.map((n) => `- ${n}`), ""] : []),
-    ...(model.unread.length ? [...model.unread.map((u) => `- ${unreadText(u)}`), ""] : [])];
+    ...(model.unread.length ? [...model.unread.map((u) => `- ${unreadText(u)}`), ""] : []),
+    ...(model.risks.length ? [`${h}# May be risky for live data (${model.risks.length})`, "", "From fixed rules over the changes above, not from a review.", "", ...model.risks.map((r) => `- ${r.text} (\`${r.at}\`)`), ""] : [])];
 }
