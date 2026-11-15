@@ -1413,3 +1413,7 @@ export function mdTarget({ tab, page = null, layer = null, finding = false } = {
   if (tab === "steps" && page === "res") return { kind: "res", name: "the Resilience page", tip: tip("this page: the paths with their retries, time budget and action, the other checks and what to watch after the merge") };
   return { kind: "overview", name: "the Overview", tip: tip("the Overview: the verdict, the criteria with their findings, what changed, the behavior and the repo's rules and checks") };
 }
+
+// A PR or review named in a command (pick:<ref>, drop:<ref>): its URL, owner/repo#number, or the bare number, which is
+// the first one in the list's order when two repos have a PR of that number. Rows and state are keyed by URL.
+export const byRef = (list, ref) => (list ?? []).find((x) => x.url === ref || `${x.repo}#${x.number}` === ref) ?? (list ?? []).find((x) => String(x.number) === ref) ?? null;

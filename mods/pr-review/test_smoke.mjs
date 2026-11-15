@@ -369,11 +369,17 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     for (let k = 0; k <= v.walk.steps.length + 1; k++) { v.step = k; draw(v, `panel: Walkthrough, layer ${k}`); }
     v.walkMore = true; v.walkError = "The model gave no answer"; draw(v, "panel: Walkthrough, its options and an error"); v.walkMore = false; v.walkError = null;
   }
-  v.view = "setup"; draw(v, "panel: Setup"); v.view = "diff";
+  v.panelCommand("setup", cx); draw(v, "panel: Setup"); v.panelCommand("setup:close", cx); assert.equal(v.view, "diff", "setup:close leaves Setup like its Close button"); draw(v, "panel: Setup closed");
+  // The other scripted clicks: the folds, a pick and a removal by owner/repo#number (two repos can share a number).
+  for (const c of ["picker", "merged", "other", "progress-all", "progress-all", "merged", "other"]) { v.panelCommand(c, cx); draw(v, `panel: command ${c}`); }
+  v.panelCommand(`drop:${prs[0].repo}#${prs[0].number}`, cx); await settle(); assert.equal(v.undo?.url, prs[0].url); v.panelCommand("undrop", cx); await settle(); assert.equal(v.undo, null);
   v.note = "Could not open: gh pr view: not found"; v.error = "Error: gh pr diff: could not resolve"; v.files = []; draw(v, "panel: a diff that did not come, and a note"); v.note = null;
   S.exec = null;
   // A remount with that pick: the frame before prs.json is read shows no list.
   { const w = new PrReview(); w.init({}, cx); draw(w, "panel: the pick from before coming back"); assert.ok(w.restoring && !w.srcAsked); await settle(); assert.ok(!w.restoring); }
+  // Back from the review of another PR (minimized, or Back): the panel shows that PR, not the pick from before.
+  { S.store.set("pr.fromReview", prs[1]); const w = new PrReview(); w.init({}, cx); await settle(); draw(w, "panel: back from a review, its PR shown");
+    assert.deepEqual([w.prSel?.url, S.store.get("pr.fromReview")], [prs[1].url, null], "the review's PR, handed over once"); }
   S.props = { part: "mini" }; S.store.set("review.minimized", { target: prs[0], at: now });
   const mini = new PrReview(); mini.init({}, cx); draw(mini, "the minimized review's chip");
   S.spaces = null; S.props = null;

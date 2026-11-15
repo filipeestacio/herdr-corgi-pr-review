@@ -132,4 +132,24 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   assert.equal(calls.filter((c) => c.includes("worktree remove")).length, 1, "one with nothing only there goes at once");
   S.exec = null; S.props = {};
 }
+
+// ---- back from a review the panel shows that review's PR, not the one picked before (shared "pr.fromReview")
+{
+  const { byRef } = await import("./views.js");
+  const pr = (repo, n) => ({ url: `https://github.com/${repo}/pull/${n}`, repo, number: n, title: `PR ${n}`, headSha: "abc", base: "main" });
+  const a = pr("o/r", 7), x = pr("o/other", 7), y = pr("o/r", 9);
+  assert.deepEqual([byRef([a, x, y], "7"), byRef([a, x, y], "o/other#7"), byRef([a, x, y], x.url), byRef([a, x, y], "9"), byRef([a], "8")], [a, x, x, y, null], "two PRs numbered 7: the bare number is the first, the repo or the URL names the other");
+  S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOString(), prs: [a] }));
+  Map.prototype.set.call(S.store, "pr.selected", { "all@s1": a.url }); Map.prototype.set.call(S.store, "pr.picked", {});
+  // The review of X was opened by a Resume in a list (no pick), then minimized: the review copy hands X over.
+  Map.prototype.set.call(S.store, "review.target", x); Map.prototype.set.call(S.store, "review.back", "corgi");
+  S.props = { part: "review" }; const rv = new PrReview(); rv.init({}, cx); await flush(); rv.command("minimize", cx);
+  assert.equal(S.store.get("pr.fromReview")?.url, x.url, "leaving the review hands its PR over");
+  S.props = {}; const v = new PrReview(); v.init({}, cx); v.render(cx);
+  assert.ok(v.restoring && !v.srcAsked, "no list while it comes back");
+  await flush();
+  assert.deepEqual([v.prSel?.url, S.store.get("pr.fromReview"), S.store.get("pr.selected")["all@s1"]], [x.url, null, x.url], "the panel shows the review's PR and remembers it for this space");
+  const w = new PrReview(); w.init({}, cx); await flush();
+  assert.equal(w.prSel?.url, x.url, "and again after the next remount");
+}
 console.log("panel ok");

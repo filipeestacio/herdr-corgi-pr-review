@@ -257,7 +257,9 @@ export async function startExplore(root = null) {
   setShared("review.explore", { start: true, root, space: focused()?.space ?? null, at: Date.now() });
   run("layout.switch", { name: plan.name });
 }
-const leave = () => run("layout.switch", { name: shared("review.back") || "main" });
+// Leaving hands the review's PR to the panel (shared "pr.fromReview"): back there it shows this PR, whichever way the
+// review was opened (a Resume in a list, the minimized chip, Go to, a related PR), not the one picked before.
+const leave = () => { const pr = shared("review.target"); if (pr?.url) setShared("pr.fromReview", pr); run("layout.switch", { name: shared("review.back") || "main" }); };
 // Minimize: back to the previous layout with the review kept as one entry (part "mini", a float in the main layout):
 // Open brings it back where it was, ✕ drops it. One at a time: minimizing another review replaces it.
 const minimize = () => { const pr = shared("review.target"); if (pr) setShared("review.minimized", { target: pr, at: Date.now() }); leave(); };

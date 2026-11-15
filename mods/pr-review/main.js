@@ -24,7 +24,7 @@ import { tabArgs } from "./threads.js"; // a new Claude tab with the PR's text: 
 import { loadDiff, saveDiff } from "./diffcache.js";
 import { setupBanner, renderSetup, loadSetup, runSetup, openUrl, readConfig } from "./setup-view.js";
 import { chip, PRIORITY_TIP } from "./stack.js";
-import { panelState, bodyTab, DONE_DAYS, diffTooLarge, filesToDiff, isOpenPr, byState, listRows, riskSignal, progressText, pendingText, rowMarks, mineGroups, progressRows, removedText, withPick, openSig, panelShown } from "./views.js";
+import { panelState, bodyTab, DONE_DAYS, diffTooLarge, filesToDiff, isOpenPr, byState, listRows, riskSignal, progressText, pendingText, rowMarks, mineGroups, progressRows, removedText, withPick, openSig, panelShown, byRef } from "./views.js";
 import { ReviewMode, startReview, startExplore, saveKey, flowCard, modelPills, modelLabel, renderReviews, renderAgentBar, renderKeys, renderCardMenu, renderMini } from "./review.js";
 import { highlightJob, highlightStep, langOf, colors, renderLine, editorSyntax } from "./syntax.js";
 
@@ -129,40 +129,23 @@ export default class PrReview extends View {
     if (this.part === "review") return this.initReview(cx);
     // The pick from before (shared "pr.selected") is known at once: the list is not drawn (nor fetched) while prs.json
     // is read, and the branch's diff is only made when the branch is what the panel shows.
-    const sel = shared("pr.selected") ?? {}, before = sel[selKey()] ?? sel[viewKey()];
+    // A review just left hands over its PR (shared "pr.fromReview", review.js leave): that one, not the older pick.
+    const sel = shared("pr.selected") ?? {}, before = shared("pr.fromReview")?.url ?? sel[selKey()] ?? sel[viewKey()];
     if (before === BRANCH) this.branchPicked = true; else if (before) this.restoring = true;
     if (visible() && this.branchPicked) this.refresh(cx);
     // Key commands (keys.json "pr-review.<name>"): picker (the PR list), source:mine|repo|review, merged, setup, walkthrough, review, finish.
-    cx.spawn(async (cx) => {
-      for (;;) {
-        const c = String(await nextCommand()), [name, arg] = [c.split(":")[0], c.split(":").slice(1).join(":")];
-        if (name === "source" && SOURCES.some(([k]) => k === arg)) { setShared("pr.source", arg); this.picking = true; this.loadSource(cx); }
-        else if (c === "picker") { this.picking = !this.picking; if (this.picking) this.loadSource(cx); }
-        else if (c === "setup") { this.view = "setup"; runSetup(this, cx, false); }
-        else if (c === "walkthrough") this.openWalk(cx, false);
-        else if (c === "review" && this.pr?.url) startReview(this.prSel ?? this.branchTarget());
-        else if (c === "finish") this.finishReview(); // the pending comments' "Finish your review"
-        else if (c === "merged") this.showDone = !this.showDone; // the list's "Merged or closed" row (a toggle)
-        else if (c === "other") this.showOther = !this.showOther; // Mine's "Other repos or older" row (a toggle)
-        else if (name === "drop") { const r = (shared("review.open") ?? []).find((x) => String(x.number) === arg); if (r) this.dropReview(r.url, cx); } // In progress row's ✕
-        else if (c === "undrop") this.undoDrop(cx); // the "Undo" after it
-        else if (c === "progress-all") this.allOpen = !this.allOpen; // In progress: "Show all" / "Show fewer"
-        else if (name === "explore") startExplore(arg || null); // pr-review.explore[:<folder>]: a topic in existing code, no PR
-        // For keys and scripted demos: a listed PR's row click (pick:<number>, the shown source's list).
-        else if (c === "pick:branch") this.choose(null, cx); // the list's "Current branch" row
-        else if (name === "pick") { const pr = this.listNow().find((p) => String(p.number) === arg); if (pr) this.pickTarget(pr, cx); }
-        cx.notify();
-      }
-    });
+    cx.spawn(async (cx) => { for (;;) { this.panelCommand(String(await nextCommand()), cx); cx.notify(); } });
     cx.spawn(async (cx) => {
       try {
         await this.loadPrs(cx);
         // The PR picked last in this view survives remounts (layout switch, a recreated block); one you didn't
         // open comes back from shared "pr.picked".
-        const sel = shared("pr.selected") ?? {}, url = sel[selKey()] ?? sel[viewKey()]; // the view's pick from before picks per space
+        const from = shared("pr.fromReview");
+        if (from) setShared("pr.fromReview", null); // taken once
+        const sel = shared("pr.selected") ?? {}, url = from?.url ?? sel[selKey()] ?? sel[viewKey()]; // the view's pick from before picks per space
         this.spaceSeen = location().space;
         if (url === BRANCH && !this.prSel) this.branchPicked = true;
-        const pr = url && url !== BRANCH && !this.prSel ? this.prs.find((p) => p.url === url) ?? (shared("pr.picked") ?? {})[url] : null;
+        const pr = url && url !== BRANCH && !this.prSel ? this.prs.find((p) => p.url === url) ?? (from?.url ? from : (shared("pr.picked") ?? {})[url]) : null;
         if (pr) this.choose(pr, cx);
       } finally { this.restoring = false; cx.notify(); } // a pick that is gone: the list after all
       this.cfg = await readConfig();
@@ -173,6 +156,29 @@ export default class PrReview extends View {
       this.scanIfDue(cx);
     });
     cx.timer.every(60000, (cx) => this.scanIfDue(cx)); // a time check; prs.py itself at most every PRS_MS
+  }
+
+  // A key command or scripted click for the panel (pr-review.<c>).
+  panelCommand(c, cx) {
+    const [name, arg] = [c.split(":")[0], c.split(":").slice(1).join(":")];
+    if (name === "source" && SOURCES.some(([k]) => k === arg)) { setShared("pr.source", arg); this.picking = true; this.loadSource(cx); }
+    else if (c === "picker") { this.picking = !this.picking; if (this.picking) this.loadSource(cx); }
+    else if (c === "setup") { this.view = "setup"; runSetup(this, cx, false); }
+    else if (c === "setup:close") this.view = "diff"; // Setup's "Close"
+    else if (c === "walkthrough") this.openWalk(cx, false);
+    else if (c === "review" && this.pr?.url) startReview(this.prSel ?? this.branchTarget());
+    // review:<number | owner/repo#number | url>: a row's "Resume" (a review in progress) or "Review" (a listed PR).
+    else if (name === "review" && arg) { const r = byRef((shared("review.open") ?? []).filter(shownIn), arg), pr = r ? null : byRef(this.listNow(), arg); if (r) startReview(r.target ?? r); else if (pr) this.pickTarget(pr, cx, true); }
+    else if (c === "finish") this.finishReview(); // the pending comments' "Finish your review"
+    else if (c === "merged") this.showDone = !this.showDone; // the list's "Merged or closed" row (a toggle)
+    else if (c === "other") this.showOther = !this.showOther; // Mine's "Other repos or older" row (a toggle)
+    else if (name === "drop") { const r = byRef((shared("review.open") ?? []).filter(shownIn), arg); if (r) this.dropReview(r.url, cx); } // In progress row's ✕: drop:<number | owner/repo#number | url>
+    else if (c === "undrop") this.undoDrop(cx); // the "Undo" after it
+    else if (c === "progress-all") this.allOpen = !this.allOpen; // In progress: "Show all" / "Show fewer"
+    else if (name === "explore") startExplore(arg || null); // pr-review.explore[:<folder>]: a topic in existing code, no PR
+    // For keys and scripted demos: a listed PR's row click (pick:<number>, the shown source's list).
+    else if (c === "pick:branch") this.choose(null, cx); // the list's "Current branch" row
+    else if (name === "pick") { const pr = byRef(this.listNow(), arg); if (pr) this.pickTarget(pr, cx); } // pick:<number | owner/repo#number | url>
   }
 
   key() { return this.prSel?.url ?? JSON.stringify(location()); }
