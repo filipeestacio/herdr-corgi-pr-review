@@ -4,7 +4,7 @@
 // it so must give what a fresh computation gives after everything that changes their inputs. Counts, not times: the
 // one time check is generous and takes the best of three. perf_bench.mjs prints the numbers.)
 import assert from "node:assert/strict";
-import { hasFixtures, openReview, openPanel, PR2, BIG, STATES, measure, counted, frame, later, settled, quiet, cx, settle } from "./perf_bench.mjs";
+import { hasFixtures, openReview, openPanel, PR2, BIG, STATES, measure, counted, frame, later, settled, quiet, cx, settle, N } from "./perf_bench.mjs";
 import { S } from "./render_stub.mjs";
 
 if (!hasFixtures) {
@@ -92,6 +92,22 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   globalThis.window.is_window_active = () => true;
   v.fixCostTick(cx); await settle();
   assert.equal(execs, 1, "in front, a running fix's log is looked for");
+  // The job's agent is gone (no terminal of that name): read that once, then never again; alive again, read again.
+  v.fixCostTick(cx); await settle(); v.fixCostTick(cx); await settle();
+  assert.equal(execs, 1, "a job whose agent ended is not asked about every 20 s");
+  v.threadDoc = { ...v.threadDoc, [key]: { ...v.threadDoc[key], fixes: [{ ...v.threadDoc[key].fixes[0], terminal: "t9" }] } }; S.terminals = [{ address: "t9", state: "live" }];
+  v.fixCostTick(cx); await settle(); v.fixCostTick(cx); await settle();
+  assert.equal(execs, 3, "a job whose agent's terminal is live is asked about on every tick");
+  S.terminals = null; v.fixCostTick(cx); await settle(); v.fixCostTick(cx); await settle();
+  assert.equal(execs, 4, "and once more after it ended");
+  // GitHub's poll and the threads' files: a frame only for something new.
+  const comment = JSON.stringify({ id: 1, path: "library/loans.py", line: 3, side: "RIGHT", user: "anna", user_type: "User", body: "Why?", at: "2026-11-15T10:00:00Z" });
+  S.exec = async (cmd, args) => (args.includes("graphql") ? { code: 0, stdout: "", stderr: "" } : args.some((a) => /pulls\/2\/comments/.test(String(a))) ? { code: 0, stdout: comment, stderr: "" } : { code: 1, stdout: "", stderr: "stub" });
+  v.cfg = { ...v.cfg, dryRun: false };
+  const polled = async () => { v.ghPoll = null; v.ghIn = null; const n0 = N.notify; v.ghTick(cx); await settle(); return N.notify - n0; };
+  assert.ok((await polled()) > 0 && v.gh.length === 1, "a new comment from GitHub is drawn");
+  const list = v.gh;
+  assert.deepEqual([await polled(), v.gh === list], [0, true], "the same comments again: no frame, and the list stays the one it was");
   globalThis.window.is_window_active = active; S.exec = null;
 }
 
@@ -120,6 +136,56 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   S.exec = null; S.props = null; await settle();
 }
 
+// ---- shared state is written for another value only, and a visit alone does not write the register again
+{
+  later(); S.writes = true;
+  const v = await openReview(PR2()), wrote = async (f) => { const n0 = N.shared; f(); later(); await settle(); later(); await settle(); return N.shared - n0; };
+  assert.ok((await wrote(() => v.registerReview(cx))) >= 2 && S.store.get("review.open")?.[0]?.url === v.prSel.url, "the review registers itself: review.open and review.registry");
+  assert.equal(await wrote(() => v.registerReview(cx)), 0, "a visit a moment later, nothing else new: no file, no shared write");
+  assert.equal(await wrote(() => { v.prog.seen.add(v.patch[0].path); v.registerReview(cx); }), 2, "a file viewed: written");
+  assert.equal(await wrote(() => { v.publish(); v.publish(); }), 0, "the bar's facts published again unchanged: not written");
+  assert.equal(await wrote(() => { v.comments = [...v.comments, { id: "c9", file: v.patch[0].path, start: 1, end: 1, text: "x" }]; v.publish(); }), 1, "one more pending comment: written once");
+  S.writes = false;
+}
+// ---- the panel with a PR chosen does not build the list of PRs behind it
+{
+  const { v: p, prs } = await openPanel(PR2(), 40);
+  p.picking = true; const list = counted(() => frame(p));
+  p.memo.clear(); p.context = null; p.choose(prs[0], cx); await settle();
+  const chosen = counted(() => frame(p));
+  assert.ok(list("context.ruleContext") >= 40 && chosen("context.ruleContext") === 0 && chosen("view.picker") === 0, "the list's rows are made while the list shows, not behind a chosen PR");
+  S.exec = null; S.props = null; S.spaces = null;
+}
+// ---- the list's triage reads a PR's cached diff once per head, not each time the list opens
+{
+  const { hash } = await import("./pr.js");
+  const { v: p, prs } = await openPanel(PR2(), 6), pr = prs.find((x) => x.state === "open"), base = `/h/pr-data/cache/diff-${hash(pr.url)}-${pr.headSha}`;
+  S.files.set(`${base}.json`, JSON.stringify({ url: pr.url, head: pr.headSha, parts: 1 })); S.files.set(`${base}.0.txt`, PR2().diff);
+  let reads = 0; const get = S.files.get.bind(S.files); S.files.get = (k) => { if (k === `${base}.0.txt`) reads++; return get(k); };
+  p.picking = true; p.loadTriage(cx); await settle(); p.loadTriage(cx); await settle();
+  assert.deepEqual([reads, p.triage.has(pr.url)], [1, true], "two loads of the list's triage read the diff once");
+  S.files.get = get; S.exec = null; S.props = null; S.spaces = null;
+}
+
+// ---- the command loop goes on after a command that threw, and starts again after one that Herdr stopped
+{
+  const waiters = []; S.nextCommand = () => new Promise((r) => waiters.push(r));
+  const v = await openReview(PR2()), send = async (c) => { waiters.shift()(c); await settle(); };
+  assert.equal(waiters.length, 1, "the review waits for its commands");
+  await send("findings"); assert.equal(v.tab, "findings");
+  const command = v.command; v.command = () => { throw new Error("boom"); };
+  await send("files"); assert.equal(v.note, 'The command "files" failed: boom', "a command that throws is said");
+  v.command = command;
+  await send("files"); assert.equal(v.tab, "files", "and the next one runs");
+  // Stopped by Herdr: the loop's task is gone with its wait, and cmdAt was never taken back.
+  waiters.length = 0; v.cmdAt = Date.now() - 10000;
+  frame(v); await settle();
+  assert.equal(waiters.length, 1, "the next frame starts the loop again");
+  await send("comments"); assert.equal(v.tab, "comments", "and commands run again");
+  frame(v); await settle(); assert.equal(waiters.length, 1, "a loop that waits is not started twice");
+  S.nextCommand = null;
+}
+
 // ---- frames that Herdr stopped: the view draws less there
 // (A stopped frame leaves `drawing` set: no code of the mod runs after it. Two in a row on one tab and page count.)
 {
@@ -128,10 +194,10 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   const big = await openReview(BIG());
   STATES.Resilience(big); await settle(); await quiet(big);
   assert.ok(ids(big).has("rv-res-canvas") && big.leanLevel() === 0, "the map is drawn");
-  assert.ok(stopped(big).has("rv-res-canvas"), "one stopped frame changes nothing");
+  assert.ok(stopped(big).has("rv-res-canvas") && stopped(big).has("rv-res-canvas"), "two stopped frames change nothing (a busy machine does that to a frame of 25 ms)");
   assert.ok(ids(big).has("rv-res-canvas") && big.cut === 0, "and a frame that ended starts the count again");
-  stopped(big); const lean = stopped(big);
-  assert.ok(!lean.has("rv-res-canvas") && lean.has("rv-res-canvas-lean") && lean.has("rv-res-canvas-again"), "two in a row: the page without its picture, with a sentence and a way back");
+  stopped(big); stopped(big); const lean = stopped(big);
+  assert.ok(!lean.has("rv-res-canvas") && lean.has("rv-res-canvas-lean") && lean.has("rv-res-canvas-again"), "three in a row: the page without its picture, with a sentence and a way back");
   assert.ok(!ids(big).has("rv-res-canvas"), "it stays so");
   STATES.Architecture(big); await settle(); await quiet(big);
   assert.ok(ids(big).has("rv-arch-canvas"), "another page is drawn as before");
@@ -143,9 +209,23 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   STATES["Files (as opened)"](big); await settle(); frame(big);
   STATES["Walkthrough, a layer"](big); await settle(); frame(big);
   const rows = () => big.items.filter((it) => it.t === "row").length, before = rows();
-  assert.ok(before > 4000 && before <= 5000, `the Walkthrough lists up to 5 000 lines (${before}), also after the Files tab was drawn`);
-  stopped(big); stopped(big);
-  assert.ok(rows() <= 2500 && rows() > 1500, `after two stopped frames it lists half (${rows()})`);
+  assert.ok(before > 2000 && before <= 3000, `the Walkthrough lists up to 3 000 lines (${before}), also after the Files tab was drawn`);
+  // The open layer has its lines wherever it stands; the room left goes to the layers after it, then to the ones before.
+  const shown = (k) => { const s = big.steps()[k], ids = new Set(big.present(s)); return [big.items.filter((it) => it.t === "row" && ids.has(it.hunk)).length, big.present(s).reduce((n, id) => n + big.byId.get(id).rows.length, 0)]; };
+  for (const k of [0, 9, big.steps().length - 1]) {
+    big.command(`step:${k}`, cx); frame(big);
+    const [got, all] = shown(k);
+    assert.ok(all > 0 && got >= all, `layer ${k} open: all of its ${all} lines are listed (${got})`);
+    assert.ok(rows() <= 3000 + 200, `and the list still holds about 3 000 (${rows()})`);
+  }
+  const last = big.steps().length - 1; assert.ok(shown(last - 1)[0] > 0 && shown(1)[0] === 0, "the last layer open: the room left goes to the ones before it, the first ones wait");
+  big.command("step:0", cx); frame(big);
+  stopped(big); stopped(big); stopped(big);
+  assert.ok(rows() <= 1500 && rows() > 700, `after three stopped frames it lists half (${rows()})`);
+  // After a while it tries all of it again.
+  const now = Date.now; Date.now = () => now() + 6 * 60000;
+  frame(big); assert.ok(rows() > 2000, `five minutes later the list is whole again (${rows()})`);
+  Date.now = now;
   // An exception is not a stopped frame.
   const boom = big.renderReview; big.renderReview = () => { throw new Error("boom"); };
   for (let k = 0; k < 3; k++) assert.throws(() => big.render(cx), /boom/);

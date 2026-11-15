@@ -16,7 +16,7 @@ if (!existsSync(FIXTURES)) {
 }
 
 const { default: PrReview } = await import("./main.js");
-const { splitPatch, hunksOf, diffRows, hash, mapReview, lineKey } = await import("./pr.js");
+const { splitPatch, hunksOf, diffRows, hash, mapReview, lineKey, reviewRequest } = await import("./pr.js");
 const { langOf } = await import("./syntax.js");
 const { foldOnOpen, resWatch } = await import("./views.js");
 const R = await import("./review.js");
@@ -104,6 +104,10 @@ async function open({ diff, analysis = null, findings = null, ctx = null, pr = 2
   v.ctx = ctx ? JSON.parse(ctx) : null; v.head = v.ctx?.head ?? null;
   await v.loadFindings(cx);
   if (analysis) v.ai = v.mapSaved(JSON.parse(analysis), true);
+  // The analysis also where the first frame asks for it (renderReview: loadAi reads the picked model's cached one,
+  // the exact file and the newest). Without the files that read took the analysis away at the first settle(), and
+  // what a tour draws after it (the previews, the popups, the card menus, Ask and Look inside) had none.
+  if (analysis) { const job = reviewRequest({ url, pr: url, worktree: null, files: v.patch, hunks: v.hunks, model: "sonnet", context: v.ctxReq(), dir: "/h/pr-data/cache" }); S.files.set(job.out, analysis); S.files.set(job.latest, analysis); }
   v.securityNow(cx); v.publish();
   await settle();
   return v;
@@ -111,7 +115,7 @@ async function open({ diff, analysis = null, findings = null, ctx = null, pr = 2
 
 // Everything one review shows.
 async function tour(v, name) {
-  const at = (x) => `${name}: ${x}`;
+  const at = (x) => `${name}: ${x}`, had = Boolean(v.ai);
   for (const tab of ["files", "steps", "comments", "findings"]) act(v, tab, at(`tab ${tab}`));
   // Syntax colors: once the queue is drained, a line of code that starts with a keyword has spans. It keeps them with a
   // line selected (the row arrays stay the same ones), with line wrap on, and gets them again with the whole file
@@ -274,6 +278,7 @@ async function tour(v, name) {
   }
   await deep(v, at);
   await settle();
+  assert.equal(Boolean(v.ai), had, at("the analysis is there to the tour's end (or was never there)"));
 }
 
 const PR2 = { diff: fx("pr2.diff"), ctx: fx("ctx.json"), impact: fx("impact.json") };
@@ -578,6 +583,10 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   S.store.set("review.minimized", { target: prs[3], at: now });
   S.spaces = [{ id: "sA", active: true, folder: "/h/a" }];
   const v = new PrReview(); v.init({}, cx); await settle();
+  // Not the first-run switch to Setup (nothing is installed here): it covered every frame below until "setup:close",
+  // and the lists and the diff were built behind it only because the panel built them whether they showed or not.
+  // Setup has its own frames further down.
+  v.setupFirst = false;
   v.spaceSlug = { root: "/h/a", slug: "saefty/corgi-demo" };
   assert.deepEqual(v.panelProgress().shown.map((r) => r.number), [2], "In progress: work done and not merged; one only opened is not there");
   assert.deepEqual(v.panelProgress().left.map((r) => [r.number, r.state]), [[1, "merged"]], "the merged one is listed apart, dimmed");
@@ -871,8 +880,13 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     click(`rv-infra-n${w.infraMemo.pic.L.nodes.findIndex((n) => n.at === "stacks/orders/queue.tf:2")}`, "a card of the infrastructure picture"); draw(w, "Infrastructure changes: a card clicked");
     assert.ok(w.page === null && !w.note, "a click on a changed resource's card leads to it in the diff");
   }
+  // Back to this review: opening the other ones above put their PR in the stand-in's shared state, and the next
+  // frame of `v` would take it for a new target and start over (then the layer checked below was "All changes"
+  // without an analysis, whose short texts the comparison skips).
+  S.store.set("review.target", v.prSel);
   v.command("order:reading", cx); v.command("step:0", cx);
   const st = v.steps()[0];
+  assert.ok(v.ai && st.title !== "All changes", "the layer checked is one of the analysis");
   check("a layer", drawn([() => {}], () => { v.stepRow(st, 0, tt); v.item({ t: "step", s: st, i: 0 }, tt); }), { stateDiagram: (st.visuals ?? []).filter((x) => x.kind === "state_machine").length });
   v.command("findings", cx); v.ffocus = null;
   const all = drawn([() => {}], () => v.findingsPane(tt));

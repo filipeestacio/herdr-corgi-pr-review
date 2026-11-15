@@ -38,7 +38,10 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   await idle(v, "the list at rest: 20 renders ask for nothing");
   Map.prototype.set.call(S.store, "review.open", [review(1, 9), review(2, 4)]); // the review layout touched one
   reset(); v.render(cx); await flush();
-  assert.deepEqual(n.writes, ["goto.items.review"], "a changed list of open reviews writes Go to's items once");
+  assert.deepEqual(n.writes, [], "a review only touched makes the same items: nothing is written");
+  Map.prototype.set.call(S.store, "review.open", [{ ...review(1, 12), progress: { files: 3, filesViewed: 2 } }, review(2, 4)]); // a file viewed
+  reset(); v.render(cx); await flush();
+  assert.deepEqual(n.writes, ["goto.items.review"], "a review whose progress changed writes Go to's items once");
   await idle(v, "and then nothing again");
   // prs.json read again with the same PRs (a scan that found nothing new): no redraw.
   reset(); await v.loadPrs(cx); assert.equal(n.notify, 0, "the same prs.json draws nothing");

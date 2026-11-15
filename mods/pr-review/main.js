@@ -59,6 +59,7 @@ const SOURCE_MS = 3 * 60 * 1000, SOURCE_KEEP = 20, PICKED_KEEP = 20;
 const GH_FIELDS = "number,title,author,headRefName,headRefOid,baseRefName,updatedAt,isDraft,reviewDecision,additions,deletions,url";
 const REVIEW = { APPROVED: ["approved", "ansi2"], CHANGES_REQUESTED: ["changes requested", "ansi1"], REVIEW_REQUIRED: ["review required", "ansi3"] };
 const BRANCH = "branch"; // shared "pr.selected": the current branch was picked (not a PR)
+const CMD_STALE = 3000; // ms a command may be running before its loop counts as stopped (listen)
 // The panel's diff is a virtual list (as the review's): only the lines on screen are built per frame, so a frame costs
 // the same for 200 lines as for 9000. Its cards have no handler of their own (a list's renderer cannot hold one): a
 // press is found by its place. views.js panelButtons says each card's buttons, their widths and gap: they are drawn
@@ -76,6 +77,7 @@ const HEADS = new Map(), HEAD_ASKS = new Map();
 // review of a PR is a new copy each time it opens, and waited for this one command (0.3 s, 0.7 to 2 s on a busy
 // machine) before it built anything from the diff it had read from the cache in a few ms.
 const REPOS = new Map();
+const SIZES = new Map(); // a cached diff's size ({files, lines}) by PR and head, for the list's triage (loadTriage)
 const age = (iso) => { const m = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000)); return !Number.isFinite(m) ? "" : m < 60 ? `${m}m` : m < 2880 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`; };
 
 function location() {
@@ -127,7 +129,7 @@ export default class PrReview extends View {
     this.uid = Math.random().toString(36).slice(2, 8);
     // The minimized chip's copy sits in the main layouts also while the panel does not: it keeps a click on a PR mark
     // of the Worktrees mod ("want:<owner/repo#n>") for the panel (wantPick).
-    if (this.part === "mini") cx.spawn(async () => { for (;;) { const c = String(await nextCommand()); if (c.startsWith("want:")) this.wantPick(c.slice(5)); } });
+    if (this.part === "mini") this.listen(cx, (c) => { if (c.startsWith("want:")) this.wantPick(c.slice(5)); }, false);
     // A minimized Explore whose run is going: its status file says when it has ended, so the chip can say so.
     if (this.part === "mini") cx.timer.every(5000, (cx) => this.miniPoll(cx));
     if (this.part === "bar" || this.part === "reviews" || this.part === "agentbar" || this.part === "keys" || this.part === "cmenu" || this.part === "mini") return;
@@ -160,7 +162,7 @@ export default class PrReview extends View {
     if (before === BRANCH) this.branchPicked = true; else if (before) this.restoring = !this.picking;
     if (visible() && this.branchPicked) this.refresh(cx);
     // Key commands (keys.json "pr-review.<name>"): picker (the PR list), source:mine|repo|review, merged, setup, walkthrough, review, finish.
-    cx.spawn(async (cx) => { for (;;) { this.panelCommand(String(await nextCommand()), cx); cx.notify(); } });
+    this.listen(cx, (c, cx) => this.panelCommand(c, cx));
     cx.spawn(async (cx) => {
       try {
         await this.loadPrs(cx);
@@ -938,9 +940,10 @@ export default class PrReview extends View {
     // Written when they differ from what is there (a call per render wrote both keys each time).
     if (JSON.stringify(shared("goto.handlers.review")) !== JSON.stringify(handlers)) setShared("goto.handlers.review", handlers);
     this.gotoSig = openSig(shared("review.open"));
-    setShared("goto.items.review", (shared("review.open") ?? []).map((r) => ({ id: `review:${r.url}`, title: `Resume review #${r.number} ${r.title ?? ""}`,
+    const items = (shared("review.open") ?? []).map((r) => ({ id: `review:${r.url}`, title: `Resume review #${r.number} ${r.title ?? ""}`,
       subtitle: [r.repo, progressText(r.progress)].filter(Boolean).join(" · "), tag: "Review", url: r.url, keywords: [String(r.number), r.repo ?? ""],
-      run: [["goto.set", { key: "pr.goto", value: { url: r.url } }]] })));
+      run: [["goto.set", { key: "pr.goto", value: { url: r.url } }]] }));
+    if (JSON.stringify(shared("goto.items.review") ?? null) !== JSON.stringify(items)) setShared("goto.items.review", items); // as the handlers: only another value is written
   }
 
   // A PR handed over by Go to: resume a review in progress, else open it in the review layout like "Open PR…".
@@ -1009,10 +1012,13 @@ export default class PrReview extends View {
         risk.set(pr.url, riskSignal(known));
         if (!listed.has(pr.url)) return;
         // The diff's size from its cache (in parts, diffcache.js); a missing one leaves the effort to the analysis.
-        const [ctx, diff] = await Promise.all([pr.headSha ? read(`${cacheDir()}/ctx-${h}-${pr.headSha}.json`) : null, loadDiff(`${cacheDir()}/diff-${h}-${head}`, pr.url, head, readTextFile)]);
-        const files = diff ? splitPatch(diff) : null;
+        // Once per PR and head (SIZES): the diff of a head never changes, and each time the list opened every listed
+        // PR's whole diff was read and split again for these two numbers (a big one: 0.9 MB, 20 ms to split).
+        const sized = async () => { const diff = await loadDiff(`${cacheDir()}/diff-${h}-${head}`, pr.url, head, readTextFile), fs = diff ? splitPatch(diff) : null; return fs && { files: fs.length, lines: fs.reduce((n, f) => n + f.add + f.del, 0) }; };
+        if (!SIZES.has(`${h}-${head}`)) { SIZES.set(`${h}-${head}`, sized().then((x) => { if (!x) SIZES.delete(`${h}-${head}`); return x; })); keepLast(SIZES, 300); }
+        const [ctx, size] = await Promise.all([pr.headSha ? read(`${cacheDir()}/ctx-${h}-${pr.headSha}.json`) : null, SIZES.get(`${h}-${head}`)]);
         const security = (known.findings ?? []).filter((f) => isSecurity(f) && !["fixed", "dismissed"].includes(known.status?.[f.id]?.s)); // as the review's ⛨
-        out.set(pr.url, triageOf({ pr, analysis, size: files && { files: files.length, lines: files.reduce((n, f) => n + f.add + f.del, 0) },
+        out.set(pr.url, triageOf({ pr, analysis, size,
           security, related: ctx, llm: llm[pr.url] ?? null }));
       }).map((one) => one.catch(() => null))); // a broken cache file costs that row its chips, not the whole list
       this.triage = out; this.risk = risk; cx.notify();
@@ -1356,7 +1362,27 @@ export default class PrReview extends View {
     setShared("goto.items.review", null);
   }
 
+  // This copy's commands (keys.json "pr-review.<name>", herdr-app do): a loop on nextCommand(). A command that throws
+  // is said in the footer and the loop goes on. One whose slice Herdr stops (a task may run about a second: 0.4 s
+  // went through, 1.5 s did not) takes the loop's task with it, and no key of the review did anything from then on:
+  // cmdAt is the time the running command started (0: none runs), and a frame that finds it older than CMD_STALE
+  // starts the loop again (stillListening). redraw: whether a command is followed by a frame.
+  listen(cx, run, redraw = true) {
+    this.cmdRun = run; this.cmdRedraw = redraw; this.cmdAt = 0;
+    cx.spawn(async (cx) => {
+      for (;;) {
+        const c = String(await nextCommand());
+        this.cmdAt = Date.now();
+        try { run(c, cx); } catch (e) { this.note = `The command "${c.split(":")[0]}" failed: ${String(e).replace(/^Error: /, "")}`; }
+        this.cmdAt = 0;
+        if (redraw) cx.notify();
+      }
+    });
+  }
+  stillListening(cx) { if (this.cmdAt && Date.now() - this.cmdAt > CMD_STALE) this.listen(cx, this.cmdRun, this.cmdRedraw); }
+
   render(cx) {
+    this.stillListening(cx);
     if (this.announces && !shared("goto.handlers.review") && !this.announceQueued) {
       this.announceQueued = true;
       cx.timer.after(0, () => { this.announceQueued = false; this.publishGoto(); });
