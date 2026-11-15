@@ -93,13 +93,6 @@ export function safeFile(root, file) {
   for (const s of String(file).split("/")) { if (s === "" || s === ".") continue; if (s === "..") { if (!out.length) return null; out.pop(); } else out.push(s); }
   return out.length ? `${String(root).replace(/\/+$/, "")}/${out.join("/")}` : null;
 }
-// What a path of a checkout is, as git's index says it (`git ls-files -s -z -- <path>`, asked through safegit.py):
-// true only for exactly one entry, a regular file (mode 100…) at that very path. A folder gives its files, a symlink
-// has mode 120000 and a submodule 160000, an untracked or missing path gives nothing. rel: the path below the root.
-export function trackedFile(out, rel) {
-  const rows = String(out ?? "").split("\0").filter(Boolean), m = rows.length === 1 ? /^100\d{3} [0-9a-f]+ 0\t([^]+)$/.exec(rows[0]) : null;
-  return Boolean(m) && m[1] === rel;
-}
 // Files of a PR that is not trusted which an editor acts on by opening them or their folder: a workspace or project
 // file, the editor's own settings, a dev container, build files. By pattern and whatever the case (a file system that
 // ignores case opens Build.Gradle as build.gradle). They are read in Herdr only.

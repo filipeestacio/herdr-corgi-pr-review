@@ -78,14 +78,16 @@ function refused(target) {
   return null;
 }
 
-// A path of a PR that is not trusted, by what it is in the checkout and not by its text: asked of git's index through
-// safegit.py (read-only, follows no file). Only one tracked regular file passes: not a folder ("src/"), not a symlink
-// the PR put there (it may name anything on this machine), not a submodule. Every place that draws a link comes
-// through openIn, also those whose path an analysis wrote.
+// A path of a PR that is not trusted, by what it is in the checkout and not by its text: safegit.py regular-file (one
+// read-only process) asks git's index and then the disk. Only one tracked regular file passes: not a folder ("src/"),
+// not a symlink the PR put there (it may name anything on this machine), not a submodule, and not a name that is a
+// file in the index but a symlink on a disk that ignores case. → the file's real path (that one is opened, not the
+// text that was clicked), or null. Every place that draws a link comes through openIn, also those whose path an
+// analysis wrote.
 async function foreignFile(target) {
   const rel = E.safeFile("/", target.file)?.slice(1);
-  const r = await exec("python3", [`${appHome()}/mods/pr-review/safegit.py`, target.root, "ls-files", "-s", "-z", "--", rel], { timeout: 20000 }).catch(() => null);
-  return r?.code === 0 && E.trackedFile(r.stdout, rel);
+  const r = await exec("python3", [`${appHome()}/mods/pr-review/safegit.py`, target.root, "regular-file", rel], { timeout: 20000 }).catch(() => null);
+  return r?.code === 0 && r.stdout.startsWith("/") ? r.stdout : null;
 }
 
 // A click: ONE editor process (for a PR that is not trusted, git is asked what the path is first). target: {root
@@ -94,7 +96,8 @@ async function foreignFile(target) {
 export async function openIn(target, id = null) {
   const no = refused(target);
   if (no) return no;
-  if (target.foreign && !(await foreignFile(target))) return "This PR is not trusted yet, and this path is not a regular file of its checkout (a folder, a link or a submodule are not opened). Read it here.";
+  const real = target.foreign ? await foreignFile(target) : null;
+  if (target.foreign && !real) return "This PR is not trusted yet, and this path is not a regular file of its checkout (a folder, a link or a submodule are not opened). Read it here.";
   if (target.foreign && id === "idea" && E.buildScript(target.file)) return "This PR is not trusted yet, and IntelliJ IDEA evaluates a build script when it opens one. Open it in another editor, or read it here.";
   const found = await lookForEditors();
   await rootRead(target.root); // a folder no link has shown yet: its kind of project and its `.git` first, then the editor
@@ -104,7 +107,7 @@ export async function openIn(target, id = null) {
   // of the set: a test home's whole guard), no editor is started; what would have run is kept (dryOpened). A stand-in
   // `open` on the PATH is no guard: exec runs with the login shell's PATH, not the window's.
   const [cfg, mark] = await Promise.all([readConfig(), readTextFile(`${appHome()}/editor.dry-run`).catch(() => null)]), more = cfg.editors ? E.extraEditors(cfg.editors) : extra;
-  const argv = use ? E.openArgv(use, found[use], target.file ? { file: E.safeFile(target.root, target.file), line: target.line ?? null } : { dir: target.root }, more) : null;
+  const argv = use ? E.openArgv(use, found[use], target.file ? { file: real ?? E.safeFile(target.root, target.file), line: target.line ?? null } : { dir: target.root }, more) : null;
   if (!argv) return "No editor to open this in was found.";
   if (cfg.dryRun === true || mark !== null) { dryRuns = [...dryRuns.slice(-19), { at: Date.now(), argv: [argv[0], ...argv[1]] }]; notify({ title: "Dry run: no editor started", body: [argv[0], ...argv[1]].join(" "), level: "info" }); return null; }
   const r = await exec(argv[0], argv[1], { timeout: 20000 }).catch((e) => ({ code: 1, stderr: String(e) }));

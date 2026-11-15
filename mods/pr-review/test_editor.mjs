@@ -2,7 +2,7 @@
 // editor a place gets, what may be opened, and the one program a click starts. No editor is started here: only the
 // program and its arguments are looked at.)
 import assert from "node:assert/strict";
-import { trackedFile, buildScript } from "./editor.js";
+import { buildScript } from "./editor.js";
 import { EDITORS, LINE_BASE, PROJECT_MARKS, candidates, foundFrom, installed, gitLink, editorOf, withChoice, safeFile, foreignBlocked, openArgv, extraEditors, linkLabel, shortLabel, openingLabel, linkTip, menuItems } from "./editor.js";
 
 // Installed editors are found by reading files: each app's Info.plist in both Applications folders (macOS), the
@@ -60,14 +60,6 @@ assert.deepEqual(["src/gradle.py", "docs/build.xml.md", "iml/a.txt", "devcontain
   assert.equal(editorOf({ file: "a.main.kts", found: both, foreign: true, choice: picked, key: "/g" }).id, "vscode");
   assert.equal(editorOf({ file: "a.main.kts", found: { idea: { app: "/B" } }, foreign: true }), null, "only IntelliJ is there: no link");
   assert.equal(editorOf({ file: "A.java", found: both, foreign: true }).id, "idea", "source is not a build script");
-}
-// What a path is in the checkout, from `git ls-files -s -z -- <path>`: only one regular file at that very path.
-{
-  const row = (mode, path) => `${mode} 1de565933b05f74c75ff9a6520af5f9f8a5a2f1d 0\t${path}\0`;
-  assert.deepEqual([trackedFile(row("100644", "src/a b.py"), "src/a b.py"), trackedFile(row("100755", "bin/run"), "bin/run")], [true, true]);
-  assert.deepEqual([trackedFile(row("120000", "docs/link"), "docs/link"), trackedFile(row("160000", "vendor/lib"), "vendor/lib"), trackedFile("", "gone.py"), trackedFile(null, "x"),
-    trackedFile(row("100644", "src/a.py") + row("100644", "src/b.py"), "src"), trackedFile(row("100644", "src/only.py"), "src"), trackedFile(row("100644", "src/only.py"), "src/"),
-    trackedFile("100644 1de5 1\ta.py\0", "a.py")], Array(8).fill(false), "a symlink, a submodule, nothing, a folder (also one with a single file), a conflict stage");
 }
 
 // What a click starts: ONE program with its arguments, never a shell line. macOS: `open` with the editor's URL for a

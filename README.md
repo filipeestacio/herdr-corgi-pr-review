@@ -171,8 +171,9 @@ review made for the PR. A click starts one process and changes nothing in the ch
 `code` or `idea` command is used. Java, Kotlin and Gradle files open in IntelliJ IDEA and the rest in VS Code; a
 folder goes by the kind of project. The ▾ next to the link picks another editor for that project, and the pick is
 shared with the other Corgi mods. For a PR from someone else that you have not trusted, only single files are
-opened, never the folder: before the click starts the editor, git is asked what the path is in the checkout, and
-only a tracked regular file is opened, not a folder, a symlink or a submodule. A build, project or workspace file
+opened, never the folder: before the click starts the editor, git and the disk are asked what the path is in the
+checkout, and only a tracked regular file is opened, by its real path, not a folder, a symlink or a submodule (also
+not where two names of the PR are one name on a disk that ignores case). A build, project or workspace file
 (any Gradle script, `pom.xml`, `build.xml`, `Makefile`, `package.json`, `.iml`, `.ipr`, `.code-workspace`, and what
 lies in `.vscode/`, `.idea/` or `.devcontainer/`) is not opened either, and no other build script (`.kts`,
 `.groovy`) goes to IntelliJ IDEA, because an editor can run a project's code when it opens those. More editors: `"editors": [{"id", "name", "folder": [argv…], "file": [argv…]}]` in
