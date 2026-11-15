@@ -70,6 +70,16 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
     if (v.mdPrev) v.command("md-close", cx);
   }
 }
+// ---- the diff's list asks what hangs under a line only where something does
+{
+  const v = await openReview(BIG());
+  STATES["Files (as opened)"](v); await settle(); settled(v);
+  const rows = v.items.filter((it) => it.t === "row").length, under = v.items.filter((it) => !["row", "file", "fold", "gap", "note", "pad"].includes(it.t)).length;
+  const ran = counted(() => v.filesItems());
+  assert.ok(rows > 2000 && under > 20, `the list has ${rows} lines and ${under} items under them`);
+  assert.ok(ran("pr.lineThreads") < 200, `${ran("pr.lineThreads")} lines were asked for their comments while listing ${rows} (before: each of them)`);
+}
+
 // ---- a big map is laid out after the frame, a small one in it
 // (In Herdr the layout of 80 cards takes 208 ms and a render is stopped after about 50: laid out in the frame, the
 // page never came.)

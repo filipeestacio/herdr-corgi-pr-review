@@ -1553,7 +1553,13 @@ export const ReviewMode = {
     const ths = this.threads().filter((x) => x.file === path), notes = codePins(this.pins(), path);
     const show = this.show();
     const thread = { gh, editId: this.composing ? this.editing?.id ?? null : null, composeKey: range && at.compose === undefined ? lineKey(rows[range[1]]) : null };
+    // The lines something hangs under (a suggestion, a comment, a thread, a note, a finding's card, the composer), by
+    // their number on either side: underRow is asked only there. It pushes nothing for any other line, and asking it
+    // for each was most of what a frame did to list 2 500 lines. (A definition's hint: every line, it is rare.)
+    const hot = this.defAt?.key.startsWith(`${path}:`) ? null
+      : new Set([...sugs.map((x) => x.line), ...cms.map((c) => c.end), ...gh.map((g) => g.line), ...ths.map((x) => x.end), ...notes.map((x) => x.anchor.end), ...under.values(), ...(range ? [rows[range[1]].number] : [])]);
     const cardsUnder = (r, side) => {
+      if (hot && !hot.has(r.number)) return;
       const from = items.length;
       underRow(r);
       if (side) for (let k = from; k < items.length; k++) items[k] = { ...items[k], side };
