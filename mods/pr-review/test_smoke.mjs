@@ -373,7 +373,16 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   assert.deepEqual(v.panelProgress().shown.map((r) => r.number), [2], "In progress: work done and not merged; one only opened is not there");
   assert.deepEqual(v.panelProgress().left.map((r) => [r.number, r.state]), [[1, "merged"]], "the merged one is listed apart, dimmed");
   assert.equal(S.store.get("review.minimized"), null, "the chip of a merged PR goes");
-  for (const src of ["mine", "repo", "review"]) { S.store.set("pr.source", src); v.picking = true; draw(v, `panel: the ${src} list`); }
+  for (const src of ["mine", "repo", "space", "review"]) { S.store.set("pr.source", src); v.picking = true; draw(v, `panel: the ${src} list`); }
+  // This space: rows with their branch, the focused pane's PR marked and first, a merged one with its word; and empty.
+  { S.store.set("pr.source", "space");
+    const row = (n, head, state) => ({ ...pr(n, "saefty/corgi-demo", state, 1), head, author: "me", add: 3, del: 1, review: null, source: "space", session: null, cwd: "/h/a" });
+    v.srcLists.space = { key: "space:x", at: now, prs: [row(21, "feat/x", "open"), row(22, "fix/1", "open"), row(20, "fix/1", "merged")] };
+    v.spaceHeads = new Map([["/h/a", { cwd: "/h/a", slug: "saefty/corgi-demo", branch: "fix/1" }]]);
+    draw(v, "panel: This space with the focused agent's PR"); assert.deepEqual(v.listNow().map((p) => p.number), [21, 22, 20]);
+    v.srcLists.space = { key: null, prs: [], why: "Every checkout in this space is on its default branch, so there is no branch to look up a PR for." }; draw(v, "panel: This space, nothing to list");
+    v.srcLists.space = { key: "space:x", prs: [], loading: true }; draw(v, "panel: This space, asking GitHub"); v.srcLists.space = { key: "space:x", prs: [], error: "gh: no network" }; draw(v, "panel: This space, gh failed");
+    v.panelCommand("source:space", cx); assert.equal(S.store.get("pr.sourceBy")?.sA, "space", "source:space picks it for this space"); S.store.set("pr.sourceBy", null); }
   S.store.set("pr.source", "mine"); v.showOther = v.showDone = true; draw(v, "panel: Mine with the other repos and the merged ones unfolded");
   v.choose(prs[0], cx); await settle(); draw(v, "panel: PR #2 chosen");
   assert.equal(S.store.get("pr.selected")["all@sA"], prs[0].url);
