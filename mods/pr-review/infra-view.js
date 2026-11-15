@@ -28,8 +28,12 @@ export function infraSection(t, o) {
     .child(div().id(id).min_w(0).text_size(TYPE.small).line_height(1.5).whitespace_normal().text_color(color)
       .when(Boolean(at), (e) => e.cursor_pointer().hover((s) => s.text_color(t.foreground)).tooltip("Show this place in the diff").on_click((_e, cx) => o.onJump(at, cx))).child(text))
     .children(at && o.edit ? o.edit(`${id}-ed`, at) : []);
+  // The title counts what the section lists, each under its own name: the sentence over the picture counts the
+  // resources alone, so one number for all three would not match it.
+  const count = (k, one) => (k ? `${k} ${one}${k === 1 ? "" : "s"}` : null);
+  const counts = [count(m.cards.filter((c) => c.status !== "unchanged").length, "resource"), count(m.rows.length, "value"), count(m.notices.length, "notice")].filter(Boolean).join(" · ");
   return v_flex().w_full().gap(8).pt(6)
-    .child(div().text_size(TYPE.body).font_semibold().text_color(t.muted).child(`Infrastructure changes · ${m.total}`))
+    .child(div().text_size(TYPE.body).font_semibold().text_color(t.muted).child(`Infrastructure changes · ${counts}`))
     .child(div().text_size(TYPE.small).text_color(t.muted).whitespace_normal().child(infraSource(m)))
     // A changed backend, provider or Transform stands above the picture: it changes where or how everything below runs.
     .children(m.notices.map((n, k) => h_flex().gap(8).items_start().child(div().flex_none().text_size(TYPE.small).line_height(1.5).text_color(t.ansi3).child("⚠")).child(line(`rv-infra-note${k}`, noticeText(n), `${n.file}:${n.line}`, t.foreground))))
