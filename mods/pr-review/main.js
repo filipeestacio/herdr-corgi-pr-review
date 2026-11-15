@@ -24,7 +24,7 @@ import { tabArgs } from "./threads.js"; // a new Claude tab with the PR's text: 
 import { loadDiff, saveDiff } from "./diffcache.js";
 import { setupBanner, renderSetup, loadSetup, runSetup, openUrl, readConfig } from "./setup-view.js";
 import { chip, PRIORITY_TIP } from "./stack.js";
-import { panelState, bodyTab, capped, IN_PROGRESS_MAX, diffTooLarge, filesToDiff, isOpenPr, byState, listRows, riskSignal, progressText, pendingText, rowMarks } from "./views.js";
+import { panelState, bodyTab, capped, IN_PROGRESS_MAX, diffTooLarge, filesToDiff, isOpenPr, byState, listRows, riskSignal, progressText, pendingText, rowMarks, mineGroups, inProgressNow, withPick } from "./views.js";
 import { ReviewMode, startReview, startExplore, saveKey, flowCard, modelPills, modelLabel, renderReviews, renderAgentBar, renderKeys, renderCardMenu, renderMini } from "./review.js";
 import { highlightJob, highlightStep, langOf, colors, renderLine, editorSyntax } from "./syntax.js";
 
@@ -73,6 +73,8 @@ const prCtx = (pr) => C.prContext(ctxDoc(), pr, home());
 const shownIn = (pr) => C.shown(ctxDoc(), prCtx(pr), shared);
 // The view's key for remembering the picked PR: the contexts it shows.
 const viewKey = () => Object.keys(ctxDoc()?.contexts ?? {}).filter((id) => C.shown(ctxDoc(), id, shared)).join(",") || "all";
+// ... and per Herdr space: a PR picked in one space is not shown in another (that one has its own pick, or the list).
+const selKey = () => `${viewKey()}@${location().space ?? ""}`;
 // A context tag (only with two or more contexts): label in its colour.
 export const ctxTag = (t, id, key = null) => div().flex_none().px(5).rounded(4).border_1().border_color(C.colorOf(ctxDoc(), id, t)).text_size(10).text_color(C.colorOf(ctxDoc(), id, t)).when(Boolean(key), (e) => e.id(`ctx-${key}`).tooltip("Context this PR belongs to")).child(C.labelOf(ctxDoc(), id));
 
@@ -135,8 +137,11 @@ export default class PrReview extends View {
         else if (c === "review" && this.pr?.url) startReview(this.prSel ?? this.branchTarget());
         else if (c === "finish") this.finishReview(); // the pending comments' "Finish your review"
         else if (c === "merged") this.showDone = !this.showDone; // the list's "Merged or closed" row (a toggle)
+        else if (c === "other") this.showOther = !this.showOther; // Mine's "Other repos or older" row (a toggle)
+        else if (name === "drop") { const r = this.inProgressList().find((x) => String(x.number) === arg); if (r) this.dropReview(r.url, cx); } // In progress row's ✕
         else if (name === "explore") startExplore(arg || null); // pr-review.explore[:<folder>]: a topic in existing code, no PR
         // For keys and scripted demos: a listed PR's row click (pick:<number>, the shown source's list).
+        else if (c === "pick:branch") this.choose(null, cx); // the list's "Current branch" row
         else if (name === "pick") { const pr = this.listNow().find((p) => String(p.number) === arg); if (pr) this.pickTarget(pr, cx); }
         cx.notify();
       }
@@ -150,7 +155,8 @@ export default class PrReview extends View {
       await this.loadPrs(cx);
       // The PR picked last in this view survives remounts (layout switch, a recreated block); one you didn't
       // open comes back from shared "pr.picked".
-      const url = (shared("pr.selected") ?? {})[viewKey()];
+      const sel = shared("pr.selected") ?? {}, url = sel[selKey()] ?? sel[viewKey()]; // the view's pick from before picks per space
+      this.spaceSeen = location().space;
       if (url === BRANCH && !this.prSel) this.branchPicked = true;
       const pr = url && url !== BRANCH && !this.prSel ? this.prs.find((p) => p.url === url) ?? (shared("pr.picked") ?? {})[url] : null;
       if (pr) this.choose(pr, cx);
@@ -174,6 +180,7 @@ export default class PrReview extends View {
     const text = await readTextFile(`${appHome()}/pr-data/prs.json`).catch(() => null);
     const doc = text ? JSON.parse(text) : null;
     if (doc) this.prs = doc.prs ?? [];
+    this.dropMinimized();
     if (this.prSel) this.prSel = this.prs.find((p) => p.url === this.prSel.url) ?? this.prSel; // fresh updatedAt: the diff cache stamp
     cx.notify();
     return doc;
@@ -278,7 +285,7 @@ export default class PrReview extends View {
 
   choose(pr, cx) {
     this.prSel = pr; this.branchPicked = !pr; this.picking = false; this.mode = "diff"; this.askTop = false;
-    setShared("pr.selected", { ...(shared("pr.selected") ?? {}), [viewKey()]: pr?.url ?? BRANCH });
+    setShared("pr.selected", withPick(shared("pr.selected"), selKey(), pr?.url ?? BRANCH));
     if (pr && !this.prs.some((p) => p.url === pr.url)) { // not in prs.json: keep the whole target, the newest PICKED_KEEP
       const kept = Object.entries(shared("pr.picked") ?? {}).filter(([u]) => u !== pr.url).slice(0, PICKED_KEEP - 1);
       setShared("pr.picked", Object.fromEntries([[pr.url, pr], ...kept]));
@@ -686,6 +693,7 @@ export default class PrReview extends View {
         return ghTarget(p, { repo, cwd, source: now, context: this.contextOfPr(repo, cwd, now === "repo" ? spaceC : null) });
       });
       this.srcLists[now] = { key, prs, at: Date.now() };
+      this.dropMinimized();
       for (let attempt = 0; attempt < 3; attempt++) { // compare-and-swap: another copy may write it too
         const old = await readTextFile(sourcesFile()).catch(() => null);
         try { await writeTextFile(sourcesFile(), JSON.stringify(pruneSources({ ...JSON.parse(old ?? "{}"), [key]: { at: Date.now(), prs } }, SOURCE_KEEP)), old); break; } catch { /* again */ }
@@ -819,7 +827,10 @@ export default class PrReview extends View {
   // with one way into the review each (Resume once started), merged and closed ones are folded under their own row.
   picker(t) {
     const src = this.sourceNow(), sl = this.srcLists[src], inProgress = (shared("review.open") ?? []).filter(shownIn);
-    const { list, above, started } = listRows(this.listNow(), inProgress, capped(inProgress, this.allOpen).shown), { open, done } = byState(list);
+    const { list, above, started } = listRows(this.listNow(), inProgress, capped(this.inProgressList(), this.allOpen).shown);
+    // Mine: this space's repo and recent first, the rest folded (views.js mineGroups); the other lists by state.
+    const b = byState(list), g = src === "mine" ? mineGroups(list, this.spaceSlug?.slug ?? null) : { here: b.open, other: [], done: b.done };
+    const open = g.here, done = g.done, rest = g.other;
     const item = (id, on, top, sub, state, tag, click, pr) => v_flex().id(id).flex_none().px(8).py(4).rounded(7).cursor_pointer().tooltip(pr ? "Select this PR to see its diff" : "Use the diff of the focused pane's branch")
       .when(on, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click(click)
       .child(h_flex().gap(6).child(div().flex_1().min_w(0).truncate().child(top)).when(Boolean(state), (e) => e.child(div().id(`${id}-st`).tooltip(`PR state: ${state}`).flex_none().text_size(10.5).text_color(t[STATE[state]] ?? t.muted).child(state)))
@@ -848,7 +859,7 @@ export default class PrReview extends View {
       : item(`pick-${src}-${p.url}`, this.prSel?.url === p.url, `#${p.number} ${p.title ?? ""}`, other(p), p.state, null, (_e, cx) => this.pickTarget(p, cx), p));
     const inView = C.tagged(ctxDoc()) ? " (in this view)" : "", n = open.filter((p) => this.triage?.has(p.url)).length; // triaged rows of this list
     // One sentence for an empty list: what is going on, or what to do.
-    const empty = src === "mine" ? (this.scanning ? "Searching transcripts for PRs…" : "No PRs from Claude sessions") : sl?.loading ? "Asking GitHub…"
+    const empty = src === "mine" ? (this.scanning ? "Searching transcripts for PRs…" : this.prs.length ? "No recent PRs from Claude sessions in this repository." : "No PRs from Claude sessions") : sl?.loading ? "Asking GitHub…"
       : src === "repo" && sl?.key === null ? "Open a space on a GitHub repo to list its PRs."
       : above ? "Every open PR here is in progress above." : src === "repo" ? `No open PRs in this repo${inView}` : `No open review requests${inView}`;
     return v_flex().flex_none().p(6)
@@ -872,11 +883,15 @@ export default class PrReview extends View {
           .child(pill(`pr-setup-${this.uid}`, t, "Setup", (_e, cx) => { this.picking = false; this.view = "setup"; runSetup(this, cx, false); cx.notify(); }, false, "Check which programs this mod needs are installed")))
         .child(item("pick-branch", Boolean(this.branchPicked && !this.prSel), "Current branch", "Diff of the focused pane", null, null, (_e, cx) => this.choose(null, cx)))
         .children(open.map(row))
+        .when(rest.length > 0, (e) => e.child(h_flex().id(`pr-other-${this.uid}`).flex_none().mt(4).px(8).h(24).gap(6).items_center().rounded(6).cursor_pointer().text_size(11.5).text_color(t.muted)
+          .tooltip(this.showOther ? "Hide the PRs of other repositories and the ones without activity for 30 days" : "Show the PRs of other repositories and the ones without activity for 30 days").hover((s) => s.bg(t.hover).text_color(t.foreground))
+          .on_click((_e, cx) => { this.showOther = !this.showOther; cx.notify(); }).child(div().w(10).flex_none().child(this.showOther ? "▾" : "▸")).child(`Other repos or older (${rest.length})`)))
+        .when(rest.length > 0 && Boolean(this.showOther), (e) => e.children(rest.map(row)))
         .when(done.length > 0, (e) => e.child(h_flex().id(`pr-done-${this.uid}`).flex_none().mt(4).px(8).h(24).gap(6).items_center().rounded(6).cursor_pointer().text_size(11.5).text_color(t.muted)
           .tooltip(this.showDone ? "Hide the merged and closed PRs" : "Show the merged and closed PRs").hover((s) => s.bg(t.hover).text_color(t.foreground))
           .on_click((_e, cx) => { this.showDone = !this.showDone; cx.notify(); }).child(div().w(10).flex_none().child(this.showDone ? "▾" : "▸")).child(`Merged or closed (${done.length})`)))
         .when(done.length > 0 && Boolean(this.showDone), (e) => e.children(done.map(row)))
-        .when(!list.length, (e) => e.child(div().p(8).whitespace_normal().text_color(t.muted).child(empty)));
+        .when(!open.length && !rest.length && !done.length, (e) => e.child(div().p(8).whitespace_normal().text_color(t.muted).child(empty)));
   }
 
   diffRow(row, i, t, plain = false) {
@@ -914,7 +929,7 @@ export default class PrReview extends View {
   // each tagged when there are several.
   openReviews(t) {
     const ago = (ms) => { const m = Math.round((Date.now() - ms) / 60000); return m < 60 ? `${m} min ago` : m < 2880 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`; };
-    const list = (shared("review.open") ?? []).filter(shownIn), { shown, more } = capped(list, this.allOpen);
+    const list = this.inProgressList(), { shown, more } = capped(list, this.allOpen);
     return v_flex().flex_none().px(10).pt(8).pb(4).gap(2).border_b(1).border_color(t.border)
       .child(h_flex().px(4).gap(8).items_center().child(div().flex_1().text_size(11).font_semibold().text_color(t.muted).child("In progress"))
         .when(Boolean(this.allOpen) && list.length > IN_PROGRESS_MAX, (e) => e.child(pill(`pr-open-less-${this.uid}`, t, "Show fewer", (_e, cx) => { this.allOpen = false; cx.notify(); }, false, "Show only the most recent reviews"))))
@@ -925,9 +940,43 @@ export default class PrReview extends View {
           .when(risk.length > 0, (e) => e.child(h_flex().flex_wrap().gap(4).children(risk)))
           .child(div().whitespace_normal().text_size(11).text_color(t.muted).child([r.status === "sent" ? "sent" : null, progressText(r.progress)].filter(Boolean).join(" · "))))
         .when(C.tagged(ctxDoc()), (e) => e.child(ctxTag(t, prCtx(r), r.url)))
-        .child(pill(`pr-resume-${r.url}`, t, "Resume", (_e, cx) => { cx.stop_propagation(); startReview(r.target ?? r); }, false, "Continue this review where you left it"))))
+        .child(pill(`pr-resume-${r.url}`, t, "Resume", (_e, cx) => { cx.stop_propagation(); startReview(r.target ?? r); }, false, "Continue this review where you left it"))
+        .child(pill(`pr-drop-${r.url}`, t, "✕", (_e, cx) => { cx.stop_propagation(); this.dropReview(r.url, cx); }, false, "Remove from In progress; opening the review again resumes where it was", "Remove from In progress"))))
       .when(more > 0, (e) => e.child(div().id(`pr-open-all-${this.uid}`).px(4).py(3).text_size(11.5).text_color(t.accent).cursor_pointer().tooltip("List every review in progress")
         .hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => { this.allOpen = true; cx.notify(); }).child(`Show all (${list.length})`)));
+  }
+
+  // The reviews in progress this view shows (views.js inProgressNow: work done, not merged or closed, recent).
+  inProgressList() { return inProgressNow((shared("review.open") ?? []).filter(shownIn), { states: this.statesNow(), slug: this.spaceSlug?.slug ?? null }); }
+  // What is known of PR states: prs.json and the lists fetched from GitHub (url -> open, draft, merged, closed).
+  statesNow() {
+    return new Map([...Object.values(this.srcLists ?? {}).flatMap((l) => l?.prs ?? []), ...this.prs].map((p) => [p.url, p.state]));
+  }
+  // ✕ on a row of In progress: the review counts as done (pr-data/open-reviews.json, shared "review.open"). Its
+  // progress stays in review-progress.json: opening it again resumes where it was and puts it back (pr.js touchReview).
+  dropReview(url, cx) {
+    setShared("review.open", (shared("review.open") ?? []).filter((r) => r.url !== url));
+    cx.spawn(async () => {
+      const file = `${appHome()}/pr-data/open-reviews.json`;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const before = await readTextFile(file).catch(() => null);
+        const list = JSON.parse(before ?? "[]").map((r) => (r.url === url ? { ...r, status: "done", doneAt: Date.now() } : r));
+        try { await writeTextFile(file, JSON.stringify(list, null, 1), before); return; } catch { /* written meanwhile: again */ }
+      }
+    });
+  }
+  // The minimized review's chip goes once its PR is merged or closed (it was kept in shared.json for good).
+  dropMinimized() {
+    const m = shared("review.minimized"), st = m?.target?.url && this.statesNow().get(m.target.url);
+    if (st === "merged" || st === "closed") setShared("review.minimized", null);
+  }
+  // Another Herdr space: its own pick (else the list) and its repo's lists; the diff follows (render: key changed).
+  onSpace(cx) {
+    const url = (shared("pr.selected") ?? {})[selKey()];
+    this.prSel = url && url !== BRANCH ? this.prs.find((p) => p.url === url) ?? (shared("pr.picked") ?? {})[url] ?? null : null;
+    this.branchPicked = url === BRANCH; this.picking = false; this.srcAsked = false; this.spaceSlug = null; this.showOther = false;
+    if (!this.prSel && !this.branchPicked) this.loadSource(cx);
+    cx.notify();
   }
 
   // The current branch's PR as a review target: no session, so what is sent goes to this space's agent.
@@ -987,6 +1036,7 @@ export default class PrReview extends View {
     // Go to: a handed-over PR (outside render), and the reviews-in-progress items when that list changes.
     if (shared("pr.goto")?.url && !this.gotoQueued) { this.gotoQueued = true; cx.timer.after(0, (cx) => { this.gotoQueued = false; this.takeGoto(cx); }); }
     if (shared("review.open") !== this.gotoOpen) { this.gotoOpen = shared("review.open"); cx.timer.after(0, () => this.publishGoto()); }
+    if (this.spaceSeen !== undefined && location().space !== this.spaceSeen) { this.spaceSeen = location().space; cx.timer.after(0, (cx) => this.onSpace(cx)); }
     if (!this.scanQueued && visible() && windowActive() && Date.now() - (this.scanAt ?? 0) >= PRS_MS) { this.scanQueued = true; cx.timer.after(0, (cx) => { this.scanQueued = false; this.scanIfDue(cx); }); }
     // The selection is never dropped here: a PR the view hides gets a banner instead.
     // refresh() notifies, which render may not: queue it once, right after this render.
@@ -1044,7 +1094,7 @@ export default class PrReview extends View {
     const pickId = `pr-pick-${this.uid}`;
     const pickBody = div().flex_1().min_h(0).relative()
       .child(v_flex().id(pickId).absolute().inset_0().overflow_y_scroll()
-        .when((shared("review.open") ?? []).some(shownIn), (e) => e.child(this.openReviews(t)))
+        .when(this.inProgressList().length > 0, (e) => e.child(this.openReviews(t)))
         .child(this.picker(t)))
       .child(Scrollbar.vertical(pickId).absolute().inset_0());
     // The composer: under the selected lines, at the top for the whole file, or in place of the comment being edited.

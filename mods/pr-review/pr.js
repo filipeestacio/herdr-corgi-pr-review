@@ -576,7 +576,10 @@ const DAY = 86400000, KEEP_CLOSED = 14 * DAY, MAX_REVIEWS = 50;
 // The registry with this review created or updated: startedAt stays, lastTouched moves, fields merge.
 export function touchReview(list, entry, now) {
   const old = list.find((r) => r.url === entry.url);
-  const next = { status: "in-progress", ...old, ...entry, progress: { ...old?.progress, ...entry.progress }, startedAt: old?.startedAt ?? now, lastTouched: now };
+  // Opened again after it was done (✕ in the panel's In progress, or expired): in progress again, unless merged since
+  // (expireReviews marks that done again).
+  const status = entry.status ?? (old?.status && old.status !== "done" ? old.status : "in-progress");
+  const next = { ...old, ...entry, status, progress: { ...old?.progress, ...entry.progress }, startedAt: old?.startedAt ?? now, lastTouched: now };
   return [next, ...list.filter((r) => r.url !== entry.url)];
 }
 

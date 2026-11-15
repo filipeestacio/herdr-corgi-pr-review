@@ -866,3 +866,32 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.equal(resVerdictParts([ps[1]]).head, "1 path blocks once it is wired.");
   assert.equal(resPathView(ps[1]).wired.reason, "x");
 }
+
+// Relevance in the panel: the space's repo, recent activity, work done, merged/closed known.
+{
+  const { mineGroups, inProgressNow, withPick } = await import("./views.js");
+  const now = Date.parse("2026-11-15T12:00:00Z"), ago = (d) => new Date(now - d * 86400000).toISOString();
+  const prs = [{ url: "a", repo: "o/here", state: "open", updatedAt: ago(1) }, { url: "b", repo: "o/else", state: "open", updatedAt: ago(1) },
+    { url: "c", repo: "o/here", state: "draft", updatedAt: ago(40) }, { url: "d", repo: "o/here", state: "merged", updatedAt: ago(3) },
+    { url: "e", repo: "o/else", state: "closed", updatedAt: ago(20) }, { url: "f", repo: "o/else", state: "merged", updatedAt: ago(1) }];
+  const g = mineGroups(prs, "o/here", now);
+  assert.deepEqual([g.here, g.other, g.done].map((x) => x.map((p) => p.url)), [["a"], ["b", "c"], ["d"]]);
+  assert.deepEqual(mineGroups(prs, null, now).here.map((p) => p.url), ["a", "b"], "outside a GitHub repo: every repo, still only recent");
+  assert.deepEqual(mineGroups(prs, null, now).done.map((p) => p.url), ["d", "f"]);
+  const r = (url, repo, lastDays, progress = {}, status = "in-progress") => ({ url, repo, status, lastTouched: now - lastDays * 86400000, progress });
+  const reg = [r("opened", "o/here", 0, { files: 9, steps: 6 }), r("viewed", "o/else", 1, { filesViewed: 2 }), r("here", "o/here", 2, { comments: 1 }),
+    r("merged", "o/here", 0, { stepsChecked: 1 }), r("old", "o/here", 20, { filesViewed: 1 }), r("sent", "o/else", 3, {}, "sent"), r("done", "o/here", 0, { filesViewed: 1 }, "done")];
+  assert.deepEqual(inProgressNow(reg, { states: new Map([["merged", "merged"]]), slug: "o/here", now }).map((x) => x.url), ["here", "viewed", "sent"],
+    "only opened, merged, untouched for 14 days and done ones are not in progress; the space's repo first");
+  const sel = withPick(withPick({ a: 1, b: 2 }, "a", 3), "c", 4, 2);
+  assert.deepEqual(sel, { a: 3, c: 4 }, "set again moves to the end; the newest kept");
+  console.log("ok panel relevance");
+}
+{
+  const { touchReview } = await import("./pr.js");
+  const done = [{ url: "u", status: "done", doneAt: 1, lastTouched: 1, progress: { filesViewed: 2 } }];
+  assert.equal(touchReview(done, { url: "u", progress: { filesViewed: 3 } }, 5)[0].status, "in-progress", "opened again after ✕: in progress again");
+  assert.equal(touchReview([{ url: "u", status: "sent", lastTouched: 1 }], { url: "u" }, 5)[0].status, "sent");
+  assert.equal(touchReview(done, { url: "u", status: "done" }, 5)[0].status, "done");
+  console.log("ok touch");
+}
