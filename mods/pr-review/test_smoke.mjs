@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { S, cx as base } from "./render_stub.mjs";
 
 const { default: PrReview } = await import("./main.js");
-const { splitPatch, hunksOf, diffRows, hash } = await import("./pr.js");
+const { splitPatch, hunksOf, diffRows, hash, mapReview } = await import("./pr.js");
 const { foldOnOpen, resWatch } = await import("./views.js");
 const R = await import("./review.js");
 const { withThreadState, addThreads, addFollowup } = await import("./threads.js");
@@ -259,6 +259,25 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   assert.ok((v3.resNow()?.unseen ?? []).length > 0 && v3.resNow().paths.some((p) => p.same_cause), "unseen and one cause blocking once come from the data");
   await tour(v3, "PR #2, a real resilience run with the R2 schema");
 }
+// The Security page with what a webhook PR adds to it: a deny rule (a guard), a right on something off the map, an
+// operator's script whose row and call are one way, two derived operator ways that say the same, a finding that only
+// a threat makes part of the page.
+{
+  const doc = JSON.parse(fx("findings-s.json")), sec = doc.security, row = (id, more) => ({ id, public: false, auth_kind: "iam", change: "added", principal_kind: "role", at: "template.yaml:30", ...more });
+  sec.access.push(row("acc5", { resource: "QueuePolicy", kind: "queue", principal: "everyone but the FrontDesk role", principal_node: null, node: "queue", actions: ["deny sqs:SendMessage"], auth: "resource policy" }),
+    row("acc6", { resource: "FrontDesk logs", kind: "log group", principal: "FrontDesk function", principal_node: "g_fd", actions: ["logs:PutLogEvents"] }),
+    row("acc7", { resource: "replay.sh", kind: "script", principal: "operator with queue credentials", principal_node: null, principal_kind: "operator", node: "events", actions: ["sqs:SendMessage"] }),
+    row("acc8", { resource: "configuration", principal: "operator who deploys handler", principal_node: null, principal_kind: "operator", node: "handler", actions: ["set configuration"], change: "unchanged", derived: true, from_gate: 0, value_from: null }),
+    row("acc9", { resource: "configuration", principal: "operator who deploys handler", principal_node: null, principal_kind: "operator", node: "handler", actions: ["set configuration"], change: "unchanged", derived: true, from_gate: 0, value_from: null }));
+  sec.threats.push({ id: "t8", where: { access: "acc5" }, boundary: "Account → queue", threat: "Another principal sends to the queue.", stride: "S", findings: [], result: "mitigated", goal: "Forged events.", path: ["queue"], evidence: "template.yaml:30", note: "" });
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify(doc) });
+  const { asideOf, crossingsOf } = await import("./views.js"), data = { arch: v.ai.arch, access: v.ai.access, threats: v.ai.threats, gates: v.ai.gates, bypasses: v.ai.bypasses, findings: v.openFindings() };
+  const aside = asideOf(data), rows = crossingsOf(data);
+  assert.deepEqual([aside.guards.length, aside.rights.length, rows.filter((r) => r.kind === "operator" && r.derived).length, rows.some((r) => r.key === "a:acc5" || r.key === "a:acc6")], [1, 1, 2, false],
+    "one guard and one right off the map under the crossings, and the two same operator rows as one (next to the fixture's own)");
+  act(v, "page:blast", "Security with a guard");
+  await tour(v, "PR #2 with a guard, a right off the map and an operator's script");
+}
 // Someone else's PR with reasons for a security review: the offers instead of a start.
 {
   const ctx = { ...JSON.parse(fx("ctx.json")), security_trigger: { run: true, reasons: [{ text: "New route /remind" }, { text: "Token check changed" }] } };
@@ -307,7 +326,8 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   S.spaces = [{ id: "sA", active: true, folder: "/h/a" }];
   const v = new PrReview(); v.init({}, cx); await settle();
   v.spaceSlug = { root: "/h/a", slug: "saefty/corgi-demo" };
-  assert.deepEqual(v.inProgressList().map((r) => r.number), [2], "In progress: work done and not merged; one only opened is not there");
+  assert.deepEqual(v.panelProgress().shown.map((r) => r.number), [2], "In progress: work done and not merged; one only opened is not there");
+  assert.deepEqual(v.panelProgress().left.map((r) => [r.number, r.state]), [[1, "merged"]], "the merged one is listed apart, dimmed");
   assert.equal(S.store.get("review.minimized"), null, "the chip of a merged PR goes");
   for (const src of ["mine", "repo", "review"]) { S.store.set("pr.source", src); v.picking = true; draw(v, `panel: the ${src} list`); }
   S.store.set("pr.source", "mine"); v.showOther = v.showDone = true; draw(v, "panel: Mine with the other repos and the merged ones unfolded");
@@ -318,6 +338,42 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   assert.equal(v.prSel, null, "another space shows its own pick (none yet: the list), not the PR from the first one");
   S.spaces = [{ id: "sA", active: true, folder: "/h/a" }]; v.onSpace(cx);
   assert.equal(v.prSel?.url, prs[0].url, "back in the first space: its pick again");
+  // In progress: the other repo's review and one not touched for 20 days wait behind "Show all", the merged one is
+  // dimmed with its state; ✕ removes one (its minimized chip too) and offers Undo, which puts it back.
+  S.store.set("review.open", [reg(prs[0], { filesViewed: 2, files: 9, comments: 1 }), reg(prs[1], { filesViewed: 1 }, now - 1000), reg(prs[3], { stepsChecked: 1 }, now - 2000), reg(prs[2], { comments: 2 }, now - 20 * 86400000)]);
+  S.store.set("review.minimized", { target: prs[0], at: now });
+  v.spaceSlug = { root: "/h/a", slug: "saefty/corgi-demo" }; v.picking = true; draw(v, "panel: In progress with more behind Show all");
+  assert.deepEqual([v.panelProgress().shown.map((r) => r.number), v.panelProgress().more], [[2], 2]);
+  v.allOpen = true; draw(v, "panel: In progress, all shown");
+  assert.deepEqual(v.panelProgress().shown.map((r) => r.number), [2, 5, 9], "all: this repo's first, then the other repo's");
+  v.dropReview(prs[0].url, cx); await settle(); draw(v, "panel: a review removed, Undo offered");
+  assert.ok(!S.store.get("review.open").some((r) => r.number === 2) && S.store.get("review.minimized") === null && v.undo?.number === 2, "✕ takes the review and its chip away and keeps it for Undo");
+  v.undoDrop(cx); await settle(); draw(v, "panel: the removal undone");
+  assert.deepEqual([S.store.get("review.open")[0].number, v.undo], [2, null], "Undo puts it back");
+  v.allOpen = false;
+  // A chosen PR with its diff: a line picked (the composer), a comment added, edited, a whole-file one, the pending
+  // bar; Walkthrough without and with an analysis; Setup; a diff that did not come; a note.
+  S.exec = async (cmd, args) => (cmd === "gh" && args[1] === "diff" ? { code: 0, stdout: fx("pr2.diff"), stderr: "" } : { code: 1, stdout: "", stderr: "stub" });
+  v.memo.clear(); v.context = null; v.choose(prs[0], cx); await settle(); draw(v, "panel: PR #2 with its diff");
+  assert.ok(v.files.length > 1 && v.rows.length > 0 && !v.error, "the diff is shown");
+  v.sel = v.rows.findIndex((r) => r.kind === "+"); draw(v, "panel: a line picked, the composer under it");
+  v.selEnd = v.sel + 2; v.question = "Why this?"; v.addComment(cx); await settle(); draw(v, "panel: a pending comment and the bar");
+  assert.equal(v.comments.length, 1, "the comment was added");
+  v.editComment(v.comments[0], cx); draw(v, "panel: the comment being edited"); v.cancel(cx);
+  v.askTop = true; draw(v, "panel: a comment on the whole file"); v.askTop = false;
+  v.pick(v.files[1].path, cx); await settle(); draw(v, "panel: another file");
+  v.openWalk(cx, false); await settle(); draw(v, "panel: Walkthrough without an analysis");
+  {
+    const saved = JSON.parse(fx("analysis.json")), hunks = hunksOf(v.patch), at = new Map(hunks.map((h) => [h.id, h])), r = mapReview(saved.answer, saved.hunks.map((h) => ({ ...h, ...(at.get(h.id) ?? {}) })));
+    v.walkHunks = hunks; v.walk = { ...saved, title: r.title, summary: r.summary, asks: r.asks, steps: [...r.steps].sort((a, b) => a.order - b.order).map((x) => ({ ...x, text: x.text || x.why })) };
+    for (let k = 0; k <= v.walk.steps.length + 1; k++) { v.step = k; draw(v, `panel: Walkthrough, layer ${k}`); }
+    v.walkMore = true; v.walkError = "The model gave no answer"; draw(v, "panel: Walkthrough, its options and an error"); v.walkMore = false; v.walkError = null;
+  }
+  v.view = "setup"; draw(v, "panel: Setup"); v.view = "diff";
+  v.note = "Could not open: gh pr view: not found"; v.error = "Error: gh pr diff: could not resolve"; v.files = []; draw(v, "panel: a diff that did not come, and a note"); v.note = null;
+  S.exec = null;
+  // A remount with that pick: the frame before prs.json is read shows no list.
+  { const w = new PrReview(); w.init({}, cx); draw(w, "panel: the pick from before coming back"); assert.ok(w.restoring && !w.srcAsked); await settle(); assert.ok(!w.restoring); }
   S.props = { part: "mini" }; S.store.set("review.minimized", { target: prs[0], at: now });
   const mini = new PrReview(); mini.init({}, cx); draw(mini, "the minimized review's chip");
   S.spaces = null; S.props = null;
@@ -385,7 +441,7 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   // What a page draws for itself and a text does not need: offers and prices of runs, ages, buttons, hints how to use
   // the page, lines that only fold or count what the text has in full, and the certainty said in the page's own
   // second wording (the text has it as Certainty and Preconditions).
-  const NOT_COPIED = [/recommended because/, /^Re-run \(/, /^Run probe/, /^last run .* ago/, /^A click shows the way\.$/, /^Verify (all \d+ )?with an agent/, /^Derived from the code that was read;$/, /lit on the map, the rest dimmed/,
+  const NOT_COPIED = [/recommended because/, /^Re-run \(/, /^Run probe/, /^last run .* ago/, /^A click shows the way\.$/, /^Verify (all \d+ )?with an agent/, /^Derived from the code that was read;$/, /^It needs nothing else:$/, /^it holds as the code stands\.$/, /lit on the map, the rest dimmed/,
     /^in a sandbox, without network, at most 30 s$/, /^\d+ more: /, /resilience paths?, .* ▸$/, /^call over a trust boundary$/, /^Look inside/, /Ask names it/, /^This analysis has no further details for this card\.$/, /^“Look inside” reads/, /^“↻ Refresh diagrams”/,
     /^and \d+ more in the Findings tab$/, /^Ask about this layer$/, /^A finding sent to Fix stays unresolved and shows here/, /^not counted as findings$/];
   const norm = (x) => String(x).toLowerCase().replace(/,? \d+ (s|min|h|d|days?) ago/g, "").replace(/#\d+;|#quot;|#lt;|#gt;/g, " ").replace(/[^a-z0-9äöüß]+/g, " ").trim();

@@ -45,7 +45,7 @@ import { resWord, resToolText, resVerdict, resWatch, resTwice, PROBE_TYPICAL, re
 import { withProbes, certaintyText, probedText } from "./views.js"; // wave C2 V3: a reproduced probe confirms its findings // wave R2: words, verdict, watch, doubled ways
 import { withResilience, resilienceStart, RUN_TYPICAL } from "./pr.js"; // the Resilience run's data // the Resilience page
 import { wayOf, wayText, passZones, runsIn } from "./views.js"; // panel round 3: ways through every gate, zones passed on
-import { transitionMarks, effectiveFrom, inProcess, mapArch, crossingsOf, crossingChanged, secSentence, TRUST_ORDER } from "./views.js";
+import { transitionMarks, effectiveFrom, inProcess, mapArch, crossingsOf, crossingChanged, secSentence, TRUST_ORDER, asideOf, threatCited, blastOf, skipText } from "./views.js";
 import { trustLegend, hasTrust } from "./stack.js";
 import { scopeTable, scopeConflicts, runSummary, AREA_NAME, areaFindings, surfaceOf, EXPOSURE, reachLevel, secOrder, extraWays } from "./views.js";
 import * as TH from "./threads.js";
@@ -532,6 +532,8 @@ export const ReviewMode = {
     else if (name === "trust") this.trust("pr", cx);
     else if (name === "cmenu") { const [k, ...key] = arg.split("|"), card = this.cardByKey(key.join("|")); card?.menu[Number(k)]?.[2]?.(cx); }
     else if (name === "ask") this.setDrawer(arg === "close" ? null : arg === "fold" ? "collapsed" : "open", cx); // the Ask drawer: open | fold | close
+    else if (name === "worktrees") { const [x, y] = arg.split(",").map(Number); this.listWorktrees(cx, Number.isFinite(y) ? { x, y } : null); } // the ⋯ menu's "Fix worktrees…"; worktrees:<x>,<y>: where the list opens (default: the pointer)
+    else if (name === "wt-remove") this.removeWorktree(Number(arg), cx); // wt-remove:<index>: a row of that list
     else if (name === "apply") { const j = this.fixes().find((f) => f.id === arg) ?? this.fixes().filter((f) => f.state === "running").at(-1); if (j) this.applyFix(j, cx); }
     else if (name === "open") {
       cx.spawn(async () => {
@@ -2773,7 +2775,7 @@ export const ReviewMode = {
           .tooltip(this.wrapOn() ? "Long lines wrap. Click to keep them on one line and scroll sideways." : "Long lines stay on one line: scroll sideways with shift+wheel or the bar under the diff. Click to wrap them.")).child(sep()))
       .child(link("rv-values", div().text_color(valuesOn() ? t.foreground : t.muted).child(`Example values ${valuesOn() ? "on" : "off"}`), () => setShared("review.values", !valuesOn())).tooltip("Example values from the flow traces, shown inline in the diff: click to switch"))
       .child(link("rv-keys", div().child("?"), () => openOverlay({ mod: "pr-review", props: { part: "keys" }, kind: "popup", ...KEYS_POP })).tooltip("Keyboard shortcuts").accessibility_label("Keyboard shortcuts"))
-      .child(link("rv-more", div().child("⋯"), menu("more", [["Explore a topic…", false, "explore"], ["Mark done", false, "done"], ["Copy link", false, "copy-link"], ["Copy review state", false, "copy-state"], ["Copy this page as Markdown", false, "copy-md"], ...(this.checkList().length ? [["Copy context to check findings", false, "copy-md:verify"]] : []), ...(this.prSel?.url?.startsWith("https://github.com") ? [["Open on GitHub", false, "open-gh"]] : [])])).tooltip("Explore a topic, mark done, copy the link, the review's state, this page or the context to check findings as text, open on GitHub").accessibility_label("More actions"));
+      .child(link("rv-more", div().child("⋯"), menu("more", [["Explore a topic…", false, "explore"], ["Mark done", false, "done"], ...(this.fixBase() ? [["Fix worktrees…", false, "worktrees"]] : []), ["Copy link", false, "copy-link"], ["Copy review state", false, "copy-state"], ["Copy this page as Markdown", false, "copy-md"], ...(this.checkList().length ? [["Copy context to check findings", false, "copy-md:verify"]] : []), ...(this.prSel?.url?.startsWith("https://github.com") ? [["Open on GitHub", false, "open-gh"]] : [])])).tooltip("Explore a topic, mark done, list the fix worktrees left on disk, copy the link, the review's state, this page or the context to check findings as text, open on GitHub").accessibility_label("More actions"));
   },
 
   // ---- render: the left column
@@ -3857,7 +3859,10 @@ export const ReviewMode = {
     // Security findings: ⛨ ones (pr.js isSecurity) and the category's own (a right granted and not used, low).
     const sec = this.findings().filter((f) => f.security || f.category === "security"), open = sec.filter((f) => OPEN_ST.includes(this.fstatus(f)));
     const runs = this.find.runs, sr = runs.security, title = (text) => div().text_size(14).font_semibold().child(text);
-    const a = this.ai?.arch ?? null, threats = this.ai?.threats ?? [], marks = archMarks(a, open, this.ai?.access, threats), surface = surfaceOf(this.ai?.access);
+    // The unresolved findings a named threat stands on that are no ⛨ finding (a flood, a script that leaves a guardrail
+    // off): listed and marked here too, counted apart ("⛨" stays what pr.js isSecurity says).
+    const threats = this.ai?.threats ?? [], cited = threatCited(threats, this.openFindings()).filter((f) => !open.includes(f)), shown = [...open, ...cited];
+    const a = this.ai?.arch ?? null, marks = archMarks(a, shown, this.ai?.access, threats), surface = surfaceOf(this.ai?.access);
     // The card a finding sits on (a call it breaks: the calling card).
     const cardOf = new Map([...[...marks.nodes].flatMap(([id, m]) => m.findings.map((f) => [f.id, id])), ...[...marks.edges].flatMap(([i, m]) => m.findings.map((f) => [f.id, a.edges[i].from]))]);
     // The crossings (views.js crossingsOf), with the unresolved findings of every source. A finding stands at one
@@ -3871,7 +3876,7 @@ export const ReviewMode = {
       return stated.length ? { ways: stated, stated: true } : { ways: surface.entries.filter((x) => (x.node && x.node === cardOf.get(f.id)) || x.at === `${f.file}:${f.line}`), stated: false };
     };
     const LEVEL = { public: "public", authenticated: "authenticated", internal: "internal_only", data: "internal_only" }, zoned = (a?.zones ?? []).length > 0;
-    const order = secOrder(open.map((f) => { const r = rowOf(f); return r ? { f, level: r.kind === "entry" ? "public" : LEVEL[r.from.trust] ?? "unknown", crosses: r.kind !== "bypass" && r.kind !== "operator" }
+    const order = secOrder(shown.map((f) => { const r = rowOf(f); return r ? { f, level: r.kind === "entry" ? "public" : LEVEL[r.from.trust] ?? "unknown", crosses: r.kind !== "bypass" && r.kind !== "operator" }
       : { f, level: reachLevel(f, waysOf(f).ways), crosses: zoned ? (a.edges ?? []).some((e) => e.crosses && !inProcess(e) && e.to === cardOf.get(f.id)) : null }; }));
     const ctx = { open, marks, surface, cardOf, waysOf, rowOf, crossings, why: new Map(order.map((r) => [r.f.id, r.why])), focus: this.blastFocus ?? null, name: (id) => a?.nodes.find((n) => n.id === id)?.label ?? (a?.groups ?? []).find((g) => g.id === id)?.label ?? (id === "internet" ? "Internet" : id),
       // A finding's link to its crossing: that row open in the table above.
@@ -3898,8 +3903,8 @@ export const ReviewMode = {
     // A picture only from three changed crossings on: below that the table says it all.
     const map = data && a && changed.length >= 3 ? this.secMap(t, a, ctx, changed) : null;
     return [["head", head], ...(data ? [] : [["empty", this.secEmpty(t)]]),
-      ...(data ? [["sentence", div().id("rv-sec-sentence").text_size(14).line_height(1.5).whitespace_normal().max_w(1000).child(secSentence(crossings, open.length))], ["crossings", this.secCrossings(t, title, crossings)]] : []),
-      ...(map ? [["map", map]] : []), ["findings", this.secIntro(t, sec, open)], ...order.map(({ f }) => [`f:${f.id}`, this.secFinding(t, f, ctx)]),
+      ...(data ? [["sentence", div().id("rv-sec-sentence").text_size(14).line_height(1.5).whitespace_normal().max_w(1000).child(secSentence(crossings, open.length, cited.length))], ["crossings", this.secCrossings(t, title, crossings)]] : []),
+      ...(map ? [["map", map]] : []), ["findings", this.secIntro(t, sec, open, cited)], ...order.map(({ f }) => [`f:${f.id}`, this.secFinding(t, f, ctx)]),
       ["scope", this.secScope(t, title)]];
   },
   // The crossings as a picture (from three changed ones on): the trust zones as columns, public → authenticated →
@@ -3910,7 +3915,8 @@ export const ReviewMode = {
   // ponytail: the columns follow archLayout's order of the calls, which keeps the trust order unless a call runs from
   // an inner zone back out (then it is a stub); operator ways are a column before public.
   secMap(t, a, ctx, rows) {
-    const marksAll = this.archMarksNow(), eff = this.effZones(a), num = (r) => ctx.crossings.indexOf(r) + 1;
+    // The marks: the findings of this page (⛨ and the ones a threat stands on), not every finding of the PR.
+    const marksAll = ctx.marks, eff = this.effZones(a), num = (r) => ctx.crossings.indexOf(r) + 1;
     const key = `${JSON.stringify(rows.map((r) => [r.key, r.result, r.check, num(r)]))}|${[...marksAll.nodes.keys()]}|${[...eff.keys()]}`;
     if (this.secMemo?.key !== key) {
       const { groups, nodes: cards, edges } = secPicture(rows, a, num), nodes = new Map(cards.map((n) => [n.id, n])); // views.js: the same picture as the page's Markdown
@@ -4008,8 +4014,9 @@ export const ReviewMode = {
         .when(also.length > 0, (e) => e.child(v_flex().pl(28).gap(2).child(div().text_size(11.5).text_color(t.muted).child("Also at this place")).child(flist(k, also, "h"))))
         .when(open, (e) => e.child(strip(r)));
     };
-    // If a frame with a way in is compromised: what its principal may do (views.js secBlast).
-    const blast = secBlast(rows, arch);
+    // If a frame with a way in is compromised: what its principal may do (views.js secBlast, by principal behind a way in).
+    const aside = asideOf({ arch, access: this.ai?.access ?? [], threats: this.ai?.threats ?? [], findings: this.openFindings() });
+    const blast = secBlast(rows, arch, this.ai?.access ?? []);
     return v_flex().id("rv-sec-crossings").gap(8).p(12).rounded(10).border_1().border_color(t.border).bg(t.surface)
       .child(h_flex().gap(10).items_center().flex_wrap().child(title("Trust boundary crossings")).child(div().text_size(12.5).text_color(t.muted).child("The ways in, the rights and the calls this PR opens or changes across a trust boundary. A click shows the way.")))
       .child(rows.length ? v_flex().w_full().gap(6).text_size(12.5).line_height(1.45)
@@ -4018,6 +4025,12 @@ export const ReviewMode = {
           .on_click((_e, cx) => { this.crossAll = !this.crossAll; cx.notify(); }).child(this.crossAll ? `Hide the ${hidden} unchanged ${hidden === 1 ? "crossing" : "crossings"} ▴` : `${hidden} ${hidden === 1 ? "crossing is" : "crossings are"} unchanged by this PR ▸`)))
         : div().text_size(12.5).text_color(t.muted).whitespace_normal().child("The data names no crossing: no zones, no way in and no right into another zone. Run the security review for them."))
       .children(blast.map((s, i) => h_flex().id(`rv-sec-blast-${i}`).gap(8).items_start().text_size(12.5).line_height(1.5).child(div().flex_none().text_color(t.ansi3).child("⚠")).child(div().flex_1().min_w(0).whitespace_normal().child(s))))
+      // No crossings: a rule that takes a right away guards its resource (with the threat it holds against), and a
+      // right on something the map does not show.
+      .children(aside.guards.map((g, i) => h_flex().id(`rv-sec-guard-${i}`).gap(8).items_start().text_size(12.5).line_height(1.5).child(div().flex_none().text_color(t.ansi2).child("⛨"))
+        .child(div().flex_1().min_w(0).whitespace_normal().child(`${g.text}${g.threats.map((x) => ` Holds against: ${plain(x.threat ?? "")} (${String(x.result ?? "").replace(/_/g, " ")}${x.evidence ? `, ${x.evidence}` : ""}).`).join("")}`))))
+      .when(aside.rights.length > 0, (e) => e.child(div().id("rv-sec-offmap").text_size(12).text_color(t.muted).whitespace_normal().line_height(1.5)
+        .child(`Also granted, on nothing the map shows: ${aside.rights.map((r) => r.text).join(" ")}`)))
       .when(!rows.some((r) => r.kind === "operator"), (e) => e.child(div().text_size(12).text_color(t.dim).child("Operator and CI ways (admin scripts, deploys, guardrails): none named by the data, not assessed.")));
   },
   // A way in this PR opens that the task does not ask for (views.js extraWays: an "extra" ask in its files):
@@ -4036,13 +4049,15 @@ export const ReviewMode = {
     cx.notify();
   },
   // Above the findings: who will read a finding once it is a comment. Or why there is none.
-  secIntro(t, sec, open) {
+  secIntro(t, sec, open, cited = []) {
     const sr = this.find.runs.security, settled = sec.length - open.length;
     const none = sr?.state === "done" ? "The security review and the other runs left no unresolved security finding." : sr?.state === "failed" ? "No unresolved security finding from the other runs. The security review failed (see below), so it has not looked."
       : sr?.state === "running" ? "No unresolved security finding so far. The security review is still running." : "No unresolved security finding from the other runs. The security review has not run on this PR.";
     return v_flex().gap(4)
       // No "Add as comment" here: a finding with its way to use the weakness does not go into a PR comment from this page.
-      .when(!open.length, (e) => e.child(div().text_size(13.5).text_color(t.muted).whitespace_normal().child(none)))
+      .when(!open.length && !cited.length, (e) => e.child(div().text_size(13.5).text_color(t.muted).whitespace_normal().child(none)))
+      .when(cited.length > 0, (e) => e.child(div().id("rv-sec-cited").text_size(13.5).text_color(t.muted).whitespace_normal()
+        .child(`${open.length ? "" : "No unresolved finding is about access or data (⛨). "}${cited.length} unresolved ${cited.length === 1 ? "finding backs" : "findings back"} a threat named above without being about access or data: ${cited.length === 1 ? "it is" : "they are"} listed here too.`)))
       .when(open.length > 1 && !this.secOpen().some((f) => f.proof?.state === "running"), (e) => e.child(h_flex().child(pill("rv-sec-vfall", t, `Verify all ${open.length} with an agent…`, (_e, cx) => this.verifyAgent(this.secOpen(), cx))
         .tooltip("One agent in its own checkout of the PR head tries to show or refute each unresolved security finding, with the threat model, the map and what is not known as context. A preview first."))))
       .when(settled > 0, (e) => e.child(div().text_size(12.5).text_color(t.muted).child(`${settled} more security ${settled === 1 ? "finding is" : "findings are"} fixed or dismissed: see the Findings tab.`)));
@@ -4395,7 +4410,7 @@ export const ReviewMode = {
         return h_flex().id(`rv-sec-run-${k}`).gap(8).items_start().text_size(12.5).line_height(1.5).cursor_pointer().on_click(toggle(`run:${k}`)).tooltip(whole ? "Fold this line" : "Show the whole line")
           .child(div().w(150).flex_none().font_semibold().child(label))
           .child(div().flex_1().min_w(0).when(whole, (e) => e.whitespace_normal()).when(!whole, (e) => e.truncate()).text_color(failed ? t.ansi1 : r?.state ? t.foreground : t.muted)
-            .child([runSummary(r, from(k)), allowedOf(k, r), scope?.read?.length ? `read: ${scope.read.join(", ")}` : null, scope?.skipped?.length ? `left out: ${scope.skipped.join("; ")}` : null,
+            .child([runSummary(r, from(k)), allowedOf(k, r), scope?.read?.length ? `read: ${scope.read.join(", ")}` : null, scope?.skipped?.length ? `left out: ${scope.skipped.map(skipText).filter(Boolean).join("; ")}` : null,
               r?.state === "done" && k !== "analysis" && !scope ? "it reported no scope" : null].filter(Boolean).join(" · ")));
       })))
       // An area the runs contradict each other on, or that a run calls clean while a finding names it in its effect
@@ -5641,13 +5656,15 @@ export const ReviewMode = {
     this.ghBusy = true;
     if (force) this.loadContext(cx, true);
     cx.spawn(async (cx) => {
-      const [gh, sha] = await Promise.all([this.ghComments(), pr.url.startsWith("https://") ? this.headOf(pr.url) : null]);
+      // The head as just asked (the panel, or this review's own load): not asked again within GH_MS, except by ↻.
+      const seen = this.heads.get(pr.url), known = !force && seen?.sha && Date.now() - seen.at < GH_MS ? seen.sha : null;
+      const [gh, sha] = await Promise.all([this.ghComments(), known ?? (pr.url.startsWith("https://") ? this.headOf(pr.url) : null)]);
       this.ghBusy = false;
       this.ghPoll = pollAfter(this.ghPoll, gh !== false && (sha !== null || !pr.url.startsWith("https://")), Date.now());
       if (this.prSel?.url !== pr.url) return;
       if (gh) this.gh = gh;
       await this.loadThreads(cx);
-      if (sha) this.heads.set(pr.url, { at: Date.now(), sha });
+      if (sha && !known) this.heads.set(pr.url, { at: Date.now(), sha });
       if (sha && sha !== this.prSel.headSha) { this.prSel = { ...this.prSel, headSha: sha }; this.refresh(cx, true); }
       cx.notify();
     });
@@ -5660,6 +5677,46 @@ export const ReviewMode = {
     const label = busy ? "Updating…" : Date.now() - at < 60000 ? "Updated just now ↻" : `Updated ${ago(this.ctx.at)} ↻`;
     return fact("rv-ov-fresh", label, "When CI checks, mergeability and related PRs were read from GitHub. New commits and review comments are checked every 5 minutes while this window is in front. Click to read all of it again now.",
       busy ? null : (_e, cx) => { this.ghTick(cx, true); cx.stop_propagation(); });
+  },
+
+  // ---- fix worktrees left on disk (~/.herdr/worktrees/<repo>/fix-…): nothing removes them by age, because one may
+  // hold a fix that exists nowhere else. "Fix worktrees…" lists them with what would be lost; a click removes one,
+  // and one with commits or changes only there asks for a second click.
+  listWorktrees(cx, at = null) {
+    const base = this.fixBase();
+    if (!base) { this.note = "This PR has no local checkout, so there are no fix worktrees to list."; return cx.notify(); }
+    const git = (cwd, args) => exec("git", ["-C", cwd, ...args], { timeout: 30000 }).catch(() => ({ code: 1, stdout: "" }));
+    cx.spawn(async (cx) => {
+      const list = TH.leftWorktrees((await git(base, ["worktree", "list", "--porcelain"])).stdout, home(), this.prSel?.repo);
+      this.wts = await Promise.all(list.map(async (w) => {
+        // Commits of its branch that no other branch, tag or remote has (not --all: that counts this worktree's own
+        // HEAD as a ref, and nothing would ever be "only there"); changes not committed.
+        const [only, st] = await Promise.all([git(base, ["rev-list", "--count", w.branch, "--not", `--exclude=${w.branch}`, "--branches", "--tags", "--remotes"]), git(w.path, ["--no-optional-locks", "status", "--porcelain"])]);
+        return { ...w, only: Number(only.stdout.trim()) || 0, dirty: st.stdout.trim().length > 0, unknown: only.code !== 0 || st.code !== 0 };
+      }));
+      if (!this.wts.length) this.note = "No fix worktrees are left on disk for this repository.";
+      else openOverlay({ mod: "pr-review", props: { part: "cmenu", key: "wt", items: this.wts.map((w, k) => [TH.worktreeLine(w, this.wtAsk === w.path), TH.worktreeRisky(w), `wt-remove:${k}`]) }, kind: "popup", width: 520, height: 12 + 30 * this.wts.length, ...(at ? { at } : {}) });
+      cx.notify();
+    });
+  },
+  removeWorktree(k, cx) {
+    const w = this.wts?.[k], base = this.fixBase();
+    if (!w || !base) return;
+    if (TH.worktreeRisky(w) && this.wtAsk !== w.path) {
+      this.wtAsk = w.path;
+      this.note = `${w.branch} holds work that exists only there. Nothing was removed. Open "Fix worktrees…" again and choose "Remove anyway" to delete it.`;
+      return cx.notify();
+    }
+    this.wtAsk = null;
+    const job = this.fixes().find((j) => j.path === w.path && j.state === "running");
+    if (job) return this.discardFix(job, cx); // a fix job of this review: its agent ends and its state follows
+    cx.spawn(async (cx) => {
+      const git = (args) => exec("git", ["-C", base, ...args], { timeout: 60000 }).catch((e) => ({ code: 1, stderr: String(e) }));
+      const r = await git(["worktree", "remove", "--force", w.path]);
+      if (r.code === 0) await git(["branch", "-D", w.branch]);
+      this.note = r.code === 0 ? `Removed ${w.branch} and its worktree.` : `Could not remove ${w.branch}: ${String(r.stderr ?? "").trim().slice(0, 160)}`;
+      cx.notify();
+    });
   },
 };
 

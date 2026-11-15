@@ -3,9 +3,9 @@
 // analysis as review.js holds it (pr.js mapReview), the merged findings (pr.js mergeFindings) and their states, and
 // returns text that starts with the PR and commit it is about. Pictures are Mermaid: an agent reads it as text and
 // GitHub draws it. A security finding is in here in full: this is for the person's own use, nothing is posted.
-import { taskList, taskHead, verdictParts, findingCounts, componentLine, CERTAINTY, SEVERITY_SCALE, levels } from "./pr.js";
+import { taskList, taskHead, verdictParts, findingCounts, componentLine, CERTAINTY, SEVERITY_SCALE, levels, isGuard } from "./pr.js";
 import { transitionText } from "./arch.js";
-import { resPathView } from "./views.js";
+import { resPathView, asideOf, threatCited, skipText } from "./views.js";
 import { resWord, resToolText, resVerdict, resWatch } from "./views.js"; // wave R2: the page's words, verdict and watch list
 // The pages' own sources, so a page and its Markdown say the same: the crossings and their picture, the scope table,
 // the map as the Architecture page draws it, the paths' order and verdict, a finding's facts.
@@ -399,6 +399,13 @@ export function securityMd({ pr, head, ai = null, findings = [], statusOf = () =
   const openAll = findings.filter((f) => unresolved(statusOf(f))), list = bySeverity(openAll.filter((f) => f.security || f.category === "security"));
   const rows = crossingsOf({ arch: a, access: ai?.access ?? [], threats, gates: ai?.gates ?? [], bypasses: ai?.bypasses ?? [], findings: openAll });
   const changed = rows.filter(crossingChanged), rest = rows.filter((r) => !crossingChanged(r)), marks = archMarks(a, openAll, ai?.access, threats);
+  // The unresolved findings a named threat stands on without being ⛨ (their effect is not access or data): a flood
+  // at a public way in, a script that can leave a guardrail off. Counted apart, listed in full.
+  const cited = bySeverity(threatCited(threats, openAll).filter((f) => !list.includes(f))), shown = [...list, ...cited], picMarks = archMarks(a, shown, ai?.access, threats);
+  // The guards: rules that take a right away, with the threat they hold against (views.js asideOf).
+  const guards = asideOf({ arch: a, access: ai?.access ?? [], threats, gates: ai?.gates ?? [], bypasses: ai?.bypasses ?? [], findings: openAll }).guards ?? [];
+  // Codex answers in text and a small Claude pass turns it into findings: an older run carries that pass's model.
+  const modelOf = (kind, r) => (!r.model ? "" : kind === "codex" && /^claude/i.test(r.model) ? ` (Codex; its text turned into findings by ${r.model})` : ` (${r.model})`);
   const label = (id) => a?.nodes?.find((n) => n.id === id)?.label ?? (a?.groups ?? []).find((g) => g.id === id)?.label ?? (id === "internet" ? "Internet" : id);
   const num = (r) => rows.indexOf(r) + 1, fline = (f) => `  - ${findingLine(f, statusOf(f))}`;
   const crossing = (r) => {
@@ -421,41 +428,41 @@ export function securityMd({ pr, head, ai = null, findings = [], statusOf = () =
       r.kind === "operator" && r.valueFrom !== undefined && (r.valueFrom ? `- Set at \`${r.valueFrom}\`.` : "- Set nowhere in the repository."),
       Boolean(ask) && `- The task does not ask for “${flat(ask.text)}”, and this PR opens it here.${ask.why ? ` ${flat(ask.why)}` : ""}`,
       ...(r.conflicts ?? []).map((c) => `- Data disagree: “${dot(c.f.title)}” names ${c.finding.join(", ") || "no way in"}, its threat ${c.threat.join(", ") || "no way in"}; the outer one counts here.`),
-      ...(r.threats ?? []).map((x) => `- Threat${x.stride ? ` (STRIDE ${x.stride})` : ""}${x.result ? `, ${String(x.result).replace(/_/g, " ")}` : ""}: ${flat(x.threat ?? "")}${x.note ? ` (${flat(x.note)})` : ""}`),
+      ...(r.threats ?? []).map((x) => `- Threat${x.id ? ` ${x.id}` : ""}${x.stride ? ` (STRIDE ${x.stride})` : ""}${x.result ? `, ${String(x.result).replace(/_/g, " ")}` : ""}: ${flat(x.threat ?? "")}${x.evidence ? ` Evidence: \`${flat(x.evidence)}\`.` : ""}${x.note ? ` (${flat(x.note)})` : ""}`),
       r.findings.length > 0 && ["- **Findings at this crossing:**", ...r.findings.map(fline)],
       also.length > 0 && ["- **Also at this place:**", ...also.map(fline)],
       "", ...cx.at(r.at), r.kind === "operator" && r.valueFrom ? cx.at(r.valueFrom) : []];
   };
   // The picture: the page's (only the cards at a crossing, the zones as frames, each line numbered as above).
   const pic = (changed.length ? changed : rows), drawn = pic.length ? secPicture(pic, a, num) : null, picture = drawn?.edges.length ? drawn : null; // nothing to draw without a line
-  const blast = secBlast(rows, a), rowOf = (f) => rows.find((r) => r.findings.includes(f)) ?? null;
+  const blast = secBlast(rows, a, ai?.access ?? []), rowOf = (f) => rows.find((r) => r.findings.includes(f)) ?? null;
   const REACH_WORD = { public: "anyone can reach it", authenticated: "an authenticated caller can reach it", internal_only: "it can only be reached from inside", unknown: "the analysis could not tell from where it can be reached" };
-  const reach = (f) => { const r = rowOf(f), { ways, stated } = r ? { ways: [], stated: false } : waysOf(f), level = REACH_WORD[f.reachability] ?? null;
+  const reach = (f) => { const r = rowOf(f), { ways, stated } = r ? { ways: [], stated: false } : waysOf(f), level = REACH_WORD[f.reachability] ?? null, conflict = r?.conflicts?.find((c) => c.f === f);
     if (!r && ways.length) return [`- **Reachable from:** ${ways.map((x) => `${flat(x.resource)}: ${EXPOSURE[x.exposure].toLowerCase()}, reached by ${flat(x.principal)}`).join("; ")}. ${stated ? `Stated by the analysis${level && f.reachability !== "unknown" ? `: ${level}` : ""}.` : "Derived from the map: the finding sits at this way in."}`];
     if (!r && level) return [`- **Reachable from:** ${level[0].toUpperCase()}${level.slice(1)}${f.reachability === "unknown" ? "." : ". Stated by the analysis, which names no way in."}`];
-    return r ? [`- **Reachable from:** ${flat(r.identity ?? r.from.name)} through ${flat(r.what || label(r.ends.to))} (crossing ${num(r)}, ${flat(r.from.name)} → ${flat(r.to.name)}).`,
+    return r ? [`- **Reachable from:** ${flat(r.identity ?? r.from.name)} through ${flat(r.what || label(r.ends.to))} (crossing ${num(r)}, ${flat(r.from.name)} → ${flat(r.to.name)}).${conflict ? ` Data disagree: the finding names ${conflict.finding.join(", ") || "no way in"}, its threat ${conflict.threat.join(", ") || "no way in"}; the outer one counts.` : ""}`,
     `- **Way:** ${wayText(wayOf(r, rows, a))}.${r.holds_if ? ` Holds only if: ${dot(r.holds_if)}.` : ""}`] : []; };
   const proof = (f) => (f.proof?.state === "done" ? [`- **Agent check:** ${String(f.proof.result ?? "").replace(/_/g, " ")}${f.proof.reason ? `: ${flat(f.proof.reason)}` : ""}${f.proof.command ? ` (ran \`${flat(f.proof.command)}\`)` : ""}`] : []);
   // What each run checked: the page's table (views.js scopeTable), each run's own line, and where they contradict.
   const tab = scopeTable(ai?.scope ?? null, runs), who = (k) => (k === "analysis" ? "Analysis" : SOURCE[k] ?? k), conflicts = [...scopeConflicts(tab, list)];
   const cell = (c) => (c ? `${String(c.result ?? "").replace(/_/g, " ")}${c.note ? `: ${flat(c.note)}` : ""}` : "–");
-  const run = ([kind, r]) => [`- **${who(kind)}:** ${[`${r.state ?? "not run"}${r.model ? ` (${r.model})` : ""}`, r.error && `Error: ${dot(r.error)}`, r.scope?.read?.length > 0 && `Read: ${r.scope.read.map(flat).join("; ")}`,
-    r.scope?.skipped?.length > 0 && `Left out: ${r.scope.skipped.map(flat).join("; ")}`, r.state && !r.scope && "It does not say what it checked",
+  const run = ([kind, r]) => [`- **${who(kind)}:** ${[`${r.state ?? "not run"}${modelOf(kind, r)}`, r.error && `Error: ${dot(r.error)}`, r.scope?.read?.length > 0 && `Read: ${r.scope.read.map(flat).join("; ")}`,
+    (r.scope?.skipped ?? []).map(skipText).filter(Boolean).length > 0 && `Left out: ${r.scope.skipped.map(skipText).filter(Boolean).map(flat).join("; ")}`, r.state && !r.scope && "It does not say what it checked",
     r.scope && `Allowed: ${Array.isArray(r.allowed) && r.allowed.length ? r.allowed.map((x) => flat(String(x).replace(/(?:\/[^\s/()]+)+\/([^\s/()]+)/g, "$1"))).join(", ") : "read files in the checkout and its git history; no network, no writes"}`,
     r.count !== undefined && r.count !== null && count(r.count, "finding")].filter(Boolean).join(". ")}.`];
   // The page's order (views.js secOrder): how far out a finding can be reached from, by its crossing's row, else by
   // the ways in it names or sits at; then over a trust boundary; then severity. Each with the reason in words.
-  const surface = surfaceOf(ai?.access), cardAt = new Map([...[...marks.nodes].flatMap(([id, m]) => m.findings.map((f) => [f.id, id])), ...[...marks.edges].flatMap(([i, m]) => m.findings.map((f) => [f.id, a.edges[i].from]))]);
+  const surface = surfaceOf(ai?.access), cardAt = new Map([...[...picMarks.nodes].flatMap(([id, m]) => m.findings.map((f) => [f.id, id])), ...[...picMarks.edges].flatMap(([i, m]) => m.findings.map((f) => [f.id, a.edges[i].from]))]);
   const waysOf = (f) => { const stated = (f.reachable_from ?? []).map((id) => [...surface.entries, ...surface.grants].find((x) => x.id === id)).filter(Boolean);
     return stated.length ? { ways: stated, stated: true } : { ways: surface.entries.filter((x) => (x.node && x.node === cardAt.get(f.id)) || x.at === `${f.file}:${f.line}`), stated: false }; };
   const LEVEL = { public: "public", authenticated: "authenticated", internal: "internal_only", data: "internal_only" }, zoned = (a?.zones ?? []).length > 0;
-  const placed = secOrder(list.map((f) => { const r = rowOf(f); return r ? { f, level: r.kind === "entry" ? "public" : LEVEL[r.from.trust] ?? "unknown", crosses: r.kind !== "bypass" && r.kind !== "operator" }
+  const placed = secOrder(shown.map((f) => { const r = rowOf(f); return r ? { f, level: r.kind === "entry" ? "public" : LEVEL[r.from.trust] ?? "unknown", crosses: r.kind !== "bypass" && r.kind !== "operator" }
     : { f, level: reachLevel(f, waysOf(f).ways), crosses: zoned ? (a.edges ?? []).some((e) => e.crosses && !inProcess(e) && e.to === cardAt.get(f.id)) : null }; }));
   const ordered = placed.map((r) => r.f), why = new Map(placed.map((r) => [r.f.id, r.why]));
   const effLines = [...(eff ?? [])].map(([id, v]) => `- ${flat(label(id))}: ${v.cond ? `${v.trust[0].toUpperCase()}${v.trust.slice(1)} if ${v.cond.replace(/^if crossing /, "")}` : `Reachable as ${v.trust}`}. Drawn in ${flat(v.zone?.name ?? v.drawn)} (${v.drawn}), but ${flat(v.why)}${v.cond ? ` ${v.cond}` : ""}.`);
   return doc(prLine({ pr, head }), "", "# Security", "",
-    `${count(list.length, "unresolved security finding")}${list.length ? `: ${sevCount(list)}` : ""}.`, "",
-    rows.length > 0 && [secSentence(rows, list.length), ""],
+    `${count(list.length, "unresolved security finding")}${list.length ? `: ${sevCount(list)}` : cited.length ? " about access or data" : ""}.${cited.length ? ` ${count(cited.length, "other unresolved finding backs", "other unresolved findings back")} a threat named here (${sevCount(cited)}).` : ""}`, "",
+    rows.length > 0 && [secSentence(rows, list.length, cited.length), ""],
     [`## Trust boundary crossings (${changed.length}${rest.length ? `, and ${rest.length} unchanged` : ""})`, "",
       "The ways in, the rights and the calls this PR opens or changes across a trust boundary, each in full.", "",
       !rows.length && "The data names no crossing: no zones, no way in and no right into another zone. The security review names them.",
@@ -464,11 +471,15 @@ export function securityMd({ pr, head, ai = null, findings = [], statusOf = () =
       ...blast.map((s) => `- ${s}`), blast.length > 0 && "",
       rows.length > 0 && !rows.some((r) => r.kind === "operator") && "Operator and CI ways (admin scripts, deploys, guardrails): none named by the data, not assessed.", ""],
     picture && ["## Boundary picture", "", "Only the crossings, numbered as in the table, with what goes over them; a dashed line is not assessed. The frames are the trust zones.", "",
-      ...mermaidFlow({ groups: picture.groups, nodes: picture.nodes, edges: picture.edges.map((e) => ({ from: e.from, to: e.to, label: e.label, dashed: e.dashed })) }, { marks: { nodes: marks.nodes } }), "",
+      ...mermaidFlow({ groups: picture.groups, nodes: picture.nodes, edges: picture.edges.map((e) => ({ from: e.from, to: e.to, label: e.label, dashed: e.dashed })) }, { marks: { nodes: picMarks.nodes } }), "",
       effLines.length > 0 && ["Cards that can be reached from further out than their zone says:", "", ...effLines, ""]],
-    ordered.length > 0 && [`## Findings (${ordered.length}, full text)`, "", ordered.length > 1 && "Ordered by how far out they can be reached from, then by whether the way crosses a trust boundary, then by severity.", "",
+    ordered.length > 0 && [`## Findings (${ordered.length}, full text)`, "",
+      cited.length > 0 && `${list.length ? "" : "No unresolved finding is about access or data (⛨). "}${cited.length} unresolved ${cited.length === 1 ? "finding backs" : "findings back"} a threat named above without being about access or data: ${cited.length === 1 ? "it is" : "they are"} listed here too.`,
+      ordered.length > 1 && "Ordered by how far out they can be reached from, then by whether the way crosses a trust boundary, then by severity.", "",
       ...ordered.flatMap((f, k) => [`### ${k + 1}. ${flat(f.title)}`, "", findingBody(f, { status: statusOf(f), asks: ai?.asks ?? [], h: "####", extra: [why.has(f.id) && `- **Order:** ${why.get(f.id)}`, ...reach(f), ...proof(f)], cx, more: moreOf(f) })])],
     !ordered.length && ["## Findings (0)", "", "No unresolved security finding.", ""],
+    guards.length > 0 && [`## Guards (${guards.length})`, "", "Rules that take a right away: they protect their resource and are no way in.", "",
+      ...guards.map((g) => `- ${flat(g.text)}${(g.threats ?? []).map((x) => ` Holds against: ${flat(x.threat)} (${String(x.result ?? "").replace(/_/g, " ")}${x.evidence ? `, \`${x.evidence}\`` : ""}).`).join("")}`), ""],
     exposureMd(ai, "##"), blastMd(ai, "##"),
     grantsOf(ai?.access).length > 0 && [`## Rights granted (${grantsOf(ai.access).length})`, "", ...table(["Resource", "Kind", "Who", "May", "Auth", "Used by the code", "Where"],
       grantsOf(ai.access).map((x) => [x.resource, x.kind, x.principal, (x.actions ?? []).join("; "), x.auth, x.used === undefined ? "" : x.used ? "yes" : "no", x.at ? `\`${x.at}\`` : ""]))],
@@ -487,7 +498,8 @@ export function securityMd({ pr, head, ai = null, findings = [], statusOf = () =
 const isEntry = (x) => Boolean(x.public) || /route|endpoint|api|url|http|gateway|ingress/i.test(String(x.kind ?? ""));
 const unchecked = (x) => (x.auth_kind ? x.auth_kind === "none" : /^(|none|no|nothing|unauthenticated|-|–)$/i.test(String(x.auth ?? "").trim().replace(/[\s.(:;,].*$/, "")));
 const entriesOf = (access) => (access ?? []).filter(isEntry).map((x, k) => ({ x, k, r: !x.public ? 2 : unchecked(x) ? 0 : 1 })).sort((a, b) => a.r - b.r || a.k - b.k).map(({ x }) => x);
-const grantsOf = (access) => (access ?? []).filter((x) => !isEntry(x));
+// A guard takes a right away (crossingsMd lists it); two derived operator rows that say the same are one.
+const grantsOf = (access) => (access ?? []).filter((x, k, all) => !isEntry(x) && !isGuard(x) && !(x.derived && all.findIndex((y) => y.derived && y.resource === x.resource && y.principal === x.principal && y.node === x.node) < k));
 const AUTH_KIND = { none: "none", code: "in the code", gateway: "at the gateway", iam: "IAM" };
 const checkOf = (x) => (unchecked(x) ? "none" : [AUTH_KIND[x.auth_kind], flat(x.auth)].filter(Boolean).join(": ") || "not stated");
 const yesNo = (v) => (v === true ? "yes" : v === false ? "no" : "not stated");
@@ -520,11 +532,19 @@ function blastMd(ai, h) {
     const own = nodes.filter((n) => n.zone === z.id);
     if (own.length && own.every((n) => n.type === "external")) return null;
     const names = new Set([z.name, z.id, ...own.flatMap((n) => [n.id, n.label]), ...(ai?.components ?? []).filter((c) => own.some((n) => n.id === c.node)).map((c) => c.name)].filter(Boolean).map(norm));
-    const rights = access.filter((x) => names.has(norm(x.principal)));
+    // Whose right: the principal's card or frame when the run names it (principal_node), else by name; guards aside.
+    const hosted = (n) => (Array.isArray(n.runs_in) ? n.runs_in.length > 0 : Boolean(n.runs_in)); // a frame's zone: the one its own cards carry
+    const inZone = (id) => (nodes.some((n) => n.id === id) ? zoneOf(id) : (nodes.find((n) => n.group === id && n.zone && !hosted(n)) ?? nodes.find((n) => n.group === id && n.zone))?.zone) === z.id;
+    const rights = access.filter((x) => !isGuard(x) && !x.public && (x.principal_node ? inZone(x.principal_node) : names.has(norm(x.principal))));
     const out = (a?.edges ?? []).filter((e) => own.some((n) => n.id === e.from) && zoneOf(e.to) !== z.id);
     const reached = [...new Set(out.map((e) => zoneOf(e.to)).filter(Boolean))].map((id) => zones.find((x) => x.id === id)).filter(Boolean);
     const free = [...new Set(out.filter((e) => !zoneOf(e.to)).map((e) => e.to))];
-    const can = rights.length ? `it can ${rights.map(right).join("; ")}` : "no right in this PR names it";
+    // With the principal's card named (a newer run): by principal, each right on its card or, off the map, its kind
+    // and resource; else as before, "it can … on <resource>".
+    // An operator's right works through its script or workflow (the row's card), not on it.
+    const on = (x) => `${(x.actions ?? []).map(flat).join(", ") || "use"} ${["operator", "ci"].includes(x.principal_kind) ? "through" : "on"} ${nodes.some((n) => n.id === x.node) ? name(x.node) : [x.kind, flat(x.resource)].filter(Boolean).join(" ")}${x.used === false ? " (granted, not used by the code)" : ""}`;
+    const who = [...new Set(rights.filter((x) => x.principal_node).map((x) => flat(x.principal)))];
+    const can = !rights.length ? "no right in this PR names it" : who.length ? who.map((p) => `${p} can ${rights.filter((x) => flat(x.principal) === p).map(on).join("; ")}`).join(". ") : `it can ${rights.map(right).join("; ")}`;
     const via = [...reached.map((x) => `${flat(x.name ?? x.id)} (${x.trust ?? "trust not stated"})`), free.length && `${count(free.length, "card")} outside every zone (${free.map(name).join("; ")})`].filter(Boolean);
     return `- **${flat(z.name ?? z.id)}** (${z.trust ?? "trust not stated"}): If it is compromised, ${can}. ${via.length ? `Its calls reach ${via.join(" and ")}.` : "It calls nothing outside its zone."}`;
   }).filter(Boolean);

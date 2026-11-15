@@ -215,6 +215,47 @@ ez = {"zones": [{"id": "p", "trust": "public", "nodes": ["c"]}, {"id": "a", "tru
 assert [x["where"] for x in reviewers.security_view(ez, [], entry, None)["threats"]] == [{"access": "acc1"}], "the caller's edge into a public entry is that entry, not a second crossing"
 assert [x["where"] for x in reviewers.security_view({**ez, "threats": []}, [], entry, None)["threats"]] == [{"access": "acc1"}], "one way in, one not assessed entry"
 
+# A webhook into one cloud account with an admin script that reaches another: a deny rule is a guard (no grant, no
+# placeholder), a right on something off the picture is no crossing, a call the run named through its access row gets
+# no second "no threat was named", a call out of the account is a crossing at equal trust, and two checks that hold on
+# unnamed secrets give one operator way with both names.
+hook = {"architecture": {
+    "groups": [{"id": "out", "kind": "External"}, {"id": "acct", "kind": "Cloud account"}, {"id": "ops", "kind": "Client"}, {"id": "org", "kind": "Cloud account"}],
+    "nodes": [{"id": "sender", "group": "out", "status": "unchanged"}, {"id": "gw", "group": "acct", "status": "new", "label": "Hooks API"}, {"id": "fn", "group": "acct", "status": "new"},
+              {"id": "vault", "group": "acct", "status": "new"}, {"id": "topic", "group": "acct", "status": "new"}, {"id": "sink", "group": "acct", "status": "new"},
+              {"id": "tool", "group": "ops", "status": "new"}, {"id": "policies", "group": "org", "status": "unchanged"}, {"id": "peer", "group": "org", "status": "new"}],
+    "edges": [{"from": "sender", "to": "gw", "status": "new"}, {"from": "gw", "to": "fn", "status": "new"}, {"from": "fn", "to": "vault", "status": "new"},
+              {"from": "fn", "to": "topic", "status": "new"}, {"from": "topic", "to": "sink", "status": "new"}, {"from": "tool", "to": "policies", "status": "new"},
+              {"from": "topic", "to": "peer", "status": "new"}]}}
+row = lambda **kw: {"public": False, "auth_kind": "iam", "change": "added", "principal_kind": "role", "at": "infra.tf:1", **kw}  # noqa: E731
+hook_ans = {
+    "zones": [{"id": "z0", "trust": "public", "nodes": ["sender"]}, {"id": "z1", "trust": "public", "nodes": ["gw", "fn"]}, {"id": "z2", "trust": "internal", "nodes": ["topic"]},
+              {"id": "z3", "trust": "data", "nodes": ["vault", "sink"]}, {"id": "z4", "trust": "authenticated", "nodes": ["tool"]}, {"id": "z5", "trust": "internal", "nodes": ["policies", "peer"]}],
+    "access": [row(resource="route", principal="anyone on the internet", public=True, auth_kind="code", node="gw", principal_kind="internet"),
+               row(resource="fn-policy", principal="fn role", principal_node="fn", node="vault", actions=["secrets:Get"]),
+               row(resource="fn-policy", principal="fn role", principal_node="fn", actions=["logs:Put"]),
+               row(resource="topic-policy", principal="everyone but the fn role", node="topic", actions=["deny events:Put"]),
+               row(resource="sink-policy", principal="anyone in the account", node="sink", actions=["store:*"], effect="deny"),
+               row(resource="admin.sh", principal="operator", principal_node="ops", principal_kind="operator", node="tool", actions=["org:Detach"])],
+    "gates": [{"where": {"access": "acc1"}, "principal": "anonymous", "check": "token", "at": "fn.py:4", "source": "code", "holds_if": "the first hook secret is set and not empty", "carries": ["body"]},
+              {"where": {"access": "acc1"}, "principal": "anonymous", "check": "signature", "at": "fn.py:9", "source": "code", "holds_if": "the second hook secret is set", "carries": ["body"]}],
+    "threats": [{"where": {"access": "acc1"}, "threat": "A forged call.", "result": "mitigated", "evidence": "fn.py:4", "path": ["sender", "gw", "fn"]},
+                {"where": {"access": "acc2"}, "threat": "A taken-over fn role reads the secrets.", "result": "mitigated", "evidence": "infra.tf:1", "path": ["fn", "vault"]},
+                {"where": {"access": "acc4"}, "threat": "Another principal publishes directly.", "result": "mitigated", "evidence": "infra.tf:2", "path": ["topic"]},
+                {"where": {"access": "acc6"}, "threat": "The operator leaves the policies detached.", "result": "not_assessed", "note": "no time", "path": ["ops", "tool", "policies"]}]}
+hv = reviewers.security_view(hook_ans, [], hook, None)
+assert [(r["id"], r.get("effect")) for r in hv["access"] if r.get("effect")] == [("acc4", "deny"), ("acc5", "deny")], "a deny rule is a guard: by its effect, or (an older run) by its actions"
+assert {"from": "topic", "to": "peer", "edge": "e6"} in hv["crossing"], "a call out of the cloud account is a crossing, also between two internal zones"
+derived = [x["where"] for x in hv["threats"] if x.get("derived")]
+assert derived == [{"from": "fn", "to": "topic", "edge": "e3"}, {"from": "topic", "to": "sink", "edge": "e4"}, {"from": "topic", "to": "peer", "edge": "e6"}], \
+    ("placeholders only for the calls nothing names: not for a guard (acc5), a right off the picture (acc3), the call a right's threat covers (fn → vault, acc2) "
+     f"or the call an operator's threat walks (tool → policies, acc6): {derived}")
+hop = [r for r in hv["access"] if r.get("derived")]
+assert [(r["resource"], r["actions"], r["from_gate"], r["from_gates"], r["node"]) for r in hop] == \
+    [("first hook secret; second hook secret", ["set first hook secret", "set second hook secret"], 0, [0, 1], "gw")], "one operator way per card, named by the conditions' subjects"
+assert "effect (deny" in reviewers.findings_schema("security")["description"] and "replayed genuine request" in reviewers.findings_schema("security")["description"]
+assert "never a tool" in reviewers.findings_schema("claude")["description"], "a run's skipped list is about the PR, not about its tools"
+
 # The view lands in the findings file next to the runs; a run without one leaves it.
 file = home / "findings" / "123.json"
 reviewers.merge(file, "security", "h1", [{"id": "s1", "reviewer": "security"}], {"state": "done"}, {"threats": []})

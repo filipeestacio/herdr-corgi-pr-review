@@ -377,6 +377,12 @@ assert.equal(rangeMarks(mr, [{ line: 7.5, end: 9, mark: "x" }, { line: 9, end: 7
 // The height of a Markdown text: paragraphs, a list and a fenced code block each count, with a gap between blocks.
 import { mdHeight, MD } from "./views.js";
 assert.equal(mdHeight("", 600), 21);
+{ // a height is counted once per text and place, then remembered; another width is another place
+  const text = "A paragraph long enough to wrap in a narrow card, with some more words after it.\n\n- one\n- two", was = mdHeight.counted;
+  const a = mdHeight(text, 300), n = mdHeight.counted;
+  assert.equal(n, was + 1); assert.equal(mdHeight(text, 300), a); assert.equal(mdHeight.counted, n, "the second ask counts nothing");
+  assert.ok(mdHeight(text, 120) > a && mdHeight.counted === n + 1, "a narrower place is counted anew");
+}
 assert.equal(mdHeight("One line with `code`.", 600), 21);
 assert.equal(mdHeight("One.\n\nTwo.\n\nThree.", 600), 3 * 21 + 2 * MD.GAP);
 assert.equal(mdHeight("Do this:\n\n- one\n- two\n- three", 600, 20), 20 + MD.GAP + 3 * (20 + MD.ITEM_GAP));
@@ -930,8 +936,26 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   const r = (url, repo, lastDays, progress = {}, status = "in-progress") => ({ url, repo, status, lastTouched: now - lastDays * 86400000, progress });
   const reg = [r("opened", "o/here", 0, { files: 9, steps: 6 }), r("viewed", "o/else", 1, { filesViewed: 2 }), r("here", "o/here", 2, { comments: 1 }),
     r("merged", "o/here", 0, { stepsChecked: 1 }), r("old", "o/here", 20, { filesViewed: 1 }), r("sent", "o/else", 3, {}, "sent"), r("done", "o/here", 0, { filesViewed: 1 }, "done")];
-  assert.deepEqual(inProgressNow(reg, { states: new Map([["merged", "merged"]]), slug: "o/here", now }).map((x) => x.url), ["here", "viewed", "sent"],
-    "only opened, merged, untouched for 14 days and done ones are not in progress; the space's repo first");
+  assert.deepEqual(inProgressNow(reg, { states: new Map([["merged", "merged"]]), slug: "o/here", now }).map((x) => x.url), ["here"],
+    "in a space on a repo: its reviews; only opened, merged, untouched for 14 days and done ones are not in progress");
+  assert.deepEqual(inProgressNow(reg, { states: new Map([["merged", "merged"]]), now }).map((x) => x.url), ["viewed", "here", "sent"], "outside a GitHub repo: every repo's, by last touch");
+  // "Show all" adds the older ones; the merged one is listed apart with its state; nothing with work in it is lost.
+  const { progressRows, inProgressLeft, removedText } = await import("./views.js");
+  const states = new Map([["merged", "merged"]]), rows = progressRows(reg, { states, slug: "o/here", now });
+  assert.deepEqual([rows.shown.map((x) => x.url), rows.more, rows.total], [["here"], 3, 4], "the other repos' reviews and the old one wait behind Show all");
+  const all = progressRows(reg, { states, slug: "o/here", now, all: true });
+  assert.deepEqual([all.shown.map((x) => x.url), all.more], [["here", "old", "viewed", "sent"], 3], "all: the one untouched for 20 days and the other repos too; more says what Show fewer hides");
+  assert.deepEqual(inProgressLeft(reg, states).map((x) => [x.url, x.state]), [["merged", "merged"]]);
+  assert.equal([...rows.shown, ...progressRows(reg, { states, now, all: true }).shown, ...rows.left].some((x) => x.url === "opened" || x.url === "done"), false, "only opened or done: nowhere");
+  assert.equal(removedText({ number: 2, progress: { comments: 2 } }), "#2 removed from In progress. Its 2 pending comments and your progress are kept.");
+  assert.equal(removedText({ number: 7, progress: {} }), "#7 removed from In progress. Your progress is kept.");
+  // The layout shows the panel: its block not hidden, no hidden column around it, up in its stack; null without a block.
+  const { panelShown } = await import("./views.js");
+  const block = { id: "pr", type: "block", content: { mod: "pr-review" } }, bar = { id: "bar", type: "block", content: { mod: "pr-review", props: { part: "bar" } } };
+  const side = (hidden) => ({ id: "root", type: "row", children: [{ id: "main", type: "block" }, { id: "review", type: "column", hidden, children: [block] }] });
+  const stack = (active) => ({ id: "root", children: [{ id: "panel", type: "column", children: [{ id: "panel-body", type: "stack", active, children: [{ id: "files", content: { mod: "files" } }, block] }] }] });
+  assert.deepEqual([panelShown(side(false)), panelShown(side(true)), panelShown(stack("pr")), panelShown(stack("files")), panelShown({ id: "root", children: [bar] }), panelShown(null)],
+    [true, false, true, false, null, null]);
   const sel = withPick(withPick({ a: 1, b: 2 }, "a", 3), "c", 4, 2);
   assert.deepEqual(sel, { a: 3, c: 4 }, "set again moves to the end; the newest kept");
   console.log("ok panel relevance");
@@ -943,4 +967,67 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.equal(touchReview([{ url: "u", status: "sent", lastTouched: 1 }], { url: "u" }, 5)[0].status, "sent");
   assert.equal(touchReview(done, { url: "u", status: "done" }, 5)[0].status, "done");
   console.log("ok touch");
+}
+
+// The Security page on a webhook into one cloud account with an admin script that reaches another (synthetic): a deny
+// rule is a guard, not a right or a crossing; a right on something off the map is no crossing; a call inside an
+// account's frame is a crossing when the run says so; an operator's script and its call are one way; two derived
+// operator ways that say the same are one; the run's own note is the reason a crossing is not assessed; the findings
+// a threat stands on are named next to the ⛨ count; a taken-over principal's rights are by principal.
+{
+  const { crossingsOf, crossingChanged, asideOf, threatCited, blastOf, secSentence, skipText } = await import("./views.js");
+  const { isGuard } = await import("./pr.js");
+  const arch = { groups: [{ id: "out", label: "Senders", kind: "External" }, { id: "acct", label: "Shop account", kind: "Cloud account" }, { id: "ops", label: "Laptop", kind: "Client" }, { id: "org", label: "Org account", kind: "Cloud account" }],
+    zones: [{ id: "z0", name: "Senders", trust: "public" }, { id: "z1", name: "Hook API and function", trust: "public" }, { id: "z2", name: "Topic", trust: "internal" }, { id: "z3", name: "Stores", trust: "data" },
+      { id: "z4", name: "Laptop", trust: "authenticated" }, { id: "z5", name: "Org account: policies", trust: "internal" }],
+    nodes: [{ id: "sender", group: "out", zone: "z0", type: "external", label: "Sender" }, { id: "gw", group: "acct", zone: "z1", label: "Hooks API" }, { id: "fn", group: "acct", zone: "z1", label: "hook fn" },
+      { id: "vault", group: "acct", zone: "z3", label: "Secrets" }, { id: "topic", group: "acct", zone: "z2", label: "Topic" }, { id: "sink", group: "acct", zone: "z3", label: "Sink" },
+      { id: "first", group: "ops", zone: "z4", label: "list.sh" }, { id: "tool", group: "ops", zone: "z4", label: "admin.sh" }, { id: "policies", group: "org", zone: "z5", label: "Policies" }],
+    edges: [{ from: "sender", to: "gw", status: "new" }, { from: "gw", to: "fn", status: "new" }, { from: "fn", to: "vault", status: "new", crosses: true, label: "read the secrets" },
+      { from: "topic", to: "sink", status: "new", crosses: true, label: "archive" }, { from: "tool", to: "policies", status: "new", crosses: true, label: "detach" }] };
+  const row = (id, more) => ({ id, public: false, auth_kind: "iam", change: "added", principal_kind: "role", at: "infra.tf:1", ...more });
+  const access = [row("acc1", { resource: "route", principal: "anyone on the internet", public: true, auth_kind: "code", node: "gw", principal_kind: "internet", principal_node: null }),
+    row("acc2", { resource: "fn-policy", kind: "secret", principal: "fn role", principal_node: "fn", node: "vault", actions: ["secrets:Get"], auth: "IAM" }),
+    row("acc3", { resource: "fn-policy", kind: "log group", principal: "fn role", principal_node: "fn", actions: ["logs:Put"] }),
+    row("acc4", { resource: "topic-policy", principal: "everyone but the fn role", principal_node: null, node: "topic", actions: ["deny events:Put"], auth: "resource policy" }),
+    row("acc5", { resource: "sink-policy", principal: "anyone in the account", principal_node: null, node: "sink", actions: ["store:* without TLS"], effect: "deny" }),
+    row("acc6", { resource: "admin.sh", principal: "operator with org credentials", principal_node: "ops", principal_kind: "operator", node: "tool", actions: ["org:Detach"] }),
+    row("acc7", { resource: "configuration", principal: "operator who deploys Hooks API", principal_node: null, principal_kind: "operator", node: "gw", actions: ["set configuration"], change: "unchanged", derived: true, from_gate: 0, value_from: null }),
+    row("acc8", { resource: "configuration", principal: "operator who deploys Hooks API", principal_node: null, principal_kind: "operator", node: "gw", actions: ["set configuration"], change: "unchanged", derived: true, from_gate: 1, value_from: null })];
+  const threats = [{ id: "t1", where: { access: "acc1" }, threat: "A flood crowds out real senders.", stride: "D", result: "finding", findings: ["flood"] },
+    { id: "t2", where: { access: "acc2" }, threat: "A taken-over fn role reads the secrets.", stride: "I", result: "not_assessed", note: "needs the function first; two secrets only", findings: [] },
+    { id: "t3", where: { access: "acc4" }, threat: "Another principal publishes directly.", stride: "S", result: "mitigated", evidence: "infra.tf:2", findings: [] },
+    { id: "t4", where: { access: "acc6" }, threat: "The operator leaves the policies detached.", stride: "E", result: "finding", findings: ["script"], path: ["ops", "tool", "policies"] },
+    { id: "t5", where: { from: "fn", to: "vault", edge: "e2" }, threat: "No threat was named for this crossing.", result: "not_assessed", derived: true, findings: [] },
+    { id: "t6", where: { from: "topic", to: "sink", edge: "e3" }, threat: "Someone replays the archive.", stride: "T", result: "not_assessed", note: "replay rights are elsewhere", findings: [] }];
+  const findings = [{ id: "flood", ids: ["flood"], severity: "medium", title: "One limit for everyone", impact: "degraded_operation", security: false },
+    { id: "script", ids: ["script"], severity: "medium", title: "The script stops halfway", impact: "edge_case", security: false },
+    { id: "other", ids: ["other"], severity: "high", title: "No timeout", impact: "degraded_operation", security: false }];
+  assert.deepEqual(access.filter(isGuard).map((x) => x.id), ["acc4", "acc5"], "by its effect, or (an older run) by actions that start with deny");
+  const rows = crossingsOf({ arch, access, threats, findings });
+  assert.deepEqual(rows.map((r) => [r.key, r.kind, r.from.name, r.to.name, r.result]), [
+    ["a:acc1", "entry", "anyone on the internet", "Hook API and function", "finding"],
+    ["a:acc6", "operator", "Laptop", "Org account: policies", "finding"],
+    ["a:acc7", "operator", "operator who deploys Hooks API", "Hook API and function", "not_assessed"],
+    ["e:2", "right", "Hook API and function", "Stores", "not_assessed"],
+    ["e:3", "call", "Topic", "Stores", "not_assessed"]], "five crossings: no guard, no right off the map, no second configuration row, the script with its call, the calls inside the account");
+  const op = rows[1], right = rows[3];
+  assert.deepEqual([op.ends, op.aliases, op.identity], [{ from: "tool", to: "policies" }, ["e:4"], "operator with org credentials"], "the way starts at the script's own card, not at the first card of its frame");
+  assert.equal(right.reason, "The run named a threat here and left it open: needs the function first; two secrets only.", "the run's reason, not the placeholder's");
+  assert.equal(rows[4].identity, "Topic", "inside one frame the card says who calls, not the account");
+  const aside = asideOf({ arch, access, threats, findings });
+  assert.deepEqual(aside.guards.map((g) => [g.text, g.threats.map((x) => x.id)]), [
+    ["Guard at Topic: denies events:Put to everyone but the fn role (resource policy, infra.tf:1).", ["t3"]], ["Guard at Sink: denies store:* without TLS to anyone in the account (infra.tf:1).", []]]);
+  assert.deepEqual(aside.rights.map((r) => r.text), ["fn role may logs:Put on fn-policy (log group, infra.tf:1)."], "nothing is lost: the right off the map stands here");
+  assert.deepEqual(threatCited(threats, findings).map((f) => f.id), ["flood", "script"]);
+  const said = secSentence(rows, 0, 2);
+  assert.match(said, /No finding about access or data is unresolved\. 2 other unresolved findings back a threat named here\.$/, said);
+  assert.match(secSentence(rows, 0, 0), /No security finding is unresolved\.$/);
+  assert.equal(rows.filter(crossingChanged).length, 5);
+  assert.deepEqual(blastOf(arch, access).map((b) => b.text), ["If fn role is taken over, it can secrets:Get on Secrets; logs:Put on log group fn-policy."], "by principal behind the way in; no guard, no operator");
+  assert.equal(skipText("git diff not run: Bash denied, read the changed files instead"), "git diff not run: read the changed files instead");
+  assert.equal(skipText("tests not reviewed"), "tests not reviewed");
+  assert.equal(skipText("git diff (the tool was denied, so I read the files at HEAD)"), "git diff (I read the files at HEAD)");
+  assert.equal(skipText("the shell: not available, so no tests were run"), "no tests were run");
+  console.log("ok guards, operator ways and the findings behind threats");
 }
