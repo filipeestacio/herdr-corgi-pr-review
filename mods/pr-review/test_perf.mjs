@@ -136,6 +136,28 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   S.exec = null; S.props = null; await settle();
 }
 
+// ---- shared state is written for another value only, and a visit alone does not write the register again
+{
+  later(); S.writes = true;
+  const v = await openReview(PR2()), wrote = async (f) => { const n0 = N.shared; f(); later(); await settle(); later(); await settle(); return N.shared - n0; };
+  assert.ok((await wrote(() => v.registerReview(cx))) >= 2 && S.store.get("review.open")?.[0]?.url === v.prSel.url, "the review registers itself: review.open and review.registry");
+  assert.equal(await wrote(() => v.registerReview(cx)), 0, "a visit a moment later, nothing else new: no file, no shared write");
+  assert.equal(await wrote(() => { v.prog.seen.add(v.patch[0].path); v.registerReview(cx); }), 2, "a file viewed: written");
+  assert.equal(await wrote(() => { v.publish(); v.publish(); }), 0, "the bar's facts published again unchanged: not written");
+  assert.equal(await wrote(() => { v.comments = [...v.comments, { id: "c9", file: v.patch[0].path, start: 1, end: 1, text: "x" }]; v.publish(); }), 1, "one more pending comment: written once");
+  S.writes = false;
+}
+// ---- the list's triage reads a PR's cached diff once per head, not each time the list opens
+{
+  const { hash } = await import("./pr.js"), { openPanel } = await import("./perf_bench.mjs");
+  const { v: p, prs } = await openPanel(PR2(), 6), pr = prs.find((x) => x.state === "open"), base = `/h/pr-data/cache/diff-${hash(pr.url)}-${pr.headSha}`;
+  S.files.set(`${base}.json`, JSON.stringify({ url: pr.url, head: pr.headSha, parts: 1 })); S.files.set(`${base}.0.txt`, PR2().diff);
+  let reads = 0; const get = S.files.get.bind(S.files); S.files.get = (k) => { if (k === `${base}.0.txt`) reads++; return get(k); };
+  p.picking = true; p.loadTriage(cx); await settle(); p.loadTriage(cx); await settle();
+  assert.deepEqual([reads, p.triage.has(pr.url)], [1, true], "two loads of the list's triage read the diff once");
+  S.files.get = get; S.exec = null; S.props = null; S.spaces = null;
+}
+
 // ---- the command loop goes on after a command that threw, and starts again after one that Herdr stopped
 {
   const waiters = []; S.nextCommand = () => new Promise((r) => waiters.push(r));

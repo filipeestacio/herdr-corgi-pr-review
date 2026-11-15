@@ -69,6 +69,7 @@ const HEADS = new Map(), HEAD_ASKS = new Map();
 // review of a PR is a new copy each time it opens, and waited for this one command (0.3 s, 0.7 to 2 s on a busy
 // machine) before it built anything from the diff it had read from the cache in a few ms.
 const REPOS = new Map();
+const SIZES = new Map(); // a cached diff's size ({files, lines}) by PR and head, for the list's triage (loadTriage)
 const age = (iso) => { const m = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000)); return !Number.isFinite(m) ? "" : m < 60 ? `${m}m` : m < 2880 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`; };
 
 function location() {
@@ -924,9 +925,10 @@ export default class PrReview extends View {
     // Written when they differ from what is there (a call per render wrote both keys each time).
     if (JSON.stringify(shared("goto.handlers.review")) !== JSON.stringify(handlers)) setShared("goto.handlers.review", handlers);
     this.gotoSig = openSig(shared("review.open"));
-    setShared("goto.items.review", (shared("review.open") ?? []).map((r) => ({ id: `review:${r.url}`, title: `Resume review #${r.number} ${r.title ?? ""}`,
+    const items = (shared("review.open") ?? []).map((r) => ({ id: `review:${r.url}`, title: `Resume review #${r.number} ${r.title ?? ""}`,
       subtitle: [r.repo, progressText(r.progress)].filter(Boolean).join(" · "), tag: "Review", url: r.url, keywords: [String(r.number), r.repo ?? ""],
-      run: [["goto.set", { key: "pr.goto", value: { url: r.url } }]] })));
+      run: [["goto.set", { key: "pr.goto", value: { url: r.url } }]] }));
+    if (JSON.stringify(shared("goto.items.review") ?? null) !== JSON.stringify(items)) setShared("goto.items.review", items); // as the handlers: only another value is written
   }
 
   // A PR handed over by Go to: resume a review in progress, else open it in the review layout like "Open PR…".
@@ -983,10 +985,13 @@ export default class PrReview extends View {
         risk.set(pr.url, riskSignal(known));
         if (!listed.has(pr.url)) return;
         // The diff's size from its cache (in parts, diffcache.js); a missing one leaves the effort to the analysis.
-        const [ctx, diff] = await Promise.all([pr.headSha ? read(`${cacheDir()}/ctx-${h}-${pr.headSha}.json`) : null, loadDiff(`${cacheDir()}/diff-${h}-${head}`, pr.url, head, readTextFile)]);
-        const files = diff ? splitPatch(diff) : null;
+        // Once per PR and head (SIZES): the diff of a head never changes, and each time the list opened every listed
+        // PR's whole diff was read and split again for these two numbers (a big one: 0.9 MB, 20 ms to split).
+        const sized = async () => { const diff = await loadDiff(`${cacheDir()}/diff-${h}-${head}`, pr.url, head, readTextFile), fs = diff ? splitPatch(diff) : null; return fs && { files: fs.length, lines: fs.reduce((n, f) => n + f.add + f.del, 0) }; };
+        if (!SIZES.has(`${h}-${head}`)) { SIZES.set(`${h}-${head}`, sized().then((x) => { if (!x) SIZES.delete(`${h}-${head}`); return x; })); keepLast(SIZES, 300); }
+        const [ctx, size] = await Promise.all([pr.headSha ? read(`${cacheDir()}/ctx-${h}-${pr.headSha}.json`) : null, SIZES.get(`${h}-${head}`)]);
         const security = (known.findings ?? []).filter((f) => isSecurity(f) && !["fixed", "dismissed"].includes(known.status?.[f.id]?.s)); // as the review's ⛨
-        out.set(pr.url, triageOf({ pr, analysis, size: files && { files: files.length, lines: files.reduce((n, f) => n + f.add + f.del, 0) },
+        out.set(pr.url, triageOf({ pr, analysis, size,
           security, related: ctx, llm: llm[pr.url] ?? null }));
       }).map((one) => one.catch(() => null))); // a broken cache file costs that row its chips, not the whole list
       this.triage = out; this.risk = risk; cx.notify();

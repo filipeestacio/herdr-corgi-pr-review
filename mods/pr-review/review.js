@@ -115,6 +115,11 @@ const MAX_PROGRESS = 100;
 // shared("review.open") is this file's in-progress and sent entries: [{url, number, repo, title, context, startedAt,
 // lastTouched, headSha, status, progress: {stepsChecked, steps, filesViewed, files, comments, findingsOpen}, target}].
 const openFile = () => `${appHome()}/pr-data/open-reviews.json`;
+// A shared value written only when it is another one: every write redraws every mod of the window and writes the
+// whole shared.json again (about 100 KB with a few reviews in it), and the review published the same value several
+// times while it opened.
+const putShared = (key, value) => { if (JSON.stringify(shared(key) ?? null) !== JSON.stringify(value ?? null)) setShared(key, value); };
+const TOUCH_MS = 5 * 60000; // a review's "last touched" on file may be this old before a visit alone writes it again (registerReview)
 // shared("review.registry") is every entry, done ones too, with {at}: for plug-ins that mirror reviews elsewhere
 // (PROVIDERS.md). Written on each registry change, 1.5 s after the last edit.
 // The AI analysis' model: any value the claude CLI offers (models.py), Sonnet until one is picked.
@@ -691,7 +696,7 @@ export const ReviewMode = {
     if (this.wtIn === job) return; // the same checkout is being made
     this.worktree = null;
     if (this.prSel.space && this.root) {
-      this.worktree = { url, head: this.head, path: this.root, local: true }; setShared("review.worktree", this.worktree); this.applyTrust();
+      this.worktree = { url, head: this.head, path: this.root, local: true }; putShared("review.worktree", this.worktree); this.applyTrust();
       this.loadSince(cx); this.loadContext(cx); return;
     }
     // A PR you didn't open may use the active space's checkout of its repo (cwd); your own PRs keep the dedicated clones.
@@ -715,7 +720,7 @@ export const ReviewMode = {
       const w = JSON.parse(r.stdout);
       this.head ??= w.head;
       this.worktree = { url, head: w.head, path: w.path };
-      setShared("review.worktree", this.worktree);
+      putShared("review.worktree", this.worktree);
       if (!shared("gh.login")) exec("gh", ["api", "user", "--jq", ".login"]).then((r) => { if (r.code === 0) { setShared("gh.login", r.stdout.trim()); this.applyTrust(); } }).catch(() => null);
       this.applyTrust();
       if (this.pendingRun) { this.pendingRun = false; this.loadAi(cx, "run"); }
@@ -849,9 +854,13 @@ export const ReviewMode = {
       this.regExtra = {};
       const prs = JSON.parse(await readTextFile(`${appHome()}/pr-data/prs.json`).catch(() => null) ?? "{}").prs ?? [];
       for (let attempt = 0; attempt < 3; attempt++) {
-        const before = await readTextFile(openFile()).catch(() => null);
-        entry.reviewed = markReviewed((before ? JSON.parse(before) : []).find((r) => r.url === pr.url)?.reviewed, this.worktree?.head ?? this.head, how, Date.now());
-        const list = expireReviews(touchReview(before ? JSON.parse(before) : [], entry, Date.now()), prs, Date.now());
+        const before = await readTextFile(openFile()).catch(() => null), old = before ? JSON.parse(before) : [], was = old.find((r) => r.url === pr.url), now = Date.now();
+        entry.reviewed = markReviewed(was?.reviewed, this.worktree?.head ?? this.head, how, now);
+        const list = expireReviews(touchReview(old, entry, now), prs, now);
+        // Nothing but the time of the last touch is new, and the one on file is young: no write. Every tab, page,
+        // layer and line picked comes here (saveProgress), and each time the file, "review.open" and
+        // "review.registry" were written: 45 KB of shared state, twice the whole shared.json, two frames of every mod.
+        if (was && now - was.lastTouched < TOUCH_MS && JSON.stringify(list.map((r) => (r.url === pr.url ? { ...r, lastTouched: was.lastTouched } : r))) === JSON.stringify(old)) return;
         try {
           await writeTextFile(openFile(), JSON.stringify(list, null, 1), before);
           setShared("review.open", list.filter((r) => r.status !== "done"));
@@ -1005,7 +1014,7 @@ export const ReviewMode = {
   // What the bar shows: the analysis on screen, or the one running.
   publish() {
     const a = this.ai;
-    setShared("review.meta", { url: this.prSel?.url ?? null, pending: this.comments?.length ?? 0, selected: this.prSel ? this.selected().length : 0, model: this.aiModel, busy: this.aiBusy?.model ?? null, error: this.aiError,
+    putShared("review.meta", { url: this.prSel?.url ?? null, pending: this.comments?.length ?? 0, selected: this.prSel ? this.selected().length : 0, model: this.aiModel, busy: this.aiBusy?.model ?? null, error: this.aiError,
       shown: a ? { model: a.model, model_id: a.model_id, cost: a.cost, exact: a.exact, mergeRisk: a.mergeRisk, effort: a.effort } : null,
       checks: this.prSel ? this.checksNow().reduce((n, c) => ({ ok: n.ok + (c.ok === true), fail: n.fail + (c.ok === false) }), { ok: 0, fail: 0 }) : null,
       // For the bar's "Dry run" chip and the "Run review" popup (findings: all, and the analysis' own).
@@ -1188,7 +1197,7 @@ export const ReviewMode = {
     const d = doc ? JSON.parse(doc) : {};
     this.find = { ...this.find, list: withThreats(d.findings ?? [], d.security), runs: runsOf(d.runs), status: d.status ?? {}, reports: parseReports(rep), security: d.security ?? null, resilience: d.resilience ?? null, loaded: url };
     for (const r of Object.values(this.find.runs)) if (r.busy && Date.now() - Date.parse(r.started) > 30 * 60000) { r.busy = false; r.state = "failed"; r.error = "Stopped without a result"; }
-    setShared("review.reviewers", this.find.runs);
+    putShared("review.reviewers", this.find.runs);
     this.securityNow(cx);
     cx.notify();
   },
