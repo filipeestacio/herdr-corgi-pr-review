@@ -2,6 +2,7 @@
 // node tests them (test_views.mjs).
 import { transitionText } from "./arch.js";
 import { isSecurity, priceOf, isGuard } from "./pr.js";
+import { RES_WHEN } from "./pr.js"; // Resilience: the words for a dependency's cases
 
 // The panel is either picking a PR (none chosen yet, or PRs ▾ open) or showing the chosen one (its diff or walkthrough).
 // chosen: a PR, or the current branch picked from the list.
@@ -1119,7 +1120,9 @@ const RES_WORDS = { poison_message: "a message that always fails", no_dlq: "no d
   cannot_happen: "cannot happen here", possible: "possible", likely: "likely", unlikely: "unlikely",
   alarm: "an alarm", log: "a log line", metric: "a metric", dlq: "the dead-letter queue", platform_only: "the platform's own metrics only", none: "nothing",
   mental: "to understand", ops: "to run", money: "in money", dishonest_response: "the route answers success while the work is lost", no_throttle: "no throttle",
-  stale_cache: "a stale cache", clock: "a clock assumption", request: "request" };
+  stale_cache: "a stale cache", clock: "a clock assumption", request: "request",
+  no_backoff: "retries at once, without backoff", thundering_herd: "every caller refills at once", unchecked_answer: "the answer is not checked", backpressure: "the wait backs up to the way in",
+  secret_store: "secret store", config_store: "config store", identity_provider: "identity provider", in_process: "in one process" };
 export const resWord = (k) => RES_WORDS[k] ?? String(k ?? "").replace(/_/g, " ");
 // A model's text about its own tools ("nothing was executed, because Bash was denied") is no finding about the code.
 export const resToolText = (s) => /\b(bash|tool|permission|sandbox)\b[^.]*\b(denied|refused|not allowed|blocked)\b/i.test(String(s ?? ""));
@@ -1397,6 +1400,20 @@ export function panelShown(node, mod = "pr-review") {
     return null;
   };
   return walk(node, true);
+}
+
+// ---- Resilience: dependencies that fail or are overloaded (pr.js downstreamOf), a compact row each. The decided cases
+// as words with their mark ("slow: waits up to 7 s of the 10 s request ✗"; ✓ handled, ~ partly, ✗ not handled; text, and
+// words and mark apart so only the mark takes a colour), each
+// with the path that shows how it spreads (only one of the run's paths) and that path's number on the page; the cases
+// the code cannot decide by name only (open: they are asked under "After merge, watch"). paths: in the page's order. Pure.
+const DEP_MARK = { yes: "✓", partly: "~", no: "✗" }, DEP_BARE = { yes: "handled", partly: "partly handled", no: "not handled" };
+export function resDepRows(res, paths = res?.paths ?? []) {
+  const num = new Map(paths.map((p, k) => [p.id, k + 1])), blocks = new Set(paths.filter((p) => p.blocker).map((p) => p.id));
+  return (res?.downstream ?? []).map((d) => ({ dep: d.dep, what: [resWord(d.kind), d.mode && resWord(d.mode)].filter(Boolean).join(", "), entry: d.entry || null, at: d.at || null, card: d.card ?? d.node ?? null,
+    cases: (d.cases ?? []).filter((c) => DEP_MARK[c.handled]).map((c) => ({ when: c.when, handled: c.handled, at: c.at ?? null, effect: c.effect ?? "", path: num.has(c.path) ? c.path : null,
+      number: num.get(c.path) ?? null, blocks: blocks.has(c.path), words: `${RES_WHEN[c.when] ?? resWord(c.when)}: ${String(c.how || DEP_BARE[c.handled]).replace(/\.$/, "")}`, mark: DEP_MARK[c.handled] })).map((c) => ({ ...c, text: `${c.words} ${c.mark}` })),
+    open: (d.cases ?? []).filter((c) => !DEP_MARK[c.handled]).map((c) => RES_WHEN[c.when] ?? resWord(c.when)) }));
 }
 
 // "Copy as Markdown": what it copies where the person is. kind picks the text (markdown.js), name completes the

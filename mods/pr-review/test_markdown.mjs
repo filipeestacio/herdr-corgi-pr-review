@@ -273,4 +273,10 @@ const all = [f("m1", "medium", { breaks: { node: "c" } }), sec, f("l1", "low"), 
   const md = resilienceMd({ pr: { repo: "o/r", number: 2, title: "t" }, head: "ccddf95aa", res, arch });
   assert.match(md, /Failing: no dead-letter queue/); assert.match(md, /Seen: no, silent/); assert.doesNotMatch(md, /Bash/);
   assert.match(md, /## Before merge, not observable\n\n- Mail loss is not visible/); assert.equal(md.match(/oldest message in LoanEvents/g)?.length, 1);
+  assert.doesNotMatch(md, /When a dependency fails/, "no section without dependencies");
+  // Dependencies that fail or are overloaded: a line each, its cases under it with the number of their path here.
+  const dep = resilienceMd({ pr: {}, head: "h", res: { ...res, downstream: [{ dep: "Mailer", kind: "external", mode: "sync", at: "library/mailer.py:14", cases: [
+    { when: "slow", handled: "no", how: "waits up to 7 s", effect: "The request hangs until its timeout.", path: "p1" }, { when: "down", handled: "yes", how: "fails fast", at: "library/mailer.py:19" },
+    { when: "recovers", handled: "not_checkable" }] }] }, arch });
+  assert.match(dep, /## When a dependency fails\n\n- Mailer \(external, sync, library\/mailer\.py:14\)\n  - slow: waits up to 7 s ✗, path 1\. The request hangs until its timeout\.\n  - down: fails fast ✓ \(library\/mailer\.py:19\)\n  - The code cannot tell: recovers\.\n/);
 }

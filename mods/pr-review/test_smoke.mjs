@@ -265,6 +265,21 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   v3.deep = { ...v3.deep, probes: { [v3.probeKey("r1")]: { state: "done", status: "reproduced", line: "handled=1, no mail", ms: 1100, head: "ccddf95", base: { status: "script_failed", verdict: "new_in_pr", line: "ImportError" }, pre_existing: false, network_barrier: true, sandbox: "sandbox-exec" } } };
   assert.ok((v3.resNow()?.unseen ?? []).length > 0 && v3.resNow().paths.some((p) => p.same_cause), "unseen and one cause blocking once come from the data");
   await tour(v3, "PR #2, a real resilience run with the R2 schema");
+  // Dependencies that fail or are overloaded: a row each under the map; a click on a case opens the path that shows
+  // how it spreads and marks the dependency on the map; a run without them (the one above) draws no such rows.
+  assert.ok(!S.clicks.has("rv-res-dep-0-slow"), "no rows without dependencies");
+  const ps = r3.paths.map((p) => p.id), dn = [{ dep: "Mailer", kind: "external", node: "mailer", edge: null, at: "library/mailer.py:14", mode: "sync", cases: [
+    { when: "slow", at: "library/mailer.py:16", handled: "no", how: "waits up to 7 s of the 10 s request", effect: "The request hangs.", path: ps.at(-1), findings: [] },
+    { when: "down", at: "library/mailer.py:19", handled: "yes", how: "fails fast", effect: "", path: null, findings: [] }, { when: "overloaded", at: "library/mailer.py:17", handled: "partly", how: "", effect: "", path: "nope", findings: [] },
+    { when: "recovers", at: null, handled: "not_checkable", how: "", effect: "", path: null, findings: [] }] }];
+  for (const head of [r3.head, "0000000aaaa"]) {
+    const v4 = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify({ ...doc, resilience: { ...r3, head, downstream: dn } }) });
+    act(v4, "page:res", "Resilience with dependencies"); click("rv-res-dep-0-slow", "a dependency's case"); draw(v4, "the path of a dependency's case, open");
+    assert.equal(v4.resOpen, ps.at(-1), "the case opens its path");
+    assert.ok(v4.resNow().paths.find((p) => p.id === ps.at(-1)).marks.some((m) => m.at === "mailer" && m.mark === "✕ when slow"), "and the map marks the dependency");
+    for (const id of ["rv-res-dep-0-down", "rv-res-dep-at-0"]) { click(id, "a dependency's line"); draw(v4, `after ${id}`); }
+    assert.match((await import("./markdown.js")).resilienceMd({ pr: {}, head: v4.head, res: v4.resNow(), arch: v4.ai?.arch }), /## When a dependency fails\n\n- Mailer/, "the export has the dependencies");
+  }
 }
 // The Security page with what a webhook PR adds to it: a deny rule (a guard), a right on something off the map, an
 // operator's script whose row and call are one way, two derived operator ways that say the same, a finding that only

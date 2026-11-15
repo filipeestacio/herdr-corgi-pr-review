@@ -131,61 +131,61 @@
   },
   "resilience": {
    "state": "done",
-   "cost": 0.2916647,
-   "ms": 113501,
+   "cost": 0.3398213,
+   "ms": 126594,
    "model": "claude-sonnet-5-5",
-   "at": "2026-11-15T00:07:54+0100",
-   "count": 5,
+   "at": "2026-11-15T02:47:38+0100",
+   "count": 7,
    "head": "ccddf9524aec9c46d338d296bacce38d994af5fb",
    "scope": {
     "read": [
-     "library/consumer.py",
-     "library/events.py",
      "library/handler.py",
+     "library/consumer.py",
      "library/reminders.py",
-     "library/loans.py",
      "library/status.py",
-     "library/api.py",
+     "library/events.py",
      "library/mailer.py",
+     "library/api.py",
+     "library/loans.py",
      "library/dates.py",
-     "library/tests/test_consumer.py",
+     "library/tests/test_reminders.py",
      "template.yaml"
     ],
     "checked": [
      {
       "area": "retries",
       "result": "finding",
-      "note": "mailer swallows exhausted retry; no client or SDK retry on publish because none exists"
+      "note": "mailer swallow and backoff, no DLQ"
      },
      {
       "area": "timeouts",
       "result": "finding",
-      "note": "10s function against 7s mailer sleeps"
+      "note": "7 s mailer sleep against 10 s timeout"
      },
      {
       "area": "redelivery",
       "result": "finding",
-      "note": "no DLQ, no partial batch response, default visibility 30s"
+      "note": "no partial batch, DLQ or alarm"
      },
      {
       "area": "effects",
       "result": "finding",
-      "note": "double mail, lost mail, no idempotency key"
+      "note": "double mail, lost mail"
      },
      {
       "area": "state",
       "result": "finding",
-      "note": "reminded_on has three writers"
+      "note": "reminded_on has two writers"
      },
      {
       "area": "races",
-      "result": "finding",
-      "note": "hypothetical, since stores are per process"
+      "result": "clean",
+      "note": "per-process state; the race is not possible today"
      },
      {
       "area": "load",
       "result": "finding",
-      "note": "no throttle on /remind, no consumer MaximumConcurrency"
+      "note": "no concurrency cap or throttle"
      },
      {
       "area": "db",
@@ -195,12 +195,12 @@
      {
       "area": "caches",
       "result": "clean",
-      "note": "none"
+      "note": "no cache"
      },
      {
       "area": "clocks",
       "result": "finding",
-      "note": "equality windows, UTC"
+      "note": "exact-day windows, UTC date"
      },
      {
       "area": "observability",
@@ -209,14 +209,18 @@
      },
      {
       "area": "operations",
+      "result": "clean",
+      "note": "rollback is trivial; no health endpoint to check"
+     },
+     {
+      "area": "dependencies",
       "result": "finding",
-      "note": "no schedule, no alarms"
+      "note": "SMTP, SQS and the store"
      }
     ],
     "skipped": [
-     "the git diff tool failed, so I read the files at HEAD instead of the diff",
-     "README.md",
-     "test files other than test_consumer.py"
+     "README.md and the other test files: not needed for the resilience paths",
+     "the raw git diff: the git helper failed, so I read the HEAD files directly"
     ]
    },
    "allowed": [
@@ -592,40 +596,40 @@
    "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
   },
   {
-   "id": "377e726c6e80",
+   "id": "f836bc6838d5",
    "reviewer": "resilience",
    "file": "library/reminders.py",
    "line": 16,
    "end": 34,
    "severity": "high",
-   "title": "Nothing runs send_reminders or publish_overdue: no schedule, no entry point",
-   "detail": "`send_reminders` and `publish_overdue` are called only from tests. `handler.py` routes only `/remind` and `/late`, and `template.yaml` has no `Schedule` event or third function.\n\nIn production no `loan.reminded` or `loan.overdue` event is created by a status change, and the two-days-before mail never goes out unless the front desk posts each loan to `/remind` by hand.",
-   "suggestion": "Add a scheduled function (an EventBridge `Schedule` event in `template.yaml`) that calls both functions once a day, with an alarm on its errors.",
+   "title": "Nothing runs send_reminders or publish_overdue: no schedule, route or caller",
+   "detail": "`send_reminders` and `publish_overdue` are called only from tests. `template.yaml` has no schedule event, and `handler.py` only serves `/late` and `/remind`.\n\nIn production no `loan.overdue` event is created and no automatic reminder goes out. The only way a mail leaves is the manual `/remind` route.",
+   "suggestion": "Add a scheduled event (EventBridge Schedule) that runs a daily entry calling `send_reminders` and `publish_overdue` with the real queue.",
    "code": "def send_reminders(store, mailer, queue, on=None):",
    "category": "requirement",
    "impact": "dead_path",
-   "effect": "Members get no automatic due-soon or overdue mail, and nobody sees that the job never runs.",
+   "effect": "Members get no automatic reminders or overdue notices; the front desk must call `/remind` by hand for each loan.",
    "certainty": "derived",
    "effort": "moderate",
    "introduced_here": true,
    "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
   },
   {
-   "id": "35f8ce274021",
+   "id": "3f9a85156739",
    "reviewer": "resilience",
    "file": "library/mailer.py",
-   "line": 14,
+   "line": 13,
    "end": 20,
-   "severity": "medium",
-   "title": "Mailer swallows an exhausted retry, so /remind answers 202 and the queue deletes the message",
-   "detail": "After `RETRIES` failed attempts `Mailer.send` falls out of the loop and returns `None` without raising. It also sleeps 1+2+4 = 7s, and the 4s sleep comes after the last attempt.\n\nThe new callers rely on `send` raising to learn the mail failed. `handler.py:21` goes on to answer 202 `reminded: true`, and `consumer.handle` returns, so SQS deletes the message. In both cases the mail is lost with no error and no log above debug.\n\nThe 7s of sleeps plus any SMTP timeouts also leave little room in the 10s function timeout (`template.yaml:8`) for the request route. In the consumer, a batch of 10 can reach 70s.",
-   "suggestion": "Re-raise the last `OSError` after the final attempt and skip the sleep after the last attempt.",
-   "code": "        for attempt in range(RETRIES):",
+   "severity": "high",
+   "title": "Mailer swallows exhausted retries, so callers record a mail that was never sent",
+   "detail": "After 3 failed attempts the `for` loop ends and `send` returns normally, with no raise and no log. Both callers treat that as success.\n\n- `consumer.py:23` sets `reminded_on`.\n- `reminders.py:23` calls `transition`, which publishes the event.\n- `handler.py:22` answers 202 with `reminded: true`.\n\nThe SQS batch is acknowledged and the loan is marked reminded, so `due_soon` never picks it up again. The mail is lost and nothing reports it.",
+   "suggestion": "Raise after the last attempt so the consumer fails and the queue redelivers.\n\n```python\n            except OSError:\n                if attempt == RETRIES - 1:\n                    raise\n                time.sleep(2 ** attempt)\n```",
+   "code": "    def send(self, to, subject, body):",
    "category": "availability",
-   "impact": "degraded_operation",
-   "effect": "A member's reminder is lost while the front desk is told it was sent, and SQS never redelivers it.",
+   "impact": "data_loss",
+   "effect": "A member whose mail failed is never reminded again, and neither the front desk nor on-call sees it.",
    "preconditions": [
-    "`Mailer.send` raises `OSError` for a real transport (today it only appends to a list, so the path is not exercised)"
+    "Mailer is backed by SMTP in production and raises `OSError` on a failed send (the in-memory outbox never does)"
    ],
    "certainty": "derived",
    "effort": "quick",
@@ -633,21 +637,62 @@
    "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
   },
   {
-   "id": "eae963438b42",
+   "id": "742873c4c336",
+   "reviewer": "resilience",
+   "file": "library/mailer.py",
+   "line": 20,
+   "end": 20,
+   "severity": "medium",
+   "title": "Mailer backoff of 7 s per mail runs inside a 10 s request and a 10-record batch",
+   "detail": "The mailer sleeps 1 s, 2 s and 4 s, 7 s in total, and it sleeps after the last attempt too. The Lambda timeout is 10 s (`template.yaml:8`).\n\n- `POST /remind` can wait 7 s on one mail, with no throttle.\n- A consumer batch of 10 has a worst case of about 70 s against the 10 s function timeout. A single bad SMTP window therefore times out the whole batch.\n- The timed-out batch is redelivered after the visibility timeout and re-mails the records that already went out.\n\nThe retry sits under the queue's own redelivery, so it adds a layer without adding safety.",
+   "suggestion": "Drop the in-process sleep retry (or cap it at one attempt) and let the queue redeliver, with partial batch responses so finished records are not re-mailed.",
+   "code": "                time.sleep(2 ** attempt)",
+   "category": "availability",
+   "impact": "degraded_operation",
+   "effect": "During an SMTP slowdown, `/remind` requests hang near the Lambda timeout and queue batches time out and repeat their mails.",
+   "preconditions": [
+    "SMTP send raises `OSError` or is slow in production"
+   ],
+   "certainty": "derived",
+   "effort": "moderate",
+   "introduced_here": false,
+   "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
+  },
+  {
+   "id": "43cb7f5133d7",
+   "reviewer": "resilience",
+   "file": "library/consumer.py",
+   "line": 11,
+   "end": 26,
+   "severity": "medium",
+   "title": "Consumer logs nothing: no event id, loan id or outcome, and unknown types are dropped silently",
+   "detail": "`handler` and `handle` have no log lines, and `Mailer.send` logs only at debug (`mailer.py:17`). An unknown message type falls through both `if` branches and counts as handled.\n\nOn-call cannot tell which loan was mailed, which batch was repeated or which event was ignored. The `LoanEvent` carries no id to correlate, and the publish path logs nothing either.",
+   "suggestion": "Log each handled message at info with type and loan_id, and log a warning for an unknown type.",
+   "code": "def handler(event, context):",
+   "category": "observability",
+   "impact": "degraded_operation",
+   "effect": "Duplicate, lost or ignored mails cannot be reconstructed from logs; on-call sees only platform metrics.",
+   "certainty": "derived",
+   "effort": "quick",
+   "introduced_here": true,
+   "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
+  },
+  {
+   "id": "1c012b474363",
    "reviewer": "resilience",
    "file": "library/reminders.py",
    "line": 13,
    "end": 31,
    "severity": "medium",
-   "title": "Date equality windows skip a loan forever if one daily run is missed",
-   "detail": "`due_soon` matches only `due_on == day + 2` and `publish_overdue` matches only `due_on == day - 1`.\n\nA missed or failed daily run, a retried run on the next day, or a UTC against local-time day shift in `dates.today()` means the loan never matches again. Its reminder or overdue event is lost with no signal.",
-   "suggestion": "Select loans with `due_on <= day + 2` (and `reminded_on is None`) so a later run catches up.",
+   "title": "Exact-day equality windows: one missed daily run loses a loan's reminder or overdue event forever",
+   "detail": "`due_soon` matches `due_on == day + 2`. `publish_overdue` matches `due_on == day - 1`. If the daily job does not run on that day (outage, failed deploy, a run that raised at `reminders.py:33`), the loan never matches again.\n\nThe day also comes from `dt.date.today()` (`dates.py:8`), which is the Lambda's UTC date, so the window can shift against the library's local day.",
+   "suggestion": "Use a range (`due_on <= day + 2` with `reminded_on is None`) and filter overdue by `status_of` instead of an exact day.",
    "code": "    return [l for l in loans if l.open and l.due_on == day and l.reminded_on is None]",
    "category": "bug",
    "impact": "edge_case",
-   "effect": "A member whose loan fell on a skipped day never gets the reminder or the overdue notice.",
+   "effect": "A member whose loan fell on a skipped day gets no reminder or overdue notice.",
    "preconditions": [
-    "The daily job misses a day, or runs near midnight in a timezone other than UTC"
+    "The scheduled job misses at least one day, or the UTC date differs from the library's local date"
    ],
    "certainty": "derived",
    "effort": "quick",
@@ -655,43 +700,46 @@
    "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
   },
   {
-   "id": "277a40234468",
+   "id": "479f51c19859",
    "reviewer": "resilience",
    "file": "library/consumer.py",
-   "line": 18,
-   "end": 26,
+   "line": 19,
+   "end": 22,
    "severity": "medium",
-   "title": "The consumer and /remind log nothing at info level, and the event has no id",
-   "detail": "`handle` sends mail and mutates the loan without a log line. The only trace is `log.debug(\"mail to %s\")` in the mailer, which includes the member's email and is off at the default level.\n\nAn event carries no id, no correlation id and no trace context across the publish/consume hop, and nothing alarms on consumer errors. On-call cannot tell which loan was mailed, how often, or which record broke a batch.",
-   "suggestion": "Log `type`, `loan_id` and the message id at info level in `handle`, and alarm on the consumer's Errors metric.",
-   "code": "def handle(message):",
-   "category": "observability",
-   "impact": "degraded_operation",
-   "effect": "On-call cannot tell duplicate, lost or failing reminder mails from normal ones.",
+   "title": "Consumer mails from the loan's current state without checking it, so stale events mail returned loans",
+   "detail": "`handle` looks the loan up and sends mail for `loan.reminded` or `loan.overdue` without checking `loan.open` or the status.\n\nA queued event processed after a return, a delayed or repeated redelivery, or a manual `/remind` on a returned loan mails the member anyway.",
+   "suggestion": "Skip the mail when `not loan.open`, and for `loan.reminded` when `loan.reminded_on` is already set.",
+   "code": "    loan = api.store.get(message[\"loan_id\"])",
+   "category": "bug",
+   "impact": "edge_case",
+   "effect": "Members who already returned the book get a 'please return' or 'overdue' mail.",
+   "preconditions": [
+    "An event is processed after the loan was returned (queue delay or redelivery, or a manual `/remind`)"
+   ],
    "certainty": "derived",
    "effort": "quick",
    "introduced_here": true,
    "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
   },
   {
-   "id": "ddc0c1366f58",
+   "id": "6737c617ef43",
    "reviewer": "resilience",
-   "file": "library/consumer.py",
-   "line": 8,
-   "end": 8,
-   "severity": "high",
-   "title": "Module-level Mailer only appends to a list: no mail leaves and the list grows in warm Lambdas",
-   "detail": "`Mailer()` gets the default in-memory `outbox`. In the consumer and the front desk (which imports `consumer`) every handled event or `/remind` appends the member's email, name and book to a list that is never drained or sent.\n\nNo SMTP transport exists in the repo. The list grows for the life of each warm container and holds personal data.",
-   "suggestion": "Inject a real SMTP or SES-backed mailer into the consumer, and keep the outbox for tests only.",
-   "code": "mailer = Mailer()",
-   "category": "bug",
-   "impact": "dead_path",
-   "effect": "Consumer-sent reminder mails are never delivered, and memory grows with every request.",
+   "file": "template.yaml",
+   "line": 28,
+   "end": 37,
+   "severity": "medium",
+   "title": "Consumer trigger has no partial-batch response, concurrency cap or alarm",
+   "detail": "The SQS event source sets only `BatchSize: 10`. There is no `FunctionResponseTypes: [ReportBatchItemFailures]`, no `ScalingConfig.MaximumConcurrency`, and no alarm on queue age or Lambda errors.\n\nAfter an outage the backlog drains at the platform's scaling rate straight into the mail server. A poison or failing record repeats its whole batch until the 4-day default retention ends the loop. Nobody is alerted.",
+   "suggestion": "Set `FunctionResponseTypes: [ReportBatchItemFailures]` and `ScalingConfig: {MaximumConcurrency: 2}` on the SQS event, and add an age-of-oldest-message alarm.",
+   "code": "  ReminderConsumer:",
+   "category": "availability",
+   "impact": "degraded_operation",
+   "effect": "After an outage the backlog hits SMTP without a limit, and failing batches repeat mails with no alert.",
    "preconditions": [
-    "Deployed as is, with no real transport injected"
+    "Something publishes to the queue (not true today, see `library/events.py:20`)"
    ],
    "certainty": "derived",
-   "effort": "moderate",
+   "effort": "quick",
    "introduced_here": true,
    "head": "ccddf9524aec9c46d338d296bacce38d994af5fb"
   }
@@ -1045,29 +1093,16 @@
  },
  "resilience": {
   "head": "ccddf9524aec9c46d338d296bacce38d994af5fb",
-  "at": "2026-11-15T00:07:54+0100",
+  "at": "2026-11-15T02:47:38+0100",
   "model": "claude-sonnet-5-5",
   "picture": "2026-11-14T17:18:21.337051+01:00",
+  "edge_ids": true,
   "hints_used": {
    "architecture": true,
    "security": true,
    "findings": true
   },
-  "edge_ids": true,
   "deps": [
-   {
-    "edge": "e0",
-    "node": "handler",
-    "at": "library/handler.py:12",
-    "mode": "sync",
-    "timeout": {
-     "s": 10,
-     "source": "template.yaml:8 Globals Function Timeout"
-    },
-    "request_path": true,
-    "entry": "POST /remind and GET /late via HttpApi",
-    "throttle": "none; the API has no throttling and the token defaults to empty"
-   },
    {
     "edge": "e1",
     "node": "handler",
@@ -1075,12 +1110,12 @@
     "mode": "in_process",
     "timeout": {
      "s": 10,
-     "source": "shares the function timeout; no per-call timeout"
+     "source": "Lambda Globals.Timeout (template.yaml:8); mailer has none of its own"
     },
     "retry": {
-     "layer": "Mailer.send",
+     "layer": "mailer",
      "attempts": 3,
-     "backoff": "1s, 2s, 4s",
+     "backoff": "1 s, 2 s, 4 s (exponential), also after the last attempt",
      "jitter": false,
      "on": "OSError",
      "exhausted": "swallowed",
@@ -1089,54 +1124,58 @@
     "context": {
      "carrier": "none",
      "kind": "none",
-     "missing": "no request id or loan id logged",
+     "missing": "no request id or loan id is logged",
      "receiver_logs": false,
-     "at": "library/consumer.py:18"
+     "at": "library/handler.py:21"
     },
-    "request_path": true
-   },
-   {
-    "edge": "e4",
-    "node": "status",
-    "at": "library/status.py:51",
-    "mode": "in_process",
-    "timeout": {
-     "s": 0,
-     "source": "none; in-process call"
-    }
+    "request_path": true,
+    "entry": "POST /remind",
+    "throttle": "none (HttpApi default)"
    },
    {
     "edge": "e5",
     "node": "events",
-    "at": "library/events.py:20",
-    "mode": "in_process",
+    "at": "library/events.py:19",
+    "mode": "async",
     "timeout": {
      "s": 0,
-     "source": "no SQS client exists; it appends to a list"
+     "source": "no SQS call exists; publish appends to a list"
+    },
+    "retry": {
+     "layer": "none",
+     "attempts": 0,
+     "backoff": "none",
+     "jitter": false,
+     "on": "none",
+     "exhausted": "swallowed",
+     "at": "library/events.py:20"
     },
     "context": {
      "carrier": "message body",
-     "kind": "id_only",
-     "missing": "event id, trace id",
+     "kind": "none",
+     "missing": "event id, correlation id",
      "receiver_logs": false,
      "at": "library/events.py:7"
-    }
+    },
+    "request_path": false,
+    "entry": "send_reminders / publish_overdue (no caller)",
+    "throttle": "none"
    },
    {
     "edge": "e6",
     "node": "consumer",
-    "at": "template.yaml:32",
+    "at": "template.yaml:34",
     "mode": "async",
     "timeout": {
      "s": 10,
-     "source": "template.yaml:8"
+     "source": "Lambda Globals.Timeout"
     },
     "retry": {
      "layer": "SQS redelivery",
      "attempts": 0,
-     "backoff": "none, redelivered every visibility timeout",
+     "backoff": "none (visibility timeout only)",
      "jitter": false,
-     "on": "any exception from the handler",
+     "on": "any exception from the handler, which fails the whole batch",
      "exhausted": "swallowed",
      "at": "template.yaml:11"
     },
@@ -1149,17 +1188,17 @@
      "dlq": false,
      "max_receive": 0,
      "worst_record_s": 7
-    }
-   },
-   {
-    "edge": "e7",
-    "node": "consumer",
-    "at": "library/consumer.py:19",
-    "mode": "in_process",
-    "timeout": {
-     "s": 0,
-     "source": "in-memory dict; `store.get` raises KeyError when the id is absent"
-    }
+    },
+    "context": {
+     "carrier": "SQS body (type, loan_id, on)",
+     "kind": "none",
+     "missing": "event id and trace",
+     "receiver_logs": false,
+     "at": "library/consumer.py:14"
+    },
+    "request_path": false,
+    "entry": "the queue consumer",
+    "throttle": "none (no MaximumConcurrency)"
    },
    {
     "edge": "e8",
@@ -1167,73 +1206,93 @@
     "at": "library/consumer.py:21",
     "mode": "in_process",
     "timeout": {
-     "s": 0,
-     "source": "no transport timeout; retries sleep up to 7s"
+     "s": 10,
+     "source": "Lambda function timeout; none on the mailer"
     },
     "retry": {
-     "layer": "Mailer.send",
+     "layer": "mailer",
      "attempts": 3,
-     "backoff": "1s, 2s, 4s",
+     "backoff": "1 s, 2 s, 4 s",
      "jitter": false,
      "on": "OSError",
      "exhausted": "swallowed",
      "at": "library/mailer.py:14"
-    }
+    },
+    "context": {
+     "carrier": "none",
+     "kind": "none",
+     "missing": "loan id and event id are not logged",
+     "receiver_logs": false,
+     "at": "library/consumer.py:21"
+    },
+    "request_path": false,
+    "entry": "the queue consumer",
+    "throttle": "none"
    }
   ],
   "effects": [
    {
     "id": "ef1",
-    "kind": "mail (direct, from the daily job)",
-    "idempotency_key": "none; the guard is loan.reminded_on in a per-process store",
+    "kind": "mail (reminder)",
+    "idempotency_key": "none (loan.reminded_on is the only guard)",
     "at": "library/reminders.py:21",
     "node": "reminders",
     "order": "before_commit",
-    "retried_by": [],
+    "retried_by": [
+     "rerun of send_reminders after a partial failure"
+    ],
     "findings": [
+     "43e895797954",
      "29c173706fda",
-     "43e895797954"
+     "3f9a85156739"
     ]
    },
    {
     "id": "ef2",
-    "kind": "mail (from the consumer)",
-    "idempotency_key": "none; the event has no id",
+    "kind": "mail (reminder or overdue)",
+    "idempotency_key": "none",
     "at": "library/consumer.py:21",
     "node": "consumer",
     "order": "none",
     "retried_by": [
-     "SQS redelivery of the whole batch",
-     "Mailer.send"
+     "SQS batch redelivery",
+     "mailer loop"
     ],
     "findings": [
      "ded9bfd83acb",
-     "35f8ce274021"
+     "3f9a85156739",
+     "742873c4c336",
+     "479f51c19859"
     ]
    },
    {
     "id": "ef3",
-    "kind": "mail (from /remind)",
-    "idempotency_key": "none; every POST mails again",
+    "kind": "mail via POST /remind",
+    "idempotency_key": "none",
     "at": "library/handler.py:21",
     "node": "handler",
     "order": "none",
-    "retried_by": [],
+    "retried_by": [
+     "client retry",
+     "mailer loop"
+    ],
     "findings": [
      "96f6bd121173",
-     "35f8ce274021"
+     "95eaa36fceeb",
+     "742873c4c336"
     ]
    },
    {
     "id": "ef4",
-    "kind": "publish loan.reminded or loan.overdue",
-    "idempotency_key": null,
+    "kind": "publish LoanEvent",
+    "idempotency_key": "none (no event id)",
     "at": "library/events.py:20",
     "node": "events",
     "order": "before_commit",
     "retried_by": [],
     "findings": [
-     "0ecf9c8f5fff"
+     "0ecf9c8f5fff",
+     "a1a4419b5"
     ]
    }
   ],
@@ -1241,28 +1300,22 @@
    {
     "id": "s1",
     "what": "loan.reminded_on",
-    "store": "in-process LoanStore (api.store, one per Lambda container)",
+    "store": "in-memory LoanStore (per Lambda process)",
     "isolation": null,
-    "note": "The consumer and front desk have separate stores, so the consumer's write never reaches the front desk.",
-    "invariant": "Only `status.transition` changes a loan's status, and a loan is reminded once.",
+    "note": "The consumer Lambda and the front desk Lambda each have their own empty store (api.py:6), so the consumer cannot see front-desk loans.",
+    "invariant": "only transition() changes a loan's status fields, and each loan is reminded once",
     "shared_across_process": false,
     "writers": [
      {
-      "node": "status",
-      "at": "library/status.py:46",
-      "guard": "move() state-machine check against a clock-derived status",
+      "node": "reminders",
+      "at": "library/status.py:47",
+      "guard": "state machine move() check",
       "breaks": false
      },
      {
       "node": "consumer",
       "at": "library/consumer.py:23",
       "guard": "none",
-      "breaks": true
-     },
-     {
-      "node": "handler",
-      "at": "library/handler.py:21",
-      "guard": "none, via consumer.handle",
       "breaks": true
      }
     ],
@@ -1273,191 +1326,482 @@
      },
      {
       "node": "status",
-      "at": "library/status.py:37"
+      "at": "library/status.py:35"
      }
     ]
    },
    {
     "id": "s2",
     "what": "loan.returned_on",
-    "store": "in-process LoanStore",
+    "store": "in-memory LoanStore",
     "isolation": null,
     "note": null,
-    "invariant": "Only `transition` sets it, and it publishes loan.returned.",
+    "invariant": "only transition() sets returned_on",
     "shared_across_process": false,
     "writers": [
      {
       "node": "status",
-      "at": "library/status.py:48",
+      "at": "library/status.py:49",
       "guard": "move()",
       "breaks": false
      },
      {
       "node": null,
       "at": "library/loans.py:42",
-      "guard": "none, called from api.give_back",
+      "guard": "none (called from api.py:15)",
       "breaks": true
      }
     ],
     "readers": [
      {
-      "node": "reminders",
-      "at": "library/loans.py:24"
+      "node": "status",
+      "at": "library/status.py:31"
      }
     ]
    }
   ],
   "races": [
    {
-    "id": "race1",
-    "shared": "loan.reminded_on within one process",
-    "pattern": "check-then-act",
+    "id": "x1",
+    "shared": "loan.reminded_on across the front desk and consumer Lambdas",
+    "pattern": "check-then-act with a mail before the state write",
     "needs": null,
     "actors": [
-     "POST /remind A",
-     "POST /remind B"
+     "send_reminders run A",
+     "send_reminders run B (rerun or overlap)"
     ],
     "steps": [
      [
       "A",
-      "reads the loan and sends mail",
-      "library/consumer.py:19"
+      "due_soon reads reminded_on is None",
+      "library/reminders.py:13"
      ],
      [
       "B",
-      "reads the loan, reminded_on still unset, and sends mail again",
-      "library/consumer.py:21"
+      "due_soon reads reminded_on is None",
+      "library/reminders.py:13"
      ],
      [
       "A",
-      "sets reminded_on",
-      "library/consumer.py:23"
+      "mails the member",
+      "library/reminders.py:21"
+     ],
+     [
+      "B",
+      "mails the member again",
+      "library/reminders.py:21"
+     ],
+     [
+      "A",
+      "transition sets reminded_on",
+      "library/status.py:47"
      ]
     ],
-    "breaks_at": 1,
+    "breaks_at": 3,
     "findings": [],
-    "oncall": "Nothing; the member gets two mails and nothing is logged above debug.",
-    "possible_today": true,
-    "note": "`/remind` never checks `reminded_on`, so even sequential calls mail twice. A race is only needed for the daily job, `due_soon` against the later `transition`."
+    "oncall": "Nothing: the duplicate mail is logged only at debug level.",
+    "possible_today": false,
+    "note": "Not possible today: nothing calls send_reminders (r_f1). The in-memory store is also per process, so two runs would need one process."
    }
   ],
   "additions": [
    {
-    "what": "LoanEvents SQS queue and its Lambda trigger",
+    "what": "LoanEvents SQS queue and ReminderConsumer Lambda",
     "kind": "queue",
     "at": "template.yaml:11",
-    "solves": "The front desk's mail work leaves the request path and the daily job, and mail failures are retried without blocking (consumer.py:14).",
-    "likelihood": "likely",
-    "cost": {
-     "mental": "two Lambdas, a queue, and duplicate mail paths (direct, /remind, consumer)",
-     "ops": "a DLQ, alarms and a redrive procedure are missing",
-     "money": "low"
-    },
-    "simpler": "Send the mail directly from the daily job, which it already does. This loses retry isolation and the event stream for later consumers.",
-    "result": "questionable",
-    "findings": [
-     "0ecf9c8f5fff",
-     "a90aa7763",
-     "ded9bfd83acb",
-     "741d3e364325"
-    ],
-    "purpose": "Decouples mailing from the status change so a failing mail does not break the daily job.",
-    "next": "Keep the queue only if the job sends no mail itself. Add a real publisher, a shared store, a DLQ with partial batch response, an event id and idempotency.",
-    "works_today": false,
-    "broken_by": "Nothing publishes to SQS (`events.py:20` only appends to a list), and the consumer reads a different in-memory store."
-   },
-   {
-    "what": "POST /remind shortcut that calls consumer.handle in the front-desk process",
-    "kind": "new route",
-    "at": "library/handler.py:18",
-    "solves": "The front desk gets an immediate mail for one loan (handler.py:19).",
+    "solves": "Decouples sending from the daily job so a mail failure does not stop the job and each mail can be retried (template.yaml:34)",
     "likelihood": "possible",
     "cost": {
-     "mental": "a second path to the same mail and an import of the consumer into the front desk",
-     "ops": "a mail failure surfaces as a 500 or a silent 202",
-     "money": "low"
+     "mental": "Two Lambdas and one queue, plus an in-process shortcut that bypasses it",
+     "ops": "Needs a DLQ, a redrive and alarms, none of which exist",
+     "money": "Low"
     },
-    "simpler": "Publish `loan.reminded` through `transition` and let the consumer mail it. This loses the immediacy, which the queue gives within seconds.",
-    "result": "unjustified",
+    "simpler": "Keep sending from the daily job: one function and one mail path. That loses per-mail retry and isolation from SMTP failures.",
+    "result": "questionable",
+    "findings": [
+     "a90aa7763",
+     "0ecf9c8f5fff",
+     "741d3e364325",
+     "6737c617ef43"
+    ],
+    "purpose": "Retry and isolate mail sending from the job that decides who to remind.",
+    "next": "Keep the queue only if the direct mail in `reminders.py` is dropped; add a DLQ, partial batch responses, an SQS publisher and a shared store.",
+    "works_today": false,
+    "broken_by": "Nothing writes to SQS (`events.py:20`) and the consumer reads an in-memory store the front desk does not share."
+   },
+   {
+    "what": "POST /remind shortcut that calls the consumer directly",
+    "kind": "route",
+    "at": "library/handler.py:18",
+    "solves": "The front desk wants a mail at once without waiting for the queue (handler.py:19)",
+    "likelihood": "possible",
+    "cost": {
+     "mental": "A second, unguarded mail path beside the queue",
+     "ops": "None beyond the route",
+     "money": "Mail volume with no cap"
+    },
+    "simpler": "Publish one `loan.reminded` event for that loan and answer 202 once it is queued. That loses the 'at once' wording but keeps one sender.",
+    "result": "questionable",
     "findings": [
      "95eaa36fceeb",
      "96f6bd121173",
-     "35f8ce274021"
+     "a0fdb476f",
+     "742873c4c336"
     ],
-    "purpose": "Mail one loan at once from the front desk.",
-    "next": "Drop the direct call and go through `transition`, with input validation, 404 on an unknown id and a dedupe check.",
-    "works_today": true,
-    "broken_by": ""
+    "purpose": "Send one loan's reminder immediately from the front desk.",
+    "next": "Change it to publish an event through `transition` and validate the id, or drop it.",
+    "works_today": false,
+    "broken_by": "The consumer's `api.store` is empty in the front desk Lambda unless loans were borrowed in the same process."
    },
    {
-    "what": "Mailer retry loop (the sleeps)",
-    "kind": "retry layer",
+    "what": "Mailer in-process retry loop (3 attempts, 1/2/4 s)",
+    "kind": "retry",
     "at": "library/mailer.py:14",
-    "solves": "A transient SMTP error (mailer.py:19), though the only transport is a list append that never raises.",
+    "solves": "Rides out a short SMTP error (mailer.py:19)",
     "likelihood": "possible",
     "cost": {
-     "mental": "a retry layer under SQS redelivery",
-     "ops": "sleeps of up to 7s against a 10s timeout",
-     "money": "low"
+     "mental": "A second retry layer under queue redelivery",
+     "ops": "None",
+     "money": "Up to 7 s of billed Lambda time per failing mail"
     },
-    "simpler": "Let the consumer fail so SQS redelivers it, and drop the sleep.",
+    "simpler": "One layer: raise and let SQS redeliver, which backs off on the visibility timeout.",
     "result": "unjustified",
     "findings": [
-     "35f8ce274021"
+     "3f9a85156739",
+     "742873c4c336"
     ],
-    "purpose": "Retry a transient send error.",
-    "next": "Drop the in-process sleeps, or re-raise after the last attempt.",
+    "purpose": "Retry a failed send inside the function.",
+    "next": "Drop the sleeps (or keep one attempt) and raise on failure.",
     "works_today": false,
-    "broken_by": "No real transport exists, and exhausted retries return without raising."
+    "broken_by": "After the final attempt it swallows the failure and returns success."
    }
   ],
-  "db_calls": [],
-  "caches": [],
-  "clocks": [
+  "downstream": [
    {
-    "kind": "equality on a date window",
-    "at": "library/reminders.py:13",
-    "effect": "A skipped daily run permanently skips that loan's reminder.",
-    "findings": [
-     "eae963438b42"
+    "dep": "Mail server (SMTP via Mailer)",
+    "kind": "external",
+    "node": "mailer",
+    "edge": "e8",
+    "at": "library/consumer.py:21",
+    "mode": "sync",
+    "entry": "the queue consumer",
+    "cases": [
+     {
+      "when": "slow",
+      "at": "library/mailer.py:14",
+      "handled": "no",
+      "how": "no timeout; waits until the 10 s Lambda timeout",
+      "effect": "The batch times out and is redelivered, re-mailing the records that already went out.",
+      "findings": [
+       "742873c4c336",
+       "ded9bfd83acb"
+      ],
+      "path": "p2"
+     },
+     {
+      "when": "overloaded",
+      "at": "library/mailer.py:19",
+      "handled": "partly",
+      "how": "retries 3 times with 1 s, 2 s, 4 s, no jitter",
+      "effect": "Adds load for up to 7 s per mail, then gives up silently.",
+      "findings": [
+       "3f9a85156739",
+       "742873c4c336"
+      ],
+      "path": "p4"
+     },
+     {
+      "when": "down",
+      "at": "library/mailer.py:19",
+      "handled": "no",
+      "how": "3 attempts, then returns as if sent",
+      "effect": "The mails are lost while the loans are marked reminded.",
+      "findings": [
+       "3f9a85156739"
+      ],
+      "path": "p4"
+     },
+     {
+      "when": "bad_answer",
+      "at": "library/mailer.py:16",
+      "handled": "not_checkable",
+      "how": "in-memory append; there is no SMTP response to check",
+      "effect": "The code cannot say what a real SMTP rejection looks like.",
+      "findings": [],
+      "path": null
+     },
+     {
+      "when": "recovers",
+      "at": "template.yaml:37",
+      "handled": "partly",
+      "how": "queue backlog drains with no concurrency cap",
+      "effect": "Records that failed redeliver, but the ones swallowed on exhaustion are never caught up.",
+      "findings": [
+       "6737c617ef43"
+      ],
+      "path": "p8"
+     }
     ]
    },
    {
-    "kind": "date derived from the clock inside the state check, UTC in Lambda",
-    "at": "library/status.py:37",
-    "effect": "status_of is computed from today(), so the overdue move is rejected, which shows as ValueError.",
+    "dep": "Mail server (SMTP via Mailer)",
+    "kind": "external",
+    "node": "mailer",
+    "edge": "e1",
+    "at": "library/handler.py:21",
+    "mode": "sync",
+    "entry": "POST /remind",
+    "cases": [
+     {
+      "when": "slow",
+      "at": "library/mailer.py:20",
+      "handled": "no",
+      "how": "waits up to 7 s of the 10 s request",
+      "effect": "The request hangs near its limit and the caller sees a timeout or 500.",
+      "findings": [
+       "742873c4c336"
+      ],
+      "path": "p1"
+     },
+     {
+      "when": "overloaded",
+      "at": "library/mailer.py:19",
+      "handled": "no",
+      "how": "retries at once for 3 attempts, no throttle on the route",
+      "effect": "Callers can keep adding mail load.",
+      "findings": [
+       "96f6bd121173"
+      ],
+      "path": "p9"
+     },
+     {
+      "when": "down",
+      "at": "library/handler.py:22",
+      "handled": "no",
+      "how": "mailer swallows the failure, the route answers 202",
+      "effect": "The caller is told `reminded: true` and the mail is lost.",
+      "findings": [
+       "3f9a85156739"
+      ],
+      "path": "p1"
+     },
+     {
+      "when": "bad_answer",
+      "at": "library/handler.py:20",
+      "handled": "no",
+      "how": "a missing id or unknown loan raises KeyError",
+      "effect": "The caller gets a 500 with no body.",
+      "findings": [
+       "95eaa36fceeb"
+      ],
+      "path": "p1"
+     },
+     {
+      "when": "recovers",
+      "at": "library/handler.py:22",
+      "handled": "not_checkable",
+      "how": "nothing is queued, so nothing is replayed",
+      "effect": "The front desk has to re-call `/remind` by hand.",
+      "findings": [],
+      "path": null
+     }
+    ]
+   },
+   {
+    "dep": "LoanEvents SQS queue",
+    "kind": "queue",
+    "node": "queue",
+    "edge": "e5",
+    "at": "library/events.py:20",
+    "mode": "async",
+    "entry": "send_reminders / publish_overdue (no caller)",
+    "cases": [
+     {
+      "when": "slow",
+      "at": "library/events.py:20",
+      "handled": "not_checkable",
+      "how": "no SQS call exists",
+      "effect": "The code cannot tell.",
+      "findings": [],
+      "path": null
+     },
+     {
+      "when": "overloaded",
+      "at": "library/events.py:20",
+      "handled": "not_checkable",
+      "how": "no SQS call exists",
+      "effect": "The code cannot tell.",
+      "findings": [],
+      "path": null
+     },
+     {
+      "when": "down",
+      "at": "library/events.py:20",
+      "handled": "no",
+      "how": "nothing reaches SQS, so SQS being down is invisible",
+      "effect": "Events are lost; the state is already changed.",
+      "findings": [
+       "0ecf9c8f5fff"
+      ],
+      "path": "p5"
+     },
+     {
+      "when": "bad_answer",
+      "at": "library/events.py:20",
+      "handled": "no",
+      "how": "no send result is checked",
+      "effect": "A rejected send cannot be seen.",
+      "findings": [
+       "43e895797954"
+      ],
+      "path": "p7"
+     },
+     {
+      "when": "recovers",
+      "at": "library/events.py:20",
+      "handled": "no",
+      "how": "events lost earlier are never re-published",
+      "effect": "No reconciliation catches up loans whose event was lost.",
+      "findings": [
+       "0ecf9c8f5fff"
+      ],
+      "path": "p5"
+     }
+    ]
+   },
+   {
+    "dep": "LoanStore (in-memory)",
+    "kind": "internal",
+    "node": "store",
+    "edge": "e7",
+    "at": "library/consumer.py:19",
+    "mode": "in_process",
+    "entry": "the queue consumer and POST /remind",
+    "cases": [
+     {
+      "when": "slow",
+      "at": "library/consumer.py:19",
+      "handled": "yes",
+      "how": "an in-process dict lookup",
+      "effect": "No wait.",
+      "findings": [],
+      "path": null
+     },
+     {
+      "when": "overloaded",
+      "at": "library/consumer.py:19",
+      "handled": "yes",
+      "how": "in-process, no shared load",
+      "effect": "None.",
+      "findings": [],
+      "path": null
+     },
+     {
+      "when": "down",
+      "at": "library/consumer.py:19",
+      "handled": "no",
+      "how": "a cold Lambda starts with an empty dict",
+      "effect": "Every lookup raises KeyError and the batch fails or the route answers 500.",
+      "findings": [
+       "741d3e364325"
+      ],
+      "path": "p1"
+     },
+     {
+      "when": "bad_answer",
+      "at": "library/consumer.py:19",
+      "handled": "no",
+      "how": "KeyError for an unknown id; no check of the loan's state",
+      "effect": "A poison record repeats its batch; a returned loan still gets mailed.",
+      "findings": [
+       "ded9bfd83acb",
+       "479f51c19859"
+      ],
+      "path": "p2"
+     },
+     {
+      "when": "recovers",
+      "at": "library/consumer.py:19",
+      "handled": "no",
+      "how": "a restart loses all loans",
+      "effect": "State does not come back after a Lambda recycle.",
+      "findings": [
+       "741d3e364325"
+      ],
+      "path": "p1"
+     }
+    ]
+   }
+  ],
+  "db_calls": [
+   {
+    "entry": "send_reminders",
+    "per_request": "no database; one in-memory scan per run and one lookup per record",
+    "calls": [
+     {
+      "op": "scan of all open loans",
+      "target": "LoanStore.open_loans (in memory)",
+      "at": "library/reminders.py:20",
+      "in_loop": false
+     },
+     {
+      "op": "get by id",
+      "target": "LoanStore.get",
+      "at": "library/consumer.py:19",
+      "in_loop": true
+     }
+    ]
+   }
+  ],
+  "caches": [],
+  "clocks": [
+   {
+    "kind": "local date equality",
+    "at": "library/reminders.py:13",
+    "effect": "A missed daily run permanently skips the loan's reminder; the window is exactly one day.",
     "findings": [
-     "a867a575d"
+     "1c012b474363"
+    ]
+   },
+   {
+    "kind": "Lambda UTC date",
+    "at": "library/dates.py:8",
+    "effect": "`today()` is the host's date, which can differ from the library's day at midnight.",
+    "findings": [
+     "1c012b474363"
     ]
    }
   ],
   "blind_spots": [
    {
     "id": "b1",
-    "failure": "The consumer fails or mails nothing, with no alarm on Errors or on queue age.",
-    "at": "template.yaml:28",
-    "signal": "platform_only",
-    "alarm": "none",
-    "findings": []
-   },
-   {
-    "id": "b2",
-    "failure": "Mail lost after the mailer's retries are exhausted, with no error or log.",
-    "at": "library/mailer.py:20",
+    "failure": "The mail is dropped after retries and nothing reports it.",
+    "at": "library/mailer.py:14",
     "signal": "none",
     "alarm": "none",
     "findings": [
-     "35f8ce274021"
+     "3f9a85156739"
+    ]
+   },
+   {
+    "id": "b2",
+    "failure": "The consumer mails, repeats or ignores events with no log of which loan or event.",
+    "at": "library/consumer.py:11",
+    "signal": "platform_only",
+    "alarm": "none",
+    "findings": [
+     "43cb7f5133d7"
     ]
    },
    {
     "id": "b3",
-    "failure": "The daily job never runs, because nothing invokes it.",
-    "at": "library/reminders.py:16",
+    "failure": "Queue backlog, age and redelivery count are unwatched; there is no alarm for any of them.",
+    "at": "template.yaml:11",
     "signal": "none",
     "alarm": "none",
     "findings": [
-     "377e726c6e80"
+     "a90aa7763",
+     "6737c617ef43"
     ]
    }
   ],
@@ -1468,108 +1812,145 @@
     "trigger": "POST /remind with a valid token",
     "steps": [
      "e0",
-     "handler.py:20",
+     "library/handler.py:21",
      "e1",
-     "consumer.py:19",
+     "library/consumer.py:19",
      "e8",
-     "mailer.py:14",
-     "handler.py:22"
+     "library/mailer.py:14"
     ],
-    "end": "202 reminded:true even when the mail failed or the loan is unknown. The mail repeats on every POST, and `reminded_on` is not persisted.",
+    "end": "The consumer looks the loan up in the empty per-Lambda store and raises KeyError, so the route answers 500 and no mail goes out. If the loan is found and SMTP fails, the swallowed retry still returns 202 after up to 7 s.",
     "result": "finding",
     "limited_by": null,
     "failing": [
      "dishonest_response",
-     "duplicate_effect",
+     "no_timeout_public",
      "no_throttle",
-     "no_timeout_public"
+     "reads_foreign_state"
     ],
-    "raises": false,
-    "signal": "none",
-    "seen_as": "The front desk sees 202; the member gets nothing or several mails.",
-    "visible": false,
+    "raises": true,
+    "signal": "platform_only",
+    "seen_as": "500s, or 202 after a lost mail, with no application log",
+    "visible": true,
     "findings": [
-     "35f8ce274021",
-     "96f6bd121173",
      "95eaa36fceeb",
-     "0218d7f89b2c"
+     "741d3e364325",
+     "3f9a85156739",
+     "742873c4c336",
+     "96f6bd121173"
     ],
     "probe": null,
     "note": "",
-    "action": "Make the route enqueue or call the state machine, reject unknown ids with 404, and re-raise exhausted mail errors.",
+    "action": "Return 202 only after the mail is sent or safely queued, and validate the id and loan state.",
     "possible_today": true
    },
    {
     "id": "p2",
-    "kind": "request",
-    "trigger": "POST /remind with an unknown id or malformed body",
-    "steps": [
-     "e0",
-     "handler.py:20",
-     "consumer.py:19"
-    ],
-    "end": "KeyError or JSONDecodeError escapes the handler as an unhandled exception and the client gets a 500.",
-    "result": "finding",
-    "limited_by": null,
-    "failing": [
-     "dishonest_response"
-    ],
-    "raises": true,
-    "signal": "platform_only",
-    "seen_as": "Lambda Errors on FrontDesk and a 500 to the client, with no message.",
-    "visible": true,
-    "findings": [
-     "95eaa36fceeb"
-    ],
-    "probe": null,
-    "note": "",
-    "action": "Validate the body and return 400 or 404.",
-    "possible_today": true
-   },
-   {
-    "id": "p3",
     "kind": "retry",
-    "trigger": "One record in a batch of 10 raises (KeyError for an unknown loan, or a mailer error)",
+    "trigger": "One record in a batch raises, or the batch times out",
     "steps": [
      "e6",
-     "consumer.py:14",
-     "e8"
+     "library/consumer.py:13",
+     "e8",
+     "template.yaml:37"
     ],
-    "end": "The whole batch is redelivered every 30s for up to 4 days. Earlier records are mailed again each time, with no DLQ.",
+    "end": "The whole batch is redelivered after 30 s, already-mailed records are mailed again, and there is no dead-letter queue to stop it.",
     "result": "finding",
     "limited_by": null,
     "failing": [
      "unbounded_retry",
      "no_dlq",
      "poison_message",
-     "duplicate_effect"
+     "duplicate_effect",
+     "over_timeout"
     ],
     "raises": true,
     "signal": "platform_only",
-    "seen_as": "Lambda Errors on the consumer and queue depth that never drains.",
+    "seen_as": "Lambda Errors on the consumer and rising queue depth, no message",
     "visible": true,
     "findings": [
      "ded9bfd83acb",
-     "03f980cbd223",
      "a90aa7763",
-     "767d77392b43"
+     "767d77392b43",
+     "742873c4c336",
+     "6737c617ef43"
     ],
     "probe": null,
-    "note": "Not possible today: nothing publishes to SQS (see p4).",
-    "action": "Add a DLQ with maxReceiveCount, return partial batch failures, and make the consumer idempotent.",
+    "note": "Not possible today: nothing publishes to SQS (p5).",
+    "action": "Add a dead-letter queue with maxReceiveCount and partial batch responses, and make the consumer idempotent.",
+    "possible_today": false
+   },
+   {
+    "id": "p3",
+    "kind": "effect",
+    "trigger": "send_reminders runs",
+    "steps": [
+     "library/reminders.py:21",
+     "library/status.py:47",
+     "e4",
+     "e5",
+     "e6",
+     "library/consumer.py:21"
+    ],
+    "end": "The member is mailed directly and again by the consumer from the published loan.reminded event.",
+    "result": "finding",
+    "limited_by": null,
+    "failing": [
+     "duplicate_effect"
+    ],
+    "raises": false,
+    "signal": "none",
+    "seen_as": "Members report two mails; no log shows it",
+    "visible": false,
+    "findings": [
+     "29c173706fda",
+     "365d2b41e9b3",
+     "af7a655d1"
+    ],
+    "probe": null,
+    "note": "Not possible today: no caller (r_f1) and no SQS publisher (p5).",
+    "action": "Keep one sender: only publish the event and let the consumer mail.",
     "possible_today": false
    },
    {
     "id": "p4",
     "kind": "effect",
-    "trigger": "The daily job calls transition",
+    "trigger": "The mailer exhausts its 3 attempts",
     "steps": [
-     "status.py:51",
+     "library/mailer.py:14",
+     "library/mailer.py:20",
+     "library/consumer.py:23",
+     "library/status.py:47"
+    ],
+    "end": "send returns normally, the loan is marked reminded and the mail is lost for good.",
+    "result": "finding",
+    "limited_by": null,
+    "failing": [
+     "swallowed_retry",
+     "lost_effect",
+     "silent"
+    ],
+    "raises": false,
+    "signal": "none",
+    "seen_as": "Nothing: the batch succeeds and the loan shows as reminded",
+    "visible": false,
+    "findings": [
+     "3f9a85156739"
+    ],
+    "probe": null,
+    "note": "",
+    "action": "Raise after the last attempt so the caller and the queue can retry.",
+    "possible_today": true
+   },
+   {
+    "id": "p5",
+    "kind": "effect",
+    "trigger": "send_reminders or publish_overdue publishes an event",
+    "steps": [
      "e4",
-     "events.py:20",
+     "library/events.py:20",
      "e5"
     ],
-    "end": "The event goes to an in-memory list and is lost when the function ends. The consumer never receives it.",
+    "end": "The event goes into a Python list and is lost when the process ends; the queue never receives it and the consumer never runs.",
     "result": "finding",
     "limited_by": null,
     "failing": [
@@ -1578,160 +1959,129 @@
     ],
     "raises": false,
     "signal": "none",
-    "seen_as": "Nothing; the queue stays empty.",
+    "seen_as": "Nothing: the queue stays empty and the consumer is idle",
     "visible": false,
     "findings": [
      "0ecf9c8f5fff",
-     "07f5e8a3dfe4"
+     "07f5e8a3dfe4",
+     "aaa23d9ba"
     ],
     "probe": null,
-    "note": "The daily job has no trigger (p6), and `publish_overdue` always raises.",
-    "action": "",
-    "possible_today": false
-   },
-   {
-    "id": "p5",
-    "kind": "effect",
-    "trigger": "send_reminders mails, then transition publishes an event the consumer mails again",
-    "steps": [
-     "reminders.py:21",
-     "e3",
-     "reminders.py:23",
-     "e4",
-     "e6",
-     "consumer.py:21"
-    ],
-    "end": "The member is mailed twice, and the consumer then fails on an unknown loan (per-process stores).",
-    "result": "finding",
-    "limited_by": null,
-    "failing": [
-     "duplicate_effect",
-     "reads_foreign_state",
-     "lost_effect"
-    ],
-    "raises": true,
-    "signal": "platform_only",
-    "seen_as": "Two mails for one loan, plus Lambda Errors on the consumer.",
-    "visible": true,
-    "findings": [
-     "29c173706fda",
-     "365d2b41e9b3",
-     "741d3e364325",
-     "43e895797954"
-    ],
-    "probe": null,
-    "note": "Not possible until the SQS publisher (p4) and a scheduler (p6) exist.",
-    "action": "",
-    "possible_today": false
+    "note": "",
+    "action": "Implement the SQS publisher with `LOAN_EVENTS_URL` and fail the call when SQS rejects it.",
+    "possible_today": true
    },
    {
     "id": "p6",
     "kind": "other",
-    "trigger": "Time passes with no scheduler configured",
+    "trigger": "The daily job should run",
     "steps": [
-     "template.yaml:14",
-     "reminders.py:16"
+     "template.yaml:28",
+     "library/reminders.py:16"
     ],
-    "end": "No automatic reminders or overdue events are ever produced.",
+    "end": "No scheduler or route invokes send_reminders or publish_overdue, so they never run in production.",
     "result": "finding",
     "limited_by": null,
     "failing": [
      "silent",
-     "no_alarm"
+     "lost_effect"
     ],
     "raises": false,
     "signal": "none",
-    "seen_as": "Nothing; the feature is absent.",
+    "seen_as": "Nothing: no event or mail appears",
     "visible": false,
     "findings": [
-     "377e726c6e80"
+     "f836bc6838d5",
+     "36f9a6ea72b7"
     ],
     "probe": null,
     "note": "",
-    "action": "Add a Schedule event and a function that calls both jobs.",
+    "action": "Add a schedule that runs the job.",
     "possible_today": true
    },
    {
     "id": "p7",
     "kind": "state",
-    "trigger": "The daily job runs near midnight, or one day is skipped",
+    "trigger": "Publish raises after the state change, or the run stops midway",
     "steps": [
-     "reminders.py:13",
-     "reminders.py:31"
+     "library/reminders.py:21",
+     "library/status.py:47",
+     "library/status.py:50"
     ],
-    "end": "Equality on the due date skips the loan permanently.",
+    "end": "The mail is sent and reminded_on is set but the event is not published, or the reverse; the loan is not retried either way.",
     "result": "finding",
     "limited_by": null,
     "failing": [
-     "clock",
      "lost_effect",
-     "silent"
+     "duplicate_effect"
     ],
-    "raises": false,
-    "signal": "none",
-    "seen_as": "A member complains they were not reminded.",
-    "visible": false,
+    "raises": true,
+    "signal": "platform_only",
+    "seen_as": "An error on the daily job; the loan is already marked",
+    "visible": true,
     "findings": [
-     "eae963438b42"
+     "43e895797954"
     ],
     "probe": null,
-    "note": "There is no scheduler yet (p6).",
-    "action": "",
+    "note": "Not possible today: nothing calls send_reminders and publish cannot fail (list append).",
+    "action": "Publish before or with the state write and make the consumer own the mail.",
     "possible_today": false
    },
    {
     "id": "p8",
-    "kind": "other",
-    "trigger": "Any /remind or consumer event on a warm container",
+    "kind": "load",
+    "trigger": "Backlog after a consumer or SMTP outage",
     "steps": [
-     "consumer.py:8",
-     "mailer.py:16"
+     "e6",
+     "template.yaml:37",
+     "e8"
     ],
-    "end": "Mail only appends to an in-memory outbox; the list grows and nothing is delivered.",
-    "result": "finding",
+    "end": "The backlog drains with unlimited consumer concurrency into the mail server.",
+    "result": "not_assessed",
     "limited_by": null,
     "failing": [
-     "lost_effect",
-     "unbounded_queue",
-     "silent"
+     "backpressure",
+     "no_throttle"
     ],
     "raises": false,
     "signal": "none",
-    "seen_as": "Nothing; memory grows slowly.",
+    "seen_as": "SMTP rejections or throttling; no queue alarm",
     "visible": false,
     "findings": [
-     "ddc0c1366f58"
+     "6737c617ef43"
     ],
     "probe": null,
-    "note": "",
+    "note": "Not possible today: nothing publishes (p5). The mail server's limits cannot be read from the code.",
     "action": "",
-    "possible_today": true
+    "possible_today": false
    },
    {
     "id": "p9",
-    "kind": "other",
-    "trigger": "The consumer handles an event or /remind runs, and on-call investigates",
+    "kind": "request",
+    "trigger": "An empty FRONT_DESK_TOKEN lets `Bearer ` through",
     "steps": [
-     "consumer.py:18",
-     "mailer.py:17"
+     "library/handler.py:9",
+     "library/handler.py:16",
+     "library/handler.py:21"
     ],
-    "end": "Only a debug log exists, and it holds the member's email.",
+    "end": "Anyone on the internet can trigger unlimited mails through `/remind`; there is no throttle on the HttpApi.",
     "result": "finding",
     "limited_by": null,
     "failing": [
-     "silent",
-     "no_trace"
+     "no_throttle",
+     "no_timeout_public"
     ],
     "raises": false,
     "signal": "none",
-    "seen_as": "No log line says which loan was mailed.",
+    "seen_as": "Nothing in the application; the mail bill and spam complaints",
     "visible": false,
     "findings": [
-     "277a40234468"
+     "0218d7f89b2c",
+     "ae798bb31"
     ],
     "probe": null,
     "note": "",
-    "action": "",
+    "action": "Fail startup when the token is empty and add a throttle to the stage.",
     "possible_today": true
    }
   ],
@@ -1740,112 +2090,131 @@
     "check": "cors",
     "result": "clean",
     "at": "template.yaml:24",
-    "why": "No browser caller is declared and no CORS config is added.",
+    "why": "No browser caller is defined and there are no CORS settings to check.",
     "findings": []
    },
    {
     "check": "cache_control",
-    "result": "clean",
+    "result": "not_checkable",
     "at": "library/handler.py:26",
-    "why": "Authenticated JSON; no caching layer.",
+    "why": "`GET /late` returns no Cache-Control header, but the front desk caller's behaviour is not in the repo.",
     "findings": []
    },
    {
     "check": "rollback",
     "result": "clean",
     "at": "template.yaml:11",
-    "why": "There are no migrations. A rollback drops the queue, and any queued messages would be lost.",
+    "why": "The PR adds a queue and a function and drops nothing, so a rollback just removes them; there is no migration or flag.",
     "findings": []
    },
    {
     "check": "limits",
     "result": "finding",
-    "at": "template.yaml:35",
-    "why": "No MaximumConcurrency on the consumer, no throttle on the API, no batch failure reporting.",
+    "at": "template.yaml:37",
+    "why": "There is no concurrency cap, no throttle on the HttpApi and no maxReceiveCount.",
     "findings": [
-     "35f8ce274021"
+     "6737c617ef43",
+     "a90aa7763"
     ]
    },
    {
     "check": "cardinality",
     "result": "clean",
     "at": "library/events.py:7",
-    "why": "No metrics are emitted.",
+    "why": "No metrics or labels are emitted.",
     "findings": []
    },
    {
     "check": "clocks",
     "result": "finding",
     "at": "library/reminders.py:13",
-    "why": "Date equality windows.",
+    "why": "Exact-day equality and a UTC date; see r_f5.",
     "findings": [
-     "eae963438b42"
+     "1c012b474363"
     ]
    },
    {
     "check": "health",
-    "result": "not_checkable",
+    "result": "clean",
     "at": "template.yaml:14",
-    "why": "Lambda has no health route, and none is needed.",
+    "why": "Lambda has no health endpoint to check, and the PR adds none.",
     "findings": []
    },
    {
     "check": "shutdown",
-    "result": "not_checkable",
+    "result": "clean",
     "at": "library/consumer.py:11",
-    "why": "Lambda has no graceful shutdown. An in-flight record is redelivered, and its mail repeats because there is no idempotency.",
+    "why": "Lambda is stateless apart from the in-memory dict; there is no long-lived work to drain.",
     "findings": []
-   },
-   {
-    "check": "alarms",
-    "result": "finding",
-    "at": "template.yaml:28",
-    "why": "No alarm on consumer errors, queue age or a DLQ.",
-    "findings": [
-     "a90aa7763",
-     "277a40234468"
-    ]
    },
    {
     "check": "scheduler",
     "result": "finding",
-    "at": "template.yaml:14",
-    "why": "No Schedule event exists.",
+    "at": "template.yaml:28",
+    "why": "Nothing calls `send_reminders` or `publish_overdue`; see r_f1.",
     "findings": [
-     "377e726c6e80"
+     "f836bc6838d5"
+    ]
+   },
+   {
+    "check": "idempotency and dedupe",
+    "result": "finding",
+    "at": "library/events.py:7",
+    "why": "The event has no id and the consumer has no dedupe.",
+    "findings": [
+     "a1a4419b5",
+     "ded9bfd83acb"
+    ]
+   },
+   {
+    "check": "visibility versus function timeout",
+    "result": "finding",
+    "at": "template.yaml:8",
+    "why": "The queue's 30 s default visibility is 3 times the 10 s function timeout, and the rule asks for 6 times.",
+    "findings": [
+     "767d77392b43"
     ]
    }
   ],
   "probes": [
    {
     "id": "r1",
-    "claim": "Calling `Mailer.send` with an outbox whose `append` always raises `OSError` and `time.sleep` stubbed returns None after 3 attempts and 7s of sleeps, so the exhausted retry is swallowed.",
-    "of": "p1",
+    "claim": "With a Mailer whose outbox raises OSError on every append and `time.sleep` patched, `send` returns None after 3 attempts, 7 s of sleep in total, and `consumer.handle` still sets `reminded_on`.",
+    "of": "p4",
     "kind": "retry",
     "strength": "runs_pr_code",
     "status": "proposed"
    },
    {
     "id": "r2",
-    "claim": "A batch of 10 where record 10 has an unknown loan_id mails records 1 to 9 on each of 5 redeliveries, which is 45 mails.",
-    "of": "p3",
-    "kind": "redelivery",
+    "claim": "A SQS batch of 10 `loan.reminded` records against a failing mailer costs 70 s of sleep, against a 10 s function timeout.",
+    "of": "p2",
+    "kind": "budget",
     "strength": "runs_pr_code",
     "status": "proposed"
    },
    {
     "id": "r3",
-    "claim": "Calling `send_reminders` with `on` one day after the run was missed returns 0 for a loan due in 1 day, so it is never reminded.",
-    "of": "p7",
+    "claim": "POST /remind with a loan id that is missing from `api.store` raises KeyError, and the handler returns no 202.",
+    "of": "p1",
+    "kind": "downstream",
+    "strength": "runs_pr_code",
+    "status": "proposed"
+   },
+   {
+    "id": "r4",
+    "claim": "Running `send_reminders` on a day that is not exactly 2 days before due returns 0, so a skipped day leaves the loan unreminded.",
+    "of": "p6",
     "kind": "clock",
     "strength": "runs_pr_code",
     "status": "proposed"
    }
   ],
   "not_checked": [
-   "The git diff tool could not run, so I did not check which lines the PR changed. The introduced_here flags rely on the commit messages and the file content.",
-   "How SQS, HttpApi and Lambda defaults behave (visibility 30s, retention 4 days, no API throttle) was not verified, because the deployment is not in the repo.",
-   "The README and the test files other than test_consumer.py."
+   "Real SMTP behaviour, error types and rate limits: the Mailer only appends to a list, so no OSError path was observed.",
+   "Deployed settings of FRONT_DESK_TOKEN, the HttpApi stage throttle and the account's Lambda concurrency.",
+   "`requirements.txt` and whether boto3 is available to the Lambdas.",
+   "The raw diff against `origin/feat/due-reminders`: the git helper failed in this session. I read the whole HEAD tree instead, so I cannot say which lines changed in this PR; `introduced_here` is judged from the commit history and the code."
   ]
  }
 }
