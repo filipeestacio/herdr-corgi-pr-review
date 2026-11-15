@@ -135,6 +135,23 @@ async function tour(v, name) {
   }
   // The pages, with their folds and rows clicked.
   for (const p of ["overview", "blast", "arch", "res"]) act(v, `page:${p}`, at(`page ${p}`));
+  // The pages' signs: every nav row of Analysis carries one (the map's is its word "Changed" while no finding stands on
+  // it), each with a glyph, a form, and a tip that names its page in words; a page with unresolved findings is colored,
+  // one without is quiet. The bar's excerpt and the registry entry (the minimized chip, the panel's row) say the same.
+  {
+    v.command("page:blast", cx); S.ids = new Set(); draw(v, at("the pages' signs")); const ids = S.ids; S.ids = null;
+    for (const id of ["rv-nav-ov", "rv-nav-sec", "rv-nav-arch", "rv-nav-res"]) assert.ok(ids.has(id), at(`the sign ${id}`));
+    const b = v.pageBadges(), open = v.openFindings(), name = { overview: "Overview", arch: "Architecture impact", blast: "Security", res: "Resilience" };
+    for (const k of Object.keys(name)) {
+      assert.ok(b[k].glyph && ["filled", "plain", "open", "quiet"].includes(b[k].form) && b[k].tip.startsWith(`${name[k]}: `), at(`the ${k} sign: ${JSON.stringify(b[k])}`));
+      assert.equal(b[k].state === "open", b[k].form !== "quiet", at(`${k}: colored exactly while something is unresolved`));
+    }
+    assert.equal(b.overview.state === "open", open.length > 0, at("the Overview's sign follows the unresolved findings"));
+    assert.equal(b.blast.n, v.counts().security, at("the Security sign keeps the number of the verdict"));
+    assert.equal(b.res.n, (v.resNow()?.paths ?? []).filter((p) => p.blocker).length, at("the Resilience sign keeps the number of blockers"));
+    if (open.length) assert.ok(/\d (critical|high|medium|low)/.test(b.overview.tip), at(`the tip counts by severity: ${b.overview.tip}`));
+    for (const r of v.mergeRows()) assert.ok(Array.isArray(v.rowFindings(r)), at("a row's findings"));
+  }
   // Resilience: every path opened (its picture and probe), all paths, the clean checks, a probe's script, and none open.
   v.command("page:res", cx);
   for (const p of v.resNow()?.paths ?? []) act(v, `res-path:${p.id}`, at(`Resilience, path ${p.id}`));

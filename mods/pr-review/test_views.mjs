@@ -176,21 +176,22 @@ assert.deepEqual(listRows(mine, [], []).list, mine);
 
 // The risk signal of a row comes from cached files only: the highest severity among the open findings (the analysis'
 // own and the reviewers'), and whether one of them is about security. Nothing cached: nothing shown.
+const core = ({ top, open, security }) => ({ top, open, security }); // the mark's form and words are tested with the sign below
 assert.equal(riskSignal({}), null);
 assert.equal(riskSignal({ analysis: null, findings: undefined }), null);
 const layers = { steps: [{ findings: [{ id: "a1", severity: "medium", category: "bug" }, { id: "a2", severity: "high", category: "security" }] }, { findings: [{ id: "a3", severity: "low", category: "structure" }] }, {}] };
 const reviewers = [{ id: "r1", reviewer: "security", severity: "critical" }, { id: "r2", reviewer: "claude", severity: "medium" }];
-assert.deepEqual(riskSignal({ analysis: layers, findings: reviewers }), { top: "critical", open: 5, security: true });
+assert.deepEqual(core(riskSignal({ analysis: layers, findings: reviewers })), { top: "critical", open: 5, security: true });
 // A fixed or dismissed finding no longer counts; one with a fix sent (progress) still does.
-assert.deepEqual(riskSignal({ analysis: layers, findings: reviewers, status: { r1: { s: "fixed" }, a2: { s: "progress" } } }), { top: "high", open: 4, security: true });
-assert.deepEqual(riskSignal({ analysis: layers, findings: reviewers, status: { r1: { s: "dismissed" }, a2: { s: "fixed" } } }), { top: "medium", open: 3, security: false });
-assert.deepEqual(riskSignal({ analysis: { steps: [] }, findings: [] }), { top: null, open: 0, security: false });
+assert.deepEqual(core(riskSignal({ analysis: layers, findings: reviewers, status: { r1: { s: "fixed" }, a2: { s: "progress" } } })), { top: "high", open: 4, security: true });
+assert.deepEqual(core(riskSignal({ analysis: layers, findings: reviewers, status: { r1: { s: "dismissed" }, a2: { s: "fixed" } } })), { top: "medium", open: 3, security: false });
+assert.deepEqual(core(riskSignal({ analysis: { steps: [] }, findings: [] })), { top: null, open: 0, security: false });
 // ⛨ as in the review (pr.js isSecurity): by the finding's effect when it has one, not by who found it.
 assert.equal(riskSignal({ findings: [{ id: "s", reviewer: "security", severity: "high", impact: "edge_case", category: "bug" }] }).security, false, "the security reviewer's bug is no security finding");
 assert.equal(riskSignal({ findings: [{ id: "c", reviewer: "claude", severity: "high", impact: "unauthorized_access", category: "bug" }] }).security, true, "access without permission is, whoever found it");
 assert.equal(riskSignal({ findings: [{ id: "d", reviewer: "claude", severity: "high", impact: "data_loss", category: "data" }] }).security, false, "data loss only with the category security");
 // An analysis cached before layers had findings still loads.
-assert.deepEqual(riskSignal({ analysis: {} }), { top: null, open: 0, security: false });
+assert.deepEqual(core(riskSignal({ analysis: {} })), { top: null, open: 0, security: false });
 
 // The progress of a review in progress says "layers", like the review's tab, and leaves out what is zero.
 assert.equal(progressText({ steps: 6, stepsChecked: 0, files: 9, filesViewed: 2, comments: 1, replies: 0, fixedThreads: 0, findingsOpen: 11 }), "0/6 layers · 2/9 files · 1 comment · 11 unresolved findings");
@@ -216,7 +217,7 @@ assert.equal(pendingText([{ file: "a.py" }, { file: "a.py" }, { file: "b.py" }])
   // A row's findings in words: the highest severity with its count, all of them for the tooltip, security counted.
   assert.equal(worst([]), null);
   assert.deepEqual(worst([{ severity: "medium" }, { severity: "high", security: true }, { severity: "medium" }, { severity: "low" }]),
-    { severity: "high", count: 1, total: 4, label: "1 high", words: "1 high, 2 medium, 1 low", security: 1 });
+    { severity: "high", count: 1, total: 4, label: "1 high", words: "1 high, 2 medium, 1 low", security: 1, sign: { top: "high", color: "ansi1", form: "plain" }, signWords: "1 high" });
   assert.equal(worst([{ severity: "low" }, { severity: "low" }]).label, "2 low");
   // Blockers by severity, security first among equals, the rest in their order.
   const bs = [{ severity: "medium", title: "rule" }, { severity: "high", title: "bug" }, { severity: "low", title: "overlap" }, { severity: "high", title: "auth", finding: "s1" }, { severity: "high", title: "bug 2" }];
@@ -1152,4 +1153,56 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.equal(spaceEmpty([co("/b", "o/b", "main")], []), "Every checkout in this space is on its default branch, so there is no branch to look up a PR for.");
   assert.equal(spaceEmpty([co("/a", "o/a", "feat/x")], repos), "No open PR for feat/x, fix/1. Choose Current branch below to see the diff.");
   console.log("ok this space");
+}
+
+// ---- one sign for severity and certainty (signOf, signWords, pageBadge, the risk mark)
+{
+  const { signOf, signWords, sureOf, pageBadge, riskOfCounts, rowMarks, withProbes, signEl, markLabel } = await import("./views.js");
+  const high = { id: "h", severity: "high", certainty: "derived", security: true }, reach = { id: "m", severity: "medium", certainty: "derived", path_certainty: "assumed", security: true };
+  const guess = { id: "g", severity: "medium", certainty: "assumed" }, old = { id: "o", severity: "low" }, ran = { id: "c", severity: "high", certainty: "confirmed" };
+  // How sure one finding is: a finding from before the field is "derived" (no claim), an assumed reach is "assumed".
+  assert.deepEqual([ran, high, reach, guess, old].map(sureOf), ["confirmed", "derived", "assumed", "assumed", "derived"]);
+  // The color is the highest severity; the form is the surest finding of that severity, whatever the lower ones are.
+  assert.deepEqual(signOf([high, reach, guess]), { top: "high", color: "ansi1", form: "plain" });
+  assert.deepEqual(signOf([ran, high]), { top: "high", color: "ansi1", form: "filled" });
+  assert.deepEqual(signOf([reach, guess, old]), { top: "medium", color: "ansi3", form: "open" }, "medium is only assumed, the derived low one does not count");
+  assert.deepEqual(signOf([old]), { top: "low", color: "ansi4", form: "plain" });
+  assert.deepEqual(signOf([{ severity: "critical", certainty: "assumed" }]), { top: "critical", color: "ansi1", form: "open" });
+  assert.deepEqual(signOf([]), { top: null, color: "muted", form: "quiet" });
+  // A probe that reproduced a path confirms its findings (withProbes): the sign is filled and the words say how.
+  const proved = withProbes([high, reach], [{ id: "p1", findings: ["h"], probe: "r1" }], [{ id: "r1", of: "p1", status: "done", result: "reproduced", strength: "runs_pr_code" }]);
+  assert.equal(signOf(proved).form, "filled");
+  assert.equal(signWords(proved), "1 high, confirmed by a probe · 1 medium, assumed reachable");
+  assert.equal(signWords([{ ...ran, probed: { id: "r2", strength: "models_env" } }, ran, guess, old, old]), "1 high, confirmed by a probe, platform modeled · 1 high, confirmed by a run · 1 medium, assumed · 2 low");
+  // A page: color, form, the number, and the tip in words.
+  assert.deepEqual(pageBadge("security", proved, { state: "done", n: 1, unit: "unresolved cause" }),
+    { glyph: "⛨", color: "ansi1", form: "filled", n: 1, state: "open", tip: "Security: 1 unresolved cause. 1 high, confirmed by a probe · 1 medium, assumed reachable." });
+  const res = pageBadge("resilience", [guess], { state: "done", n: 0, unit: "paths block the merge", more: "1 path blocks once wired.", unsure: "2 paths not assessed" });
+  assert.deepEqual([res.glyph, res.color, res.form, res.n, res.state], ["↯", "ansi3", "open", 0, "open"]);
+  assert.equal(res.tip, "Resilience: 0 paths block the merge. 1 medium, assumed. 2 paths not assessed. 1 path blocks once wired.");
+  assert.match(pageBadge("security", [high], { state: null }).tip, /^Security: 1 high, derived\. The Security run did not run\.$/);
+  assert.deepEqual(pageBadge("overview", [high, old]), { glyph: "!", color: "ansi1", form: "plain", n: 2, state: "open", tip: "Overview: 1 high, derived · 1 low." });
+  // Nothing unresolved: a run that did not run has its own quiet sign, a running one too; checked and clean is a
+  // small ✓; clean, but with something left unchecked, is the page's sign in the quiet color. None of them is colored.
+  assert.deepEqual(pageBadge("resilience", [], { state: null }), { glyph: "○", color: "dim", form: "quiet", n: 0, state: "none", tip: "Resilience: not run." });
+  assert.deepEqual([pageBadge("security", [], { state: "failed" }).state, pageBadge("security", [], { state: "failed" }).tip], ["none", "Security: the run failed, so nothing is known."]);
+  assert.deepEqual([pageBadge("security", [], { state: "running" }).glyph, pageBadge("security", [], { state: "running" }).state], ["⋯", "running"]);
+  assert.deepEqual(pageBadge("security", [], { state: "done" }), { glyph: "✓", color: "dim", form: "quiet", n: 0, state: "clean", tip: "Security: checked, nothing unresolved." });
+  assert.deepEqual(pageBadge("resilience", [], { state: "done", unsure: "1 path not assessed" }), { glyph: "↯", color: "dim", form: "quiet", n: 0, state: "quiet", tip: "Resilience: no unresolved finding; 1 path not assessed." });
+  // The risk mark of the panel's rows and of the minimized chip speaks the same way; an entry from before has no form.
+  const risk = riskSignal({ findings: [{ ...ran, impact: "unauthorized_access" }, guess] });
+  assert.deepEqual([risk.form, risk.words], ["filled", "1 high, confirmed by a run · 1 medium, assumed"]);
+  assert.deepEqual(rowMarks(risk, null), [{ text: "⛨ high", security: true, kind: "risk", glyph: "⛨", word: "high", color: "ansi1", form: "filled", words: "1 high, confirmed by a run · 1 medium, assumed" }]);
+  assert.deepEqual(rowMarks(riskOfCounts({ unresolved: 1, medium: 1, security: 1 }, [reach]), null).map((m) => [m.color, m.form, m.words]), [["ansi3", "open", "1 medium, assumed reachable"]]);
+  assert.deepEqual(rowMarks({ top: "high", security: true }, null).map((m) => [m.color, m.form]), [["ansi1", "plain"]]);
+  // The ⛨ speaks of the security findings: a probe that confirmed another finding does not fill it (its words still say so).
+  assert.deepEqual([riskSignal({ findings: [ran, { ...high, impact: "unauthorized_access" }] }).form, riskOfCounts({ unresolved: 2, high: 2, security: 1 }, [ran, high]).form, riskOfCounts({ unresolved: 1, high: 1 }, [ran]).form], ["plain", "plain", "filled"]);
+  assert.deepEqual(rowMarks({ top: "high", security: false, form: "filled" }, null).map((m) => [m.glyph, m.color]), [["", "muted"]], "without ⛨ the word stays grey");
+  // The element: filled puts the color under the glyph, open draws a dashed frame and adds "?", else the glyph alone.
+  const drawn = (sign) => { const calls = []; const el = new Proxy({}, { get: (_, k) => (...a) => { calls.push([k, ...a]); return el; } }); signEl(() => el, { ansi1: "#ff0000", background: "#000000", muted: "#888888" }, sign); return calls; };
+  assert.deepEqual(drawn({ glyph: "⛨", color: "ansi1", form: "filled" }).filter(([k]) => ["bg", "text_color", "child", "border_dashed"].includes(k)), [["bg", "#ff0000"], ["text_color", "#000000"], ["child", "⛨"]]);
+  assert.deepEqual(drawn({ glyph: "⛨", color: "ansi1", form: "open" }).filter(([k]) => ["bg", "child", "border_dashed"].includes(k)), [["border_dashed"], ["child", "⛨?"]]);
+  assert.deepEqual(drawn({ glyph: "↯", color: "ansi1", form: "plain" }).filter(([k]) => ["bg", "text_color", "child", "border_dashed"].includes(k)), [["text_color", "#ff0000"], ["child", "↯"]]);
+  assert.equal(markLabel(() => null, {}, { glyph: "", text: "medium" }), "medium");
+  console.log("ok signs");
 }

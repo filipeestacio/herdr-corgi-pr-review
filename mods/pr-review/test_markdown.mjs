@@ -1,7 +1,7 @@
 // Run: node test_markdown.mjs
 import assert from "node:assert/strict";
 import { diffRows } from "./pr.js";
-import { rowsByPath, codeContext, codeStats, mdParts, mdJoin, CODE_MAX } from "./markdown.js";
+import { rowsByPath, codeContext, codeStats, mdParts, mdJoin, CODE_MAX, fenceLang } from "./markdown.js";
 import { prLine, mermaidFlow, visualMd, findingMd, findingsMd, overviewMd, layerMd, architectureMd, securityMd, cardOf, wayIn, verifyContextMd } from "./markdown.js";
 
 const pr = { repo: "o/r", number: 2, title: "feat: x", url: "https://example.test/pull/2" }, head = "abcdef1234", base = { pr, head };
@@ -349,6 +349,14 @@ const all = [f("m1", "medium", { breaks: { node: "c" } }), sec, f("l1", "low"), 
     { when: "slow", handled: "no", how: "waits up to 7 s", effect: "The request hangs until its timeout.", path: "p1" }, { when: "down", handled: "yes", how: "fails fast", at: "library/mailer.py:19" },
     { when: "recovers", handled: "not_checkable" }] }] }, arch });
   assert.match(dep, /## When a dependency fails \(1\)\n\n- Mailer \(external, sync, library\/mailer\.py:14\)\n  - slow: waits up to 7 s ✗, path 1\. The request hangs until its timeout\.\n  - down: fails fast ✓ \(library\/mailer\.py:19\)\n  - The code cannot tell: recovers\.\n/);
+}
+
+// ---- a fence's language: a script without an ending is fenced as bash by its first line
+{
+  for (const [file, first, lang] of [["scripts/a.sh", "", "bash"], ["bin/release", "#!/usr/bin/env bash", "bash"], [".envrc", "", "bash"], ["hooks/pre-commit", "", "bash"], ["bin/tool", "#!/usr/bin/env python3", "python"],
+    ["Makefile", "", "makefile"], ["LICENSE", "", ""], ["a.py", "", "python"], ["x.toml", "", "toml"], ["bin/release", undefined, ""]]) assert.equal(fenceLang(file, first), lang, file);
+  const cx = codeContext(rowsByPath(new Map([["bin/release", diffRows(["@@ -1,3 +1,3 @@", " #!/bin/sh", " set -eu", " echo hi"])]])));
+  assert.equal(cx.block("bin/release", 2)[2], "```bash");
 }
 
 // ---- the code context: the lines a place names, from the rows the review holds

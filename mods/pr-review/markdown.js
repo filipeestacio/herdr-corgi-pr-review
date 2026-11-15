@@ -5,6 +5,7 @@
 // GitHub draws it. A security finding is in here in full: this is for the person's own use, nothing is posted.
 import { taskList, taskHead, verdictParts, findingCounts, componentLine, CERTAINTY, SEVERITY_SCALE, levels, isGuard } from "./pr.js";
 import { transitionText } from "./arch.js";
+import { langOf } from "./syntax.js";
 import { resPathView, asideOf, threatCited, skipText, guardLine } from "./views.js";
 import { resWord, resToolText, resVerdict, resWatch } from "./views.js"; // wave R2: the page's words, verdict and watch list
 // The pages' own sources, so a page and its Markdown say the same: the crossings and their picture, the scope table,
@@ -32,6 +33,9 @@ const doc = (...parts) => `${parts.flat(Infinity).filter((x) => x !== null && x 
 
 const LANG = { py: "python", js: "javascript", mjs: "javascript", cjs: "javascript", ts: "typescript", tsx: "tsx", jsx: "jsx", json: "json", yaml: "yaml", yml: "yaml", sh: "bash", rs: "rust", go: "go",
   java: "java", kt: "kotlin", rb: "ruby", tf: "hcl", toml: "toml", sql: "sql", html: "html", css: "css", md: "markdown" };
+// A fence's language: by the ending, else what the highlighter makes of the name or of the file's first line ("#!/bin/sh"
+// in bin/release, .envrc, a Git hook), so a script without an ending is fenced as bash.
+export const fenceLang = (file, first = "") => { const name = String(file).split("/").pop(), l = langOf(String(file), first); return LANG[name.split(".").pop()] ?? (/^(?:gnu)?makefile$|\.mk$/i.test(name) ? "makefile" : { shell: "bash", js: "javascript" }[l] ?? l ?? ""); };
 export const CODE_MAX = 12; // lines of one block
 const CODE_PAD = 2; // lines around the place
 // A file's rows by its path, also by the end of it ("mailer.py:14" in a path step): Map(path -> rows) -> rowsOf(file).
@@ -65,7 +69,7 @@ export function codeContext(rowsOf) {
     const gap = (k) => k > 0 && n(part[k]) !== null && n(part[k - 1]) !== null && n(part[k]) - n(part[k - 1]) > 1;
     const diff = part.some((r) => r.kind !== " "), lines = part.flatMap((r, k) => [...(gap(k) ? [diff ? `@@ line ${n(r)} @@` : "…"] : []), (diff ? `${r.kind}${r.text}` : r.text).replace(/\s+$/, "")]), tick = lines.some((l) => l.includes("```")) ? "````" : "```";
     shown.set(file, [...(shown.get(file) ?? []), [a, b]]); stats.blocks++; stats.lines += lines.length;
-    return [`Code \`${file}:${a}-${b}\`:`, "", `${tick}${diff ? "diff" : LANG[String(file).split(".").pop()] ?? ""}`, ...lines, tick, all.length > part.length && `(${all.length - part.length} more ${all.length - part.length === 1 ? "line" : "lines"} of this place not shown.)`, ""];
+    return [`Code \`${file}:${a}-${b}\`:`, "", `${tick}${diff ? "diff" : fenceLang(file, rows.find((r) => r.n === 1)?.text)}`, ...lines, tick, all.length > part.length && `(${all.length - part.length} more ${all.length - part.length === 1 ? "line" : "lines"} of this place not shown.)`, ""];
   };
   const at = (place, pad) => { const m = /^(.+?):(\d+)(?:-(\d+))?$/.exec(String(place ?? "").trim()); return m ? block(m[1], Number(m[2]), Number(m[3] ?? m[2]), pad) : []; };
   return { block, at, stats, on: Boolean(rowsOf) };
