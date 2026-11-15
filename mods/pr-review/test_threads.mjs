@@ -85,6 +85,11 @@ assert.deepEqual(TH.selectedOf(fx, "pr"), ["c1", "p9"]);
 assert.equal(TH.threadsOf(fx, "pr").length, 1, "the selection keeps the threads");
 assert.deepEqual(TH.selectedOf(TH.toggleSelected(fx, "pr", "c1", 4), "pr"), ["p9"]);
 assert.deepEqual(TH.selectedOf(JSON.parse(JSON.stringify(fx)), "pr"), ["c1", "p9"], "it persists with the threads");
+// The findings ticked in the Findings tab are a list of their own beside it, kept the same way.
+{ let d = TH.toggleSelected(TH.toggleSelected(fx, "pr", "f1", 5, TH.FINDINGS), "pr", "f2", 6, TH.FINDINGS);
+  assert.deepEqual([TH.selectedOf(d, "pr", TH.FINDINGS), TH.selectedOf(d, "pr")], [["f1", "f2"], ["c1", "p9"]]);
+  d = TH.toggleSelected(d, "pr", "f1", 7, TH.FINDINGS); assert.deepEqual(TH.selectedOf(JSON.parse(JSON.stringify(d)), "pr", TH.FINDINGS), ["f2"]);
+  d = TH.clearSelected(d, "pr", 8, TH.FINDINGS); assert.deepEqual([TH.selectedOf(d, "pr", TH.FINDINGS), TH.selectedOf(d, "pr")], [[], ["c1", "p9"]], "emptied alone"); }
 fx = TH.addThreads(fx, "pr", [{ id: "c2", file: "b.py", end: 1, text: "u" }], { route: "agent" }, 5);
 assert.deepEqual(TH.selectedOf(fx, "pr"), ["c1", "p9"], "adding threads keeps the selection");
 assert.equal(TH.fixBranch(7, ["mwb8736v"]), "fix/7-mwb8736v");

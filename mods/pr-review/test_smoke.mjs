@@ -1049,6 +1049,35 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     assert.equal(/Re-run it for the current view\. (\d+ of the|None of the)/.test(v.mdText(false)), old, `rules ${rules}: the Markdown's sentence counts`);
   }
 }
+// The Findings tab's boxes: a row under "No fix sent" is ticked in the list, as a comment is; the button then hands
+// exactly the ticked findings to the fix preview. A security finding about access or data keeps its box, switched off.
+{
+  const { secByEffect } = await import("./pr.js"), TH = await import("./threads.js");
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json") });
+  const open_ = v.findings().filter((f) => ["open", "recheck"].includes(v.fstatus(f))), plain = open_.filter((f) => !secByEffect(f)), alone = open_.filter((f) => secByEffect(f));
+  assert.ok(plain.length >= 2 && alone.length >= 1, `the fixture has findings to tick and one that goes alone (${plain.length}, ${alone.length})`);
+  const tab = (what) => { S.ids = new Set(); S.texts = new Set(); act(v, "findings", `Findings: ${what}`); const got = { ids: [...S.ids], texts: [...S.texts] }; S.ids = S.texts = null; return got; };
+  let got = tab("nothing ticked");
+  assert.ok(open_.every((f) => got.ids.includes(`rv-fbox-${f.id}`)) && got.ids.filter((id) => id.startsWith("rv-fbox-")).length === open_.length, "every row under No fix sent has a box, no other row has one");
+  assert.ok(got.texts.includes("Fix several…") && !got.texts.some((x) => x.startsWith("Fix selected")), "nothing ticked: Fix several…, as before");
+  S.clicks.get(`rv-fbox-${plain[1].id}`)(null, cx); v.command(`pick-finding:${plain[0].id}`, cx); // a click on a box, and its command
+  S.clicks.get(`rv-fbox-${alone[0].id}`)(null, cx); v.command(`pick-finding:${alone[0].id}`, cx); // switched off: nothing
+  assert.deepEqual(v.pickedFindings().sort(), [plain[0].id, plain[1].id].sort(), "two ticked; the security finding about access or data cannot be");
+  assert.equal(v.ffocus ?? null, null, "a click on a box does not open the finding");
+  got = tab("two ticked");
+  assert.ok(got.texts.includes("Fix selected (2)…") && !got.texts.includes("Fix several…") && got.texts.filter((x) => x === "✓").length >= 1, "the button names the number");
+  S.clicks.get("rv-fixall")(null, cx); await settle();
+  assert.deepEqual([v.sendP?.fix?.items.map((x) => x.id).sort(), v.sendP.fix.pool.length, v.sendP.fix.alone], [[plain[0].id, plain[1].id].sort(), plain.length, alone.length], "the preview opens with exactly these ticked, in the same list as Fix several…");
+  draw(v, "Findings: the preview of the ticked ones");
+  // Kept per PR with the threads (it comes back with them), and emptied by a send.
+  assert.deepEqual(TH.selectedOf(JSON.parse(JSON.stringify(v.threadDoc)), v.threadKey(), TH.FINDINGS).sort(), [plain[0].id, plain[1].id].sort());
+  assert.deepEqual(TH.selectedOf(v.threadDoc, v.threadKey()), [], "the comments' selection is another list");
+  v.sendP.fix.sent(cx, { route: "agent", agent: "a" }); await settle(); v.sendP = null;
+  assert.deepEqual([v.pickedFindings(), TH.selectedOf(v.threadDoc, v.threadKey(), TH.FINDINGS)], [[], []], "after the send nothing is ticked");
+  got = tab("after the send");
+  assert.ok(!got.texts.some((x) => x.startsWith("Fix selected")) && !got.ids.includes(`rv-fbox-${plain[0].id}`), "a finding with a fix sent has no box");
+  v.command(`pick-finding:${plain[0].id}`, cx); assert.deepEqual(v.pickedFindings(), [], "nor can it be ticked by its command");
+}
 // "Open in <Editor>" with editors installed (their Info.plist files are there; `open` is a stub, no editor starts):
 // the file heads' zones, the cards' monogram, the definition view, the panel's head and its file link, the state
 // "Opening …"; then a PR that is not trusted.

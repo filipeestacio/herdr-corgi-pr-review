@@ -533,6 +533,8 @@ export const ReviewMode = {
     // model in the reviewers popup; in "Finish your review" a verdict, "Insert blockers" and the submit button.
     else if (name === "send-cancel") this.sendP = null;
     else if (name === "fix-several") this.fixSeveral(cx);
+    else if (name === "pick-finding") this.pickFinding(arg, cx); // pick-finding:<id>: its box in the Findings tab
+    else if (name === "fix-picked") this.fixSeveral(cx, this.pickedFindings()); // "Fix selected (n)…"
     else if (name === "fix-pick") this.fixPick(arg, cx);
     else if (name === "codex-model") setShared("review.codexModel", arg);
     else if (name === "codex-menu") openCodexMenu();
@@ -1435,15 +1437,28 @@ export const ReviewMode = {
     this.previewFix(cx, { what: "Fix with agent", own: labels.join("\n"), ownLabel: list.length === 1 ? "FINDING" : "FINDINGS", items: list.map((f) => ({ kind: "finding", id: f.id })), labels,
       pool, alone, target,
       prompt: (sub) => [fixPrompt(list, this.pr, report, this.lang()), sub ? TH.worktreeNote(sub.branch, sub.path) : null].filter(Boolean).join("\n\n"),
-      sent: (cx) => { for (const f of list) this.setFinding(f, "progress", cx, { fixHead: this.headNow() }); } });
+      sent: (cx) => { for (const f of list) this.setFinding(f, "progress", cx, { fixHead: this.headNow() }); this.clearPicked(cx); } });
   },
   // "Fix several…": the reviewer picks which unresolved findings one agent fixes together. Security findings about
   // access or data (pr.js secByEffect) are not offered: each goes alone, so that its change stays one commit to check.
   // A finding that is ⛨ only because a threat stands on it (a flood, a script that stops halfway) is offered.
-  fixSeveral(cx) {
-    const open = this.findings().filter((f) => ["open", "recheck"].includes(this.fstatus(f)));
-    this.fix([], cx, open.filter((f) => !secByEffect(f)), open.filter((f) => secByEffect(f)).length);
+  // ticked: the ids ticked so far (the boxes of the Findings tab: "Fix selected (n)…" opens the same preview with them).
+  fixSeveral(cx, ticked = []) {
+    const open = this.findings().filter((f) => ["open", "recheck"].includes(this.fstatus(f))), pool = open.filter((f) => !secByEffect(f));
+    this.fix(pool.filter((f) => ticked.includes(f.id)), cx, pool, open.length - pool.length);
   },
+  // The boxes in the Findings tab's "No fix sent": the findings ticked there, kept per PR with the comments' selection
+  // (threads.js FINDINGS). Only what can still be ticked counts: unresolved, no fix sent, and not a security finding
+  // about access or data (those go alone). A send empties it.
+  pickedFindings() {
+    const ids = TH.selectedOf(this.threadDoc, this.threadKey(), TH.FINDINGS);
+    return ids.length ? this.findings().filter((f) => ids.includes(f.id) && ["open", "recheck"].includes(this.fstatus(f)) && !secByEffect(f)).map((f) => f.id) : [];
+  },
+  pickFinding(id, cx) {
+    const f = this.findingById(id), key = this.threadKey();
+    if (f && ["open", "recheck"].includes(this.fstatus(f)) && !secByEffect(f)) this.updateThreads(cx, (d) => TH.toggleSelected(d, key, f.id, Date.now(), TH.FINDINGS));
+  },
+  clearPicked(cx) { const key = this.threadKey(); if (TH.selectedOf(this.threadDoc, key, TH.FINDINGS).length) this.updateThreads(cx, (d) => TH.clearSelected(d, key, Date.now(), TH.FINDINGS)); },
   // A tick in that list: the preview is built again for what is ticked now (branch name and text follow).
   fixPick(id, cx) {
     const f = this.sendP?.fix;
@@ -5161,6 +5176,14 @@ export const ReviewMode = {
     const sources = this.findingSources(all);
     // The order "Quickest fix" is offered once a finding says how much work its fix is; it reorders every section.
     const efforts = hasEffort(all), order = (list) => (efforts && this.fsort ? quickFirst(list) : list);
+    // A row under "No fix sent" starts with a box, as a row of the Comments tab: ticked ones go to one fix agent
+    // together ("Fix selected (n)…"). A security finding about access or data keeps its box, switched off.
+    const picked = new Set(this.pickedFindings());
+    const box = (x) => { const alone = secByEffect(x), sel = picked.has(x.id);
+      return div().id(`rv-fbox-${x.id}`).tooltip(alone ? "Security findings about access or data are fixed one at a time: use Fix with agent… on the card." : "Select to fix this finding with an agent").accessibility_label("Select finding")
+        .w(14).h(14).mt(3).flex_none().rounded(3).border_1().border_color(sel ? t.accent : alone ? t.border : t.input).bg(sel ? t.accent : alone ? t.raised : "#00000000")
+        .flex().items_center().justify_center().text_size(TYPE.micro).text_color(t.accent_foreground).child(sel ? "✓" : "")
+        .on_click((_e, cx) => { if (!alone) this.pickFinding(x.id, cx); cx.stop_propagation(); }); };
     const row = (x) => {
       const st = this.fstatus(x), on = this.ffocus === x.id, col = t[SEV[x.severity]] ?? t.accent, li = this.layerOf(x), settled = st === "fixed" || st === "dismissed";
       const wide = on || (x.security && x.severity === "high" && !settled); // an unresolved high security finding keeps its whole title
@@ -5173,6 +5196,7 @@ export const ReviewMode = {
         // A narrow column wraps the row: the place and the state go under the title instead of squeezing it to nothing.
         .child(h_flex().id(`rv-ft-${x.id}`).tooltip("Open this finding and show its line in the diff").flex_wrap().gap(8).items_start().cursor_pointer().hover((h) => h.text_color(t.foreground))
           .on_click((_e, cx) => { this.ffocus = on ? null : x.id; if (!on) this.jumpTo(`${x.file}:${x.line}`, cx); cx.notify(); })
+          .when(st === "open" || st === "recheck", (e) => e.child(box(x)))
           .child(badge(t, x.severity, col))
           // The effort word stands in a row only while the list is sorted by it (it explains the order); else it is
           // one of the open finding's facts ("Fix effort").
@@ -5239,7 +5263,9 @@ export const ReviewMode = {
         .child(v_flex().id("rv-find-left").absolute().inset_0().overflow_y_scroll().px(8).pb(12).gap(2)
           // The two kinds of unresolved findings add up to the number in the tab and in the line above.
           .child(section("FIX SENT", sent, verify, sentHint))
-          .child(section("NO FIX SENT", unresolved, unresolved.filter((x) => !secByEffect(x)).length > 1 && pill("rv-fixall", t, "Fix several…", (_e, cx) => this.fixSeveral(cx)).tooltip("Pick which of these findings one agent fixes together; a preview first. Security findings are fixed one at a time.")))
+          .child(section("NO FIX SENT", unresolved, picked.size > 0
+            ? pill("rv-fixall", t, `Fix selected (${picked.size})…`, (_e, cx) => this.fixSeveral(cx, [...picked]), true).tooltip("Hand the ticked findings to one agent together; a preview first, where you can still change the ticks.")
+            : unresolved.filter((x) => !secByEffect(x)).length > 1 && pill("rv-fixall", t, "Fix several…", (_e, cx) => this.fixSeveral(cx)).tooltip("Pick which of these findings one agent fixes together; a preview first. Security findings are fixed one at a time.")))
           .when(c.fixed > 0, (e) => e.child(section("FIXED", by("fixed"))))
           .when(c.dismissed > 0, (e) => e.child(section("DISMISSED", by("dismissed"))))
           // Suggestions alone on their lines: notes, not findings, not counted above.
