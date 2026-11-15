@@ -10,7 +10,7 @@
 //   does not touch that refers to a changed or removed one shows.
 // - CloudFormation and SAM (YAML by indentation under its top-level keys, or JSON): Resources with Type and the top
 //   level of Properties, references by !Ref, !GetAtt, ${…} and DependsOn. No anchors, flow mappings or tabs.
-import { archLayout, markRoom, ARCH, FIT } from "./arch.js";
+import { archQuick, markRoom, ARCH, FIT } from "./arch.js";
 
 export const INFRA_MAX = 40, INFRA_LINES = 4; // cards before one type becomes one card; changed arguments on a card
 const NOTE_CH = 36; // the characters of a card's line in one row
@@ -442,11 +442,13 @@ export function infraMarks(model, findings, alias = new Map()) {
   return { nodes, edges: new Map() };
 }
 // → {arch, marks, args, L}: one layout with a row per line of a card and the room its finding mark takes. args: what
-// archLayout got, for the search for a better layout after the render (review.js layoutLater, arch.js archSearch).
-export function infraPicture(model, findings = [], fit = false) {
+// the layout got, for the search for a better layout after the frame (stack.js laidOut, arch.js layoutJob). L is what a
+// frame can afford (arch.js archQuick); lay: false leaves it to the caller (the review lays a big picture out after
+// the frame).
+export function infraPicture(model, findings = [], fit = false, lay = true) {
   const arch = infraArch(model), marks = infraMarks(model, findings, arch.alias), w = (fit ? FIT : ARCH).W - 20;
   const args = [arch, "diff", (n) => (n.lines ?? []).reduce((k, l) => k + l.rows, 0) + (marks.nodes.has(n.id) ? markRoom(marks.nodes.get(n.id), w).rows : 0), fit, { labels: true }];
-  return { arch, marks, args, L: archLayout(...args) };
+  return { arch, marks, args, ...(lay ? { L: archQuick(...args) } : {}) };
 }
 
 // ---- Copy as Markdown: the section's lines. table(head, rows) and flow(picture, opts) are markdown.js's own (its

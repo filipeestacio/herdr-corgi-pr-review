@@ -233,17 +233,27 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   assert.deepEqual(OWN.filter((f) => m.calls(f) > 0), [], "Architecture with Infrastructure changes: a frame that changes nothing computes none of these again");
   assert.ok(fns <= 1500, `Architecture with Infrastructure changes: ${fns} function calls in a frame that changes nothing, at most 1500`);
   assert.deepEqual(m.asked, { notify: 0, after: 0, every: 0, spawn: 0, exec: 0, read: 0, shared: 0 }, "and asks for no redraw, timer, task, command or shared write");
-  // Thirty resources that refer to the first: the frame draws the section without its picture, the layout comes after it.
-  const drawn = () => { S.ids = new Set(); const ran = counted(() => frame(v)); const ids = S.ids; S.ids = null; return { layouts: ran("arch.archLayout"), picture: ids.has("rv-infra-canvas") }; };
-  const lines = Array.from({ length: 30 }, (_x, i) => [`+resource "aws_sqs_queue" "q${i}" {`, i ? "+  redrive = aws_sqs_queue.q0.arn" : '+  name = "first"', "+}"]).flat();
-  v.infra = infraModel([{ path: "queues.tf", status: "added", lines: ["@@ -0,0 +1,90 @@", ...lines] }]); v.infraMemo = null;
+  // As the maps (stack.js laidOut). Thirty resources that refer to the first, 29 calls: more than a frame can lay out
+  // in full, so one rough pass in the frame (no order priced), the picture there at once.
+  const drawn = () => { S.ids = new Set(); const ran = counted(() => frame(v)); const ids = S.ids; S.ids = null; return { layouts: ran("arch.archLayout"), priced: ran("arch.permutations") + ran("arch.overlapsOf") - ran("arch.archLayout"), picture: ids.has("rv-infra-canvas") }; };
+  // n queues that refer to the first (and, with `two`, to the second as well).
+  const queues = (n, two = false) => infraModel([{ path: "queues.tf", status: "added", lines: [`@@ -0,0 +1,${4 * n} @@`, ...Array.from({ length: n }, (_x, i) => [`+resource "aws_sqs_queue" "q${i}" {`, i ? "+  redrive = aws_sqs_queue.q0.arn" : '+  name = "first"', ...(two && i > 1 ? ["+  other = aws_sqs_queue.q1.arn"] : []), "+}"]).flat()] }]);
+  await quiet(v); v.infra = queues(30); v.infraMemo = null;
   assert.equal(v.infra.cards.length, 30);
-  assert.deepEqual(drawn(), { layouts: 0, picture: false }, "30 cards: the first frame lays nothing out");
-  later();
-  assert.equal(v.infraMemo?.pic.L.nodes.length, 30, "its layout is made right after the frame");
-  assert.deepEqual(drawn(), { layouts: 0, picture: true }, "and the next frame draws the picture without laying it out again");
+  assert.deepEqual(drawn(), { layouts: 1, priced: 0, picture: true }, "30 cards: one rough layout in the frame, and the picture");
+  assert.deepEqual(drawn(), { layouts: 0, priced: 0, picture: true }, "the next frame lays nothing out");
   await quiet(v);
-  assert.deepEqual(drawn(), { layouts: 0, picture: true }, "also once the search for a better layout is through");
+  assert.deepEqual(drawn(), { layouts: 0, priced: 0, picture: true }, "also once the search for a better layout is through");
+  // Forty that refer to the first two, 77 calls: too many even for a rough pass in a frame. The frame draws the
+  // section without its picture, the first slice after it lays the picture out.
+  v.infra = queues(40, true); v.infraMemo = null;
+  assert.deepEqual(drawn(), { layouts: 0, priced: 0, picture: false }, "40 cards, 77 calls: the first frame lays nothing out");
+  assert.equal(v.infraMemo.pic.args[0].edges.length, 77);
+  later();
+  assert.equal(v.infraMemo?.pic.L.nodes.length, 40, "its layout is made right after the frame");
+  assert.deepEqual(drawn(), { layouts: 0, priced: 0, picture: true }, "and the next frame draws the picture without laying it out again");
+  await quiet(v);
+  assert.deepEqual(drawn(), { layouts: 0, priced: 0, picture: true }, "also once the search for a better layout is through");
 }
 await settle();
 console.log("perf ok");

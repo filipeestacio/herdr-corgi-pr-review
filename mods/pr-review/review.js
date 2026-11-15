@@ -3395,13 +3395,14 @@ export const ReviewMode = {
     if (!m) return [];
     const fs = this.openFindings(), key = fs.map((f) => `${f.id}|${f.severity}`).join();
     if (m.cards.length && (this.infraMemo?.model !== m || this.infraMemo.key !== key)) {
-      // As archL: one layout, in the frame when the picture is small, else right after it (firstLayouts; until then the
-      // section without its picture, or with the one from before); the search for a better one after the render.
-      const make = () => { const pic = infraPicture(m, fs); this.infraMemo = { model: m, key, pic: this.layoutLater(pic, pic.args, () => this.infraMemo?.pic) }; };
-      if (!this.drawing || m.cards.length <= LAYOUT_IN_FRAME) make(); else (this.layQueue ??= new Map()).set("infra", make);
+      // As archL (stack.js laidOut): what a frame can afford now, the better layout after it; a picture too big for
+      // the frame comes with the first slice after it (until then the section without its picture, or with the one
+      // from before when only the findings changed).
+      const pic = infraPicture(m, fs, false, false), before = this.infraMemo?.model === m ? this.infraMemo.pic.L : null;
+      this.infraMemo = { model: m, key, pic: laidOut(pic.args, pic, () => this.infraMemo?.pic, { wait: true, before }) };
     }
     const o = this.archOpts("infra");
-    return [["infra", infraSection(t, { model: m, pic: m.cards.length && this.infraMemo?.model === m ? this.infraMemo.pic : null, onJump: (at, cx) => this.jumpTo(at, cx), hl: o.hl, onHl: o.onHl,
+    return [["infra", infraSection(t, { model: m, pic: m.cards.length && this.infraMemo?.model === m && this.infraMemo.pic.L ? this.infraMemo.pic : null, onJump: (at, cx) => this.jumpTo(at, cx), hl: o.hl, onHl: o.onHl,
       canvas: (L, decorate, marks) => this.archCanvas(t, L, { ...o, onFocus: null, marks, zoom: settings().zoom || 1 }, { id: "rv-infra-canvas", pic: "rv-infra", wrap: false, decorate, notes: false }) })]];
   },
 
