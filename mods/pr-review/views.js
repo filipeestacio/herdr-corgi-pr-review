@@ -1244,6 +1244,22 @@ export function resMarkLines(text, width) {
   });
   return lines.map((l) => l.map(({ text: t, bad }) => ({ text: t, bad })));
 }
+// ---- Resilience: a path's second line, short enough to read: the way, at most three of the things it breaks (the
+// rest counted, all of them in `tip`), and its findings. today: why it cannot happen today, a line of its own. Pure.
+export function resMeta(p, way, findings = 0, max = 3) {
+  const failing = (p.failing ?? []).filter((x) => x !== "silent").map(resWord), today = p.wired?.today && !p.blocker ? String(p.wired.today).replace(/^./, (c) => c.toUpperCase()) : null;
+  const breaks = failing.length > max ? `${failing.slice(0, max).join(", ")} and ${failing.length - max} more` : failing.join(", ");
+  return { today, text: [way, breaks, findings > 0 && `${findings} ${findings === 1 ? "finding" : "findings"}`].filter(Boolean).join(" · "), tip: failing.length > max ? `It breaks: ${failing.join(", ")}.` : null };
+}
+// The opacity of a dimmed part of the Resilience page (an analysis of another head, a probe of an older one): as dim
+// as 0.55 where the second colour of the text still reads at 4.5:1 on each background given, else less dim.
+export const resFade = (t, bgs = [t.background, t.surface]) => Math.max(...bgs.map((bg) => readableFade(t.muted, bg, 0.55)));
+
+// ---- A cache has a limit: after a set, the oldest entries of a Map go until at most `max` are left. Returns the map.
+export function keepLast(map, max) {
+  while (map.size > max) map.delete(map.keys().next().value);
+  return map;
+}
 // The page's verdict in two parts (wave C2 V2): a short sentence ("5 of 11 paths block the merge.") and the count by
 // reason, most first ("a visible effect is lost: 2 · load grows without a limit: 1"); null without a blocker.
 export function resVerdictParts(paths) {
@@ -1536,19 +1552,6 @@ export function leftNow(before, left) {
   return moved.length ? moved.map((r) => `#${r.number} left In progress: its PR was ${r.state}.`).join(" ") : null;
 }
 
-// ---- Resilience: a path's second line, short enough to read: the way, at most three of the things it breaks (the
-// rest counted, all of them in `tip`), and its findings. today: why it cannot happen today, a line of its own. Pure.
-export function resMeta(p, way, findings = 0, max = 3) {
-  const failing = (p.failing ?? []).filter((x) => x !== "silent").map(resWord), today = p.wired?.today && !p.blocker ? String(p.wired.today).replace(/^./, (c) => c.toUpperCase()) : null;
-  const breaks = failing.length > max ? `${failing.slice(0, max).join(", ")} and ${failing.length - max} more` : failing.join(", ");
-  return { today, text: [way, breaks, findings > 0 && `${findings} ${findings === 1 ? "finding" : "findings"}`].filter(Boolean).join(" · "), tip: failing.length > max ? `It breaks: ${failing.join(", ")}.` : null };
-}
-// The opacity of a dimmed part of the Resilience page (an analysis of another head, a probe of an older one): as dim
-// as 0.55 where the second colour of the text still reads at 4.5:1 on each background given, else less dim.
-export const resFade = (t, bgs = [t.background, t.surface]) => Math.max(...bgs.map((bg) => readableFade(t.muted, bg, 0.55)));
-
-// ---- A cache has a limit: after a set, the oldest entries of a Map go until at most `max` are left. Returns the map.
-export function keepLast(map, max) {
-  while (map.size > max) map.delete(map.keys().next().value);
-  return map;
-}
+// The review's own risk signal from its finding counts (pr.js findingCounts: unresolved ones by severity, security by
+// cause), in riskSignal's shape. It goes into the registry entry, so the minimized chip shows the mark the review shows.
+export const riskOfCounts = (c) => ({ top: c?.high ? "high" : c?.medium ? "medium" : c?.low ? "low" : null, open: c?.unresolved ?? 0, security: Boolean(c?.security) });

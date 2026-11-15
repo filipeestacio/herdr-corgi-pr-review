@@ -33,6 +33,7 @@ import { visualPlan } from "./stack.js";
 import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCALE } from "./views.js";
 import { ghMd, mdBlocks } from "./views.js"; // GitHub comments as GitHub shows them
 import { wrapCode, codeCols, sliceSpans } from "./views.js"; // long lines wrap
+import { rowMarks, riskOfCounts } from "./views.js"; // the minimized chip's mark, from the registry entry
 import { pairRows, pairSide, HALF_GUTTER, diffModeOf, oneSided, stackOf, chipAt, textW } from "./views.js"; // side by side; the bar's stack
 import { mdTarget, secPicture, secBlast, resNoPicture } from "./views.js"; // Copy as Markdown: what it copies on each page; the Security page's picture and lines
 const MD_W = textW("⧉ Copy as Markdown…", 12.5) + 22; // the button's width on a layer's head, where clicks are placed by x
@@ -279,7 +280,9 @@ export function renderMini() {
     .on_mouse_down("left", (_e, cx) => cx.stop_propagation()) // a press the mod doesn't stop would drag the float
     .child(div().flex_none().font_semibold().child(`Review #${pr.number ?? ""}`))
     .when(Boolean(pr.title), (e) => e.child(div().flex_none().max_w(220).truncate().text_color(t.muted).child(pr.title)))
-    .when(Boolean(open?.progress?.findingsOpen), (e) => e.child(div().flex_none().text_color(t.muted).child(`· ${open.progress.findingsOpen} unresolved`)))
+    // The review's own mark, as its rows carry it: "⛨ high" in red when an unresolved finding is about security.
+    .children(rowMarks(open?.risk, null).map((m) => div().flex_none().px(5).rounded(4).text_size(11).text_color(m.security ? t.ansi1 : t.muted).bg((m.security ? t.ansi1 : t.muted) + "26").child(m.text)))
+    .when(Boolean(open?.progress?.findingsOpen), (e) => e.child(div().flex_none().text_color(t.muted).child(`${open.progress.findingsOpen} unresolved`)))
     .child(div().id("rv-mini-open").px(8).h(22).flex().items_center().rounded_full().cursor_pointer().text_color(t.accent).hover((x) => x.bg(t.hover))
       .tooltip("Back to the review, where you left it").on_click(() => startReview(pr)).child("Resume"))
     .child(div().id("rv-mini-x").w(22).h(22).flex().items_center().justify_center().rounded_full().cursor_pointer().text_color(t.muted).hover((x) => x.bg(t.hover))
@@ -803,7 +806,7 @@ export const ReviewMode = {
     cx.timer.after(1500, (cx) => cx.spawn(async (cx) => {
       if (this.regGen !== gen || this.prSel?.url !== pr.url) return;
       const entry = { url: pr.url, number: pr.number, repo: pr.repo, title: pr.title ?? this.pr?.title, context: this.ctxId(), headSha: this.head,
-        progress: this.progressNow(), target: pr, triage: this.triageNow(), ...this.regExtra };
+        progress: this.progressNow(), target: pr, triage: this.triageNow(), risk: riskOfCounts(this.counts()), ...this.regExtra };
       const how = this.regExtra.status === "sent" || this.regExtra.status === "done" ? this.regExtra.status : "seen";
       this.regExtra = {};
       const prs = JSON.parse(await readTextFile(`${appHome()}/pr-data/prs.json`).catch(() => null) ?? "{}").prs ?? [];
@@ -5251,7 +5254,8 @@ export const ReviewMode = {
     if (listShown) this.traces = this.traceMap();
     const { items, at, heads } = listShown ? this.itemsOf(this.tab === "steps" ? "steps" : "files") : { items: [], at: {} };
     if (this.selected().length) items.push({ t: "pad" }); // room for the selection toolbar
-    if (this.pendingScroll && at[this.pendingScroll] !== undefined) { this.scrollTo(this.tab === "steps" ? "steps" : "files", this.pendingScroll); this.pendingScroll = null; }
+    // hold: the list stays unseen for the one frame settleTop needs to get there (it scrolls past, then aligns).
+    if (this.pendingScroll && at[this.pendingScroll] !== undefined) { this.scrollTo(this.tab === "steps" ? "steps" : "files", this.pendingScroll); this.top.hold = true; this.pendingScroll = null; }
     if (this.scrollCompose && at.compose !== undefined) { this.lists[this.tab === "steps" ? "steps" : "files"].scroll_to_item(at.compose, "center"); this.scrollCompose = false; }
     this.uiChanged(cx);
     this.syn = colors(t);
@@ -5272,6 +5276,7 @@ export const ReviewMode = {
     if (listShown) { this.items = items; this.at = at; this.byKey = new Map(keys.map((k, i) => [k, items[i]])); }
     if (heads) this.layFiles(items, keys, sizes, heads.filter((h) => h < items.length));
     if (listShown) this.settleTop(this.tab === "steps" ? "steps" : "files", at, sizes, cx);
+    const held = listShown && Boolean(this.top?.hold); // still on its way to where you were: drawn in the next frame
     const listId = `rv-list-${this.tab === "steps" ? "steps" : "files"}`;
     const range = this.fsel && rangeOf(this.rowsFor(this.fsel.path), this.fsel.a, this.fsel.b);
     this.selKeys = range ? new Set(this.rowsFor(this.fsel.path).slice(range[0], range[1] + 1).map(lineKey)) : null;
@@ -5300,7 +5305,7 @@ export const ReviewMode = {
             .child(div().flex_1().min_w(0).whitespace_normal().child(`No local clone of ${target.repo ?? "this repo"}: reviewers, whole files, definitions and the AI analysis need one. The diff works without.`))
             .child(pill("rv-clone", t, this.cloning ? "Cloning…" : `Clone to ${this.needClone.replace(home(), "~")}`, (_e, cx) => { if (!this.cloning) { this.makeWorktree(cx, true); cx.notify(); } }, false, t.foreground).tooltip("Clone the repository once, so the PR head can be checked out for reviewers and go-to-definition"))))
 
-          .when(listShown, (e) => e.child(div().id(`${listId}-wrap`).flex_1().min_h(0).relative().on_size_change((size) => { this.listH = size.height; })
+          .when(listShown, (e) => e.child(div().id(`${listId}-wrap`).flex_1().min_h(0).relative().when(held, (x) => x.opacity(0)).on_size_change((size) => { this.listH = size.height; })
 
             // The Files list: scrolling, or dragging its scrollbar, near a folded file opens the files around the view.
             .on_scroll_wheel((e, cx) => { if (heads) this.autoFold(cx); if (hcode.maxX > 0) this.hsWheel("rv-code", e, cx); }) // sideways: the code (codeScroll)

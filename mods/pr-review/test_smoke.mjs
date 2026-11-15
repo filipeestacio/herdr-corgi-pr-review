@@ -433,6 +433,7 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   // Back from the review of another PR (minimized, or Back): the panel shows that PR, not the pick from before.
   { S.store.set("pr.fromReview", prs[1]); const w = new PrReview(); w.init({}, cx); await settle(); draw(w, "panel: back from a review, its PR shown");
     assert.deepEqual([w.prSel?.url, S.store.get("pr.fromReview")], [prs[1].url, null], "the review's PR, handed over once"); }
+  S.store.set("review.open", [{ ...reg(prs[0], { findingsOpen: 3 }), risk: { top: "high", security: true, open: 3 } }]); // the chip's mark and count
   S.props = { part: "mini" }; S.store.set("review.minimized", { target: prs[0], at: now });
   const mini = new PrReview(); mini.init({}, cx); draw(mini, "the minimized review's chip");
   S.spaces = null; S.props = null;
