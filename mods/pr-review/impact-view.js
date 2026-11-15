@@ -38,7 +38,7 @@ const decorate = (t, id, edit = null) => (n) => (n.rows?.length ? [v_flex().id(`
   .when(Boolean(r.glyph), (e) => e.child(div().flex_none().w(12).child(r.glyph))).child(div().flex_1().min_w(0).truncate().child(r.text))
   .children(k === 0 && edit && n.at ? edit(`${id}-ed-${n.id}`, n.at) : [])))] : []);
 
-const HINT = "Point at a file to see every changed symbol it calls. A click keeps the file chosen.";
+const HINT = "Click a file to see every changed symbol it calls; click it again to let it go.";
 const SEVS = ["critical", "high", "medium", "low"];
 
 // Many callers (impact.js impactDense): a row per changed symbol, what stands out first, under it its callers by
@@ -54,8 +54,9 @@ function denseRows(t, o, D, model) {
   const file = (id, f, warn) => { const on = f.path === chosen, c = warn ? t.ansi3 : t.foreground;
     return h_flex().id(id).flex_none().gap(5).items_center().px(7).h(22).rounded(6).border_1().border_color(on ? t.accent : warn ? t.ansi3 + "88" : t.border).when(on, (e) => e.bg(solidOver(t.background, t.accent + "1a")))
       .text_size(TYPE.micro).text_color(c).cursor_pointer().hover((x) => x.bg(t.hover))
-      .tooltip(`${f.path}\n${f.callers.map((x) => `${x.name}, line ${x.line}`).join("\n")}\nA click ${o.focus === f.path ? "lets the file go" : "keeps the file chosen"}.`)
-      .on_click((_e, cx) => { o.onFocus(o.focus === f.path ? null : f.path, cx); cx.stop_propagation(); }).on_hover((x, cx) => o.onHover(x ? f.path : null, cx))
+      .tooltip(`${f.path}\n${f.callers.map((x) => `${x.name}, line ${x.line}`).join("\n")}\nA click ${o.focus === f.path ? "lets the file go" : "chooses the file"}.`)
+      // ponytail: no on_hover here. Re-rendering the review on every pointer move over a chip took Herdr down; a click is enough.
+      .on_click((_e, cx) => { o.onFocus(o.focus === f.path ? null : f.path, cx); cx.stop_propagation(); })
       .when(warn, (e) => e.child(div().flex_none().child(SIG.glyph)))
       .child(div().whitespace_nowrap().child(f.n === 1 ? `${f.base}:${f.line}` : f.base)).when(f.n > 1, (e) => e.child(div().flex_none().text_color(t.muted).child(`${f.n}`))); };
   const group = (r, k, mark) => { const g = r.groups[mark], warn = Boolean(r.sig), shown = g.files.slice(0, IMPACT_DENSE.files), far = chosen ? g.files.slice(IMPACT_DENSE.files).find((f) => f.path === chosen) : null;

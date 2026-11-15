@@ -12,7 +12,7 @@ import { sectionTitle, chip, STATUS_COLOR, SEVERITY_COLOR } from "./stack.js";
 import { infraSource, infraSummary, noticeText, rowText, unreadText, denseText, denseRefs } from "./infra.js";
 
 const CARD_W = 224; // a card of the list by file: as wide as a card of the pictures, so three or more fit a row
-const HINT = "Point at a card to see what it refers to and what refers to it. A click keeps the card chosen.";
+const HINT = "Click a card to see what it refers to and what refers to it; click it again to let it go.";
 
 // Many resources: the cards by file, each file a frame, as many cards in a row as the width holds (the list never
 // gets wider than the page). No lines: the chosen card (pointed at, or clicked to keep) is outlined, what it refers
@@ -26,8 +26,9 @@ function denseList(t, o, D) {
     const top = c.mark ? [...c.mark.findings].sort((a, b) => ["critical", "high", "medium", "low"].indexOf(a.severity) - ["critical", "high", "medium", "low"].indexOf(b.severity))[0] : null;
     const el = v_flex().id(id).flex_none().w(CARD_W).px(10).py(7).gap(3).rounded(8).border_1().border_color(self || rel ? t.accent : live ? color : t.border).when(live && !self, (e) => e.border_l(4)).when(self, (e) => e.border_2())
       .bg(self ? solidOver(t.background, t.accent + "1a") : c.status === "added" ? solidOver(t.background, t.ansi2 + "14") : solidOver(t.background, t.surface))
-      .cursor_pointer().hover((x) => x.bg(t.hover)).tooltip(`${D.names.get(c.id) ?? c.name}\nA click ${o.focus === c.id ? "lets it go" : "keeps it chosen"}.`)
-      .on_click((_e, cx) => o.onFocus(o.focus === c.id ? null : c.id, cx)).on_hover((on, cx) => o.onHover(on ? c.id : null, cx))
+      .cursor_pointer().hover((x) => x.bg(t.hover)).tooltip(`${D.names.get(c.id) ?? c.name}\nA click ${o.focus === c.id ? "lets it go" : "chooses it"}.`)
+      // ponytail: no on_hover, as in impact-view: a re-render per pointer move over a card took Herdr down.
+      .on_click((_e, cx) => o.onFocus(o.focus === c.id ? null : c.id, cx))
       // The type leads and the name stands under it in the same size: resources of one thing often share a name, and
       // with the name as the title they read as the same card several times.
       .child(h_flex().gap(6).items_center().text_size(TYPE.small)

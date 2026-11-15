@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.13.0 (2026-11-15)
+
+### Fixes
+
+- pr-review: one selection for comments and findings, a box that works on a folded row, GitHub comments in a fix
+- pr-review: impact files and infrastructure cards are chosen by a click, not by pointing
+- pr-review: a tick shows at once and costs one frame; a finding's card in the diff has the selection's box
+
+### Other
+
+- chore: merge fix/one-selection
+
 ## 0.12.1 (2026-11-15)
 
 ### Fixes
