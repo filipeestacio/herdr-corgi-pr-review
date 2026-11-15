@@ -1,6 +1,6 @@
 // Run: node test_syntax.mjs
 import assert from "node:assert/strict";
-import { tokenize, langOf, firstLineOf, highlightRows, highlightLines, colors, contrast, runs, renderLine, refAt, highlightJob, highlightStep } from "./syntax.js";
+import { tokenize, tokenizeStrict, forward, langOf, firstLineOf, highlightRows, highlightLines, colors, contrast, runs, renderLine, refAt, highlightJob, highlightStep } from "./syntax.js";
 
 // [text, kind] pairs of a line, for readable asserts.
 const kinds = (line, lang, state = null) => tokenize(line, lang, state).spans.map((s) => [line.slice(s.start, s.end), s.kind]);
@@ -392,6 +392,50 @@ const file = (lines, lang) => {
   assert.deepEqual(f.at("WORKDIR"), [["WORKDIR", "keyword"]]); f.want("COPY", ["--from=build", "type"]); f.none("COPY", "/app", "function");
   f.want("RUN", ["--mount=type=cache,target=/root/.cache", "type"], ["pip", "function"], ["-r", "type"]); f.want("&& python", ["python", "function"]);
   f.want("EXPOSE", ["8080", "number"]); f.want("HEALTHCHECK", ["--interval=30s", "type"], ["CMD", "keyword"], ["\"", "string"]);
+}
+// ---- no line can hold its slice for ever, no scanner throws, and no span leaves its line
+{
+  assert.deepEqual([forward(3, 1), forward(1, 1), forward(0, 5)], [3, 2, 6]); // moved on; stood still; went back
+  // The shape of every scanner's loop, with a branch that never moves on and one that jumps back to the start (the
+  // fault that once left a whole review without colors): one pass per character, no more.
+  for (const broken of [(i) => i, () => 0]) {
+    let i = 0, passes = 0;
+    for (let at = i - 1; i < 50;) { i = forward(i, at); at = i; if (i >= 50) break; passes++; i = broken(i); }
+    assert.equal(passes, 50);
+  }
+  for (const lang of ["js", "shell", "make", "yaml", "properties", "toml", "markdown"]) { // a scanner that throws (no line at all): plain, and a fresh start
+    assert.deepEqual(tokenize(null, lang, null), { spans: [], state: null }, lang);
+    assert.throws(() => tokenizeStrict(null, lang, null), lang);
+  }
+  // Random lines for every language (a fixed seed): special characters, openers of strings, comments, heredocs and
+  // placeholders, and the starts of real lines, with the state carried on and now and then started afresh.
+  let seed = 0x5eed1234;
+  const rnd = () => { seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const pick = (a) => a[Math.floor(rnd() * a.length)];
+  const BITS = ["$", "(", ")", "{", "}", "[", "]", '"', "'", "\\", "<", ">", "#", "`", "|", "&", ";", ":", "=", "-", "!", "@", "%", "*", "?", ",", ".", "/", " ", "  ", "\t", "$(", "${", "$((", "))", "${{", "}}", "#{", "$$", "$@", "<<EOF", "<<-'x'", "EOF",
+    '"""', "'''", "/*", "*/", "//", "--", "```", "~~~", "---", "\\u00fc", "é", "🙂", "x", "name", "0x1f", "12", "1.5", "true", "null", ": ", " #", "- ", "@v4", "](", "**", "_"];
+  const STARTS = ["if [ ", "for f in ", "case $x in", "echo ", "export A=", "cat <<EOF", "target: dep", "\t@$(CC) ", "VAR := ", "ifeq (", "define x", "- name: ", "  run: |", "    ", "key: ", "- uses: a/b@", "if: ", "a.b=", "[section]", "[[t]]", "k = ",
+    "FROM x AS ", "RUN ", "ENV A=1 \\", "# ", "## ", "- [ ] ", "> ", "| a | b |", "def f(", "class A ", "import ", "const s = `", "fn f<'a>(", "resource \"a\" \"b\" {", "SELECT ", "#include <", "#!/bin/sh", "@decorator", "R\"x("];
+  const line = () => { let s = rnd() < 0.5 ? pick(STARTS) : ""; for (let k = Math.floor(rnd() * 12); k > 0; k--) s += pick(BITS); return s; };
+  const LANGS = ["js", "python", "java", "kotlin", "cpp", "go", "rust", "hcl", "sql", "json", "shell", "make", "yaml", "workflow", "spring", "properties", "toml", "markdown", "dockerfile"];
+  const t0 = performance.now();
+  for (const lang of LANGS) {
+    let st = null;
+    for (let k = 0; k < 4000; k++) {
+      const l = line();
+      if (rnd() < 0.05) st = null; // as after a hunk header
+      const t = tokenizeStrict(l, lang, st);
+      st = t.state;
+      let end = 0;
+      for (const x of t.spans) {
+        assert.ok(Number.isInteger(x.start) && Number.isInteger(x.end) && x.start >= end && x.end >= x.start && x.end <= l.length && typeof x.kind === "string", `${lang}: ${JSON.stringify(l)} -> ${JSON.stringify(t.spans)}`); // an empty span (a whole-line span of an empty line) draws nothing
+        end = x.end;
+      }
+    }
+  }
+  const ms = performance.now() - t0;
+  console.log(`fuzz: ${LANGS.length} languages, 4000 random lines each: ${ms.toFixed(0)} ms`);
+  assert.ok(ms < 5000, `the random lines took ${ms} ms`);
 }
 const sh = Array.from({ length: 10000 }, (_, i) => ({ kind: " ", text: ['if [[ -s "$STATE_DIR/$id.pem" && "$id" != tmp-* ]]; then', '  echo "$id $(stat -f %m "$STATE_DIR/$id.pem" 2>/dev/null || echo 0)" | sort -k2 -nr # c', "  KEEP=$((KEEP + 1)); log 'done' >&2", "fi"][i % 4] }));
 const lines10k = (lines) => Array.from({ length: 10000 }, (_, i) => ({ kind: " ", text: lines[i % lines.length] }));

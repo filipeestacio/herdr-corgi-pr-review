@@ -14,7 +14,9 @@ const FLAG_WORD = Object.fromEntries(FLAGS.map(([k, , , at]) => [k, at]));
 const plain = (s) => String(s ?? "").replace(/[`*_]/g, "");
 
 export const SecPicsMode = {
-  secDataNow(rows) { return dataflowOf({ data: this.ai?.secData ?? null, arch: this.ai?.arch ?? null, crossings: rows }); },
+  // Both models are kept until their data change (review.js keep): the page asks for them on every frame.
+  secDataNow(rows) { const data = this.ai?.secData ?? null, arch = this.ai?.arch ?? null; return this.keep("secData", [data, arch, rows], () => dataflowOf({ data, arch, crossings: rows })); },
+  secRightsNow(rows) { const arch = this.ai?.arch ?? null, access = this.ai?.access, open = this.openFindings(); return this.keep("secRights", [arch, access, rows, open], () => rightsOf({ arch, access: access ?? [], crossings: rows, findings: open })); },
   // The kind of data whose steps are shown: the chosen one, else the first with a mark, else the first. Only while
   // the section is open.
   secDataItem(m) { return m && this.secDataOpen ? m.items.find((x) => x.id === this.secDataSel) ?? m.items.find((x) => x.flags.length) ?? m.items[0] ?? null : null; },
@@ -69,7 +71,7 @@ export const SecPicsMode = {
               .on_click((_e, cx) => this.runReviewer("security", cx, null, tier)).child(runLabel(this.find.runs?.security, this.runPrice("security", tier), "", true))))))]);
     }
 
-    const m = rightsOf({ arch: this.ai?.arch ?? null, access: this.ai?.access ?? [], crossings: rows, findings: this.openFindings() });
+    const m = this.secRightsNow(rows);
     if (m) {
       const open = Boolean(this.secRightsOpen), v = rightsShown(m, Boolean(this.secRightsAll)), folded = rightsShown(m, false).more;
       const entry = (e) => { const sign = e.findings.length ? signOf(e.findings) : null, moved = e.change !== "unchanged";
