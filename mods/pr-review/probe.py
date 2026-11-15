@@ -28,8 +28,8 @@ failed otherwise), not_on_base.
 The script is read once, without following a link (a link, a folder that is a link, anything but a plain file of at
 most 64 KB is refused), and the result is printed as JSON, nothing is written into the checkout:
 {id, status, strength, line, exit, ms, head, base: {rev, status, line, exit, ms, verdict} | null, pre_existing,
-network_barrier, sandbox, output, at, script (what ran, blacked out like the output)}. The review takes script and result from this output only.
-Exit 2 when the call is refused, 3 when there is no script. Standard library only.
+network_barrier, sandbox, output, at, script (what ran, blacked out like the output)}. The review takes script and
+result from this output only. Exit 2 when the call is refused, 3 when there is no script. Standard library only.
 """
 import ast
 import datetime as dt

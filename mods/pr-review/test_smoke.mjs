@@ -339,6 +339,12 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     draw(v, "someone else's PR, Codex asks first");
     v.runReviewer("codex", cx); assert.equal(ran.length, 1, "the second click starts it"); assert.equal(v.find.runs.codex.state, "running");
     S.exec = null; S.store.set(SETUP_KEY, was); delete v.find.runs.codex; v.note = null; }
+  // Before a fix or verify agent starts, git says where each remote would push under the lock: all dead, or no start.
+  { const { PUSH_OFF } = await import("./threads.js"), says = (out) => { S.exec = async (cmd) => ({ code: 0, stdout: cmd === "git" ? "origin\nup\n" : out, stderr: "" }); };
+    says(`${PUSH_OFF}origin\n${PUSH_OFF}up\n`); assert.deepEqual((await v.pushLock("/h/c")).filter((x) => x.startsWith("GIT_CONFIG_COUNT")), ["GIT_CONFIG_COUNT=5"], "the lock names both remotes");
+    says(`${PUSH_OFF}origin\nhttps://example.test/r.git\n`); await assert.rejects(v.pushLock("/h/c"), /could still push to a remote, so no agent starts/);
+    says(`${PUSH_OFF}origin\n`); await assert.rejects(v.pushLock("/h/c"), /could still push/, "no answer for a remote is no lock");
+    S.exec = null; }
   S.store.set("pr-review.trustAsked", []); draw(v, "the trust question again"); click("rv-trust-pr", "trust this PR"); draw(v, "someone else's PR, trusted");
 }
 // Explore: the start (no repo, no topic), then an exploration with its answer, its pages, layers and cards, the

@@ -312,7 +312,7 @@ with tempfile.TemporaryDirectory() as d:
     g("init", "-q", cwd=clone), pathlib.Path(clone, "f.txt").write_text("in the PR\n"), g("add", ".", cwd=clone), g("commit", "-qm", "c", cwd=clone)
     g("worktree", "add", "-q", "--detach", wt, cwd=clone)
     a = reviewers.codex_args({"worktree": wt, "base": "main", "codexModel": "m-1"}, "/bin/echo")
-    assert a[:5] == ["/bin/echo", "exec", "review", "--base", "origin/main"] and a[-2:] == ["-c", 'model="m-1"'], a
+    assert a[:5] == [os.path.realpath("/bin/echo"), "exec", "review", "--base", "origin/main"] and a[-2:] == ["-c", 'model="m-1"'], a
     for flag in ("--ignore-user-config", "--ignore-rules", "--strict-config"):
         assert flag in a, flag
     assert [a[k + 1] for k, x in enumerate(a) if x == "--disable"] == ["hooks", "plugins", "apps"], "no hooks, plugins or connectors"

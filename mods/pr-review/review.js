@@ -2016,7 +2016,8 @@ export const ReviewMode = {
     const names = ((await exec("git", ["-C", base, "remote"], { timeout: 20000 })).stdout ?? "").split("\n").filter(Boolean), lock = TH.noPushEnv(names);
     const asked = await exec(lock[0], [...lock.slice(1), ...TH.pushLockProbe(names)], { cwd: base, timeout: 20000 });
     const open = asked.code === 0 ? TH.pushLockOpen(asked.stdout, names) : ["?"];
-    if (open.length) throw new Error(`git in this checkout could still push (${open.join(", ").slice(0, 120)}), so no agent starts. A remote's own push URL can be turned off from git 2.46 on; update git or remove the remote's pushurl.`);
+    // The URLs themselves are not shown: a push URL may carry a token.
+    if (open.length) throw new Error("git in this checkout could still push to a remote, so no agent starts. A remote's own push URL can be turned off from git 2.46 on; update git or remove the remote's pushurl.");
     return lock;
   },
   // A new Claude in a fresh worktree on the fix branch from the PR head the preview named (shown under the PR's agent

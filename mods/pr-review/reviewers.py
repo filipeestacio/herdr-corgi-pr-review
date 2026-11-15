@@ -728,8 +728,9 @@ def toml(d):
 
 def codex_reads(worktree, codex):
     """What a Codex run may read besides the system's own files: the checkout, its clone's .git (a worktree keeps its
-    history there), the tools' folders, the codex program itself (installed with npm: its packages' folder) and, on macOS, the cache that tells /usr/bin/git
-    where the real git is (without it every git call takes seconds). Real paths, only those that exist."""
+    history there), the tools' folders, the codex program itself (installed with npm: its packages' folder) and, on
+    macOS, the cache that tells /usr/bin/git where the real git is (without it every git call takes seconds). Real
+    paths, only those that exist."""
     common = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=worktree, capture_output=True, text=True).stdout.strip()
     xcrun = os.path.join(os.confstr(65537), "xcrun_db") if sys.platform == "darwin" else ""  # 65537: _CS_DARWIN_USER_TEMP_DIR
     parts = pathlib.Path(os.path.realpath(codex)).parts  # installed with npm: the launcher starts a binary of a package beside it
