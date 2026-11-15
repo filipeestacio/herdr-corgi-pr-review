@@ -4,7 +4,7 @@
 // it so must give what a fresh computation gives after everything that changes their inputs. Counts, not times: the
 // one time check is generous and takes the best of three. perf_bench.mjs prints the numbers.)
 import assert from "node:assert/strict";
-import { hasFixtures, openReview, openPanel, PR2, BIG, STATES, measure, counted, frame, later, settled, quiet, cx, settle } from "./perf_bench.mjs";
+import { hasFixtures, openReview, openPanel, PR2, BIG, STATES, measure, counted, frame, later, settled, quiet, cx, settle, N } from "./perf_bench.mjs";
 import { S } from "./render_stub.mjs";
 
 if (!hasFixtures) {
@@ -92,6 +92,22 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   globalThis.window.is_window_active = () => true;
   v.fixCostTick(cx); await settle();
   assert.equal(execs, 1, "in front, a running fix's log is looked for");
+  // The job's agent is gone (no terminal of that name): read that once, then never again; alive again, read again.
+  v.fixCostTick(cx); await settle(); v.fixCostTick(cx); await settle();
+  assert.equal(execs, 1, "a job whose agent ended is not asked about every 20 s");
+  v.threadDoc = { ...v.threadDoc, [key]: { ...v.threadDoc[key], fixes: [{ ...v.threadDoc[key].fixes[0], terminal: "t9" }] } }; S.terminals = [{ address: "t9", state: "live" }];
+  v.fixCostTick(cx); await settle(); v.fixCostTick(cx); await settle();
+  assert.equal(execs, 3, "a job whose agent's terminal is live is asked about on every tick");
+  S.terminals = null; v.fixCostTick(cx); await settle(); v.fixCostTick(cx); await settle();
+  assert.equal(execs, 4, "and once more after it ended");
+  // GitHub's poll and the threads' files: a frame only for something new.
+  const comment = JSON.stringify({ id: 1, path: "library/loans.py", line: 3, side: "RIGHT", user: "anna", user_type: "User", body: "Why?", at: "2026-11-15T10:00:00Z" });
+  S.exec = async (cmd, args) => (args.includes("graphql") ? { code: 0, stdout: "", stderr: "" } : args.some((a) => /pulls\/2\/comments/.test(String(a))) ? { code: 0, stdout: comment, stderr: "" } : { code: 1, stdout: "", stderr: "stub" });
+  v.cfg = { ...v.cfg, dryRun: false };
+  const polled = async () => { v.ghPoll = null; v.ghIn = null; const n0 = N.notify; v.ghTick(cx); await settle(); return N.notify - n0; };
+  assert.ok((await polled()) > 0 && v.gh.length === 1, "a new comment from GitHub is drawn");
+  const list = v.gh;
+  assert.deepEqual([await polled(), v.gh === list], [0, true], "the same comments again: no frame, and the list stays the one it was");
   globalThis.window.is_window_active = active; S.exec = null;
 }
 
@@ -120,6 +136,56 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   S.exec = null; S.props = null; await settle();
 }
 
+// ---- shared state is written for another value only, and a visit alone does not write the register again
+{
+  later(); S.writes = true;
+  const v = await openReview(PR2()), wrote = async (f) => { const n0 = N.shared; f(); later(); await settle(); later(); await settle(); return N.shared - n0; };
+  assert.ok((await wrote(() => v.registerReview(cx))) >= 2 && S.store.get("review.open")?.[0]?.url === v.prSel.url, "the review registers itself: review.open and review.registry");
+  assert.equal(await wrote(() => v.registerReview(cx)), 0, "a visit a moment later, nothing else new: no file, no shared write");
+  assert.equal(await wrote(() => { v.prog.seen.add(v.patch[0].path); v.registerReview(cx); }), 2, "a file viewed: written");
+  assert.equal(await wrote(() => { v.publish(); v.publish(); }), 0, "the bar's facts published again unchanged: not written");
+  assert.equal(await wrote(() => { v.comments = [...v.comments, { id: "c9", file: v.patch[0].path, start: 1, end: 1, text: "x" }]; v.publish(); }), 1, "one more pending comment: written once");
+  S.writes = false;
+}
+// ---- the panel with a PR chosen does not build the list of PRs behind it
+{
+  const { v: p, prs } = await openPanel(PR2(), 40);
+  p.picking = true; const list = counted(() => frame(p));
+  p.memo.clear(); p.context = null; p.choose(prs[0], cx); await settle();
+  const chosen = counted(() => frame(p));
+  assert.ok(list("context.ruleContext") >= 40 && chosen("context.ruleContext") === 0 && chosen("view.picker") === 0, "the list's rows are made while the list shows, not behind a chosen PR");
+  S.exec = null; S.props = null; S.spaces = null;
+}
+// ---- the list's triage reads a PR's cached diff once per head, not each time the list opens
+{
+  const { hash } = await import("./pr.js");
+  const { v: p, prs } = await openPanel(PR2(), 6), pr = prs.find((x) => x.state === "open"), base = `/h/pr-data/cache/diff-${hash(pr.url)}-${pr.headSha}`;
+  S.files.set(`${base}.json`, JSON.stringify({ url: pr.url, head: pr.headSha, parts: 1 })); S.files.set(`${base}.0.txt`, PR2().diff);
+  let reads = 0; const get = S.files.get.bind(S.files); S.files.get = (k) => { if (k === `${base}.0.txt`) reads++; return get(k); };
+  p.picking = true; p.loadTriage(cx); await settle(); p.loadTriage(cx); await settle();
+  assert.deepEqual([reads, p.triage.has(pr.url)], [1, true], "two loads of the list's triage read the diff once");
+  S.files.get = get; S.exec = null; S.props = null; S.spaces = null;
+}
+
+// ---- the command loop goes on after a command that threw, and starts again after one that Herdr stopped
+{
+  const waiters = []; S.nextCommand = () => new Promise((r) => waiters.push(r));
+  const v = await openReview(PR2()), send = async (c) => { waiters.shift()(c); await settle(); };
+  assert.equal(waiters.length, 1, "the review waits for its commands");
+  await send("findings"); assert.equal(v.tab, "findings");
+  const command = v.command; v.command = () => { throw new Error("boom"); };
+  await send("files"); assert.equal(v.note, 'The command "files" failed: boom', "a command that throws is said");
+  v.command = command;
+  await send("files"); assert.equal(v.tab, "files", "and the next one runs");
+  // Stopped by Herdr: the loop's task is gone with its wait, and cmdAt was never taken back.
+  waiters.length = 0; v.cmdAt = Date.now() - 10000;
+  frame(v); await settle();
+  assert.equal(waiters.length, 1, "the next frame starts the loop again");
+  await send("comments"); assert.equal(v.tab, "comments", "and commands run again");
+  frame(v); await settle(); assert.equal(waiters.length, 1, "a loop that waits is not started twice");
+  S.nextCommand = null;
+}
+
 // ---- frames that Herdr stopped: the view draws less there
 // (A stopped frame leaves `drawing` set: no code of the mod runs after it. Two in a row on one tab and page count.)
 {
@@ -128,10 +194,10 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   const big = await openReview(BIG());
   STATES.Resilience(big); await settle(); await quiet(big);
   assert.ok(ids(big).has("rv-res-canvas") && big.leanLevel() === 0, "the map is drawn");
-  assert.ok(stopped(big).has("rv-res-canvas"), "one stopped frame changes nothing");
+  assert.ok(stopped(big).has("rv-res-canvas") && stopped(big).has("rv-res-canvas"), "two stopped frames change nothing (a busy machine does that to a frame of 25 ms)");
   assert.ok(ids(big).has("rv-res-canvas") && big.cut === 0, "and a frame that ended starts the count again");
-  stopped(big); const lean = stopped(big);
-  assert.ok(!lean.has("rv-res-canvas") && lean.has("rv-res-canvas-lean") && lean.has("rv-res-canvas-again"), "two in a row: the page without its picture, with a sentence and a way back");
+  stopped(big); stopped(big); const lean = stopped(big);
+  assert.ok(!lean.has("rv-res-canvas") && lean.has("rv-res-canvas-lean") && lean.has("rv-res-canvas-again"), "three in a row: the page without its picture, with a sentence and a way back");
   assert.ok(!ids(big).has("rv-res-canvas"), "it stays so");
   STATES.Architecture(big); await settle(); await quiet(big);
   assert.ok(ids(big).has("rv-arch-canvas"), "another page is drawn as before");
@@ -143,9 +209,23 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   STATES["Files (as opened)"](big); await settle(); frame(big);
   STATES["Walkthrough, a layer"](big); await settle(); frame(big);
   const rows = () => big.items.filter((it) => it.t === "row").length, before = rows();
-  assert.ok(before > 4000 && before <= 5000, `the Walkthrough lists up to 5 000 lines (${before}), also after the Files tab was drawn`);
-  stopped(big); stopped(big);
-  assert.ok(rows() <= 2500 && rows() > 1500, `after two stopped frames it lists half (${rows()})`);
+  assert.ok(before > 2000 && before <= 3000, `the Walkthrough lists up to 3 000 lines (${before}), also after the Files tab was drawn`);
+  // The open layer has its lines wherever it stands; the room left goes to the layers after it, then to the ones before.
+  const shown = (k) => { const s = big.steps()[k], ids = new Set(big.present(s)); return [big.items.filter((it) => it.t === "row" && ids.has(it.hunk)).length, big.present(s).reduce((n, id) => n + big.byId.get(id).rows.length, 0)]; };
+  for (const k of [0, 9, big.steps().length - 1]) {
+    big.command(`step:${k}`, cx); frame(big);
+    const [got, all] = shown(k);
+    assert.ok(all > 0 && got >= all, `layer ${k} open: all of its ${all} lines are listed (${got})`);
+    assert.ok(rows() <= 3000 + 200, `and the list still holds about 3 000 (${rows()})`);
+  }
+  const last = big.steps().length - 1; assert.ok(shown(last - 1)[0] > 0 && shown(1)[0] === 0, "the last layer open: the room left goes to the ones before it, the first ones wait");
+  big.command("step:0", cx); frame(big);
+  stopped(big); stopped(big); stopped(big);
+  assert.ok(rows() <= 1500 && rows() > 700, `after three stopped frames it lists half (${rows()})`);
+  // After a while it tries all of it again.
+  const now = Date.now; Date.now = () => now() + 6 * 60000;
+  frame(big); assert.ok(rows() > 2000, `five minutes later the list is whole again (${rows()})`);
+  Date.now = now;
   // An exception is not a stopped frame.
   const boom = big.renderReview; big.renderReview = () => { throw new Error("boom"); };
   for (let k = 0; k < 3; k++) assert.throws(() => big.render(cx), /boom/);
@@ -153,30 +233,54 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   assert.equal(big.leanLevel(), 1, "three frames that threw did not count as stopped");
 }
 
-// ---- a big map is laid out after the frame, a small one in it
-// (In Herdr the layout of 80 cards takes 208 ms and a render is stopped after about 50: laid out in the frame, the
-// page never came.)
+// ---- a frame lays a map out only as far as a frame can afford; the rest comes in slices after it
+// (In Herdr a render is stopped after about 50 ms and the page never came: the full layout of 80 cards took 208 ms
+// there. One mechanism, stack.js laidOut: up to 16 calls the full layout in the frame; up to 40 one rough pass with no
+// order priced; more, as here (80 cards, 102 calls), nothing in the frame and the rough pass in the first slice after
+// it. The search for the better layout, arch.js layoutJob, follows, one slice per timer tick, and replaces the picture
+// once.)
 {
-  const drawn = (v) => { S.ids = new Set(); const ran = counted(() => frame(v)); const ids = S.ids; S.ids = null; return { layouts: ran("arch.archLayout"), map: ["rv-arch-canvas", "rv-res-canvas"].filter((id) => ids.has(id)) }; };
+  // priced: the orders of cards and lanes a layout tried (a pass counts its finished lines' overlaps once: not that).
+  const ids = (f) => { S.ids = new Set(); const ran = counted(f), seen = S.ids; S.ids = null; return { ran, map: ["rv-arch-canvas", "rv-res-canvas"].filter((id) => seen.has(id)) }; };
+  const drawn = (v) => { const { ran, map } = ids(() => frame(v)); return { layouts: ran("arch.archLayout"), priced: ran("arch.permutations") + ran("arch.overlapsOf") - ran("arch.archLayout"), map }; };
+  // One timer tick: what ran in it. A tick is at most one slice (one layoutStep) or one rough pass, never both.
+  const tick = (what) => { const ran = counted(() => later()), n = { steps: ran("arch.layoutStep"), layouts: ran("arch.archLayout"), priced: ran("arch.permutations") + ran("arch.overlapsOf") - ran("arch.archLayout") };
+    assert.ok(n.steps <= 1 && !(n.steps && n.layouts), `${what}: one slice per timer tick (${JSON.stringify(n)})`); return n; };
+  const searched = (what) => { let ticks = 0; while (ticks < 5000 && tick(what).steps) ticks++; return ticks; };
   const big = await openReview(BIG());
+  for (const id of ["rv-arch-canvas", "rv-res-canvas"]) big.hsOf(id).viewW = 1300; // measured, as in a window: Fit decides from it
   for (const [state, id] of [["Architecture", "rv-arch-canvas"], ["Resilience", "rv-res-canvas"]]) {
-    STATES[state](big); await settle(); big.fitMemos = null;
-    assert.deepEqual(drawn(big), { layouts: 0, map: [] }, `${state}, 80 cards: the first frame lays nothing out and draws the page without its picture`);
-    later();
-    assert.equal(big.fitMemos && Object.keys(big.fitMemos).length, 1, `${state}: one layout per task`);
-    settled(big);
-    assert.deepEqual(drawn(big), { layouts: 0, map: [id] }, `${state}, 80 cards: the picture is there once its layout is, and the frame still lays nothing out`);
+    STATES[state](big); await settle(); await quiet(big); big.fitMemos = null; // every search queued so far is through
+    assert.deepEqual(drawn(big), { layouts: 0, priced: 0, map: [] }, `${state}, 80 cards: the first frame lays nothing out and draws the page without its picture`);
+    assert.equal(Object.keys(big.fitMemos).length, 1, `${state}: only the card size shown is asked for`);
+    // The first slice after the frame: one layout, and that one rough (no order of cards or lanes priced).
+    assert.deepEqual(tick(state), { steps: 0, layouts: 1, priced: 0 }, `${state}: the first slice lays the map out once, roughly`);
+    const rough = Object.values(big.fitMemos)[0].L;
+    assert.deepEqual(drawn(big), { layouts: 0, priced: 0, map: [id] }, `${state}: the picture is there, and the frame lays nothing out`);
+    // How many slices that takes depends on the machine (a slice is about 10 ms); that a slice is ten steps of the
+    // layout and never a whole one is counted with a stepping clock in test_arch.mjs.
+    assert.ok(searched(state) >= 1, `${state}: the search runs in slices after the frame`);
+    assert.notEqual(Object.values(big.fitMemos)[0].L, rough, `${state}: the search's layout replaced the rough one`);
+    assert.deepEqual(drawn(big), { layouts: 0, priced: 0, map: [id] }, `${state}: the frame after the search lays nothing out`);
+    assert.equal((await measure(big, 1)).asked.after, 0, `${state}: and asks for no timer once the search is through`);
   }
-  // Marks changed (a finding dismissed): the frame draws the layout from before until the new one is there.
-  STATES.Architecture(big); settled(big);
+  // Marks changed (a finding dismissed): the frame draws the layout from before until the search for the new one is
+  // through; no rough picture in between.
+  STATES.Architecture(big); await quiet(big);
   const marked = big.openFindings().find((f) => big.archMarksNow().nodes.size && [...big.archMarksNow().nodes.values()].some((m) => m.findings.includes(f) && m.findings.length === 1));
   assert.ok(marked, "the fixture has a card marked by one finding");
-  { big.find.status = { ...big.find.status, [marked.id]: { s: "dismissed", at: "2026-11-15T10:00:00Z", ids: marked.ids } };
-    assert.deepEqual(drawn(big), { layouts: 0, map: ["rv-arch-canvas"] }, "new marks on a big map: the picture from before stays for the frame"); settled(big); }
+  { const shown = () => big.fitMemos.true.L, before = shown(); // the map with narrow cards (Fit), the one on the page
+    big.find.status = { ...big.find.status, [marked.id]: { s: "dismissed", at: "2026-11-15T10:00:00Z", ids: marked.ids } };
+    assert.deepEqual(drawn(big), { layouts: 0, priced: 0, map: ["rv-arch-canvas"] }, "new marks on a big map: the picture from before stays for the frame");
+    assert.equal(shown(), before);
+    { const n = tick("new marks"); assert.deepEqual([n.steps, n.layouts], [1, 0], "no rough pass: the picture from before stands in while the search runs"); }
+    searched("new marks");
+    assert.notEqual(shown(), before, "and the search's layout replaces it"); }
   const small = await openReview(PR2());
-  STATES.Architecture(small); await settle(); small.fitMemos = null;
+  for (const id of ["rv-arch-canvas", "rv-res-canvas"]) small.hsOf(id).viewW = 1300;
+  STATES.Architecture(small); await settle(); await quiet(small); small.fitMemos = null;
   const first = drawn(small);
-  assert.ok(first.layouts > 0 && first.map.includes("rv-arch-canvas"), "9 cards: laid out and drawn in the first frame, as before");
+  assert.deepEqual([first.layouts, first.map, first.priced > 0], [1, ["rv-arch-canvas"], true], "9 cards: laid out once and drawn in the first frame, with the orders tried (the full layout: nothing crosses, so one pass)");
 }
 // ---- the panel beside the chat builds what it shows
 // With a PR chosen the list of PRs is not built (it was: 390 elements a frame without a single diff line, now 76), and
@@ -209,17 +313,27 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   assert.deepEqual(OWN.filter((f) => m.calls(f) > 0), [], "Architecture with Infrastructure changes: a frame that changes nothing computes none of these again");
   assert.ok(fns <= 1500, `Architecture with Infrastructure changes: ${fns} function calls in a frame that changes nothing, at most 1500`);
   assert.deepEqual(m.asked, { notify: 0, after: 0, every: 0, spawn: 0, exec: 0, read: 0, shared: 0 }, "and asks for no redraw, timer, task, command or shared write");
-  // Thirty resources that refer to the first: the frame draws the section without its picture, the layout comes after it.
-  const drawn = () => { S.ids = new Set(); const ran = counted(() => frame(v)); const ids = S.ids; S.ids = null; return { layouts: ran("arch.archLayout"), picture: ids.has("rv-infra-canvas") }; };
-  const lines = Array.from({ length: 30 }, (_x, i) => [`+resource "aws_sqs_queue" "q${i}" {`, i ? "+  redrive = aws_sqs_queue.q0.arn" : '+  name = "first"', "+}"]).flat();
-  v.infra = infraModel([{ path: "queues.tf", status: "added", lines: ["@@ -0,0 +1,90 @@", ...lines] }]); v.infraMemo = null;
+  // As the maps (stack.js laidOut). Thirty resources that refer to the first, 29 calls: more than a frame can lay out
+  // in full, so one rough pass in the frame (no order priced), the picture there at once.
+  const drawn = () => { S.ids = new Set(); const ran = counted(() => frame(v)); const ids = S.ids; S.ids = null; return { layouts: ran("arch.archLayout"), priced: ran("arch.permutations") + ran("arch.overlapsOf") - ran("arch.archLayout"), picture: ids.has("rv-infra-canvas") }; };
+  // n queues that refer to the first (and, with `two`, to the second as well).
+  const queues = (n, two = false) => infraModel([{ path: "queues.tf", status: "added", lines: [`@@ -0,0 +1,${4 * n} @@`, ...Array.from({ length: n }, (_x, i) => [`+resource "aws_sqs_queue" "q${i}" {`, i ? "+  redrive = aws_sqs_queue.q0.arn" : '+  name = "first"', ...(two && i > 1 ? ["+  other = aws_sqs_queue.q1.arn"] : []), "+}"]).flat()] }]);
+  await quiet(v); v.infra = queues(30); v.infraMemo = null;
   assert.equal(v.infra.cards.length, 30);
-  assert.deepEqual(drawn(), { layouts: 0, picture: false }, "30 cards: the first frame lays nothing out");
-  later();
-  assert.equal(v.infraMemo?.pic.L.nodes.length, 30, "its layout is made right after the frame");
-  assert.deepEqual(drawn(), { layouts: 0, picture: true }, "and the next frame draws the picture without laying it out again");
+  assert.deepEqual(drawn(), { layouts: 1, priced: 0, picture: true }, "30 cards: one rough layout in the frame, and the picture");
+  assert.deepEqual(drawn(), { layouts: 0, priced: 0, picture: true }, "the next frame lays nothing out");
   await quiet(v);
-  assert.deepEqual(drawn(), { layouts: 0, picture: true }, "also once the search for a better layout is through");
+  assert.deepEqual(drawn(), { layouts: 0, priced: 0, picture: true }, "also once the search for a better layout is through");
+  // Forty that refer to the first two, 77 calls: too many even for a rough pass in a frame. The frame draws the
+  // section without its picture, the first slice after it lays the picture out.
+  v.infra = queues(40, true); v.infraMemo = null;
+  assert.deepEqual(drawn(), { layouts: 0, priced: 0, picture: false }, "40 cards, 77 calls: the first frame lays nothing out");
+  assert.equal(v.infraMemo.pic.args[0].edges.length, 77);
+  later();
+  assert.equal(v.infraMemo?.pic.L.nodes.length, 40, "its layout is made right after the frame");
+  assert.deepEqual(drawn(), { layouts: 0, priced: 0, picture: true }, "and the next frame draws the picture without laying it out again");
+  await quiet(v);
+  assert.deepEqual(drawn(), { layouts: 0, priced: 0, picture: true }, "also once the search for a better layout is through");
 }
 // ---- "Open in <Editor>": the installed editors are found by reading files, with no process; the frames that draw
 // the links (a file head's zones in the big diff, the cards' monogram) start none either, however many follow; a

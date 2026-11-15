@@ -8,6 +8,8 @@
 // the PR, the call is not) and "outside" (its file is not in the PR). A changed function whose declaration lines
 // changed has `sig`; a caller of it whose call did not change is the one to look at. Tests are callers too, counted
 // apart and never cards. A function this PR adds is in the picture only when something outside the diff uses it.
+// Infrastructure code (what infra.js reads: Terraform, CloudFormation and SAM templates) is left to the section
+// "Infrastructure changes": its files are neither changed symbols nor callers here, and no server is asked about them.
 
 export const MARKS = {
   outside: { glyph: "◆", word: "not in this PR", group: "Callers not in this PR" },
@@ -18,6 +20,7 @@ export const MARK_ORDER = ["outside", "untouched", "changed"];
 export const SIG = { glyph: "⚠", word: "signature changed, caller not" };
 // MAX_CARDS: past it the callers are summed up by file, then by changed function. ASK: changed symbols asked for
 // their references; FILES: caller files asked for their symbols; MS: the whole computation.
+export const MODEL_V = 2; // a kept result of another version is computed again (2: without infrastructure files)
 export const LIMITS = { MAX_CARDS: 40, ASK: 60, FILES: 80, MS: 90000 };
 
 const FUNC = new Set(["function", "method", "constructor"]), TYPES = new Set(["class", "interface", "struct", "enum"]);
@@ -132,12 +135,13 @@ export function adaptedOnly(changed, refs, changes) {
 
 /**
  * Asks the bridge and builds the model. call(endpoint, body) -> the bridge's answer (defs.js call); hunks: the PR's
- * (pr.js hunksOf with rows); supported(path): whether a language server exists for it; onStep(done, of).
+ * (pr.js hunksOf with rows); supported(path): whether a language server exists for it; infra(path): an infrastructure
+ * file, left out (counted in model.infra); onStep(done, of).
  * -> {status: "ok", model} | {status: "starting" | "error", message}. Never throws for a bridge answer.
  * model: {v, servers: [names], uncovered: [{ext, files}], failed: [messages], functions: [{...changedSymbols' fields,
  *   callers, outside: uses outside the checkout, more: uses past the bridge's limit, error}], skipped, ms}
  */
-export async function computeImpact({ call, root, hunks, supported, limits = LIMITS, now = Date.now, onStep = () => {} }) {
+export async function computeImpact({ call, root, hunks, supported, infra = () => false, limits = LIMITS, now = Date.now, onStep = () => {} }) {
   const t0 = now(), changes = fileChanges(hunks), symbols = new Map(), servers = new Set(), failed = new Set(), noServer = new Map();
   const late = () => now() - t0 > limits.MS;
   // A file's symbols, asked once: a list, or undefined when there is no server for it or the server failed.
@@ -151,8 +155,10 @@ export async function computeImpact({ call, root, hunks, supported, limits = LIM
     return r;
   };
   const changed = [];
+  let infraFiles = 0;
   for (const [path, ch] of changes) {
     if (!ch.added.size && !ch.removed.length) continue;
+    if (infra(path)) { infraFiles++; continue; }
     if (!supported(path)) { noServer.set(ext(path), (noServer.get(ext(path)) ?? 0) + 1); continue; }
     const r = await symbolsOf(path);
     if (r.status === "starting") return { status: "starting", message: r.message };
@@ -166,7 +172,7 @@ export async function computeImpact({ call, root, hunks, supported, limits = LIM
     if (late()) { skipped++; continue; }
     const r = await call("/references", { root, path: fn.path, line: fn.nameLine, character: fn.character });
     if (r.status === "starting") return { status: "starting", message: r.message };
-    refs.set(fn.id, r.status === "ok" ? r : { references: [], error: r.message || r.status });
+    refs.set(fn.id, r.status === "ok" ? { ...r, references: (r.references ?? []).filter((x) => !infra(x.path)) } : { references: [], error: r.message || r.status });
   }
   const files = [...new Set([...refs.values()].flatMap((r) => (r.references ?? []).map((x) => x.path)))].filter((p) => !symbols.has(p)).slice(0, limits.FILES);
   for (const path of files) { if (late()) break; const r = await symbolsOf(path); if (r.status === "starting") return { status: "starting", message: r.message }; }
@@ -176,7 +182,7 @@ export async function computeImpact({ call, root, hunks, supported, limits = LIM
     .filter((fn) => !fn.isNew || fn.callers.some((c) => c.mark !== "changed"))
     .sort((a, b) => a.path.localeCompare(b.path) || a.line - b.line);
   if (!servers.size && failed.size && !functions.length) return { status: "error", message: [...failed][0] };
-  return { status: "ok", model: { v: 1, servers: [...servers].sort(), uncovered: [...noServer].map(([e, n]) => ({ ext: e, files: n })).sort((a, b) => b.files - a.files || a.ext.localeCompare(b.ext)),
+  return { status: "ok", model: { v: MODEL_V, infra: infraFiles, servers: [...servers].sort(), uncovered: [...noServer].map(([e, n]) => ({ ext: e, files: n })).sort((a, b) => b.files - a.files || a.ext.localeCompare(b.ext)),
     failed: [...failed], functions, skipped, ms: now() - t0 } };
 }
 
@@ -210,7 +216,8 @@ export function impactLines(model) {
   const source = [
     model.servers?.length ? `Callers the language server found (${model.servers.join(", ")}), direct ones only.` : null,
     model.servers?.length ? "Dynamic calls, reflection, removed functions, other repositories and languages without a server are not in it." : null,
-    model.uncovered?.length ? `Not covered: ${plural(model.uncovered.reduce((s, u) => s + u.files, 0), "file")} without a language server (${model.uncovered.map((u) => (u.ext ? `.${u.ext}` : "no extension")).join(", ")}).` : null,
+    model.uncovered?.length || model.infra ? `Not covered: ${[model.uncovered?.length && `${plural(model.uncovered.reduce((s, u) => s + u.files, 0), "file")} without a language server (${model.uncovered.map((u) => (u.ext ? `.${u.ext}` : "no extension")).join(", ")})`,
+      model.infra && `${plural(model.infra, "infrastructure file")}: see Infrastructure changes`].filter(Boolean).join("; ")}.` : null,
     ...(model.failed ?? []), ...errors.map((e) => `A search did not finish: ${e}`),
     model.skipped ? `${plural(model.skipped, `changed ${n}`)} ${model.skipped === 1 ? "was" : "were"} not asked for callers (limit reached).` : null,
     outside ? `${plural(outside, "use")} outside the checkout or in vendored code ${outside === 1 ? "is" : "are"} not shown.` : null,

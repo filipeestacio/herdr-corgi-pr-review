@@ -10,12 +10,20 @@
 //   does not touch that refers to a changed or removed one shows.
 // - CloudFormation and SAM (YAML by indentation under its top-level keys, or JSON): Resources with Type and the top
 //   level of Properties, references by !Ref, !GetAtt, ${…} and DependsOn. No anchors, flow mappings or tabs.
-import { archLayout, markRoom, ARCH, FIT } from "./arch.js";
+import { archQuick, markRoom, ARCH, FIT } from "./arch.js";
 
 export const INFRA_MAX = 40, INFRA_LINES = 4; // cards before one type becomes one card; changed arguments on a card
 const NOTE_CH = 36; // the characters of a card's line in one row
 const TF = /\.tf$/, TFVARS = /\.tfvars$/, CFN = /\.(ya?ml|json|template)$/;
 export const isIac = (path) => TF.test(path) || TFVARS.test(path) || CFN.test(path);
+// Whether a file of the patch ({path, lines, head?}) is one this picture reads: Terraform by its name; YAML or JSON
+// only when it is a template. Any YAML or JSON may be one: only one that names Resources is read. Without its text
+// at the head, its patch or its name (template.yaml, …stack….json) has to say so.
+export function isInfraFile(f) {
+  if (TF.test(f.path) || TFVARS.test(f.path)) return true;
+  const named = /(^|\/)(template|[^/]*(stack|cloudformation|cfn|sam)[^/]*)\.(ya?ml|json)$|\.template$/i.test(f.path);
+  return CFN.test(f.path) && ((f.lines ?? []).some((l) => /Resources|AWS::/.test(l)) || (typeof f.head === "string" ? f.head.includes("Resources") : named));
+}
 export const dirOf = (path) => (path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "");
 const squash = (x) => String(x).replace(/\s+/g, " ").trim(), unq = (x) => String(x).replace(/^(["'])(.*)\1$/, "$2");
 
@@ -308,10 +316,7 @@ export function infraModel(files, others = []) {
   const tfStack = (path) => stack(`tf:${dirOf(path)}`, dirOf(path) || "Repository root", "Terraform", "tf");
   for (const f of files ?? []) {
     const tf = TF.test(f.path) || TFVARS.test(f.path);
-    // Any YAML or JSON may be a template: only one that names Resources is read. Without its text at the head, its
-    // patch or its name (template.yaml, …stack….json) has to say so, and it is then named as not read.
-    const named = /(^|\/)(template|[^/]*(stack|cloudformation|cfn|sam)[^/]*)\.(ya?ml|json)$|\.template$/i.test(f.path), said = !tf && (f.lines.some((l) => /Resources|AWS::/.test(l)) || (typeof f.head === "string" ? f.head.includes("Resources") : named));
-    if (!tf && !(CFN.test(f.path) && said)) continue;
+    if (!isInfraFile(f)) continue; // a template without its text at the head is named as not read, below
     const sides = sidesOf(f), from = f.from ?? f.path;
     if (tf) kinds.add("Terraform");
     if (!sides) { unread.push({ path: f.path, why: typeof f.head === "string" ? "the patch does not fit the file at the PR head" : "the file at the PR head is not loaded" }); if (!tf) kinds.add("CloudFormation"); continue; }
@@ -442,11 +447,13 @@ export function infraMarks(model, findings, alias = new Map()) {
   return { nodes, edges: new Map() };
 }
 // → {arch, marks, args, L}: one layout with a row per line of a card and the room its finding mark takes. args: what
-// archLayout got, for the search for a better layout after the render (review.js layoutLater, arch.js archSearch).
-export function infraPicture(model, findings = [], fit = false) {
+// the layout got, for the search for a better layout after the frame (stack.js laidOut, arch.js layoutJob). L is what a
+// frame can afford (arch.js archQuick); lay: false leaves it to the caller (the review lays a big picture out after
+// the frame).
+export function infraPicture(model, findings = [], fit = false, lay = true) {
   const arch = infraArch(model), marks = infraMarks(model, findings, arch.alias), w = (fit ? FIT : ARCH).W - 20;
   const args = [arch, "diff", (n) => (n.lines ?? []).reduce((k, l) => k + l.rows, 0) + (marks.nodes.has(n.id) ? markRoom(marks.nodes.get(n.id), w).rows : 0), fit, { labels: true }];
-  return { arch, marks, args, L: archLayout(...args) };
+  return { arch, marks, args, ...(lay ? { L: archQuick(...args) } : {}) };
 }
 
 // ---- Copy as Markdown: the section's lines. table(head, rows) and flow(picture, opts) are markdown.js's own (its

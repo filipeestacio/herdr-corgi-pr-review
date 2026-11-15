@@ -16,7 +16,7 @@ if (!existsSync(FIXTURES)) {
 }
 
 const { default: PrReview } = await import("./main.js");
-const { splitPatch, hunksOf, diffRows, hash, mapReview, lineKey } = await import("./pr.js");
+const { splitPatch, hunksOf, diffRows, hash, mapReview, lineKey, reviewRequest } = await import("./pr.js");
 const { langOf } = await import("./syntax.js");
 const { foldOnOpen, resWatch } = await import("./views.js");
 const R = await import("./review.js");
@@ -104,6 +104,10 @@ async function open({ diff, analysis = null, findings = null, ctx = null, pr = 2
   v.ctx = ctx ? JSON.parse(ctx) : null; v.head = v.ctx?.head ?? null;
   await v.loadFindings(cx);
   if (analysis) v.ai = v.mapSaved(JSON.parse(analysis), true);
+  // The analysis also where the first frame asks for it (renderReview: loadAi reads the picked model's cached one,
+  // the exact file and the newest). Without the files that read took the analysis away at the first settle(), and
+  // what a tour draws after it (the previews, the popups, the card menus, Ask and Look inside) had none.
+  if (analysis) { const job = reviewRequest({ url, pr: url, worktree: null, files: v.patch, hunks: v.hunks, model: "sonnet", context: v.ctxReq(), dir: "/h/pr-data/cache" }); S.files.set(job.out, analysis); S.files.set(job.latest, analysis); }
   v.securityNow(cx); v.publish();
   await settle();
   return v;
@@ -111,7 +115,7 @@ async function open({ diff, analysis = null, findings = null, ctx = null, pr = 2
 
 // Everything one review shows.
 async function tour(v, name) {
-  const at = (x) => `${name}: ${x}`;
+  const at = (x) => `${name}: ${x}`, had = Boolean(v.ai);
   for (const tab of ["files", "steps", "comments", "findings"]) act(v, tab, at(`tab ${tab}`));
   // Syntax colors: once the queue is drained, a line of code that starts with a keyword has spans. It keeps them with a
   // line selected (the row arrays stay the same ones), with line wrap on, and gets them again with the whole file
@@ -274,6 +278,7 @@ async function tour(v, name) {
   }
   await deep(v, at);
   await settle();
+  assert.equal(Boolean(v.ai), had, at("the analysis is there to the tour's end (or was never there)"));
 }
 
 const PR2 = { diff: fx("pr2.diff"), ctx: fx("ctx.json"), impact: fx("impact.json") };
@@ -448,23 +453,26 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   act(b, "steps", "no data: the Analysis tab"); act(b, "page:blast", "a run without data or rights");
   assert.ok(!b.pageParts.includes("data") && !b.pageParts.includes("rights") && !/Where sensitive data goes|Who may do what/.test(b.mdText(false)), "no data, no section, on the page and in its Markdown");
 }
-// The Security page's map shows archLayout's picture at once; its better layout (arch.js archSearch: a full layout per
-// try, too much for a render) comes after the render, in slices (layoutMore): the memo's layout is replaced once, the
-// view is told, and the page draws with it.
+// The Security page's map shows archLayout's picture at once (the base layout: two lines round the picture); its
+// better layout (arch.js layoutJob: too much work for a render) comes after the render, in slices of a timer tick each
+// (stack.js layoutPump): the memo's layout is replaced once, the view is told once, and the page draws with it.
 {
   const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json") });
   act(v, "page:blast", "Security, the map at once");
-  const { lineStats, archLayout } = await import("./arch.js"), quick = v.secMemo.L, jobs = v.layoutJobs.length;
+  const { lineStats } = await import("./arch.js"), { layoutSlice, laidOut } = await import("./stack.js"), quick = v.secMemo.L, q = lineStats(quick);
+  assert.deepEqual([q.crossings, q.bends, q.around], [0, 10, 2], "the base layout, at once");
   let told = 0;
-  const later = { ...cx, notify() { told++; }, timer: { ...cx.timer, after: (_ms, f) => setImmediate(() => f(later)) }, spawn: (fn) => cx.spawn(() => fn(later)) };
-  v.layoutMore(later); await settle();
-  const s = lineStats(v.secMemo.L), q = lineStats(quick);
-  assert.ok(jobs > 0 && v.secMemo.L !== quick && told >= 1 && !v.layoutBusy && v.layoutJobs.length === 0, "searched after the render");
-  assert.ok(s.crossings <= q.crossings && s.bends < q.bends && s.around < q.around, `${JSON.stringify(s)} was ${JSON.stringify(q)}`);
+  const later = { ...cx, notify() { told++; }, timer: { ...cx.timer, after: (_ms, f) => setImmediate(() => f(later)) } };
+  layoutSlice(later); // the tick after the render (this test's renders have a timer that never fires)
+  for (let i = 0; i < 50 && v.secMemo.L === quick; i++) await settle();
+  const s = lineStats(v.secMemo.L);
+  assert.deepEqual([s.crossings, s.bends, s.around], [0, 8, 1], "after the search: fewer bends, one line less round the picture");
+  assert.ok(told >= 1, "the view is told");
   draw(v, "Security, the map after its search");
-  // A memo replaced meanwhile is not searched on: its job ends without a layout.
-  const gone = { key: "x", L: quick }; v.layoutLater(gone, [null], () => null); v.layoutMore(later); await settle();
-  assert.ok(gone.L === quick && !v.layoutBusy && archLayout(null).nodes.length === 0);
+  // A memo replaced meanwhile is not searched on: its entry keeps its layout, and nobody is told.
+  await settle(); told = 0;
+  const gone = laidOut([null], { key: "x" }, () => null), empty = gone.L; layoutSlice(later); await settle();
+  assert.ok(gone.L === empty && told === 0);
 }
 // Someone else's PR with reasons for a security review: the offers instead of a start.
 {
@@ -526,6 +534,10 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   S.store.set("review.minimized", { target: prs[3], at: now });
   S.spaces = [{ id: "sA", active: true, folder: "/h/a" }];
   const v = new PrReview(); v.init({}, cx); await settle();
+  // Not the first-run switch to Setup (nothing is installed here): it covered every frame below until "setup:close",
+  // and the lists and the diff were built behind it only because the panel built them whether they showed or not.
+  // Setup has its own frames further down.
+  v.setupFirst = false;
   v.spaceSlug = { root: "/h/a", slug: "saefty/corgi-demo" };
   assert.deepEqual(v.panelProgress().shown.map((r) => r.number), [2], "In progress: work done and not merged; one only opened is not there");
   assert.deepEqual(v.panelProgress().left.map((r) => [r.number, r.state]), [[1, "merged"]], "the merged one is listed apart, dimmed");
@@ -709,6 +721,19 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     assert.equal(w.impactSt.state, "idle"); assert.deepEqual(asked, [], "no language server is asked for someone else's PR before the click");
     click("rv-impact-run", "Impact, untrusted: Find callers"); await settle(); await settle(); draw(w, "Impact, untrusted: the result");
     assert.equal(w.impactSt.state, "ok");
+    // A Terraform PR (demo/fixtures/infra): its files are "Infrastructure changes"' part. No Impact section, nothing in
+    // the Markdown, and no bridge or language server asked, though the checkout is there and the PR is trusted.
+    const tfDiff = readFileSync(new URL("../../demo/fixtures/infra/pr.diff", import.meta.url), "utf8"), starts = [];
+    const exec0 = S.exec; S.exec = async (cmd, args) => { starts.push(args.at(-1)); return exec0(cmd, args); };
+    const tf = await open({ diff: tfDiff, pr: 7, title: "feat(orders): drop the dead-letter queue" }); tf.head = "0123abc"; tf.worktree = { url: tf.prSel.url, head: tf.head, path: "/h/w" }; asked.length = 0; starts.length = 0;
+    act(tf, "steps", "Impact, Terraform only: the Analysis tab"); act(tf, "page:arch", "Impact, Terraform only: the page"); await settle(); draw(tf, "Impact, Terraform only: still none"); tf.command("impact", cx); await settle();
+    assert.deepEqual([tf.impactSt.state, tf.pageParts.includes("impact"), tf.pageParts.includes("infra"), asked, starts.filter((x) => x === "start"), /## Impact/.test(tf.mdText(false))], ["none", false, true, [], [], false], "a diff of infrastructure code has no Impact section and starts nothing");
+    // The same files next to code: Impact covers the code and says where the rest is.
+    const mixed = await open({ diff: `${tfDiff}\n${fx("pr2.diff")}`, ctx: fx("ctx.json"), pr: 8, title: "feat: both" }); mixed.worktree = { url: mixed.prSel.url, head: mixed.head, path: "/h/w" }; asked.length = 0;
+    act(mixed, "steps", "Impact, mixed: the Analysis tab"); act(mixed, "page:arch", "Impact, mixed: the page"); await settle(); draw(mixed, "Impact, mixed: about to start"); mixed.impactRun(cx); await settle(); await settle(); S.texts = new Set(); draw(mixed, "Impact, mixed: the result"); const seen = [...S.texts]; S.texts = null;
+    assert.deepEqual([mixed.impactNow()?.infra, asked.filter((x) => /\.tf|\.ya?ml/.test(x))], [6, []], "five Terraform files and the SAM template are left out");
+    assert.ok(seen.includes("Not covered: 6 infrastructure files: see Infrastructure changes.") && mixed.pageParts.includes("impact") && mixed.pageParts.includes("infra") && mixed.mdText(false).includes("Not covered: 6 infrastructure files: see Infrastructure changes."), "the hint is on the page and in its Markdown");
+    S.exec = exec0;
   } finally { globalThis.fetch = realFetch; S.exec = null; }
 }
 // The Markdown of a page says what the page shows: every text the page draws (each crossing and path opened in turn,
@@ -806,8 +831,13 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     click(`rv-infra-n${w.infraMemo.pic.L.nodes.findIndex((n) => n.at === "stacks/orders/queue.tf:2")}`, "a card of the infrastructure picture"); draw(w, "Infrastructure changes: a card clicked");
     assert.ok(w.page === null && !w.note, "a click on a changed resource's card leads to it in the diff");
   }
+  // Back to this review: opening the other ones above put their PR in the stand-in's shared state, and the next
+  // frame of `v` would take it for a new target and start over (then the layer checked below was "All changes"
+  // without an analysis, whose short texts the comparison skips).
+  S.store.set("review.target", v.prSel);
   v.command("order:reading", cx); v.command("step:0", cx);
   const st = v.steps()[0];
+  assert.ok(v.ai && st.title !== "All changes", "the layer checked is one of the analysis");
   check("a layer", drawn([() => {}], () => { v.stepRow(st, 0, tt); v.item({ t: "step", s: st, i: 0 }, tt); }), { stateDiagram: (st.visuals ?? []).filter((x) => x.kind === "state_machine").length });
   v.command("findings", cx); v.ffocus = null;
   const all = drawn([() => {}], () => v.findingsPane(tt));

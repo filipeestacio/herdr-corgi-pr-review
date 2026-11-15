@@ -324,7 +324,7 @@ test("the Terraform fixture end to end: from the patch and the files at the head
   assert.ok(!md.includes("placeholder"), "the secret's value is in no line");
   const P = infraPicture(m);
   assert.deepEqual([P.L.nodes.length, P.L.groups.length, P.arch.folded], [13, 1, null]);
-  // One layout for the render; the search for a better one runs after it, from the same arguments (review.js layoutLater).
+  // One layout for the render; the search for a better one runs after it, from the same arguments (stack.js laidOut).
   assert.deepEqual([P.args.length, P.args[4]], [5, { labels: true }]);
   assert.equal(JSON.stringify(P.L), JSON.stringify(archLayout(...P.args)), "the picture is archLayout's own");
   assert.ok(archBest(...P.args).hops.length <= P.L.hops.length, "and the search does not make it cross more");

@@ -6,13 +6,13 @@ import { EDITORS, LINE_BASE, PROJECT_MARKS, candidates, foundFrom, installed, gi
 
 // Installed editors are found by reading files: each app's Info.plist in both Applications folders (macOS), the
 // launcher scripts on Linux. The first one found per editor counts.
-const mac = candidates("/Users/me", "darwin");
-assert.ok(mac.every((c) => c.path.endsWith(".app/Contents/Info.plist")) && mac.some((c) => c.path.startsWith("/Users/me/Applications/IntelliJ IDEA")));
+const mac = candidates("/people/me", "darwin");
+assert.ok(mac.every((c) => c.path.endsWith(".app/Contents/Info.plist")) && mac.some((c) => c.path.startsWith("/people/me/Applications/IntelliJ IDEA")));
 for (const e of EDITORS) assert.ok(mac.some((c) => c.id === e.id), `${e.name} is looked for`);
 const at = (path) => mac.map((c) => c.path === path);
-assert.deepEqual(foundFrom(mac, at("/Users/me/Applications/IntelliJ IDEA Ultimate.app/Contents/Info.plist")), { idea: { app: "/Users/me/Applications/IntelliJ IDEA Ultimate.app" } });
+assert.deepEqual(foundFrom(mac, at("/people/me/Applications/IntelliJ IDEA Ultimate.app/Contents/Info.plist")), { idea: { app: "/people/me/Applications/IntelliJ IDEA Ultimate.app" } });
 assert.deepEqual(foundFrom(mac, mac.map(() => false)), {});
-const linux = candidates("/home/me", "linux");
+const linux = candidates("/people/me", "linux");
 assert.deepEqual(foundFrom(linux, linux.map((c) => c.path === "/snap/bin/code")), { vscode: { cli: "/snap/bin/code" } });
 const found = { vscode: { app: "/Applications/Visual Studio Code.app" }, idea: { app: "/Applications/IntelliJ IDEA.app" } };
 assert.deepEqual(installed(found).map((e) => [e.id, e.label, e.short]), [["vscode", "VS Code", "VS"], ["idea", "IntelliJ", "IJ"]]);
@@ -49,12 +49,12 @@ assert.deepEqual(["x.code-workspace", ".vscode/tasks.json", ".idea/workspace.xml
 
 // What a click starts: ONE program with its arguments, never a shell line. macOS: `open` with the editor's URL for a
 // file (every path segment encoded) and with the app for a folder; Linux: the editor's own tool.
-const file = "/Users/me/my repo/src/a b#1?.js";
-assert.deepEqual(openArgv("vscode", found.vscode, { file, line: 12 }), ["open", ["vscode://file/Users/me/my%20repo/src/a%20b%231%3F.js:12"]]);
+const file = "/people/me/my repo/src/a b#1?.js";
+assert.deepEqual(openArgv("vscode", found.vscode, { file, line: 12 }), ["open", ["vscode://file/people/me/my%20repo/src/a%20b%231%3F.js:12"]]);
 assert.deepEqual(openArgv("idea", found.idea, { file, line: 12 }), ["open", [`idea://open?file=${encodeURIComponent(file)}&line=${12 - 1 + LINE_BASE.idea}`]]);
-assert.deepEqual(openArgv("vscode", found.vscode, { dir: "/Users/me/my repo" }), ["open", ["-a", "/Applications/Visual Studio Code.app", "/Users/me/my repo"]]);
+assert.deepEqual(openArgv("vscode", found.vscode, { dir: "/people/me/my repo" }), ["open", ["-a", "/Applications/Visual Studio Code.app", "/people/me/my repo"]]);
 assert.deepEqual(openArgv("idea", found.idea, { dir: "/co" }), ["open", ["-a", "/Applications/IntelliJ IDEA.app", "/co"]], "not open -na, not the idea script");
-assert.deepEqual(openArgv("vscode", found.vscode, { file }), ["open", ["vscode://file/Users/me/my%20repo/src/a%20b%231%3F.js:1"]], "no line: the first");
+assert.deepEqual(openArgv("vscode", found.vscode, { file }), ["open", ["vscode://file/people/me/my%20repo/src/a%20b%231%3F.js:1"]], "no line: the first");
 assert.deepEqual(openArgv("vscode", { cli: "/usr/bin/code" }, { file, line: 3 }), ["/usr/bin/code", ["-g", `${file}:3`]]);
 assert.deepEqual(openArgv("idea", { cli: "/usr/local/bin/idea" }, { file, line: 3 }), ["/usr/local/bin/idea", ["--line", "3", file]]);
 assert.deepEqual(openArgv("zed", { cli: "/usr/bin/zed" }, { dir: "/co" }), ["/usr/bin/zed", ["/co"]]);
