@@ -357,5 +357,36 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   assert.equal(procs, 1, "a click is one process");
   later(); EV.forgetEditors(); S.exec = null;
 }
+// ---- the colors of a diff ask for few frames
+// Each slice of the queue asked for a frame of the whole window: 13 to 17 of them while the big review got its colors.
+// Now the files on screen are colored first and a frame is asked for when they are done, then one when the queue is
+// empty (and one every 250 ms at most while a long queue runs).
+for (const state of ["Files (all open)", "Walkthrough, a layer"]) {
+  const v = await openReview(BIG());
+  STATES[state](v); await settle();
+  const drain = v.drainHighlight.bind(v), asks = [];
+  v.drainHighlight = (c) => { const n0 = N.notify, left0 = v.hlQueue.size; drain(c); if (N.notify > n0) asks.push({ left: v.hlQueue.size, done: left0 - v.hlQueue.size }); };
+  frame(v); // the list is drawn: its files are queued, its first 60 lines are the ones on screen
+  const queued = v.hlQueue.size, rowsOf = () => v.items.filter((it) => it.t === "row");
+  assert.ok(queued > 3, `${state}: ${queued} files wait for their colors`);
+  // A person who scrolled to the end meanwhile: those files go first, whatever their place in the queue.
+  const last = rowsOf().at(-1), from = v.items.lastIndexOf(last) - 30;
+  v.visCode = { start: Math.max(0, from), end: v.items.length };
+  const onScreen = new Set(v.items.slice(v.visCode.start).filter((it) => it.t === "row").map((it) => v.spanMap.get(it.src)));
+  // The clock stands in, so the count does not hang on this machine's speed: every look at it is half a millisecond
+  // later, which makes a slice (12 ms) end after a few files, as in a window (there: 13 to 17 slices).
+  const now = Date.now; let t = now(), slices = 0;
+  Date.now = () => (t += 0.5);
+  try {
+  for (; v.hlQueue.size && slices < 400; slices++) { later(); if (slices === 0) assert.ok([...onScreen].every((inf) => inf.spans.length > 0 || !v.hlQueue.has(inf) || v.hlQueue.get(inf).hl), `${state}: the first slice works on the files on screen`); }
+  } finally { Date.now = now; }
+  assert.equal(v.hlQueue.size, 0, `${state}: the queue runs empty without a frame in between (${slices} slices)`);
+  assert.ok(slices >= 4, `${state}: the coloring took several slices (${slices})`);
+  assert.ok([...onScreen].every((inf) => inf.spans.some((x) => x.length > 0)), `${state}: the files on screen are colored`);
+  assert.ok(asks.length >= 1 && asks.length <= 3, `${state}: ${asks.length} frames asked for by ${slices} slices of coloring, at most 3`);
+  assert.ok(asks[0].left > 0 || queued <= asks[0].done, `${state}: the first frame comes when the files on screen are done, not at the end: ${JSON.stringify(asks)}`);
+  assert.equal(asks.at(-1).left, 0, `${state}: the last one when the queue is empty`);
+  console.log(`${state}: ${queued} files colored in ${slices} slices, ${asks.length} frames asked for`);
+}
 await settle();
 console.log("perf ok");
