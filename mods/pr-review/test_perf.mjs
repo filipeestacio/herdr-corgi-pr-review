@@ -144,8 +144,9 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
     assert.deepEqual(tick(state), { steps: 0, layouts: 1, priced: 0 }, `${state}: the first slice lays the map out once, roughly`);
     const rough = Object.values(big.fitMemos)[0].L;
     assert.deepEqual(drawn(big), { layouts: 0, priced: 0, map: [id] }, `${state}: the picture is there, and the frame lays nothing out`);
-    const ticks = searched(state);
-    assert.ok(ticks > 3, `${state}: the search took ${ticks} slices, not one long task`);
+    // How many slices that takes depends on the machine (a slice is about 10 ms); that a slice is ten steps of the
+    // layout and never a whole one is counted with a stepping clock in test_arch.mjs.
+    assert.ok(searched(state) >= 1, `${state}: the search runs in slices after the frame`);
     assert.notEqual(Object.values(big.fitMemos)[0].L, rough, `${state}: the search's layout replaced the rough one`);
     assert.deepEqual(drawn(big), { layouts: 0, priced: 0, map: [id] }, `${state}: the frame after the search lays nothing out`);
     assert.equal((await measure(big, 1)).asked.after, 0, `${state}: and asks for no timer once the search is through`);
@@ -159,9 +160,9 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
     big.find.status = { ...big.find.status, [marked.id]: { s: "dismissed", at: "2026-11-15T10:00:00Z", ids: marked.ids } };
     assert.deepEqual(drawn(big), { layouts: 0, priced: 0, map: ["rv-arch-canvas"] }, "new marks on a big map: the picture from before stays for the frame");
     assert.equal(shown(), before);
-    assert.equal(tick("new marks").layouts, 0, "no rough pass: the picture from before stands in");
-    const n = searched("new marks");
-    assert.ok(n > 2 && shown() !== before, `and the search's layout replaces it (${n} more slices)`); }
+    { const n = tick("new marks"); assert.deepEqual([n.steps, n.layouts], [1, 0], "no rough pass: the picture from before stands in while the search runs"); }
+    searched("new marks");
+    assert.notEqual(shown(), before, "and the search's layout replaces it"); }
   const small = await openReview(PR2());
   for (const id of ["rv-arch-canvas", "rv-res-canvas"]) small.hsOf(id).viewW = 1300;
   STATES.Architecture(small); await settle(); settled(small); searched("PR #2"); small.fitMemos = null;

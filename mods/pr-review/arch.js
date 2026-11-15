@@ -281,8 +281,14 @@ function* layoutSteps(arch, view, extra, fit, opts) {
   // Groups stack in order of their first column (one reaching in from the left sits on top), then by gl.
   const gLo = new Map(gIds.map((g) => [g, Math.min(...ids0.filter((id) => gOf(id) === g).map((id) => col.get(id)))]));
   let gl = [...gIds], pos = new Map(ids0.map((id, k) => [id, k]));
-  const gCmp = (a, b) => gLo.get(a) - gLo.get(b) || gl.indexOf(a) - gl.indexOf(b);
-  const colIds = (c) => ids0.filter((id) => col.get(id) === c).sort((a, b) => gCmp(gOf(a), gOf(b)) || pos.get(a) - pos.get(b));
+  // A group's place in gl and a column's cards are looked up for every order that is priced: gl's places are kept per
+  // gl (it is replaced, never changed once it was asked), the cards per column once (the columns are final here).
+  let glAt = null, glOf = null;
+  const place = (g) => { if (glOf !== gl) { glOf = gl; glAt = new Map(gl.map((x, k) => [x, k])); } return glAt.get(g); };
+  const gCmp = (a, b) => gLo.get(a) - gLo.get(b) || place(a) - place(b);
+  const inCol = Array.from({ length: ncol }, () => []);
+  for (const id of ids0) inCol[col.get(id)].push(id);
+  const colIds = (c) => [...inCol[c]].sort((a, b) => gCmp(gOf(a), gOf(b)) || pos.get(a) - pos.get(b));
   const rows = () => new Map(Array.from({ length: ncol }, (_, c) => colIds(c)).flatMap((ids) => ids.map((id, r) => [id, r / Math.max(1, ids.length - 1)])));
   for (let sweep = 0; sweep < 4; sweep++) {
     const row = rows(), bc = new Map(ids0.map((id) => [id, nb.get(id).length ? avg(nb.get(id).map((x) => row.get(x))) : row.get(id)]));
@@ -511,12 +517,12 @@ function* layoutSteps(arch, view, extra, fit, opts) {
     return true;
   };
   for (const dir of opts.still || rough ? [] : [1, -1]) for (const f of [...frames].sort((a, b) => dir * (a.lo - b.lo) || b.y - a.y)) for (const deep of [false, true]) {
+    yield "frame";
     const was = frames.map((x) => x.y), ports0 = [...portY];
     if (!pull(f, dir, deep)) break; // nothing to gain by a move
     if (count > straight) { straight = count; break; }
     frames.forEach((x, i) => moveF(x, was[i] - x.y)); // back, the ports too
     for (const [k, y] of ports0) portY.set(k, y);
-    yield "frame";
   }
 
   yield "frames";
