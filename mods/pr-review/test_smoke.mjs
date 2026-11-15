@@ -203,6 +203,26 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   assert.ok(rows("arch: Wrap").length > 1, "Wrap puts the same picture in rows");
   v.command("arch-wrap", cx);
 }
+// Copy as Markdown: its button is in the head of every page it can copy and nowhere else, and the footer names what
+// was copied. (The stand-in for exec fails, so nothing reaches a clipboard here.)
+{
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json") });
+  const drawn = (what) => { S.ids = new Set(); draw(v, what); const got = [...S.ids].filter((x) => /^rv-md(-|$)/.test(x)); S.ids = null; return got; };
+  const copied = (name) => { v.note = null; v.command("copy-md", cx); assert.ok(v.note?.startsWith(`Copied ${name} as Markdown (`) && v.note.endsWith("Nothing was posted."), `the footer after copying ${name}: ${v.note}`); };
+  for (const [page, name] of [["overview", "the Overview"], ["arch", "the architecture"], ["blast", "the Security page"], ["res", "the Resilience page"]]) {
+    v.command(`page:${page}`, cx);
+    assert.deepEqual(drawn(`${page}: Copy as Markdown`), ["rv-md"], `${page} has the button once`); copied(name);
+  }
+  v.command("order:reading", cx); v.command("step:0", cx);
+  assert.deepEqual(drawn("a layer: Copy as Markdown"), ["rv-md-l"], "the open layer's head has the button, the other layers' heads do not"); copied(`the layer "${v.steps()[0].title}"`);
+  v.command("findings", cx); v.ffocus = null;
+  assert.ok(drawn("Findings: Copy as Markdown").includes("rv-md-f"), "the Findings tab has the button"); copied("the unresolved findings");
+  v.command(`finding:${v.findings()[0].id}`, cx);
+  assert.ok(drawn("an open finding: Copy as Markdown").includes("rv-md-f")); copied("the open finding");
+  for (const tab of ["files", "comments"]) { v.command(tab, cx); assert.deepEqual(drawn(`${tab}: no Copy as Markdown`), [], `${tab} has no page to copy and no button`); }
+  const empty = await open({ ...PR2 });
+  for (const c of ["page:overview", "page:arch", "page:blast", "page:res", "findings", "copy-md"]) act(empty, c, `nothing analyzed yet: ${c}`);
+}
 await settle();
 assert.deepEqual(late, [], "a spawned task threw");
 console.log(`smoke ok: ${shown} frames`);

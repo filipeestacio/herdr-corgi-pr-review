@@ -1270,3 +1270,18 @@ export function fixCostLine(usd, tier, n = 1) {
   const over = usd > 2 * fixTypical(tier).usd * Math.max(1, n);
   return { over, text: `$${usd.toFixed(2)} so far${over ? " · above the usual cost; stop it in its tab" : ""}` };
 }
+
+// "Copy as Markdown": what it copies where the person is. kind picks the text (markdown.js), name completes the
+// footer's "Copied <name> as Markdown", tip is the button's help. layer: the open layer's title when it is one of the
+// analysis (not "All changes"); finding: one is open in the Findings tab. Files and Comments have no page of their
+// own to copy: the ⋯ menu's entry copies the Overview there.
+export function mdTarget({ tab, page = null, layer = null, finding = false } = {}) {
+  const tip = (what) => `Copies ${what} as Markdown to the clipboard, to hand to an agent or a person. Nothing is posted.`;
+  if (tab === "findings") return finding ? { kind: "finding", name: "the open finding", tip: tip("the open finding: where it is, who found it, how sure it is, its effect, detail and suggestion") }
+    : { kind: "findings", name: "the unresolved findings", tip: tip("every unresolved finding in full, most severe first. With a finding open: only that one") };
+  if (tab === "steps" && !page && layer) return { kind: "layer", name: `the layer "${layer}"`, tip: tip("this layer: what it is for, its files, the questions to check, its findings and pictures") };
+  if (tab === "steps" && page === "arch") return { kind: "arch", name: "the architecture", tip: tip("this page: the map as a Mermaid diagram, the cards, where a finding breaks the flow, the components and the other pictures") };
+  if (tab === "steps" && page === "blast") return { kind: "blast", name: "the Security page", tip: tip("this page: the unresolved security findings in full, the ways in, the rights granted and what was checked") };
+  if (tab === "steps" && page === "res") return { kind: "res", name: "the Resilience page", tip: tip("this page: the paths with their retries, time budget and action, the other checks and what to watch after the merge") };
+  return { kind: "overview", name: "the Overview", tip: tip("the Overview: the verdict, the criteria with their findings, what changed, the behavior and the repo's rules and checks") };
+}

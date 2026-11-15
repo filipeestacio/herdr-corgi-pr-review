@@ -891,3 +891,24 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.equal(resVerdictParts([ps[1]]).head, "1 path blocks once it is wired.");
   assert.equal(resPathView(ps[1]).wired.reason, "x");
 }
+
+// Copy as Markdown: each page that has the button names what it copies; Files and Comments fall back to the Overview.
+{
+  const { mdTarget } = await import("./views.js");
+  const kind = (x) => mdTarget(x).kind;
+  assert.equal(kind({ tab: "steps", page: "overview" }), "overview");
+  assert.equal(kind({ tab: "steps", page: "arch" }), "arch");
+  assert.equal(kind({ tab: "steps", page: "blast" }), "blast");
+  assert.equal(kind({ tab: "steps", page: "res" }), "res");
+  assert.equal(kind({ tab: "steps", page: null, layer: "Events" }), "layer");
+  assert.equal(kind({ tab: "steps", page: null, layer: null }), "overview", "\"All changes\" is no layer of the analysis");
+  assert.equal(kind({ tab: "steps", page: "arch", layer: "Events" }), "arch", "a page hides the layer behind it");
+  assert.equal(kind({ tab: "findings" }), "findings");
+  assert.equal(kind({ tab: "findings", finding: true }), "finding");
+  assert.equal(kind({ tab: "findings", page: "arch", layer: "Events", finding: true }), "finding", "the Findings tab wins over the page behind it");
+  assert.equal(kind({ tab: "files", page: "arch" }), "overview");
+  assert.equal(kind({ tab: "comments" }), "overview");
+  assert.equal(mdTarget({ tab: "steps", layer: "Events" }).name, 'the layer "Events"');
+  for (const x of [{ tab: "steps", page: "overview" }, { tab: "steps", page: "arch" }, { tab: "steps", page: "blast" }, { tab: "steps", page: "res" }, { tab: "steps", layer: "L" }, { tab: "findings" }, { tab: "findings", finding: true }])
+    assert.match(mdTarget(x).tip, /^Copies .* as Markdown to the clipboard.*Nothing is posted\.$/, "the help says what is copied and that nothing is posted");
+}
