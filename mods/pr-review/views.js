@@ -1603,15 +1603,18 @@ export function crossOnce(rows, num = (r) => rows.indexOf(r) + 1) {
 
 // ---- Resilience: one statement about old or new (acceptance, UX 4). Where the diff dates a path (pr.js withResilience:
 // pre_existing true or false, from the lines of its findings), that word counts, and its probe says only what the script
-// did on the base ("on base: script failed"); the probe's verdict ("new in this PR", from an ImportError on the base)
+// did on the base ("on base: the script could not run there"); the probe's verdict ("new in this PR", from an ImportError on the base)
 // dates only a path the diff could not date (resByProbe). x: the probe; byDiff: the diff dated its path; words:
 // threads.js BASE_WORDS. -> {dates: the word is a verdict of old or new, word} | null without a base run.
-const BASE_DID = { reproduced: "breaks the same way", not_reproduced: "not reproduced", script_failed: "script failed", new_in_pr: "script failed", new: "script failed", unknown: "unknown", not_run: "not run" };
+// What the script did there, by the runner's verdict (an ImportError or AttributeError: the code it needs is not on the
+// base, so it could not run; the runner's status says "not reproduced" for that too), else by its status.
+const BASE_RAN = { already_on_base: "breaks the same way", new_in_pr: "the script could not run there", unknown: "the script failed there", not_on_base: "not reproduced" };
+const BASE_DID = { reproduced: "breaks the same way", not_reproduced: "not reproduced", script_failed: "the script failed there", new_in_pr: "the script could not run there", new: "the script could not run there", unknown: "unknown", not_run: "not run" };
 export function probeBaseWord(x, byDiff, words = {}) {
   const b = x?.base;
   if (!b || typeof b !== "object") return null;
   const verdict = byDiff ? null : words[b.verdict] ?? (b.verdict ? null : { new_in_pr: "new in this PR", new: "new in this PR" }[b.status]);
-  return verdict ? { dates: true, word: verdict } : { dates: false, word: BASE_DID[b.status] ?? resWord(b.status ?? "unknown") };
+  return verdict ? { dates: true, word: verdict } : { dates: false, word: BASE_RAN[b.verdict] ?? BASE_DID[b.status] ?? resWord(b.status ?? "unknown") };
 }
 // The diff dated this path itself: old or new is known without a probe (resByProbe sets byProbe when the probe did).
 export const datedByDiff = (p) => typeof p?.pre_existing === "boolean" && !p.byProbe;

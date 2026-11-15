@@ -1169,9 +1169,10 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   const probe = { id: "r1", of: "p4", status: "done", result: "reproduced", base: { status: "script_failed", verdict: "new_in_pr", line: "import failed: ImportError" } };
   const old = { id: "p4", pre_existing: true, blocker: null }, unclear = { id: "p4", pre_existing: "unknown", blocker: { reason: "x", unclear: true } };
   assert.ok(datedByDiff(old) && datedByDiff({ pre_existing: false }) && !datedByDiff(unclear) && !datedByDiff(resByProbe([unclear], [probe])[0]) && !datedByDiff(null));
-  assert.deepEqual(probeBaseWord(probe, datedByDiff(old), W), { dates: false, word: "script failed" }, "the path says already on the base, the probe not 'new in this PR'");
+  assert.deepEqual(probeBaseWord(probe, datedByDiff(old), W), { dates: false, word: "the script could not run there" }, "the path says already on the base, the probe not 'new in this PR'");
+  assert.equal(probeBaseWord({ base: { status: "not_reproduced", verdict: "new_in_pr" } }, true, W).word, "the script could not run there", "an import that failed on the base is not 'not reproduced'");
   assert.deepEqual(probeBaseWord(probe, datedByDiff(resByProbe([unclear], [probe])[0]), W), { dates: true, word: "new in this PR" }, "the probe dates a path the diff could not");
   assert.deepEqual(probeBaseWord({ base: { status: "reproduced", verdict: "already_on_base" } }, true, W), { dates: false, word: "breaks the same way" });
-  assert.deepEqual([probeBaseWord({ base: { status: "new_in_pr" } }, false, W).word, probeBaseWord({ base: { status: "new_in_pr" } }, true, W).word, probeBaseWord({ base: "x" }, false, W), probeBaseWord({}, false, W)], ["new in this PR", "script failed", null, null]);
+  assert.deepEqual([probeBaseWord({ base: { status: "new_in_pr" } }, false, W).word, probeBaseWord({ base: { status: "new_in_pr" } }, true, W).word, probeBaseWord({ base: "x" }, false, W), probeBaseWord({}, false, W)], ["new in this PR", "the script could not run there", null, null]);
   console.log("ok old or new is said once");
 }
