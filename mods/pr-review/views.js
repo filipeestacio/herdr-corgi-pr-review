@@ -828,16 +828,17 @@ export const threatCited = (threats, findings) => { const cited = new Set((threa
   return (findings ?? []).filter((f) => (f.ids ?? [f.id]).some((i) => cited.has(i))); };
 // What a taken-over principal behind a way in may do: the rights (guards aside) of every principal whose card or frame
 // stands in the zone of a way in's card, by principal, each right on its card's label or, off the map, its resource.
-// [{principal, rights: [{actions, on, used}], text}]; [] without a way in or without zones.
+// [{principal, node, frame, rights: [{actions, on, used}], text}]; [] without a way in or without zones.
 export function blastOf(arch, access) {
   const nodes = arch?.nodes ?? [], node = (id) => nodes.find((n) => n.id === id), zoneOf = (id) => node(id)?.zone ?? nodes.find((n) => n.group === id && n.zone)?.zone ?? null;
   const doors = new Set((access ?? []).filter((x) => x.public).map((x) => zoneOf(x.node)).filter(Boolean)), by = new Map();
   for (const x of access ?? []) {
     if (x.public || isGuard(x) || ["operator", "ci"].includes(x.principal_kind) || !x.principal_node || !doors.has(zoneOf(x.principal_node))) continue;
-    if (!by.has(x.principal)) by.set(x.principal, []);
-    by.get(x.principal).push({ actions: x.actions ?? [], on: node(x.node)?.label ?? ([x.kind, x.resource].filter(Boolean).join(" ") || "a resource"), used: x.used });
+    if (!by.has(x.principal)) by.set(x.principal, { node: x.principal_node, rights: [] });
+    by.get(x.principal).rights.push({ actions: x.actions ?? [], on: node(x.node)?.label ?? ([x.kind, x.resource].filter(Boolean).join(" ") || "a resource"), used: x.used });
   }
-  return [...by].map(([principal, rights]) => ({ principal, rights,
+  // node: the principal's card or frame; frame: the frame that is or holds it (review.js adds what it reaches in one process).
+  return [...by].map(([principal, { node: pn, rights }]) => ({ principal, node: pn, frame: node(pn)?.group ?? pn, rights,
     text: `If ${principal} is taken over, it can ${rights.map((r) => `${r.actions.join(", ") || "act"} on ${r.on}${r.used === false ? " (granted, not used)" : ""}`).join("; ")}.` }));
 }
 // A run's "left out" line without the words about its tools ("git diff not run: Bash denied, read the files" → "git

@@ -3921,8 +3921,8 @@ export const ReviewMode = {
       }
       const zs = TRUST_ORDER.flatMap((tr) => (a.zones ?? []).filter((z) => z.trust === tr)), zoneNamed = (g) => zs.find((z) => `z:${z.name ?? z.id}` === g);
       const used = new Set([...nodes.values()].map((n) => n.group)), groups = ["operator", "outside", ...zs.map((z) => `z:${z.name ?? z.id}`), "unknown"].filter((g) => used.has(`t:${g}`))
-        .map((g) => (zoneNamed(g) ? { id: `t:${g}`, label: zoneNamed(g).name ?? zoneNamed(g).id, kind: zoneNamed(g).trust, trust: zoneNamed(g).trust }
-          : { id: `t:${g}`, label: g === "operator" ? "Operators and CI" : g === "outside" ? "Outside" : "Zone not named", kind: g === "outside" ? "callers" : "", trust: undefined }));
+        .map((g) => (zoneNamed(g) ? { id: `t:${g}`, label: zoneNamed(g).trust[0].toUpperCase() + zoneNamed(g).trust.slice(1), kind: zoneNamed(g).name ?? zoneNamed(g).id, trust: zoneNamed(g).trust }
+          : { id: `t:${g}`, label: g === "operator" ? "Operators and CI" : g === "outside" ? "Outside" : "Zone not named", kind: g === "outside" ? "internet" : "", trust: g === "outside" ? "public" : undefined }));
       const marks = { nodes: new Map([...marksAll.nodes].filter(([id]) => nodes.has(id))), edges: new Map() };
       // Fit: narrow cards, so the zones fit the page's width more often (the Data column was cut off).
       this.secMemo = { key, marks, L: archLayout({ groups, nodes: [...nodes.values()], edges }, "diff", (n) => (marks.nodes.has(n.id) ? MARK_CARD_ROWS : 0) + (eff.has(n.id) ? 1 : 0), true, { labels: true, lines: () => true }) };
@@ -4025,15 +4025,19 @@ export const ReviewMode = {
     // frame reaches in one process stays by frame.
     const groupOf = (id) => nodeOf(id)?.group ?? null, frames = [...new Set(rows.filter((r) => r.kind === "entry").map((r) => groupOf(r.ends.to)).filter(Boolean))];
     const aside = asideOf({ arch, access: this.ai?.access ?? [], threats: this.ai?.threats ?? [], findings: this.openFindings() }), byPrincipal = blastOf(arch, this.ai?.access ?? []);
-    const blast = [...byPrincipal.map((b) => b.text), ...frames.map((g) => {
+    const tails = new Map(), blast = [...frames.map((g) => {
       // The rights by frame only for data without a principal's card (an older run); else they stand by principal above.
       const name = (arch?.groups ?? []).find((x) => x.id === g)?.label ?? g, rights = byPrincipal.length ? [] : rows.filter((r) => r.kind === "right" && r.ends.from && (groupOf(r.ends.from) === g || runsIn(nodeOf(r.ends.from)).includes(g)));
       // What it reaches in one process: the cards of other frames its cards call without a boundary, and on from there.
       const reach = [], seen = new Set((arch?.nodes ?? []).filter((n) => n.group === g || runsIn(n).includes(g)).map((n) => n.id));
       for (const id of [...seen]) for (const e of arch?.edges ?? []) if (e.from === id && inProcess(e) && !seen.has(e.to)) { seen.add(e.to); reach.push(label(e.to)); for (const e2 of arch.edges) if (e2.from === e.to && inProcess(e2) && !seen.has(e2.to)) { seen.add(e2.to); reach.push(label(e2.to)); } }
       const can = [...rights.map((r) => `${(r.actions ?? []).join(", ") || "act"} on ${r.ends.to ? label(r.ends.to) : r.access?.resource ?? "a resource"}${r.unused ? " (granted, not used)" : ""}`), reach.length && `call ${reach.join(" and ")} in the same process`].filter(Boolean);
+      // One principal in this frame (a function and its role): what it reaches in one process joins that principal's line.
+      const mine = byPrincipal.filter((b) => b.frame === g);
+      if (mine.length === 1 && can.length) { tails.set(mine[0], can.join("; ")); return null; }
       return can.length ? `If ${name} is compromised, it can ${can.join("; ")}.` : byPrincipal.length ? null : `If ${name} is compromised, it holds no right the data names.`;
     })].filter(Boolean);
+    blast.unshift(...byPrincipal.map((b) => (tails.has(b) ? `${b.text.replace(/\.$/, "")}; ${tails.get(b)}.` : b.text)));
     return v_flex().id("rv-sec-crossings").gap(8).p(12).rounded(10).border_1().border_color(t.border).bg(t.surface)
       .child(h_flex().gap(10).items_center().flex_wrap().child(title("Trust boundary crossings")).child(div().text_size(12.5).text_color(t.muted).child("The ways in, the rights and the calls this PR opens or changes across a trust boundary. A click shows the way.")))
       .child(rows.length ? v_flex().w_full().gap(6).text_size(12.5).line_height(1.45)
