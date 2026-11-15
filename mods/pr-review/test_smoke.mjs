@@ -931,7 +931,7 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     parts("Schema changes: back on the page"); click("rv-schema-risk0", "the first risk hint"); draw(w, "Schema changes: a risk clicked");
     assert.ok(w.page === null && w.fsel?.path === "db/migrations/V6__members_and_shelves.sql" && w.fsel.a === "+6", "a risk hint leads to its line: DROP TABLE shelves");
     assert.deepEqual([...w.schemaSt.pic.marks.nodes].map(([id, k]) => [id, k.n, k.severity]), [["sql:db/migrations|loans", 1, "high"]], "the review's finding at a line of the migration stands at the loans card");
-    assert.match(text, /\| loans \| high: Notes longer than 80 characters are cut \|/, "and in the text");
+    assert.match(text, /\| `loans` \| high: Notes longer than 80 characters are cut \|/, "and in the text");
   }
 }
 // The acceptance round's corrections, each on the drawn page.

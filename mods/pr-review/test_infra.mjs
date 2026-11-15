@@ -315,12 +315,20 @@ test("the Terraform fixture end to end: from the patch and the files at the head
   assert.deepEqual(texts(card(m, "aws_secretsmanager_secret_version.mailer")), ["secret_string: changed"]);
   assert.deepEqual(m.notices.map(noticeText), ["terraform block of main.tf changed in stacks/orders/main.tf:1: backend s3: changed"]);
   const md = infraMd(m, { table, flow: mermaidFlow, findings: [{ id: "f", file: "stacks/orders/queue.tf", line: 4, severity: "high", title: "The queue lost its dead-letter queue" }] }).join("\n");
-  assert.match(md, /^## Infrastructure changes \(10\)\n\nDerived from the diff; no terraform plan was run, so replacements and computed values are estimates\.\n\n- terraform block of main\.tf changed/);
+  assert.match(md, /^## Infrastructure changes \(10\)\n\nDerived from the diff; no terraform plan was run, so replacements and computed values are estimates\.\n\n- `terraform block of main\.tf changed/);
   assert.match(md, /```mermaid\nflowchart LR\n {2}subgraph group0\["stacks\/orders \(Terraform\)"\]/);
   assert.ok(md.includes('["aws_sqs_queue orders_dlq, still referenced"]:::removed') && md.includes('["aws_lambda_function worker, may be replaced"]:::changed') && md.includes('["aws_sqs_queue orders (high: 1 finding)"]:::changed'));
-  assert.ok(md.includes("| aws_sqs_queue orders_dlq | removed; Still referenced by dlq_depth, worker_queue |"));
-  assert.ok(md.includes("| aws_sqs_queue orders | changed | visibility_timeout_seconds: 30 → 60; redrive_policy: removed |  | `stacks/orders/queue.tf:2` | high: The queue lost its dead-letter queue |"));
-  assert.ok(md.includes("### Variables, outputs and other values (2)\n\n- var.retention_days changed · default: 14 → 30 · used by aws_cloudwatch_log_group.worker (`stacks/orders/variables.tf:10`)"));
+  // What comes from the PR (addresses, values, paths, and the sentences made of them) is a code span each.
+  assert.ok(md.includes("| `aws_sqs_queue orders_dlq` | removed; `Still referenced by dlq_depth, worker_queue` |"));
+  assert.ok(md.includes("| `aws_sqs_queue orders` | changed | `visibility_timeout_seconds: 30 → 60; redrive_policy: removed` |  | `stacks/orders/queue.tf:2` | high: The queue lost its dead-letter queue |"));
+  assert.ok(md.includes("### Variables, outputs and other values (2)\n\n- `var.retention_days changed · default: 14 → 30 · used by aws_cloudwatch_log_group.worker` (`stacks/orders/variables.tf:10`)"));
+  // A value written as Markdown (a link, a mention, a backtick) is inert in the copied text: inside one code span.
+  { const tf = (v) => `output "o" {\n  value = ${v}\n}\nresource "aws_s3_bucket" "b" {\n  bucket = ${v}\n}`, was = tf('"b"'), now = tf('"[click](https://example.invalid) @octo-org/everyone `x`"');
+    const f = { path: "main.tf", status: "modified", head: now, lines: ["@@ -1,6 +1,6 @@", ...was.split("\n").map((l) => `-${l}`), ...now.split("\n").map((l) => `+${l}`)] };
+    const out = infraMd(infraModel([f]), { table, flow: mermaidFlow }), hit = out.filter((l) => l.includes("@octo-org"));
+    assert.ok(hit.length >= 2, "the value is in the row and in the table");
+    for (const l of hit) assert.match(l, /^(- |\| )`[^`]*`/, `inert: ${l}`);
+    assert.ok(out.includes("- `output.o changed · \"b\" → \"[click](https://example.invalid) @octo-org/everyone 'x'\"` (`main.tf:1`)")); }
   assert.ok(!md.includes("placeholder"), "the secret's value is in no line");
   const P = infraPicture(m);
   assert.deepEqual([P.L.nodes.length, P.L.groups.length, P.arch.folded], [13, 1, null]);

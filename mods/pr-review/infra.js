@@ -458,6 +458,9 @@ export function infraPicture(model, findings = [], fit = false, lay = true) {
 
 // ---- Copy as Markdown: the section's lines. table(head, rows) and flow(picture, opts) are markdown.js's own (its
 // table and mermaidFlow), handed in so this file stays below it.
+// A text from the PR in the copied Markdown: one line, as a code span. Pasted into GitHub, a code span is inert: no
+// mention notifies anyone, no image is fetched, no heading or fence starts, whatever a name or a value in the PR says.
+const mdCode = (x) => { const s = squash(x ?? "").replace(/`/g, "'"); return s ? `\`${s}\`` : ""; };
 export function infraMd(model, { table, flow, findings = [], h = "##" } = {}) {
   if (!model) return [];
   const arch = infraArch(model), marks = infraMarks(model, findings, arch.alias), card = new Map(model.cards.map((c) => [c.id, c]));
@@ -466,11 +469,11 @@ export function infraMd(model, { table, flow, findings = [], h = "##" } = {}) {
   const own = infraMarks(model, findings).nodes, found = (c) => { const m = own.get(c.id); return m ? `${m.severity}: ${m.findings.map((f) => squash(f.title)).join("; ")}` : ""; };
   const notes = (c) => cardLines(c, 0).filter((l) => !/^and \d+ more$/.test(l.text)).map((l) => l.text);
   return [`${h} Infrastructure changes (${model.total})`, "", infraSource(model), "",
-    ...(model.notices.length ? [...model.notices.map((n) => `- ${noticeText(n)}`), ""] : []),
+    ...(model.notices.length ? [...model.notices.map((n) => `- ${mdCode(noticeText(n))}`), ""] : []),
     ...(model.cards.length ? [`${infraSummary(model)}${arch.folded ? ` ${foldText(arch.folded)}` : ""} A card's class in the diagram is its state; an arrow points at what a resource refers to.`, "", ...flow({ groups: arch.groups, nodes, edges: arch.edges }, { systems: true, marks }), "",
-      ...table(["Resource", "State", "Changed arguments", "Depends on", "Where", "Unresolved findings"], model.cards.map((c) => [`${c.kind === "data" ? "data " : ""}${c.type} ${c.name}`, [STATE[c.status], ...notes(c)].join("; "), c.changes.map((x) => x.text).join("; "), c.deps.join(", "), `\`${c.file}:${c.line}\``, found(c)]))] : []),
-    ...(model.rows.length ? [`${h}# Variables, outputs and other values (${model.rows.length})`, "", ...model.rows.map((r) => `- ${rowText(r)} (\`${r.file}:${r.line}\`)`), ""] : []),
-    ...(model.unread.length ? [...model.unread.map((u) => `- ${unreadText(u)}`), ""] : [])];
+      ...table(["Resource", "State", "Changed arguments", "Depends on", "Where", "Unresolved findings"], model.cards.map((c) => [mdCode(`${c.kind === "data" ? "data " : ""}${c.type} ${c.name}`), [STATE[c.status], mdCode(notes(c).join("; "))].filter(Boolean).join("; "), mdCode(c.changes.map((x) => x.text).join("; ")), mdCode(c.deps.join(", ")), mdCode(`${c.file}:${c.line}`), found(c)]))] : []),
+    ...(model.rows.length ? [`${h}# Variables, outputs and other values (${model.rows.length})`, "", ...model.rows.map((r) => `- ${mdCode(rowText(r))} (${mdCode(`${r.file}:${r.line}`)})`), ""] : []),
+    ...(model.unread.length ? [...model.unread.map((u) => `- ${mdCode(unreadText(u))}`), ""] : [])];
 }
 export const foldText = (f) => `Over ${INFRA_MAX} cards: ${f.cards} resources of ${f.types} ${f.types === 1 ? "type" : "types"} are one card per type.`;
 export const unreadText = (u) => `${u.path} is not in the picture: ${u.why}.`;
