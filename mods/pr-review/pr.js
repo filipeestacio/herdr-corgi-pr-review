@@ -910,7 +910,7 @@ const reachAssumed = (f) => (f.path_certainty ?? f.certainty) === "assumed";
 // ("⛨ 2 high · 0/5 criteria"), from the same parts so the two never disagree.
 export function verdictParts(l, c, { failed = 0, toVerify = 0 } = {}) {
   const sec = l.security, secHigh = sec.filter((f) => f.severity === "high").length, open = c.unresolved ? count(c.unresolved, "unresolved finding") : "No unresolved findings";
-  const assumed = sec.filter(reachAssumed).length, reach = !assumed ? "" : assumed === sec.length ? " (reach assumed)" : ` (reach assumed for ${assumed})`;
+  const assumed = sec.filter(reachAssumed).length, reach = !assumed ? "" : assumed === sec.length ? " (assumed reachable)" : ` (${assumed} assumed reachable)`; // words, not the noun "reach": that an attacker gets there is assumed
   return [sec.length === 1 && { key: "security", text: `1 security cause, ${sec[0].severity}${reach}`, short: `⛨ 1 ${sec[0].severity}`, tone: "security" },
     sec.length > 1 && { key: "security", text: `${sec.length} security causes, ${secHigh || "none"} high${reach}`, short: secHigh ? `⛨ ${secHigh} high` : `⛨ ${sec.length}`, tone: "security" },
     l.criteria > 0 && { key: "criteria", text: metText(l), short: `${l.met}/${l.criteria} criteria`, tone: l.met === l.criteria ? "ok" : "plain" },
