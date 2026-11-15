@@ -181,6 +181,7 @@ const COMPOSE_TIP = { insertSuggestion: "Insert the selected lines as a GitHub s
 const STATE_TIP = { pending: "Pending: written by you, not sent yet", waiting: "Sent to agent: no reply yet", replied: "Agent replied, or someone answered on GitHub", fixed: "Reported fixed: the agent says it is done; nothing has checked it", declined: "Declined: the agent chose not to change it", github: "A comment from GitHub", note: "A pinned note, private to you" };
 const STALE_TIP = "The code here changed since this comment was written";
 const CARD_W = 720, CARD_MIN = 420, CARD_HEAD = 32, CARD_REPLY = 34, CARD_GAP = 6;
+const GH_BOX = [GUTTER - 30, GUTTER - 4]; // a GitHub comment's box: its zone, x from the list's left edge (in the gutter, left of the card)
 const THREAD_COLOR = { fixed: "ansi2", answered: "accent", wontfix: "muted", question: "ansi3", sent: "ansi4", posted: "ansi4" };
 const PROBE = "0".repeat(40);
 const CTX_MS = 10 * 60000; // related PRs, CI checks, mergeability (related.py): asked again after this when the review opens, else by ↻
@@ -534,7 +535,9 @@ export const ReviewMode = {
     else if (name === "send-cancel") this.sendP = null;
     else if (name === "fix-several") this.fixSeveral(cx);
     else if (name === "pick-finding") this.pickFinding(arg, cx); // pick-finding:<id>: its box in the Findings tab
-    else if (name === "fix-picked") this.fixSeveral(cx, this.pickedFindings()); // "Fix selected (n)…"
+    else if (name === "pick-comment") this.toggleSel(arg, cx); // pick-comment:<id>: a comment's box (your own, a sent thread, gh<id> for a GitHub comment)
+    else if (name === "fix-picked") this.fixSelected(cx); // "Fix selected (n)…": the same as "fix" without ids
+    else if (name === "clear-selection") this.clearSel(cx);
     else if (name === "fix-pick") this.fixPick(arg, cx);
     else if (name === "codex-model") setShared("review.codexModel", arg);
     else if (name === "codex-menu") openCodexMenu();
@@ -544,7 +547,7 @@ export const ReviewMode = {
     else if (name === "discard-pending") this.discardAsk = true; // the first click on "Discard N pending…": it only asks
     else if (name === "add-finding") { const f = this.findingById(arg); if (f) this.findingComment(f, cx); } // a finding's "Add to review"
     else if (name === "route") this.route = arg; // github | agent: where Submit and single comments go
-    else if (name === "fix") this.fixComments(arg ? arg.split(",") : this.selected(), cx); // fix:<comment id>[,<id>…], else the selected ones (the preview opens)
+    else if (name === "fix") { if (arg) this.fixComments(arg.split(","), cx); else this.fixSelected(cx); } // fix:<comment id>[,<id>…], else everything selected, comments and findings (the preview opens)
     else if (name === "fix-target") this.fixTarget(arg); // sub | main, in the open preview
     else if (name === "explore") startExplore(arg || null);
     else if (name === "explore-min") this.minimizeExplore(); // the Explore bar's "Minimize"
@@ -1057,7 +1060,7 @@ export const ReviewMode = {
   // What the bar shows: the analysis on screen, or the one running.
   publish() {
     const a = this.ai;
-    putShared("review.meta", { url: this.prSel?.url ?? null, pending: this.comments?.length ?? 0, selected: this.prSel ? this.selected().length : 0, model: this.aiModel, busy: this.aiBusy?.model ?? null, error: this.aiError,
+    putShared("review.meta", { url: this.prSel?.url ?? null, pending: this.comments?.length ?? 0, selected: this.prSel ? this.selCount() : 0, model: this.aiModel, busy: this.aiBusy?.model ?? null, error: this.aiError,
       shown: a ? { model: a.model, model_id: a.model_id, cost: a.cost, exact: a.exact, mergeRisk: a.mergeRisk, effort: a.effort } : null,
       checks: this.prSel ? this.checksNow().reduce((n, c) => ({ ok: n.ok + (c.ok === true), fail: n.fail + (c.ok === false) }), { ok: 0, fail: 0 }) : null,
       // For the bar's "Dry run" chip and the "Run review" popup (findings: all, and the analysis' own).
@@ -1437,7 +1440,7 @@ export const ReviewMode = {
     this.previewFix(cx, { what: "Fix with agent", own: labels.join("\n"), ownLabel: list.length === 1 ? "FINDING" : "FINDINGS", items: list.map((f) => ({ kind: "finding", id: f.id })), labels,
       pool, alone, target,
       prompt: (sub) => [fixPrompt(list, this.pr, report, this.lang()), sub ? TH.worktreeNote(sub.branch, sub.path) : null].filter(Boolean).join("\n\n"),
-      sent: (cx) => { for (const f of list) this.setFinding(f, "progress", cx, { fixHead: this.headNow() }); this.clearPicked(cx); } });
+      sent: (cx) => { for (const f of list) this.setFinding(f, "progress", cx, { fixHead: this.headNow() }); this.clearSel(cx); } });
   },
   // "Fix several…": the reviewer picks which unresolved findings one agent fixes together. Security findings about
   // access or data (pr.js secByEffect) are not offered: each goes alone, so that its change stays one commit to check.
@@ -1447,9 +1450,30 @@ export const ReviewMode = {
     const open = this.findings().filter((f) => ["open", "recheck"].includes(this.fstatus(f))), pool = open.filter((f) => !secByEffect(f));
     this.fix(pool.filter((f) => ticked.includes(f.id)), cx, pool, open.length - pool.length);
   },
-  // The boxes in the Findings tab's "No fix sent": the findings ticked there, kept per PR with the comments' selection
-  // (threads.js FINDINGS). Only what can still be ticked counts: unresolved, no fix sent, and not a security finding
-  // about access or data (those go alone). A send empties it.
+  // ONE selection for "Fix selected": the comments ticked (your own, sent threads, other people's GitHub comments) and
+  // the findings ticked in the Findings tab. Every place that names it says the same number (the bar's button, the
+  // pill over the diff, the Findings tab's button), and each of them sends all of it to one fix agent (fixSelected).
+  // It is kept per PR in two lists (threads.js: "selected" and FINDINGS); a send and Esc empty both.
+  selection() { const comments = this.commentsById(this.selected()), findings = this.pickedFindings(); return { comments, findings, n: comments.length + findings.length }; },
+  selCount() { return this.selection().n; },
+  // Findings alone: the list of "Fix several…" with them ticked. Comments alone: their preview. Both: one preview,
+  // one agent, one branch (fixTogether).
+  fixSelected(cx) {
+    const { comments, findings } = this.selection(), ids = comments.map((c) => c.id);
+    if (!findings.length) return this.fixComments(ids, cx);
+    if (!comments.length) return this.fixSeveral(cx, findings);
+    this.fixTogether(ids, this.findings().filter((f) => findings.includes(f.id)), cx);
+  },
+  fixTogether(ids, list, cx) {
+    const c = this.commentFix(ids), report = `${findDir()}/${hash(this.prSel.url)}.jsonl`, found = list.map((f) => `${f.title} (${f.file}:${f.line})`);
+    this.previewFix(cx, { what: "Fix with agent", ownLabel: "SELECTED",
+      own: [`COMMENTS · ${c.comments.length}`, ...c.labels, "", `FINDINGS · ${list.length}`, ...found].join("\n"),
+      items: [...c.items, ...list.map((f) => ({ kind: "finding", id: f.id }))], labels: [...c.labels, ...found],
+      prompt: (sub) => TH.fixBothPrompt(c.prompt(sub, null), fixPrompt(list, this.pr, report, this.lang())),
+      sent: (cx, how) => { for (const f of list) this.setFinding(f, "progress", cx, { fixHead: this.headNow() }); c.sent(cx, how); } });
+  },
+  // The findings ticked in the Findings tab's "No fix sent". Only what can still be ticked counts: unresolved, no fix
+  // sent, and not a security finding about access or data (those go alone).
   pickedFindings() {
     const ids = TH.selectedOf(this.threadDoc, this.threadKey(), TH.FINDINGS);
     return ids.length ? this.findings().filter((f) => ids.includes(f.id) && ["open", "recheck"].includes(this.fstatus(f)) && !secByEffect(f)).map((f) => f.id) : [];
@@ -1458,7 +1482,6 @@ export const ReviewMode = {
     const f = this.findingById(id), key = this.threadKey();
     if (f && ["open", "recheck"].includes(this.fstatus(f)) && !secByEffect(f)) this.updateThreads(cx, (d) => TH.toggleSelected(d, key, f.id, Date.now(), TH.FINDINGS));
   },
-  clearPicked(cx) { const key = this.threadKey(); if (TH.selectedOf(this.threadDoc, key, TH.FINDINGS).length) this.updateThreads(cx, (d) => TH.clearSelected(d, key, Date.now(), TH.FINDINGS)); },
   // A tick in that list: the preview is built again for what is ticked now (branch name and text follow).
   fixPick(id, cx) {
     const f = this.sendP?.fix;
@@ -1896,7 +1919,10 @@ export const ReviewMode = {
       if (d.ask) { this.setDrawer("open", cx, null); return cx.notify(); }
       this.fsel = d.sel && h.side ? { ...d.sel, side: h.side } : d.sel; this.sug = null;
       if (d.open) this.openComposer(cx);
-    } else if (it.t === "gh") { if (!(this.ghOpen ??= new Set()).delete(it.g.id)) this.ghOpen.add(it.g.id); } // its <details> open and fold, as on GitHub
+    } else if (it.t === "gh") {
+      if (x >= GH_BOX[0] && x < GH_BOX[1]) this.toggleSel(`gh${it.g.id}`, cx); // its box, in the gutter beside the card
+      else if (!(this.ghOpen ??= new Set()).delete(it.g.id)) this.ghOpen.add(it.g.id); // its <details> open and fold, as on GitHub
+    }
     else if (it.t === "sug") { this.sug = this.sug === it.s.key ? null : it.s.key; this.visit(it.s.hunk, cx); }
     else if (it.t === "ch" || it.t === "cb" || it.t === "cr") this.cardClick(it, x, cx);
 
@@ -2075,7 +2101,7 @@ export const ReviewMode = {
   },
   // threads.json changed by fn, here and in the file (compare-and-swap, like the findings' status).
   updateThreads(cx, fn) {
-    this.threadDoc = fn(this.threadDoc);
+    this.threadDoc = fn(this.threadDoc); cx.notify(); // drawn at once: a tick in a box changes nothing else that would draw it
     cx.spawn(async (cx) => {
       for (let attempt = 0; attempt < 3; attempt++) {
         const before = await readTextFile(threadsFile()).catch(() => null);
@@ -2158,23 +2184,31 @@ export const ReviewMode = {
     const status = agent?.status === "blocked" ? "waits for your OK" : agent?.status;
     return job ? { job, commit, status: status ?? (job.target === "main" ? "main agent" : "ended") } : null;
   },
-  // Comments by id: the pending ones and the sent threads.
+  // Comments by id: the pending ones, the sent threads, and other people's GitHub comments ("gh<id>", threads.js
+  // ghComment; one already sent to a fix is its thread).
   commentsById(ids) {
-    const all = [...TH.withIds(this.comments), ...this.threads()];
+    if (!ids.length) return [];
+    const all = [...TH.withIds(this.comments), ...this.threads(), ...(ids.some((id) => String(id).startsWith("gh")) ? this.gh.filter((g) => !g.in_reply_to_id).map(TH.ghComment) : [])];
     return ids.map((id) => all.find((c) => c.id === id)).filter(Boolean);
   },
-  fixComments(ids, cx) {
-    const comments = this.commentsById(ids);
-    if (!comments.length) return;
-    const items = comments.map((c) => ({ kind: "comment", id: c.id }));
-    const prompt = (sub) => TH.fixCommentsPrompt({ pr: this.pr, comments, file: this.repliesFile(), lang: this.lang(), ...sub });
-    this.previewFix(cx, { what: "Fix with agent", ownLabel: comments.length === 1 ? "YOUR COMMENT" : "YOUR COMMENTS", own: comments.map((c) => `${c.file} ${uiLine(c)}: ${c.text}`).join("\n\n"), items, prompt,
-      labels: comments.map((c) => `${c.file} ${uiLine(c)}: ${c.text}`),
+  // What a fix of these comments needs for its preview and after it was sent (fixComments, fixTogether).
+  commentFix(ids) {
+    const comments = this.commentsById(ids), said = (c) => `${c.by ? `@${c.by} on GitHub · ` : ""}${c.file} ${uiLine(c)}: ${c.text}`;
+    return { comments, items: comments.map((c) => ({ kind: "comment", id: c.id })), labels: comments.map(said),
+      prompt: (sub, lang = this.lang()) => TH.fixCommentsPrompt({ pr: this.pr, comments, file: this.repliesFile(), lang, ...sub }),
       sent: (cx, how) => {
-        const key = this.threadKey(), pending = TH.withIds(this.comments).filter((c) => ids.includes(c.id));
+        const key = this.threadKey(), pending = TH.withIds(this.comments).filter((c) => ids.includes(c.id)), had = new Set(this.threads().map((t) => t.id));
         if (pending.length) { this.comments = TH.withIds(this.comments).filter((c) => !ids.includes(c.id)); this.persist(cx); }
-        this.updateThreads(cx, (d) => TH.clearSelected(TH.addThreads(d, key, pending, how)));
-      } });
+        // A GitHub comment sent to a fix becomes a thread here: its fix, the agent's answer and Apply to PR show at
+        // it. Nothing is written to GitHub for it, now or after a verification; its thread there stays as it is.
+        this.updateThreads(cx, (d) => TH.addThreads(d, key, [...pending, ...comments.filter((c) => c.from === "github" && !had.has(c.id))], how));
+        this.clearSel(cx);
+      } };
+  },
+  fixComments(ids, cx) {
+    const f = this.commentFix(ids), n = f.comments.length;
+    if (!n) return;
+    this.previewFix(cx, { what: "Fix with agent", ownLabel: `${f.comments.some((c) => c.from === "github") ? "" : "YOUR "}COMMENT${n === 1 ? "" : "S"}`, own: f.labels.join("\n\n"), items: f.items, prompt: (sub) => f.prompt(sub), labels: f.labels, sent: f.sent });
   },
   // The preview with the target choice; prompt(sub) gives the text for a sub-agent (sub: {branch, path, head}: its
   // worktree and the PR head it starts from) or, with null, for the main agent.
@@ -2339,8 +2373,9 @@ export const ReviewMode = {
         : v.status === "wontfix" ? ["Declined", "muted"] : v.status === "answered" || v.status === "question" ? ["Agent replied", "accent"]
         : o.route === "github" ? [o.dry ? "Dry run: not posted" : "Posted", "ansi4"] : ["Sent to agent", "ansi6"];
       const action = fv?.commit && fv.job.target === "sub" ? ["Apply to PR", (cx) => this.applyFix(fv.job, cx)] : fv ? ["Go to fix", () => this.goFix(fv.job)] : ["Fix", (cx) => this.fixComments([o.id], cx)];
-      return { key: `th:${o.id}`, id: o.id, src: "mine", author: "You", time: hm(o.sentAt), sel: true, status, text: o.text, action,
-        folded: v.collapsed ? `You: ${plain(o.text)} · ${status[0]}` : null,
+      const by = o.by ? `${o.by} · GitHub` : "You"; // someone else's GitHub comment that was sent to a fix (commentFix)
+      return { key: `th:${o.id}`, id: o.id, src: o.by ? "github" : "mine", author: by, time: hm(o.sentAt), sel: true, status, text: o.text, action,
+        folded: v.collapsed ? `${by}: ${plain(o.text)} · ${status[0]}` : null,
         replies: v.entries.filter((e) => this.show().agents || e.who !== "agent").map((e) => ({ author: e.who === "you" ? "You" : e.who === "agent" ? agent : e.who, src: e.who === "you" ? "mine" : e.who === "agent" ? "agents" : "github",
           text: e.text, status: e.status ? [{ fixed: `Reported fixed${e.commit ? ` in ${String(e.commit).slice(0, 7)}` : ""}`, wontfix: "Declined", answered: "Answered", question: "Question" }[e.status] ?? e.status, THREAD_COLOR[e.status] ?? "muted"] : null })),
         menu: [["Reply", false, (cx) => this.startReply(o.id, cx)], ...(fv?.job.terminal ? [["Go to fix", false, () => this.goFix(fv.job)]] : []),
@@ -2373,7 +2408,7 @@ export const ReviewMode = {
     if (it.k === "pin") { this.openNotes ??= new Set(); if (this.openNotes.has(c.id)) this.openNotes.delete(c.id); else this.openNotes.add(c.id); }
   },
   cardRow(it, t) {
-    const c = this.cardOf(it), W = this.cardW(c), col = c.src === "notes" ? t[SOURCE.notes] : t.foreground, selMode = this.selected().length > 0, sel = this.selected().includes(c.id);
+    const c = this.cardOf(it), W = this.cardW(c), col = c.src === "notes" ? t[SOURCE.notes] : t.foreground, selMode = this.selCount() > 0, sel = this.selected().includes(c.id);
     const avatar = (name, src, size = 18) => div().w(size).h(size).flex_none().rounded_full().flex().items_center().justify_center().bg((t[SOURCE[src]] ?? t.accent) + "33")
       .text_size(size * 0.58).font_semibold().text_color(t.foreground).child(String(name).replace(/^Note.*/, "N")[0]?.toUpperCase() ?? "?");
     const pillC = ([label, k]) => div().flex_none().px(6).h(18).flex().items_center().rounded(9).border_1().border_color(t[k] ?? t.muted).text_size(TYPE.small).text_color(t[k] ?? t.muted).child(label);
@@ -2666,7 +2701,7 @@ export const ReviewMode = {
     else if (k === "shift-/" || e.key === "?") this.command("keys", cx);
     else if (k === "a" || k === "x") { const s = this.openSugs().find((x) => x.key === this.sug); if (s) (k === "a" ? this.takeSug(s, cx) : this.dropSug(s, cx)); } // only the note that is open: its line says so
     else if (k === "s" || k === "f") this.tab = k === "s" ? "steps" : "files";
-    else if (k === "escape") { if (this.mdPrev) this.mdPrev = null; else if (this.sendP) this.sendP = null; else if (this.replyTo) this.replyTo = null; else if (this.selected().length) this.clearSel(cx); else if (this.finishOpen) this.finishOpen = false; else if (this.composing) this.closeComposer(cx); else if (this.defFile) this.defFile = null; else if (this.defAt) this.defAt = null; else if (this.drawerState() === "open") this.setDrawer(null, cx); else if (this.archFocus || this.blastFocus || this.askHl) this.archFocus = this.blastFocus = this.askHl = null; else leave(); }
+    else if (k === "escape") { if (this.mdPrev) this.mdPrev = null; else if (this.sendP) this.sendP = null; else if (this.replyTo) this.replyTo = null; else if (this.selCount()) this.clearSel(cx); else if (this.finishOpen) this.finishOpen = false; else if (this.composing) this.closeComposer(cx); else if (this.defFile) this.defFile = null; else if (this.defAt) this.defAt = null; else if (this.drawerState() === "open") this.setDrawer(null, cx); else if (this.archFocus || this.blastFocus || this.askHl) this.archFocus = this.blastFocus = this.askHl = null; else leave(); }
     else return;
     cx.stop_propagation(); cx.notify();
   },
@@ -2903,39 +2938,41 @@ export const ReviewMode = {
           .children(files.flatMap((file) => [div().id(`rv-cfile-${file}`).tooltip("Show this file in the diff").flex_none().pt(8).pb(2).px(6).text_size(TYPE.small).font_semibold().text_color(t.muted).truncate()
             .cursor_pointer().hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => { this.openCommentFile(file); cx.notify(); }).child(file),
             ...rows.filter((r) => r.file === file).flatMap((r) => {
-              const st = STATE[r.state], mine = r.kind === "pending" || r.kind === "thread";
+              const st = STATE[r.state], mine = r.kind !== "note"; // yours, a sent thread, someone's GitHub comment: all can go to a fix; a private note cannot
               // A row is one line; the one clicked last shows its whole text under it, as Markdown.
               const whole = this.crow === r.id ? [div().id(`rv-crw-${r.id}`).ml(68).mr(6).mb(6).px(10).py(6).rounded(6).bg(t.surface).text_size(TYPE.body).line_height(1.5).child(TextView.markdown(`rv-crwm-${r.id}`, r.src === "github" ? ghMd(r.text, true) : String(r.text ?? "")))] : [];
-              return [h_flex().id(`rv-cr-${r.id}`).tooltip("Jump to this comment in the diff").flex_none().gap(8).items_center().px(6).h(30).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
-                .on_click((_e, cx) => this.openCommentRow(r, cx))
-                .child(div().id(`rv-crb-${r.id}`).tooltip((mine ? "Select to fix this comment with an agent" : "Only your own comments can be selected")).accessibility_label("Select comment").w(14).h(14).flex_none().rounded(3).border_1().border_color(sel.has(r.id) ? t.accent : mine ? t.input : "#00000000").bg(sel.has(r.id) ? t.accent : "#00000000")
+              // The box stands beside the part of the row that jumps to the comment, not inside it (as in the Findings tab).
+              return [h_flex().id(`rv-crow-${r.id}`).flex_none().gap(8).items_center().px(6).h(30).rounded(6).hover((s) => s.bg(t.hover))
+                .child(div().id(`rv-crb-${r.id}`).tooltip((mine ? "Select to fix this comment with an agent" : "A private note cannot be selected. Turn it into a comment first.")).accessibility_label("Select comment").w(14).h(14).flex_none().rounded(3).border_1().border_color(sel.has(r.id) ? t.accent : mine ? t.input : "#00000000").bg(sel.has(r.id) ? t.accent : "#00000000")
                   .flex().items_center().justify_center().text_size(TYPE.micro).text_color(t.accent_foreground).child(sel.has(r.id) ? "✓" : "")
-                  .when(mine, (e) => e.on_click((_e, cx) => { this.toggleSel(r.id, cx); cx.stop_propagation(); })))
+                  .when(mine, (e) => e.cursor_pointer().on_click((_e, cx) => { this.toggleSel(r.id, cx); cx.stop_propagation(); })))
+                .child(h_flex().id(`rv-cr-${r.id}`).tooltip("Jump to this comment in the diff").flex_1().min_w(0).h_full().gap(8).items_center().cursor_pointer()
+                .on_click((_e, cx) => this.openCommentRow(r, cx))
                 .child(div().w(40).flex_none().text_size(TYPE.small).text_color(t.muted).child(`${r.old ? "−" : ""}${r.line}`))
                 .child(div().flex_1().min_w(0).truncate().text_size(TYPE.body).child(plain(r.text)))
                 .when(r.replies > 0, (e) => e.child(div().id(`rv-crr-${r.id}`).tooltip(`${r.replies} replies in this thread`).flex_none().text_size(TYPE.small).text_color(t.muted).child(`↩ ${r.replies}`)))
                 .when(Boolean(r.stale), (e) => e.child(badge(t, "STALE", t.ansi3).id(`rv-crst-${r.id}`).tooltip(STALE_TIP)))
                 .when(Boolean(r.outdated), (e) => e.child(badge(t, "Outdated", t.muted).id(`rv-cro-${r.id}`).tooltip("GitHub marks this comment outdated: the code it was on changed since")))
                 .when(Boolean(r.resolved), (e) => e.child(badge(t, "Resolved", t.ansi2).id(`rv-crv-${r.id}`).tooltip("This thread is resolved on GitHub")))
-                .child(div().id(`rv-crs-${r.id}`).tooltip(STATE_TIP[r.state] ?? st[0]).flex_none().px(6).h(18).flex().items_center().rounded(9).border_1().border_color(t[st[1]] ?? t.muted).text_size(TYPE.small).text_color(t[st[1]] ?? t.muted).child(st[0])), ...whole];
+                .child(div().id(`rv-crs-${r.id}`).tooltip(STATE_TIP[r.state] ?? st[0]).flex_none().px(6).h(18).flex().items_center().rounded(9).border_1().border_color(t[st[1]] ?? t.muted).text_size(TYPE.small).text_color(t[st[1]] ?? t.muted).child(st[0]))), ...whole];
             })])))
         .child(Scrollbar.vertical("rv-comments-left").absolute().inset_0()));
   },
 
   // While comments are selected: a toolbar floating at the bottom centre of the diff (the list keeps room for it).
   selectionBar(t) {
-    const n = this.selected().length, w = 340, left = Math.max(8, Math.round(((this.listW ?? 900) - w) / 2));
+    const n = this.selCount(), w = 340, left = Math.max(8, Math.round(((this.listW ?? 900) - w) / 2));
     return h_flex().id("rv-selbar").absolute().bottom(12).left(left).w(w).h(38).pl(14).pr(5).gap(10).items_center().rounded_full().bg(t.popover).border_1().border_color(t.border).shadow_lg()
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .child(div().flex_none().text_size(TYPE.body).font_semibold().child(`${n} selected`))
       .child(div().w(1).h(18).flex_none().bg(t.border))
-      .child(div().id("rv-selfix").tooltip("Fix the selected comments with an agent; a preview first. A sub-agent works on its own branch and never pushes").flex_none().px(14).h(28).flex().items_center().rounded_full().bg(t.accent).text_color(t.accent_foreground).text_size(TYPE.body).font_semibold().cursor_pointer()
-        .on_click((_e, cx) => this.fixComments(this.selected(), cx)).child(`✦ Fix selected (${n})`))
+      .child(div().id("rv-selfix").tooltip("Fix everything selected, comments and findings, with one agent; a preview first. A sub-agent works on its own branch and never pushes").flex_none().px(14).h(28).flex().items_center().rounded_full().bg(t.accent).text_color(t.accent_foreground).text_size(TYPE.body).font_semibold().cursor_pointer()
+        .on_click((_e, cx) => this.fixSelected(cx)).child(`✦ Fix selected (${n})`))
       .child(div().flex_1())
       .child(div().id("rv-selx").w(28).h(28).flex_none().flex().items_center().justify_center().rounded_full().text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
         .tooltip("Clear selection (Esc)").accessibility_label("Clear selection").on_click((_e, cx) => this.clearSel(cx)).child("✕"));
   },
-  clearSel(cx) { const key = this.threadKey(); this.updateThreads(cx, (d) => TH.clearSelected(d, key)); },
+  clearSel(cx) { const key = this.threadKey(); if (this.selected().length || TH.selectedOf(this.threadDoc, key, TH.FINDINGS).length) this.updateThreads(cx, (d) => TH.clearSelected(TH.clearSelected(d, key), key, Date.now(), TH.FINDINGS)); },
 
   // "Reply" in a thread: the follow-up's input under the diff (Enter: the preview).
   replyBar(t) {
@@ -2975,7 +3012,7 @@ export const ReviewMode = {
       .when(Boolean(pr), (e) => e.child(div().id("rv-bar-repo").tooltip("Repository and PR number").flex_none().text_size(TYPE.small).text_color(t.muted).child(`${pr.repo ?? ""}#${pr.number ?? ""}`))
         .child(badge(t, `PR ${pr.state ?? "?"}`, t[{ open: "ansi2", draft: "dim", merged: "ansi5", closed: "ansi1" }[pr.state]] ?? t.dim).id("rv-bar-state").tooltip("The PR's state on GitHub"))
         .when(C.tagged(ctxDoc()), (e) => e.child(badge(t, C.labelOf(ctxDoc(), prCtx(pr)), C.colorOf(ctxDoc(), prCtx(pr), t)).id("rv-bar-ctx").tooltip("The context this PR belongs to"))))
-      .when(selected > 0, (e) => e.child(div().id("rv-bar-fixsel").tooltip("Fix the selected comments with an agent; a preview first. A sub-agent works on its own branch and never pushes").flex_none().px(14).h(32).flex().items_center().rounded(7).bg(t.accent).text_color(t.accent_foreground)
+      .when(selected > 0, (e) => e.child(div().id("rv-bar-fixsel").tooltip("Fix everything selected, comments and findings, with one agent; a preview first. A sub-agent works on its own branch and never pushes").flex_none().px(14).h(32).flex().items_center().rounded(7).bg(t.accent).text_color(t.accent_foreground)
         .text_size(TYPE.body).font_semibold().cursor_pointer().on_mouse_down("left", stop).on_click(() => run("pr-review.fix")).child(`✦ Fix selected (${selected})`)))
       // Until a reviewer ran, the deep review is the button to find: green, like Finish your review.
       .child(runs.some((r) => r.at || r.busy) ? pill("rv-reviews-btn", t, runLabel, openRuns).tooltip("Run Claude or security reviews of this PR, read-only; see each run's status").flex_none()
@@ -5178,7 +5215,9 @@ export const ReviewMode = {
     const efforts = hasEffort(all), order = (list) => (efforts && this.fsort ? quickFirst(list) : list);
     // A row under "No fix sent" starts with a box, as a row of the Comments tab: ticked ones go to one fix agent
     // together ("Fix selected (n)…"). A security finding about access or data keeps its box, switched off.
-    const picked = new Set(this.pickedFindings());
+    // The box stands beside the part of the row that opens the finding, not inside it: its click is its own, on a
+    // folded row as on an open one, whatever a press on the row does.
+    const picked = new Set(this.pickedFindings()), total = this.selCount();
     const box = (x) => { const alone = secByEffect(x), sel = picked.has(x.id);
       return div().id(`rv-fbox-${x.id}`).tooltip(alone ? "Security findings about access or data are fixed one at a time: use Fix with agent… on the card." : "Select to fix this finding with an agent").accessibility_label("Select finding")
         .w(14).h(14).mt(3).flex_none().rounded(3).border_1().border_color(sel ? t.accent : alone ? t.border : t.input).bg(sel ? t.accent : alone ? t.raised : "#00000000")
@@ -5194,9 +5233,8 @@ export const ReviewMode = {
       const next = steps.find((s) => s.next), shown = steps.find((s) => this.fstep?.id === x.id && s.key === this.fstep.key && s.details.length);
       return v_flex().id(`rv-fc-${x.id}`).flex_none().px(8).py(on ? 8 : 4).gap(6).rounded(7).border_l(3).border_color(on ? t.accent : col).when(on, (e) => e.bg(t.surface)).text_size(TYPE.body)
         // A narrow column wraps the row: the place and the state go under the title instead of squeezing it to nothing.
-        .child(h_flex().id(`rv-ft-${x.id}`).tooltip("Open this finding and show its line in the diff").flex_wrap().gap(8).items_start().cursor_pointer().hover((h) => h.text_color(t.foreground))
+        .child(h_flex().gap(8).items_start().when(st === "open" || st === "recheck", (e) => e.child(box(x))).child(h_flex().id(`rv-ft-${x.id}`).tooltip("Open this finding and show its line in the diff").flex_1().min_w(0).flex_wrap().gap(8).items_start().cursor_pointer().hover((h) => h.text_color(t.foreground))
           .on_click((_e, cx) => { this.ffocus = on ? null : x.id; if (!on) this.jumpTo(`${x.file}:${x.line}`, cx); cx.notify(); })
-          .when(st === "open" || st === "recheck", (e) => e.child(box(x)))
           .child(badge(t, x.severity, col))
           // The effort word stands in a row only while the list is sorted by it (it explains the order); else it is
           // one of the open finding's facts ("Fix effort").
@@ -5205,7 +5243,7 @@ export const ReviewMode = {
           .children([certaintyWord(t, x, `rv-fcert-${x.id}`)].filter(Boolean))
           .child(div().flex_1().min_w(120).font_semibold().text_color(settled ? t.muted : t.foreground).when(!wide, (e) => e.truncate()).when(wide, (e) => e.whitespace_normal()).child(x.title))
           .child(div().flex_none().text_size(TYPE.small).text_color(t.muted).child(`${x.file.split("/").pop()}:${x.line}${this.findRow(x) < 0 ? " · outside the diff" : ""}`))
-          .when(Boolean(stateWord(st)), (e) => e.child(div().flex_none().text_size(TYPE.small).font_semibold().text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(stateWord(st)))))
+          .when(Boolean(stateWord(st)), (e) => e.child(div().flex_none().text_size(TYPE.small).font_semibold().text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(stateWord(st))))))
         .when(on, (e) => e
           .child(div().text_size(TYPE.small).text_color(t.muted).whitespace_normal().child(`Found by ${this.sourcesOf(x)}${owner ? ` · Owner: ${owner}` : ""}${x.effort ? ` · Fix effort: ${x.effort}` : ""}`))
           // An analysis finding is part of its layer: name it, a click opens it.
@@ -5263,8 +5301,8 @@ export const ReviewMode = {
         .child(v_flex().id("rv-find-left").absolute().inset_0().overflow_y_scroll().px(8).pb(12).gap(2)
           // The two kinds of unresolved findings add up to the number in the tab and in the line above.
           .child(section("FIX SENT", sent, verify, sentHint))
-          .child(section("NO FIX SENT", unresolved, picked.size > 0
-            ? pill("rv-fixall", t, `Fix selected (${picked.size})…`, (_e, cx) => this.fixSeveral(cx, [...picked]), true).tooltip("Hand the ticked findings to one agent together; a preview first, where you can still change the ticks.")
+          .child(section("NO FIX SENT", unresolved, total > 0
+            ? pill("rv-fixall", t, `Fix selected (${total})…`, (_e, cx) => this.fixSelected(cx), true).tooltip(total > picked.size ? `Hand everything selected to one agent together: ${picked.size} ${picked.size === 1 ? "finding" : "findings"} ticked here and ${total - picked.size} ${total - picked.size === 1 ? "comment" : "comments"}. A preview first.` : "Hand the ticked findings to one agent together; a preview first, where you can still change the ticks.")
             : unresolved.filter((x) => !secByEffect(x)).length > 1 && pill("rv-fixall", t, "Fix several…", (_e, cx) => this.fixSeveral(cx)).tooltip("Pick which of these findings one agent fixes together; a preview first. Security findings are fixed one at a time.")))
           .when(c.fixed > 0, (e) => e.child(section("FIXED", by("fixed"))))
           .when(c.dismissed > 0, (e) => e.child(section("DISMISSED", by("dismissed"))))
@@ -5433,8 +5471,13 @@ export const ReviewMode = {
     if (it.t === "pad") return div().w_full().h(60);
     if (it.t === "hidden") return div().w_full().h(24).pl(GUTTER + 4).flex().items_center().text_size(TYPE.small).italic().text_color(t.muted).child(it.text);
     if (it.t === "gh") {
-      const g = it.g;
-      return div().w_full().h(this.sizeOf(it)).pl(GUTTER).pr(16).pt(6).child(v_flex().size_full().px(12).pt(8).gap(6).border_l(4).border_r(1).border_t(1).border_b(1)
+      const g = it.g, sel = this.selected().includes(`gh${g.id}`);
+      // Its box, to send it to a fix with the rest of the selection: in the gutter beside the card (the card is one
+      // item of the list, and a press is known by its x only: GH_BOX), shown as a card's box is.
+      return div().relative().w_full().h(this.sizeOf(it)).pl(GUTTER).pr(16).pt(6)
+        .child(div().id(`rv-ghbox-${g.id}`).tooltip("Select to fix this comment with an agent").accessibility_label("Select comment").absolute().left(GH_BOX[0] + 6).top(16).w(14).h(14).rounded(3).border_1().border_color(sel ? t.accent : t.input).bg(sel ? t.accent : t.background)
+          .flex().items_center().justify_center().text_size(TYPE.micro).text_color(t.accent_foreground).opacity(sel || this.selCount() > 0 ? 1 : 0.45).hover((s) => s.opacity(1)).child(sel ? "✓" : ""))
+        .child(v_flex().size_full().px(12).pt(8).gap(6).border_l(4).border_r(1).border_t(1).border_b(1)
         .border_color(t.border).bg(t.raised).rounded(4).text_size(TYPE.body)
         .child(h_flex().h(18).gap(8).items_center().text_size(TYPE.small)
           .child(div().font_semibold().text_color(t.foreground).child(g.user ?? "?")).child(div().text_color(t.muted).child(`on GitHub · ${g.at ? ago(g.at) : ""}`))
@@ -5717,7 +5760,7 @@ export const ReviewMode = {
     const listShown = !this.defFile && !(this.tab === "steps" && this.page);
     if (listShown) this.traces = this.traceMap();
     const { items, at, heads } = listShown ? this.itemsOf(this.tab === "steps" ? "steps" : "files") : { items: [], at: {} };
-    if (this.selected().length) items.push({ t: "pad" }); // room for the selection toolbar
+    if (this.selCount()) items.push({ t: "pad" }); // room for the selection toolbar
     // hold: the list stays unseen for the one frame settleTop needs to get there (it scrolls past, then aligns).
     if (this.pendingScroll && at[this.pendingScroll] !== undefined) { this.scrollTo(this.tab === "steps" ? "steps" : "files", this.pendingScroll); this.top.hold = true; this.pendingScroll = null; }
     if (this.scrollCompose && at.compose !== undefined) { this.lists[this.tab === "steps" ? "steps" : "files"].scroll_to_item(at.compose, "center"); this.scrollCompose = false; }
@@ -5792,7 +5835,7 @@ export const ReviewMode = {
           .when(Boolean(this.note), (e) => e.child(noteBar(this, t, cx)))
           .when(Boolean(this.saveErr), (e) => e.child(this.saveErrBar(t)))
           .when(Boolean(this.replyTo), (e) => e.child(this.replyBar(t)))
-          .when(this.selected().length > 0, (e) => e.child(this.selectionBar(t)))
+          .when(this.selCount() > 0, (e) => e.child(this.selectionBar(t)))
           .when(Boolean(this.applyBlocked), (e) => e.child(h_flex().flex_none().px(14).py(8).gap(8).items_center().border_t(1).border_color(t.border).bg(t.ansi3 + "1c").text_size(TYPE.small)
             .child(div().flex_1().whitespace_normal().child(`${this.applyBlocked.branch}: the PR's checkout isn't clean, so it can't be applied here.`))
             .child(pill("rv-handover", t, "Hand over…", (_e, cx) => this.handOverApply(this.applyBlocked, cx), false, t.foreground).tooltip("Ask the main agent to apply the fix; a preview first"))

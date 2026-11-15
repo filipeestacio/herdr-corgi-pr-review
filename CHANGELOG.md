@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- review: one selection for comments and findings with one number everywhere, a finding's box works on a folded row, and GitHub comments can be ticked and fixed too
+
 ## 0.12.0 (2026-11-15)
 
 ### Features
