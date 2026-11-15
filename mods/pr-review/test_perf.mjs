@@ -147,10 +147,10 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   const big = await openReview(BIG());
   STATES.Resilience(big); await settle(); await quiet(big);
   assert.ok(ids(big).has("rv-res-canvas") && big.leanLevel() === 0, "the map is drawn");
-  assert.ok(stopped(big).has("rv-res-canvas"), "one stopped frame changes nothing");
+  assert.ok(stopped(big).has("rv-res-canvas") && stopped(big).has("rv-res-canvas"), "two stopped frames change nothing (a busy machine does that to a frame of 25 ms)");
   assert.ok(ids(big).has("rv-res-canvas") && big.cut === 0, "and a frame that ended starts the count again");
-  stopped(big); const lean = stopped(big);
-  assert.ok(!lean.has("rv-res-canvas") && lean.has("rv-res-canvas-lean") && lean.has("rv-res-canvas-again"), "two in a row: the page without its picture, with a sentence and a way back");
+  stopped(big); stopped(big); const lean = stopped(big);
+  assert.ok(!lean.has("rv-res-canvas") && lean.has("rv-res-canvas-lean") && lean.has("rv-res-canvas-again"), "three in a row: the page without its picture, with a sentence and a way back");
   assert.ok(!ids(big).has("rv-res-canvas"), "it stays so");
   STATES.Architecture(big); await settle(); await quiet(big);
   assert.ok(ids(big).has("rv-arch-canvas"), "another page is drawn as before");
@@ -162,9 +162,23 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   STATES["Files (as opened)"](big); await settle(); frame(big);
   STATES["Walkthrough, a layer"](big); await settle(); frame(big);
   const rows = () => big.items.filter((it) => it.t === "row").length, before = rows();
-  assert.ok(before > 4000 && before <= 5000, `the Walkthrough lists up to 5 000 lines (${before}), also after the Files tab was drawn`);
-  stopped(big); stopped(big);
-  assert.ok(rows() <= 2500 && rows() > 1500, `after two stopped frames it lists half (${rows()})`);
+  assert.ok(before > 2000 && before <= 3000, `the Walkthrough lists up to 3 000 lines (${before}), also after the Files tab was drawn`);
+  // The open layer has its lines wherever it stands; the room left goes to the layers after it, then to the ones before.
+  const shown = (k) => { const s = big.steps()[k], ids = new Set(big.present(s)); return [big.items.filter((it) => it.t === "row" && ids.has(it.hunk)).length, big.present(s).reduce((n, id) => n + big.byId.get(id).rows.length, 0)]; };
+  for (const k of [0, 9, big.steps().length - 1]) {
+    big.command(`step:${k}`, cx); frame(big);
+    const [got, all] = shown(k);
+    assert.ok(all > 0 && got >= all, `layer ${k} open: all of its ${all} lines are listed (${got})`);
+    assert.ok(rows() <= 3000 + 200, `and the list still holds about 3 000 (${rows()})`);
+  }
+  const last = big.steps().length - 1; assert.ok(shown(last - 1)[0] > 0 && shown(1)[0] === 0, "the last layer open: the room left goes to the ones before it, the first ones wait");
+  big.command("step:0", cx); frame(big);
+  stopped(big); stopped(big); stopped(big);
+  assert.ok(rows() <= 1500 && rows() > 700, `after three stopped frames it lists half (${rows()})`);
+  // After a while it tries all of it again.
+  const now = Date.now; Date.now = () => now() + 6 * 60000;
+  frame(big); assert.ok(rows() > 2000, `five minutes later the list is whole again (${rows()})`);
+  Date.now = now;
   // An exception is not a stopped frame.
   const boom = big.renderReview; big.renderReview = () => { throw new Error("boom"); };
   for (let k = 0; k < 3; k++) assert.throws(() => big.render(cx), /boom/);

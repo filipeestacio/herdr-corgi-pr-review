@@ -93,6 +93,8 @@ const jsonOf = (o) => {
 // resilienceStart reads every added line of the diff: once per patch (securityNow asks on every read of a file).
 const resStartMemo = new WeakMap();
 const resStartOfPatch = (patch) => { if (!resStartMemo.has(patch)) resStartMemo.set(patch, resilienceStart(patch)); return resStartMemo.get(patch); };
+const STEP_LINES = 3000; // diff lines the Walkthrough lists at once (stepsItems): 4 000 took 23 ms per frame in Herdr on a busy machine (load 10 to 17), a frame is stopped at about 50
+const LEAN_MS = 5 * 60000; // how long a view draws less after its frames were stopped (frameCut), before it tries all of it again
 const LAYOUT_IN_FRAME = 20; // cards a map may have to be laid out while a frame is drawn (archL)
 const NO_HUNKS = []; // a file outside the diff has no hunks: always this array, so memoRows sees the same input (rowsFor)
 // A patch's file by its path (the first with it, as find gives): a Map per patch array, since rowsFor asks per finding.
@@ -1576,11 +1578,12 @@ export const ReviewMode = {
 
   // ---- the diff as list items (one virtual list per tab)
 
-  pushRows(items, at, rows, path, hunkOf) {
+  // room: the caller decided (stepsItems gives the open layer its room first): true, or the note to show instead.
+  pushRows(items, at, rows, path, hunkOf, room) {
     // ponytail: gpui-kit's virtual list holds at most 10000 items; past the budget a file's lines fold to one note
     // (collapse other files to open it) instead of crashing the render. A paged list would lift the limit.
     const cap = this.rowCap ?? this.rowsCap(9000);
-    if (items.length + rows.length > cap) { items.push({ t: "note", text: `${rows.length} lines not shown: the view holds about ${cap} lines at once. Collapse other files (click their header) to open this one.` }); return []; }
+    if (room === undefined ? items.length + rows.length > cap : room !== true) { items.push({ t: "note", text: room ?? `${rows.length} lines not shown: the view holds about ${cap} lines at once. Collapse other files (click their header) to open this one.` }); return []; }
     const sugs = this.openSugs(path), cms = this.comments.filter((c) => c.file === path), used = new Set();
     const finds = this.findings().filter((f) => f.file === path && OPEN_ST.includes(this.fstatus(f))); // a fix sent stays here until it is verified
     // A card sits under the first code line of its finding's range; an open one marks the range in the gutter.
@@ -1674,8 +1677,14 @@ export const ReviewMode = {
     const items = [], at = {};
     // Its own number of lines, every time: it used to take what the Files list had left (2 500), or 9 000 when that
     // list was never drawn, and 9 000 lines take 40 to 50 ms per frame in Herdr (a frame is stopped at about 50).
-    // 5 000 take about 23 ms; when frames are stopped all the same, it halves (rowsCap).
-    this.rowCap = this.rowsCap(5000);
+    // STEP_LINES take about half of what a frame may; when frames are stopped all the same, it halves (rowsCap).
+    // The open layer's hunks get the room first, then the layers after it, then the ones before: the layer you read
+    // always has its lines, whatever stands above it.
+    const cap = this.rowCap = this.rowsCap(STEP_LINES), cur = Math.min(this.cur ?? 0, steps.length - 1), fits = new Set();
+    let left = cap;
+    for (const i of steps.map((_s, k) => k).sort((a, b) => (a >= cur ? a - cur : steps.length + cur - a) - (b >= cur ? b - cur : steps.length + cur - b))) {
+      for (const id of this.present(steps[i])) { const n = this.byId.get(id).rows.length; if (n <= left) { fits.add(`${i}|${id}`); left -= n; } }
+    }
     steps.forEach((s, i) => {
       at[`s${i}`] = items.length;
       items.push({ t: "step", s, i }, ...(s.visuals ?? []).flatMap((v, k) => this.visItems(v, i, k)));
@@ -1690,7 +1699,7 @@ export const ReviewMode = {
         const more = seen.has(h.path) ? 0 : (this.hunks ?? []).filter((x) => x.path === h.path && !present.includes(x.id)).length;
         seen.add(h.path);
         if (more) items.push({ t: "more", path: h.path, n: more, text: `more|${i}|${h.path}` });
-        this.pushRows(items, at, h.rows, h.path, () => id);
+        this.pushRows(items, at, h.rows, h.path, () => id, fits.has(`${i}|${id}`) || `${h.rows.length} lines not shown: the view holds about ${cap} lines at once.${i === cur ? "" : " Open this layer to see them."}`);
       }
     });
     return { items, at };
@@ -2992,7 +3001,7 @@ export const ReviewMode = {
           const st = this.fstatus(f), settled = ["fixed", "dismissed"].includes(st);
           return h_flex().id(`${p}-f-${n}-${k}`).tooltip(`${this.sourcesOf(f)}: open this finding in the Findings tab`).gap(8).items_center().text_size(TYPE.body).cursor_pointer()
             .on_click((_e, cx) => { this.openFinding(f); cx.stop_propagation(); cx.notify(); })
-            .child(badge(t, f.severity, t[SEV[f.severity]]))
+            .child(badge(t, f.severity, t[SEVERITY_COLOR[f.severity]] ?? t.accent)) // also "critical", which SEV does not have: without a colour the element, and with it the frame, failed
             .child(div().flex_1().min_w(0).truncate().text_color(settled ? t.muted : t.foreground).child(f.title))
             .child(div().flex_none().text_size(TYPE.small).text_color(t.muted).child(f.sources.length === 1 ? this.sourcesOf(f) : `${f.sources.length} sources`))
             .when(st !== "open", (e) => e.child(div().flex_none().text_size(TYPE.small).text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(FSTATUS[st]?.[0] ?? st)));
@@ -3571,14 +3580,15 @@ export const ReviewMode = {
   },
   // Herdr stops a frame that takes longer than about 50 ms and keeps showing the one before, under "This view could
   // not be re-rendered"; the next frame takes as long, so the view would stay there. cut: frames stopped in a row on
-  // one tab and page. After two the view draws less there (leanLevel): no map picture but a sentence (archCanvas),
-  // and half the lines in the list per level (rowsCap). It stays so for this PR; "Draw it again" takes it back.
+  // one tab and page. After three (two happen on a busy machine to a frame that takes half the time) the view draws
+  // less there (leanLevel): no map picture but a sentence (archCanvas), and half the lines in the list per level
+  // (rowsCap). After LEAN_MS it tries all of it again; "Draw it again" does so at once.
   frameCut(was) {
     const key = `${this.tab}|${this.page ?? ""}`;
     this.cut = was ? (this.cutKey === key ? (this.cut ?? 0) + 1 : 1) : 0; this.cutKey = key;
-    if (this.cut >= 2) { (this.leanBy ??= new Map()).set(key, this.leanLevel() + 1); this.cut = 0; }
+    if (this.cut >= 3) { (this.leanBy ??= new Map()).set(key, { level: this.leanLevel() + 1, at: Date.now() }); this.cut = 0; }
   },
-  leanLevel() { return this.leanBy?.get(`${this.tab}|${this.page ?? ""}`) ?? 0; },
+  leanLevel() { const x = this.leanBy?.get(`${this.tab}|${this.page ?? ""}`); return x && Date.now() - x.at < LEAN_MS ? x.level : 0; },
   rowsCap(lines) { return Math.max(250, lines >> this.leanLevel()); },
   leanNote(t, id, cards) {
     return v_flex().id(`${id}-lean`).w_full().gap(8).p(12).rounded(8).border_1().border_color(t.border).text_size(TYPE.body).text_color(t.muted)
