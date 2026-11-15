@@ -3,7 +3,7 @@
 // analysis as review.js holds it (pr.js mapReview), the merged findings (pr.js mergeFindings) and their states, and
 // returns text that starts with the PR and commit it is about. Pictures are Mermaid: an agent reads it as text and
 // GitHub draws it. A security finding is in here in full: this is for the person's own use, nothing is posted.
-import { taskList, taskHead, verdictParts, findingCounts, componentLine, CERTAINTY, SEVERITY_SCALE, levels, isGuard } from "./pr.js";
+import { taskList, taskHead, verdictParts, findingCounts, componentLine, CERTAINTY, SEVERITY_SCALE, levels, isGuard, secOldLine } from "./pr.js";
 import { transitionText } from "./arch.js";
 import { asideOf, threatCited, skipText, guardLine } from "./views.js";
 import { resWord, resToolText, resVerdict, resWatch } from "./views.js"; // wave R2: the page's words, verdict and watch list
@@ -280,7 +280,7 @@ const componentsTable = (list) => table(["Component", "Kind", "Status", "Where",
 const ROW_KIND = { security: "Security", criterion: "Criterion", ask: "Criterion", finding: "Finding", conflict: "Merge conflict", ci: "CI check", rule: "Repo rule", verify: "Fix to verify", overlap: "Overlapping PR", resilience: "Resilience" };
 // size: "9 files +178 −10"; funnel: pr.js funnel() of the findings (how many reports became how many findings).
 export function overviewMd({ pr, head, ai = null, findings = [], statusOf = () => "open", checks = [], related = null, verdict: said = null, action = null, rows = null, nc = null, resLine = null, cost = null, flow = null, code = null, size = null, funnel = null }) {
-  const list = taskList(ai?.asks ?? [], findings, ai?.unlinked ?? [], statusOf), verdict = said ?? (ai || findings.length ? verdictParts(list, findingCounts(findings, statusOf), { failed: checks.filter((c) => c.ok === false).length }) : []);
+  const list = taskList(ai?.asks ?? [], findings, ai?.unlinked ?? [], statusOf), verdict = said ?? (ai || findings.length ? verdictParts(list, findingCounts(findings, statusOf), { failed: checks.filter((c) => c.ok === false).length, oldRules: Boolean(ai?.securityFrom?.predates) }) : []);
   const line = (f) => `- ${findingLine(f, statusOf(f))}`, cx = codeContext(code);
   const before = (r) => [`- **${ROW_KIND[r.kind] ?? r.kind}:** ${r.finding ? findingLine(r.finding, statusOf(r.finding)) : `${flat(r.title)}${r.where ? ` (\`${r.where}\`)` : ""}`}${r.ask && !r.finding ? ` (${ASK[r.ask.state] ?? r.ask.state})` : ""}`,
     Boolean(r.why) && `  - ${flat(r.why)}`, (r.asks ?? []).length > 0 && `  - Breaks: ${r.asks.map((x) => flat(x.short || x.text || x)).join("; ")}`, r.finding?.path_certainty && `  - ${{ assumed: "assumed reachable", confirmed: "confirmed reachable", derived: "reachable by the code" }[r.finding.path_certainty] ?? `reach ${r.finding.path_certainty}`}`, (r.also ?? []).length > 0 && `  - Same cause also at ${r.also.join(", ")}`,
@@ -483,7 +483,7 @@ export function securityMd({ pr, head, ai = null, findings = [], statusOf = () =
     // As the page counts: ⛨ findings once per cause, the findings behind a threat, the guards this PR loosens.
     rows.length > 0 && [secSentence(rows, secN, cited.length, guards.filter((g) => g.loosened).length), ""],
     // pr.js secNote: a run from before the current rules of the security view.
-    Boolean(ai?.securityFrom?.predates) && ["This security review is older than the current rules for guards, operators and taken-over roles, so a crossing it calls not assessed may only be left open by the old prompt. Re-run it for the current view.", ""],
+    Boolean(ai?.securityFrom?.predates) && [secOldLine(ai, taskList(ai?.asks ?? [], findings, ai?.unlinked ?? [], statusOf).security), ""],
     [`## Trust boundary crossings (${changed.length}${rest.length ? `, and ${rest.length} unchanged` : ""})`, "",
       "The ways in, the rights and the calls this PR opens or changes across a trust boundary, each in full.", "",
       !rows.length && "The data names no crossing: no zones, no way in and no right into another zone. The security review names them.",

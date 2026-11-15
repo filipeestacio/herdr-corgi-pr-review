@@ -909,11 +909,14 @@ const reachAssumed = (f) => (f.path_certainty ?? f.certainty) === "assumed";
 // count the high findings: the groups below say how severe each one is. Without a task and without a security finding:
 // the unresolved findings. → [{key, text, short, tone: security | ok | plain}]; `short` is the bar's excerpt
 // ("⛨ 2 high · 0/5 criteria"), from the same parts so the two never disagree.
-export function verdictParts(l, c, { failed = 0, toVerify = 0 } = {}) {
+// oldRules: the security run was made under older rules of the security view (secNote); the ⛨ count then says so
+// ("older rules, re-run"), in the line and in the bar, because what carries ⛨ through one of its threats may change.
+export function verdictParts(l, c, { failed = 0, toVerify = 0, oldRules = false } = {}) {
   const sec = l.security, secHigh = sec.filter((f) => f.severity === "high").length, open = c.unresolved ? count(c.unresolved, "unresolved finding") : "No unresolved findings";
-  const assumed = sec.filter(reachAssumed).length, reach = !assumed ? "" : assumed === sec.length ? " (assumed reachable)" : ` (${assumed} assumed reachable)`; // words, not the noun "reach": that an attacker gets there is assumed
-  return [sec.length === 1 && { key: "security", text: `1 security cause, ${sec[0].severity}${reach}`, short: `⛨ 1 ${sec[0].severity}`, tone: "security" },
-    sec.length > 1 && { key: "security", text: `${sec.length} security causes, ${secHigh || "none"} high${reach}`, short: secHigh ? `⛨ ${secHigh} high` : `⛨ ${sec.length}`, tone: "security" },
+  const assumed = sec.filter(reachAssumed).length, old = oldRules ? " (older rules, re-run)" : ""; // words, not the noun "reach": that an attacker gets there is assumed
+  const notes = [!assumed ? null : assumed === sec.length ? "assumed reachable" : `${assumed} assumed reachable`, oldRules && "older rules, re-run"].filter(Boolean), reach = notes.length ? ` (${notes.join("; ")})` : "";
+  return [sec.length === 1 && { key: "security", text: `1 security cause, ${sec[0].severity}${reach}`, short: `⛨ 1 ${sec[0].severity}${old}`, tone: "security" },
+    sec.length > 1 && { key: "security", text: `${sec.length} security causes, ${secHigh || "none"} high${reach}`, short: `${secHigh ? `⛨ ${secHigh} high` : `⛨ ${sec.length}`}${old}`, tone: "security" },
     l.criteria > 0 && { key: "criteria", text: metText(l), short: `${l.met}/${l.criteria} criteria`, tone: l.met === l.criteria ? "ok" : "plain" },
     !sec.length && !l.criteria && { key: "findings", text: open, short: open, tone: c.unresolved ? "plain" : "ok" },
     failed > 0 && { key: "checks", text: `${count(failed, "check")} failed`, short: `${count(failed, "check")} failed`, tone: "plain" },
@@ -1020,7 +1023,7 @@ export function componentLine(cc) {
 // its title only: no file, no line, nothing about how to reach it.
 // behavior: what the PR does at run time, first so the reader knows the PR; fixOf(f): the agent and branch of a fix sent
 // ("a sub-agent, fix/2-x"); cost: costLine's text.
-export function reviewState({ pr, head = "", list, counts, findings, statusOf, progress = "", behavior = "", fixOf = () => "", cost = "" }) {
+export function reviewState({ pr, head = "", list, counts, findings, statusOf, progress = "", behavior = "", fixOf = () => "", cost = "", oldRules = false }) {
   const word = (s) => s.replace("_", " ");
   const ask = (r) => `- ${word(r.ask.state)}: ${r.ask.text}${r.ask.acceptance ? " (acceptance criterion)" : ""}${r.ask.why ? `. ${r.ask.why}` : ""}${r.unlinked ? " No finding backs this." : ""}`;
   const one = (f) => `${secByEffect(f) ? `- ${f.severity}, security: ${f.title}` : `- ${f.severity}: ${f.title} (${f.file}:${f.line})`}${statusOf(f) === "progress" && fixOf(f) ? `. Fix: ${fixOf(f)}` : ""}`;
@@ -1028,7 +1031,7 @@ export function reviewState({ pr, head = "", list, counts, findings, statusOf, p
     .map(([label, st]) => [label, findings.filter((f) => st.includes(statusOf(f)))]).filter(([, fs]) => fs.length);
   return [`Review state of ${pr.repo ?? ""}#${pr.number}: ${pr.title ?? ""}`, `${pr.url ?? ""}${head ? ` at ${String(head).slice(0, 7)}` : ""}`, "",
     ...(behavior ? [`What it does: ${String(behavior).replace(/\s+/g, " ").trim()}`, ""] : []),
-    verdictParts(list, counts).map((p) => p.text).join(" · "), "",
+    verdictParts(list, counts, { oldRules }).map((p) => p.text).join(" · "), "",
     ...(taskHead(list) ? [`Task check: ${taskHead(list)}`, ...[...list.rows, ...list.extra].map(ask), ""] : []),
     ...groups.flatMap(([label, fs]) => [`${label} (${fs.length}):`, ...fs.map(one), ""]),
     ...(progress ? [progress, ""] : []), ...(cost ? [`AI runs on this PR: ${cost}.`, ""] : []), ...(findings.some((f) => secByEffect(f)) ? ["Security findings about access or data are listed by title only."] : [])].join("\n").trim() + "\n";
@@ -1619,3 +1622,13 @@ export const secByEffect = (f) => (f?.threats?.length ? isSecurity({ ...f, threa
 // like any other finding.
 export const secWhy = (f) => { const ts = f?.threats ?? [], named = ts.length ? `named by a threat (${ts.join(", ")})` : "";
   return secByEffect(f) ? `Security: access or data${named ? `; also ${named}` : ""}.` : named ? `Security: ${named}.` : ""; };
+
+// A security run made under older rules (secNote), as the sentence of the Security page and its Markdown: what it means,
+// the offer, and how many of the unresolved security causes (taskList's `security`) it touches: the ones that carry ⛨
+// only through a threat this run named, not through their own effect (secByEffect). null for a current run.
+export function secOldLine(ai, sec = []) {
+  if (!ai?.securityFrom?.predates) return null;
+  const hit = sec.filter((f) => !secByEffect(f)).length, n = sec.length;
+  return `This security review is older than the current rules for guards, operators and taken-over roles, so a crossing it calls not assessed may only be left open by the old prompt. Re-run it for the current view.${
+    !n ? "" : !hit ? ` None of the ${n === 1 ? "one security cause" : `${n} security causes`} hangs on a threat of this run.` : ` ${hit} of the ${n} security ${n === 1 ? "cause" : "causes"} ${hit === 1 ? "carries" : "carry"} ⛨ only through a threat this run named, so the count may change.`}`;
+}

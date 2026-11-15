@@ -1131,3 +1131,24 @@ console.log("ok");
   assert.deepEqual(v.arch.zones.map((z) => z.trust), ["public", "operator"], "an admin workstation is the operator's zone, not authenticated or public");
   console.log("ok one count of security findings");
 }
+
+// Acceptance, engineer 1: a security run under older rules. The ⛨ count says so in the verdict line and in the bar, and
+// the re-run sentence names how many security causes hang only on a threat that run named.
+{
+  const { verdictParts, taskList, secOldLine, reviewState } = await import("./pr.js");
+  const f = (id, extra = {}) => ({ id, ids: [id], file: "a.py", line: 1, severity: "high", title: id, ...extra });
+  const token = f("token", { security: true, impact: "unauthorized_access" }), flood = f("flood", { security: true, impact: "degraded_operation", threats: ["t2"] }), dlq = f("dlq", { security: true, impact: "data_loss", category: "availability", threats: ["t4"], severity: "medium" });
+  const list = taskList([], [token, flood, dlq], [], () => "open"), c = { unresolved: 3, security: 3 };
+  assert.deepEqual(verdictParts(list, c, { oldRules: true }).map((p) => [p.text, p.short]), [["3 security causes, 2 high (older rules, re-run)", "⛨ 2 high (older rules, re-run)"]]);
+  assert.deepEqual(verdictParts(list, c).map((p) => [p.text, p.short]), [["3 security causes, 2 high", "⛨ 2 high"]], "a current run: no note");
+  const one = taskList([], [{ ...flood, path_certainty: "assumed" }], [], () => "open");
+  assert.deepEqual(verdictParts(one, c, { oldRules: true }).map((p) => [p.text, p.short]), [["1 security cause, high (assumed reachable; older rules, re-run)", "⛨ 1 high (older rules, re-run)"]]);
+  assert.equal(verdictParts(taskList([], [f("x")], [], () => "open"), { unresolved: 1 }, { oldRules: true })[0].text, "1 unresolved finding", "no ⛨ count, no note");
+  const old = { securityFrom: { predates: true } };
+  assert.ok(secOldLine(old, list.security).endsWith("Re-run it for the current view. 2 of the 3 security causes carry ⛨ only through a threat this run named, so the count may change."), secOldLine(old, list.security));
+  assert.ok(secOldLine(old, [flood]).endsWith(" 1 of the 1 security cause carries ⛨ only through a threat this run named, so the count may change."));
+  assert.ok(secOldLine(old, [token]).endsWith(" None of the one security cause hangs on a threat of this run.") && secOldLine(old, []).endsWith("current view."));
+  assert.equal(secOldLine({ securityFrom: { predates: false } }, list.security), null); assert.equal(secOldLine(null, list.security), null);
+  assert.ok(reviewState({ pr: { number: 2 }, list, counts: c, findings: [], statusOf: () => "open", oldRules: true }).includes("(older rules, re-run)"));
+  console.log("ok a security run under older rules");
+}

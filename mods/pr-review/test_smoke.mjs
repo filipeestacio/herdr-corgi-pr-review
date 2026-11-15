@@ -627,6 +627,24 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     v.deep = keep;
   }
 }
+// Acceptance, engineer 1: a security run under older rules says so at the ⛨ count, in the verdict and in the bar, and
+// its re-run sentence counts the causes that hang on its threats. A run under the current rules says neither.
+{
+  const { SEC_RULES } = await import("./pr.js");
+  const texts = (v) => { S.texts = new Set(); draw(v, "texts"); const got = [...S.texts]; S.texts = null; return got; };
+  for (const rules of [1, SEC_RULES]) {
+    const doc = JSON.parse(fx("findings-s.json")); doc.security = { ...doc.security, rules };
+    const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify(doc) }), old = rules < SEC_RULES;
+    const sec = v.verdictNow().find((p) => p.key === "security");
+    assert.ok(sec && /older rules, re-run/.test(sec.text) === old && /older rules, re-run/.test(sec.short) === old, `rules ${rules}: the verdict's ⛨ part: ${sec?.text} / ${sec?.short}`);
+    v.command("page:overview", cx); assert.equal(texts(v).some((x) => /security causes?, .*older rules, re-run/.test(x)), old, `rules ${rules}: the Overview's verdict line`);
+    v.command("page:blast", cx); const page = texts(v);
+    assert.equal(page.some((x) => /^⛨ \d+( high)? \(older rules, re-run\)$/.test(x)), old, `rules ${rules}: the bar's excerpt`);
+    assert.equal(page.some((x) => /Re-run it for the current view\. (\d+ of the \d+ security causes? carr(y|ies) ⛨ only through a threat this run named|None of the)/.test(x)), old, `rules ${rules}: the re-run sentence counts`);
+    assert.equal(/older rules, re-run/.test(v.mdText(false)), false, "the Security page's Markdown has the sentence, not the bar's note");
+    assert.equal(/Re-run it for the current view\. (\d+ of the|None of the)/.test(v.mdText(false)), old, `rules ${rules}: the Markdown's sentence counts`);
+  }
+}
 await settle();
 assert.deepEqual(late, [], "a spawned task threw");
 console.log(`smoke ok: ${shown} frames`);

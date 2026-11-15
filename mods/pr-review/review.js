@@ -45,7 +45,7 @@ import { markRoom, FIT as ARCH_FIT, ARCH as ARCH_SIZE } from "./arch.js"; // a c
 import { resStartOf, resPicture, budgetBar, resCardOf, resSentence, resMarksOn } from "./views.js";
 import { resWord, resToolText, resVerdict, resWatch, resTwice, PROBE_TYPICAL, resEdgeMarks, resByProbe, RES_MARK_ROW, resMarkRows, resMarkLines, resVerdictParts, resStartCard } from "./views.js";
 import { withProbes, certaintyText, probedText } from "./views.js"; // wave C2 V3: a reproduced probe confirms its findings // wave R2: words, verdict, watch, doubled ways
-import { withThreats, secNote, secByEffect, secWhy } from "./pr.js"; // the Security page: one count, and a run from before its current rules
+import { withThreats, secNote, secOldLine, secByEffect, secWhy } from "./pr.js"; // the Security page: one count, and a run from before its current rules
 import { withResilience, resilienceStart, RUN_TYPICAL } from "./pr.js"; // the Resilience run's data // the Resilience page
 import { keepLast } from "./views.js"; // every cache has a limit
 import { resDepRows, resMeta, resFade, resShown, resRefs, probeBaseWord, datedByDiff } from "./views.js"; // Resilience: dependencies that fail or are overloaded; a path's second line; readable dimming
@@ -3951,7 +3951,7 @@ export const ReviewMode = {
       .when(data && sr?.state !== "running", (e) => e.child(this.runOffer("security", t)))
       // pr.js secNote: a run from before the current rules of the security view; what it left open may be the old prompt's.
       .when(data && sr?.state === "done" && Boolean(secNote(this.ai)), (e) => e.child(div().id("rv-sec-rules").text_size(TYPE.small).text_color(t.ansi3).whitespace_normal().line_height(1.5)
-        .child("This security review is older than the current rules for guards, operators and taken-over roles, so a crossing it calls not assessed may only be left open by the old prompt. Re-run it for the current view.")))
+        .child(secOldLine(this.ai, this.taskNow().security) ?? "")))
       // Someone else's PR with reasons (pr.js securityStart offer): why the Run button is there, with its cap.
       .when(data && Boolean(this.secOfferText()), (e) => e.child(div().id("rv-sec-offer").text_size(TYPE.body).whitespace_normal().line_height(1.5).text_color(t.ansi3)
         .child(`${this.secOfferText()} Run security review: capped at $${REVIEW_CAP[tierOf(model())]}.`)));
@@ -5358,7 +5358,7 @@ export const ReviewMode = {
   verdictNow() {
     const fc = this.counts(), checks = this.checksNow(), rb = (this.resNow()?.paths ?? []).filter((p) => p.blocker).length;
     const res = rb ? [{ key: "resilience", text: `↯ ${rb} resilience ${rb === 1 ? "blocker" : "blockers"}`, short: `↯ ${rb} resilience`, tone: "plain" }] : []; // the bar's excerpt: the sign with its word, as "⛨ 1 high" has one
-    return this.ai || fc.total ? [...verdictParts(this.taskNow(), fc, { failed: checks.filter((c) => c.ok === false).length, toVerify: this.verifyList().length }), ...res] : [];
+    return this.ai || fc.total ? [...verdictParts(this.taskNow(), fc, { failed: checks.filter((c) => c.ok === false).length, toVerify: this.verifyList().length, oldRules: Boolean(secNote(this.ai)) }), ...res] : [];
   },
   // The Overview's "Before merge" rows (pr.js beforeMerge on mergeBlockers).
   mergeRows() {
@@ -5482,7 +5482,7 @@ export const ReviewMode = {
     const p = this.progressNow();
     const ai = this.ai, behavior = ai?.behaviorPoints?.length ? ai.behaviorPoints.map((x) => x.text).join(" ") : ai?.behavior ?? "";
     const fixOf = (f) => { const ff = Object.fromEntries(this.fixFacts(f)); return [ff.Agent, ff.Branch].filter(Boolean).join(", "); };
-    const text = reviewState({ pr: this.prSel, head: this.worktree?.head ?? this.prSel.headSha ?? "", list: this.taskNow(), counts: this.counts(), findings: this.findings(), statusOf: (f) => this.fstatus(f),
+    const text = reviewState({ oldRules: Boolean(secNote(this.ai)), pr: this.prSel, head: this.worktree?.head ?? this.prSel.headSha ?? "", list: this.taskNow(), counts: this.counts(), findings: this.findings(), statusOf: (f) => this.fstatus(f),
       progress: `Reviewer's progress: ${p.filesViewed} of ${p.files} files viewed, ${p.comments} pending ${p.comments === 1 ? "comment" : "comments"}.`, behavior, fixOf, cost: this.costNow() });
     copyText(text);
     this.note = `Review state copied as text (${text.trim().split("\n").length} lines), nothing was posted.${this.findings().some((f) => secByEffect(f)) ? " Security findings about access or data are in it with their title only." : ""}`;
