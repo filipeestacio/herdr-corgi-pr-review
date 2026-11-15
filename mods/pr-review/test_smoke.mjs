@@ -516,6 +516,55 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   v.steps().forEach((_s, k) => act(v, `step:${k}`, `Explore: layer ${k}`));
   v.exBusy = { id: "x2", topic: "Next?", model: "sonnet", started: Date.now() }; draw(v, "Explore: one running"); v.exBusy = null;
   v.exErr = "The model gave no answer"; draw(v, "Explore: one failed"); v.exErr = null;
+  // A run that ended at once without an answer: the sentence with Retry, the model's choice and "Details" (what the
+  // CLI printed stays folded); the red line never holds the result object.
+  {
+    S.store.set("review.explore", { start: true, at: 3, root: "/h/repo" }); draw(v, "Explore: a new start"); v.exRoot = { root: "/h/repo", repo: "o/r" }; // the repo, as found
+    const raw = JSON.stringify({ type: "result", is_error: true, duration_api_ms: 0, stop_reason: "stop_sequence", session_id: "0000", total_cost_usd: 0, usage: { input_tokens: 0 }, result: "Claude AI usage limit reached|1794751200" });
+    v.exErr = "Explore: walkthrough: The run ended at once without an answer: Claude AI usage limit reached. It resets at 15:00. Choose another model or try again later."; v.exDetail = raw; v.exDetailOpen = false;
+    const shown = () => { S.ids = new Set(); S.texts = new Set(); draw(v, "Explore: a run that ended at once"); const got = { ids: S.ids, texts: [...S.texts] }; S.ids = null; S.texts = null; return got; };
+    let got = shown();
+    assert.ok(["rv-ex-err", "rv-ex-retry", "rv-ex-detail"].every((id) => got.ids.has(id)) && !got.ids.has("rv-ex-raw"), "the sentence, Retry and Details; the raw object folded");
+    assert.ok(got.texts.includes("The run ended at once without an answer: Claude AI usage limit reached. It resets at 15:00. Choose another model or try again later.") && !got.texts.some((x) => x.includes("session_id")), "one sentence, without the feature's name and without the object");
+    S.clicks.get("rv-ex-detail")(null, cx); got = shown();
+    assert.ok(got.ids.has("rv-ex-raw") && got.texts.includes(raw), "Details shows what the CLI printed");
+    v.exTopic.set_value("How are reminders sent?"); const before = v.exBusy; S.clicks.get("rv-ex-retry")(null, cx);
+    assert.ok(!before && v.exBusy?.topic === "How are reminders sent?" && v.exErr === null && v.exDetail === null, "Retry starts the run again and takes the error away");
+    v.exBusy = null; v.exTopic.set_value("");
+  }
+  // Minimize in Explore: the bar has it beside Back; the entry keeps the topic typed, the repo and a run that is going;
+  // the chip says what it is and how the run stands; Resume opens the page with all of it, and the run's end is read.
+  {
+    const bar = () => { S.ids = new Set(); frame("Explore: the bar", () => v.renderBar()); const ids = S.ids; S.ids = null; return ids; };
+    assert.ok(bar().has("rv-back") && bar().has("rv-min"), "Explore's bar: Back and Minimize");
+    const busy = { id: "x9", topic: "How are reminders sent?", model: "opus", started: Date.now() - 42000, status: "/h/pr-data/explore/x9.json.status", out: "/h/pr-data/explore/x9.json", ctx: null };
+    v.exTopic.set_value("How are reminders sent?"); v.exBusy = busy; v.exErr = null;
+    v.command("explore-min", cx);
+    const kept = S.store.get("review.minimized");
+    assert.deepEqual([kept.explore.draft, kept.explore.busy.id, kept.explore.exRoot.root, kept.target], ["How are reminders sent?", "x9", "/h/repo", undefined], "the page as it stands is kept");
+    assert.deepEqual(R.miniExploreText(kept.explore, null, busy.started + 42000), { head: "Explore", topic: "How are reminders sent?", repo: "o/r", state: "running", text: "running · 0:42" });
+    assert.equal(R.miniExploreText(kept.explore, { id: "x9", state: "done" }).text, "the walkthrough is ready");
+    assert.deepEqual([R.miniExploreText(kept.explore, { id: "x9", state: "failed" }).state, R.miniExploreText(kept.explore, { id: "other", state: "done" }).state], ["failed", "running"], "another run's end says nothing of this one");
+    assert.deepEqual([R.miniExploreText({ start: true, root: "/h/repo" }).head, R.miniExploreText({ start: true, root: "/h/repo" }).text], ["Explore: repo", ""], "no topic yet: the repo");
+    assert.equal(R.miniExploreText({ id: "x1", topic: "Loans", repo: "o/r", root: "/h/repo" }).state, null, "an exploration that is shown: no run");
+    for (const run of [null, { id: "x9", state: "done" }, { id: "x9", state: "failed" }]) { S.ids = new Set(); frame(`the minimized Explore chip, ${run?.state ?? "running"}`, () => R.renderMini(run)); assert.ok(["rv-mini", "rv-mini-open", "rv-mini-x"].every((id) => S.ids.has(id))); S.ids = null; }
+    // Resume: a view that lost the page's state (a new one) takes it from the entry; the run ended meanwhile with an error.
+    S.files.set("/h/mods/pr-review/review-layout.json", "{}"); // the layout it copies on a first start
+    await R.startExplore("/h/repo", kept.explore);
+    const back = S.store.get("review.explore");
+    assert.ok(S.store.get("review.minimized") === null && back.busy.id === "x9" && back.draft === "How are reminders sent?", "Resume: the entry is gone, the page has its state");
+    S.files.set(busy.status, JSON.stringify({ error: "Explore: walkthrough: The run was stopped before it answered. Try again.", kind: "stopped", detail: "" }));
+    v.exBusy = null; v.exTopic.set_value(""); v.exRoot = null; v.exStart = null;
+    const timers = []; const cx2 = { ...cx, timer: { after: (_ms, f) => timers.push(f), every() {} }, spawn: (f) => { void Promise.resolve().then(() => f(cx2)).catch(() => null); } };
+    v.enterExplore(back, cx2);
+    assert.deepEqual([v.exBusy?.id, v.exTopic.value(), v.exRoot?.root], ["x9", "How are reminders sent?", "/h/repo"], "the topic, the repo and the run are back");
+    for (const f of timers.splice(0)) f(cx2); await settle();
+    assert.deepEqual([v.exBusy, v.exErr], [null, "Explore: walkthrough: The run was stopped before it answered. Try again."], "the run's end is read at once");
+    v.enterExplore({ ...back }, cx2); // the next render reads the same entry as a new object: nothing is taken again
+    assert.deepEqual([v.exBusy, v.exErr === null, timers.length], [null, false, 0], "the entry is taken once: the ended run does not start over");
+    draw(v, "Explore: back from the chip, the run had failed");
+    v.exErr = null; v.exDetail = null; v.exTopic.set_value(""); S.store.set("review.minimized", null);
+  }
   await deep(v, (x) => `Explore: ${x}`);
   S.files.set("/h/repo/library/loans.py", FILE); v.openExploreFile("library/loans.py", 9, cx); await settle(); draw(v, "Explore: a cited file open");
   v.defFile = null; S.store.set("review.explore", null); v.leaveExplore(); draw(v, "back to the review");

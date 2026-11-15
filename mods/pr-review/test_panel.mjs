@@ -474,6 +474,19 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   assert.deepEqual([n.writes, wl.prs, wl.view, wl.at > 1], [["worktrees.prs.review"], [], "all", true], "a list of another view is emptied with a new time, once");
   S.props = {};
 }
+// ---- the minimized Explore chip learns that its run has ended (its status file), and reads nothing without a run
+{
+  S.props = { part: "mini" }; const v = new PrReview(); v.init({}, cx);
+  const busy = { id: "x9", topic: "How are reminders sent?", status: "/h/pr-data/explore/x9.json.status", started: Date.now() };
+  Map.prototype.set.call(S.store, "review.minimized", { explore: { start: true, root: "/h/repo", busy }, at: 1 });
+  S.files.set(busy.status, JSON.stringify({ busy: true })); v.miniPoll(cx); await flush(); assert.equal(v.miniRun ?? null, null, "still going");
+  S.files.set(busy.status, JSON.stringify({ error: "Explore: walkthrough: The run was stopped before it answered. Try again." })); v.miniPoll(cx); await flush();
+  assert.deepEqual(v.miniRun, { id: "x9", state: "failed" });
+  S.files.set(busy.status, JSON.stringify({ done: true })); v.miniRun = null; v.miniPoll(cx); await flush(); assert.deepEqual(v.miniRun, { id: "x9", state: "done" });
+  v.render(cx);
+  Map.prototype.set.call(S.store, "review.minimized", { explore: { id: "x1", topic: "Loans", root: "/h/repo" }, at: 2 }); v.miniRun = null; v.miniPoll(cx); await flush(); assert.equal(v.miniRun, null, "no run: nothing to read");
+  Map.prototype.set.call(S.store, "review.minimized", null); S.props = {};
+}
 
 // ---- "Open in <Editor>": which file with which line, the editor by the file's ending and by the kind of project, a PR
 // that is not trusted, no link without a checkout or an editor, one process per click and none to find the editors

@@ -1291,6 +1291,6 @@ if __name__ == "__main__":
         print(json.dumps({"cost": r["cost"], "model": r["model_id"], "ms": r["ms"]}))
     except Exception as e:  # noqa: BLE001 - the panel shows the reason
         if status:
-            save(status, {"error": str(e)[:500]})
+            save(status, llm.failed(e))
         print(str(e), file=sys.stderr)
         sys.exit(1)

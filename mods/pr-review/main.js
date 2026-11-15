@@ -132,6 +132,8 @@ export default class PrReview extends View {
     // The minimized chip's copy sits in the main layouts also while the panel does not: it keeps a click on a PR mark
     // of the Worktrees mod ("want:<owner/repo#n>") for the panel (wantPick).
     if (this.part === "mini") this.listen(cx, (c) => { if (c.startsWith("want:")) this.wantPick(c.slice(5)); }, false);
+    // A minimized Explore whose run is going: its status file says when it has ended, so the chip can say so.
+    if (this.part === "mini") cx.timer.every(5000, (cx) => this.miniPoll(cx));
     if (this.part === "bar" || this.part === "reviews" || this.part === "agentbar" || this.part === "keys" || this.part === "cmenu" || this.part === "mini") return;
     this.announces = true; // Go to's keys: published while this copy runs, cleared in close()
     this.files = []; this.rows = []; this.sel = null; this.selEnd = null; this.question = "";
@@ -974,6 +976,18 @@ export default class PrReview extends View {
     });
   }
 
+  // The minimized Explore's run (review.js minimizeExplore keeps {id, status}): done or failed once its status file
+  // says so; nothing is read while no run is minimized.
+  miniPoll(cx) {
+    const b = shared("review.minimized")?.explore?.busy;
+    if (!b?.status || this.miniRun?.id === b.id) return;
+    cx.spawn(async (cx) => {
+      const st = JSON.parse(await readTextFile(b.status).catch(() => null) ?? "null");
+      if (!st || st.busy) return cx.notify(); // still going: the chip's time moves on
+      this.miniRun = { id: b.id, state: st.error ? "failed" : "done" }; cx.notify();
+    });
+  }
+
   // "Open PR…": a URL or owner/repo#123, opened like a listed PR.
   openRef(cx) {
     const ref = parsePrRef(this.openRefInput.value());
@@ -1415,7 +1429,7 @@ export default class PrReview extends View {
           this.toReview(r ? r.target ?? r : { url: ref.url, repo: ref.repo, number: Number(ref.number), source: "open" });
         });
       }
-      return renderMini();
+      return renderMini(this.miniRun ?? null);
     }
     if (this.part === "review") {
       // Go to hands PRs over through "pr.goto"; the panel isn't mounted while the review layout shows, so take it here.

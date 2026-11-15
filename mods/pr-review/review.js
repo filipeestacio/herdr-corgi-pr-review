@@ -290,7 +290,8 @@ export async function startReview(target) {
 
 // Opens Explore in the review layout (pr-review.explore, the panel's "Explore a topic…", the review's ⋯ menu): a topic
 // walked through in existing code, no PR. root: the repo to explore (default: the active space's repo, chosen there).
-export async function startExplore(root = null) {
+// resume: the page as it was minimized (review.minimized.explore): it opens again with its topic, its run, its result.
+export async function startExplore(root = null, resume = null) {
   const dir = `${appHome()}/layouts`, read = (name) => readTextFile(`${dir}/${name}.json`).catch(() => null);
   const plan = layoutPlan(await read("review"), await read("pr-review"));
   if (plan.write) {
@@ -300,7 +301,8 @@ export async function startExplore(root = null) {
   const back = shared("layout");
   if (back && back !== plan.name) setShared("review.back", back);
   setShared("review.layout", plan.name);
-  setShared("review.explore", { start: true, root, space: focused()?.space ?? null, at: Date.now() });
+  setShared("review.explore", resume ? { ...resume, at: Date.now() } : { start: true, root, space: focused()?.space ?? null, at: Date.now() });
+  if (resume) setShared("review.minimized", null); // back in it: no entry
   run("layout.switch", { name: plan.name });
 }
 // Leaving hands the review's PR to the panel (shared "pr.fromReview"): back there it shows this PR, whichever way the
@@ -309,8 +311,10 @@ const leave = () => { const pr = shared("review.target"); if (pr?.url) setShared
 // Minimize: back to the previous layout with the review kept as one entry (part "mini", a float in the main layout):
 // Open brings it back where it was, ✕ drops it. One at a time: minimizing another review replaces it.
 const minimize = () => { const pr = shared("review.target"); if (pr) setShared("review.minimized", { target: pr, at: Date.now() }); leave(); };
-export function renderMini() {
-  const t = theme(), pr = shared("review.minimized")?.target;
+// run: what became of a minimized Explore run ({id, state: "done" | "failed"}; main.js miniPoll reads its status file).
+export function renderMini(run = null) {
+  const t = theme(), pr = shared("review.minimized")?.target, ex = shared("review.minimized")?.explore;
+  if (ex) return miniExplore(t, ex, run);
   if (!pr) return div();
   const open = (shared("review.open") ?? []).find((r) => r.url === pr.url); // the review's own count, as the panel shows it
   // A small chip, so it covers little of the terminal under it: the PR number, its full title in the tooltip.
@@ -328,6 +332,30 @@ export function renderMini() {
       .tooltip("Back to the review, where you left it").on_click(() => startReview(pr)).child("Resume"))
     .child(div().id("rv-mini-x").w(22).h(22).flex().items_center().justify_center().rounded_full().cursor_pointer().text_color(t.muted).hover((x) => x.bg(t.hover))
       .tooltip("Remove this chip. The review stays in progress with its comments; the panel's In progress resumes it.").accessibility_label("Remove the minimized review's chip").on_click(() => setShared("review.minimized", null)).child("✕"));
+}
+
+// Explore, minimized: what it is about (the topic, else "Explore: <repo>"), a run that is going or has ended meanwhile,
+// Resume (the page again with its topic, its run and its result) and ✕.
+export const miniExploreText = (ex, run = null, now = Date.now()) => {
+  const repo = ex.repo ?? ex.exRoot?.repo ?? (ex.root ?? ex.exRoot?.root ?? "").split("/").pop() ?? "", topic = String(ex.topic ?? ex.busy?.topic ?? ex.draft ?? "").trim();
+  const ended = ex.busy && run?.id === ex.busy.id ? run.state : null;
+  return { head: topic ? "Explore" : `Explore${repo ? `: ${repo}` : ""}`, topic, repo,
+    state: !ex.busy ? (ex.err ? "failed" : null) : ended === "done" ? "done" : ended === "failed" ? "failed" : "running",
+    text: !ex.busy ? (ex.err ? "the run failed" : "") : ended === "done" ? "the walkthrough is ready" : ended === "failed" ? "the run failed" : `running · ${clock(now - ex.busy.started)}` };
+};
+function miniExplore(t, ex, run) {
+  const m = miniExploreText(ex, run);
+  return h_flex().id("rv-mini").h(28).pl(10).pr(3).gap(6).items_center().rounded_full().border_1().border_color(t.border).bg(t.popover)
+    .text_size(TYPE.small).text_color(t.foreground).tooltip([m.topic || "Explore a topic", m.repo, m.state === "running" ? "The run goes on while this is minimized." : null].filter(Boolean).join("\n"))
+    .on_mouse_down("left", (_e, cx) => cx.stop_propagation()) // a press the mod doesn't stop would drag the float
+    .child(div().flex_none().font_semibold().child(m.head))
+    .when(Boolean(m.topic), (e) => e.child(div().flex_none().max_w(260).truncate().text_color(t.muted).child(m.topic)))
+    .when(m.state === "running", (e) => e.child(div().flex_none().text_color(t.muted).child(SPIN[0]).frames(SPIN, 90)))
+    .when(Boolean(m.text), (e) => e.child(div().id("rv-mini-run").flex_none().text_color(m.state === "failed" ? t.ansi1 : m.state === "done" ? t.ansi2 : t.muted).child(m.text)))
+    .child(div().id("rv-mini-open").px(8).h(22).flex().items_center().rounded_full().cursor_pointer().text_color(t.accent).hover((x) => x.bg(t.hover))
+      .tooltip("Back to Explore: the topic, the run and its result as you left them").on_click(() => startExplore(ex.root ?? null, ex)).child("Resume"))
+    .child(div().id("rv-mini-x").w(22).h(22).flex().items_center().justify_center().rounded_full().cursor_pointer().text_color(t.muted).hover((x) => x.bg(t.hover))
+      .tooltip("Remove this chip. A run that is going finishes anyway; its walkthrough is then listed under Explorations.").accessibility_label("Remove the minimized Explore chip").on_click(() => setShared("review.minimized", null)).child("✕"));
 }
 
 const pill = (id, t, label, click, on = false, color) => div().id(id).flex_none().whitespace_nowrap().px(9).h(26).flex().items_center().rounded(6).border_1()
@@ -515,6 +543,7 @@ export const ReviewMode = {
     else if (name === "fix") this.fixComments(arg ? arg.split(",") : this.selected(), cx); // fix:<comment id>[,<id>…], else the selected ones (the preview opens)
     else if (name === "fix-target") this.fixTarget(arg); // sub | main, in the open preview
     else if (name === "explore") startExplore(arg || null);
+    else if (name === "explore-min") this.minimizeExplore(); // the Explore bar's "Minimize"
     else if (name === "explore-open") this.openExploration(arg, cx);
     else if (name === "trust-repo") { // the explored repo, or the folder when it has no github.com remote
       const key = this.ex?.repo ? "pr-review.trustedRepos" : "pr-review.trustedRoots", v = this.ex?.repo ?? this.ex?.root;
@@ -3834,12 +3863,31 @@ export const ReviewMode = {
     if (!this.exMode) { this.prAiSaved = this.ai; this.exMode = true; }
     this.exStart = ex; this.ai = this.exAi ?? null;
     if (!this.exIndex) { this.exIndex = []; cx.timer.after(0, (cx) => this.loadExploreIndex(cx)); }
+    // Back from the minimized chip: the repo, the topic typed, the last error, and a run that went on meanwhile (its
+    // status file is read at once: it may have ended). Once per entry (its `at`): shared state comes as a new object
+    // with every read, so this runs in every render.
+    if (ex.exRoot && !this.exRoot) this.exRoot = ex.exRoot;
+    if (this.exTaken !== ex.at) {
+      this.exTaken = ex.at;
+      if (typeof ex.draft === "string" && ex.draft && !this.exTopic.value()) this.exTopic.set_value(ex.draft);
+      if (ex.err && !this.exErr && !this.exBusy) { this.exErr = ex.err; this.exDetail = ex.detail ?? null; }
+      if (ex.busy && !this.exBusy) { this.exBusy = ex.busy; this.exErr = null; this.pollExplore(cx, 0); }
+    }
     if (ex.start && !this.exRoot) {
       cx.timer.after(0, (cx) => cx.spawn(async (cx) => {
         const dir = ex.root ?? spaces().find((x) => x.id === ex.space)?.folder ?? spaces().find((x) => x.active)?.folder ?? null;
         this.exRoot = await this.exploreRoot(dir); cx.notify();
       }));
     }
+  },
+  // Minimize in Explore, as in a review: back to the chats with the page kept as one entry at the top. What only this
+  // view holds goes into the entry: the topic typed, the repo, a run that is going (it is its own process and goes
+  // on), the last error. Resume (the chip) opens the page with all of it.
+  minimizeExplore() {
+    const ex = shared("review.explore");
+    if (!ex) return;
+    setShared("review.minimized", { explore: { ...ex, draft: this.exTopic.value(), exRoot: this.exRoot ?? null, busy: this.exBusy ?? null, err: this.exErr ?? null, detail: this.exDetail ?? null }, at: Date.now() });
+    leave();
   },
   leaveExplore() { if (this.exMode) { this.exMode = false; this.ai = this.prAiSaved ?? null; this.defFile = null; this.drills = null; } },
   chooseExploreRepo(cx) {
@@ -3851,7 +3899,7 @@ export const ReviewMode = {
     const id = exploreId(r.root, topic), out = `${exploreDir()}/${id}.json`, status = `${out}.status`;
     const ctx = C.spaceContext(ctxDoc(), this.exStart?.space ?? focused()?.space);
     const req = { root: r.root, repo: r.repo, topic, model: m, context: this.ctxReq(ctx), out, status };
-    this.exBusy = { id, topic, model: m, started: Date.now(), status, out, ctx }; this.exErr = null;
+    this.exBusy = { id, topic, model: m, started: Date.now(), status, out, ctx }; this.exErr = null; this.exDetail = null; this.exDetailOpen = false;
     cx.spawn(async (cx) => {
       await exec("mkdir", ["-p", exploreDir()]).catch(() => null);
       const reqFile = `${out}.req.json`, before = await readTextFile(reqFile).catch(() => null);
@@ -3861,14 +3909,14 @@ export const ReviewMode = {
     });
     cx.notify();
   },
-  pollExplore(cx) {
-    cx.timer.after(5000, (cx) => cx.spawn(async (cx) => {
+  pollExplore(cx, wait = 5000) {
+    cx.timer.after(wait, (cx) => cx.spawn(async (cx) => {
       const b = this.exBusy;
       if (!b) return;
       const st = JSON.parse(await readTextFile(b.status).catch(() => null) ?? "null");
       if (!st || st.busy) { cx.notify(); return this.pollExplore(cx); }
       this.exBusy = null;
-      if (st.error) { this.exErr = st.error; return cx.notify(); }
+      if (st.error) { this.exErr = st.error; this.exDetail = st.detail ?? null; return cx.notify(); } // the sentence (llm.py failure); what the CLI printed behind "Details"
       const entry = { id: b.id, topic: b.topic, root: this.exRoot.root, repo: this.exRoot.repo, model: b.model, ctx: b.ctx, at: Date.now() };
       const before = await readTextFile(`${exploreDir()}/index.json`).catch(() => null), next = exploreIndex(before ? JSON.parse(before) : [], entry);
       await writeTextFile(`${exploreDir()}/index.json`, JSON.stringify(next.list, null, 1), before).catch(() => null);
@@ -3909,6 +3957,8 @@ export const ReviewMode = {
     const t = theme(), title = ex.topic ? `Explore: ${ex.topic}` : "Explore a topic", trusted = this.exploreTrusted(ex);
     return h_flex().id("rv-bar").size_full().pl(84).pr(16).gap(12).items_center().bg(t.chrome).text_color(t.foreground).text_size(TYPE.body)
       .child(pill("rv-back", t, "← Back", () => { setShared("review.explore", null); if (!shared("review.target")) leave(); }).tooltip("Leave Explore and return to the previous layout (Esc)").flex_none())
+      .child(pill("rv-min", t, "▁ Minimize", () => run("pr-review.explore-min")).flex_none()
+        .tooltip("Go back to your chats and keep this page as one entry at the top: the topic, a run that is going and its result stay; open it from there"))
       .child(div().id("rv-title").flex_1().min_w(0).truncate().font_semibold().text_size(TYPE.title).tooltip(title).child(title))
       .when(Boolean(ex.repo), (e) => e.child(div().id("rv-ex-repo").tooltip("The repository being explored").flex_none().text_size(TYPE.small).text_color(t.muted).child(ex.repo)))
       .when(Boolean(ex.id) && !trusted, (e) => e.child(div().id("rv-ex-trust-wrap").flex_none().tooltip("Restricted Mode: language servers run nothing from this code, so go-to-definition may find less. Trust it only if it is yours.")
@@ -4006,7 +4056,17 @@ export const ReviewMode = {
             .cursor_pointer().on_click((_e, cx) => this.runExplore(cx)).child(busy ? "Exploring…" : "Explore")))
         .when(Boolean(busy), (e) => e.child(h_flex().gap(8).items_center().text_size(TYPE.body).text_color(t.muted).child(div().child(SPIN[0]).frames(SPIN, 90))
           .child(`${modelLabel(busy.model)} is reading the code · ${clock(Date.now() - busy.started)} · cap $${CAP[tierOf(busy.model)]}`)))
-        .when(Boolean(this.exErr), (e) => e.child(div().text_size(TYPE.small).text_color(t.ansi1).whitespace_normal().child(this.exErr)))
+        // A run that gave no answer: what happened and what to do, in one sentence (llm.py failure), with Retry and
+        // the model's choice beside it; what the CLI printed only behind "Details".
+        .when(Boolean(this.exErr), (e) => e.child(v_flex().id("rv-ex-err").gap(8).p(12).rounded(8).border_1().border_color(t.ansi1 + "66").bg(t.ansi1 + "10")
+          .child(div().text_size(TYPE.body).text_color(t.foreground).whitespace_normal().line_height(1.45).child(String(this.exErr).replace(/^Explore: walkthrough: /, "")))
+          .child(h_flex().flex_wrap().gap(8).items_center()
+            .child(pill("rv-ex-retry", t, "Retry", (_e, cx) => this.runExplore(cx), false, t.foreground).tooltip("Run it again, with the model chosen here"))
+            .child(modelPills(t, "rv-ex-m2"))
+            .child(div().flex_1())
+            .when(Boolean(this.exDetail), (x) => x.child(pill("rv-ex-detail", t, this.exDetailOpen ? "Hide details" : "Details", (_e, cx) => { this.exDetailOpen = !this.exDetailOpen; cx.notify(); }).tooltip("What the claude command printed"))))
+          .when(Boolean(this.exDetail) && Boolean(this.exDetailOpen), (x) => x.child(div().id("rv-ex-raw").max_h(160).overflow_y_scroll().p(8).rounded(6).bg(t.raised).font_family(settings().font_family ?? "JetBrains Mono")
+            .text_size(TYPE.small).text_color(t.muted).whitespace_normal().child(this.exDetail)))))
         .when((this.exIndex ?? []).length > 0, (e) => e.child(div().pt(10).text_size(TYPE.small).font_semibold().text_color(t.muted).child(`EXPLORATIONS · ${this.exIndex.length}`))
           .children(this.exIndex.map((x) => h_flex().id(`rv-exi-${x.id}`).tooltip("Open this saved exploration").gap(8).px(8).h(32).items_center().rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
             .on_click((_e, cx) => this.openExploration(x.id, cx))
