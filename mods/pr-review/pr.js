@@ -1174,7 +1174,7 @@ export function withSecurity(ai, security = null, ctx = null, head = null) {
   const own = ai.own ?? { arch: ai.arch ?? null, access: ai.access ?? [] }, trigger = ctx?.security_trigger ?? null;
   if (!security || !["zones", "access", "threats"].some((k) => Array.isArray(security[k]))) {
     const had = Boolean(own.arch?.zones?.length || own.access?.length);
-    return { ...ai, own, arch: own.arch, access: own.access, threats: [], gates: [], effectiveZones: [], bypasses: [], securityTrigger: trigger, securityFrom: had ? { source: "analysis", head: null, at: null, older: false, why: null } : null };
+    return { ...ai, own, arch: own.arch, access: own.access, threats: [], gates: [], effectiveZones: [], bypasses: [], secData: null, securityTrigger: trigger, securityFrom: had ? { source: "analysis", head: null, at: null, older: false, why: null } : null };
   }
   // A zone that holds only the cards an operator or a pipeline acts through (its scripts) is the operator's zone: a
   // run from before that trust level called an admin workstation authenticated or public.
@@ -1195,6 +1195,9 @@ export function withSecurity(ai, security = null, ctx = null, head = null) {
   return { ...ai, own, arch, access: security.access ?? [], threats: security.threats ?? [], gates: security.gates ?? [],
     effectiveZones: arch ? effectiveZonesOf(arch, security.gates ?? [], security.effective_zones ?? []) : security.effective_zones ?? [],
     bypasses: security.bypasses ?? [],
+    // secData: the sensitive data the run names with its way ([{id, name, kind, steps}], dataflow.js); null for a run
+    // from before the field (then only what its checks say goes over a crossing is known).
+    secData: Array.isArray(security.data) ? security.data : null,
     securityTrigger: trigger,
     // predates: the run was made under older rules of the security view (SEC_RULES): its words may be the old prompt's.
     securityFrom: { source: "security", head: security.head ?? null, at: security.at ?? null, older: Boolean(why), why, predates: (security.rules ?? 1) < SEC_RULES } };

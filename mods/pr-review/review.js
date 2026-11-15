@@ -51,6 +51,7 @@ import { withResilience, resilienceStart, RUN_TYPICAL } from "./pr.js"; // the R
 import { keepLast } from "./views.js"; // every cache has a limit
 import { resDepRows, resMeta, resFade, resShown, resRefs, probeBaseWord, datedByDiff } from "./views.js"; // Resilience: dependencies that fail or are overloaded; a path's second line; readable dimming
 import { wayOf, wayText, passZones, runsIn } from "./views.js"; // panel round 3: ways through every gate, zones passed on
+import { SecPicsMode } from "./sec-view.js"; // the Security page's sections "Where sensitive data goes" and "Who may do what"
 import { ImpactMode } from "./impact-view.js"; // the Architecture page's Impact section: changed functions and their callers
 import { transitionMarks, effectiveFrom, inProcess, mapArch, crossingsOf, crossingChanged, crossOnce, secSentence, TRUST_ORDER, asideOf, threatCited, blastOf, skipText, guardLine } from "./views.js";
 import { trustLegend, hasTrust } from "./stack.js";
@@ -526,6 +527,7 @@ export const ReviewMode = {
     else if (name === "res-time") { this.page = "res"; this.resTimeOpen = this.resTimeOpen === false; } // the picture "Timing", folded or open
     else if (name === "res-probe-open") { this.page = "res"; this.resProbeOpen = this.resProbeOpen === arg ? null : arg; } // a probe's script and output
     else if (name === "cross") { this.page = "blast"; this.tab = "steps"; if (arg === "quiet") this.crossQuiet = !this.crossQuiet; else if (arg === "unchanged") this.crossAll = !this.crossAll; else this.crossOpen = this.crossOpen === arg ? null : arg || null; } // a click on a row of "Trust boundary crossings" (its key: a:<access id> | e:<edge index>)
+    else if (name === "sec-data" || name === "sec-rights") { this.page = "blast"; this.tab = "steps"; this.secPicCommand(name, arg); } // the sections under the boundary map: fold or open; sec-data:<id> chooses a kind of data, sec-rights:all the folded rows
     else if (name === "cross-also") { this.page = "blast"; this.tab = "steps"; this.crossAlso = new Set(this.crossAlso ?? []); if (!this.crossAlso.delete(arg)) this.crossAlso.add(arg); } // a click on "2 more at this place" of a crossing (its key)
     else if (name === "vis") { this.toggleVis(arg); } // a click on a folded or open state diagram over a layer's code (vis|<layer>|<k>)
     else if (name === "run-model") { const [kind, tier] = String(arg).split(":"); if (["sonnet", "opus"].includes(tier)) this.updateDeep(cx, (d) => ({ ...d, runModels: { ...(d.runModels ?? {}), [`${this.deepKey()}|${kind}`]: tier === this.runTier(kind).tier ? null : tier } })); else this.offerMenu = this.offerMenu === kind ? null : kind; } // run-model:<kind> opens Change model, run-model:<kind>:<tier> picks one
@@ -4016,7 +4018,10 @@ export const ReviewMode = {
     const map = data && a && changed.length >= 3 ? this.secMap(t, a, ctx, changed) : null;
     return [["head", head], ...(data ? [] : [["empty", this.secEmpty(t)]]),
       ...(data ? [["sentence", div().id("rv-sec-sentence").text_size(TYPE.title).line_height(1.5).whitespace_normal().max_w(1000).child(secSentence(crossings, secN, cited.length, asideOf({ arch: a, access: this.ai?.access ?? [] }).guards.filter((g) => g.loosened).length))], ["crossings", this.secCrossings(t, title, crossings)]] : []),
-      ...(map ? [["map", map]] : []), ["findings", this.secIntro(t, sec, open, cited)], ...order.map(({ f }) => [`f:${f.id}`, this.secFinding(t, f, ctx)]),
+      ...(map ? [["map", map]] : []),
+      // Under the map, folded to a line each (sec-view.js): where sensitive data goes, and who may do what.
+      ...(data ? this.secPicParts(t, { rows: crossings, show: ctx.show, goTo: (f) => (_e, cx) => { const j = this.pageParts.indexOf(`f:${f.id}`); if (j >= 0) this.pageScrolls.blast.scroll_to_item(j); else { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); } cx.stop_propagation(); cx.notify(); } }) : []),
+      ["findings", this.secIntro(t, sec, open, cited)], ...order.map(({ f }) => [`f:${f.id}`, this.secFinding(t, f, ctx)]),
       ["scope", this.secScope(t, title)]];
   },
   // The crossings as a picture (from three changed ones on): the trust zones as columns, public → authenticated →
@@ -4037,7 +4042,8 @@ export const ReviewMode = {
       this.secMemo = { key, marks, L: archLayout({ groups, nodes: [...nodes.values()], edges }, "diff", (n) => (marks.nodes.has(n.id) ? MARK_CARD_ROWS : 0) + (eff.has(n.id) ? 1 : 0), true, { labels: true, lines: () => true }) };
     }
     const { L, marks } = this.secMemo;
-    const opts = { ...this.archOpts("blast"), marks, numbers: false, zoom: settings().zoom || 1, onFocus: (id, cx) => { this.fh.focus(); this.secCard(id, cx); } };
+    // keep: the way of the kind of data chosen under the map (sec-view.js), lit; the rest dimmed.
+    const opts = { ...this.archOpts("blast"), marks, numbers: false, zoom: settings().zoom || 1, keep: this.secDataLit(ctx.crossings), onFocus: (id, cx) => { this.fh.focus(); this.secCard(id, cx); } };
     const deco = (n) => (eff.has(n.id) ? [h_flex().flex_none().h(15).child(chip(t, eff.get(n.id).cond ? `${eff.get(n.id).trust[0].toUpperCase()}${eff.get(n.id).trust.slice(1)} if ${eff.get(n.id).cond.replace(/^if crossing /, "")}` : `Reachable as ${eff.get(n.id).trust}`, t.ansi3, false, `rv-sec-eff-${n.id}`, `Drawn in ${eff.get(n.id).zone.name ?? eff.get(n.id).drawn} (${eff.get(n.id).drawn}), but ${eff.get(n.id).why}${eff.get(n.id).cond ? `: reachable as ${eff.get(n.id).trust} ${eff.get(n.id).cond}` : ""}.`))] : []);
     return v_flex().id("rv-sec-map").gap(6)
       .child(h_flex().gap(10).items_center().flex_wrap().text_size(TYPE.small).text_color(t.muted)
@@ -5956,6 +5962,7 @@ export const ReviewMode = {
   },
 };
 Object.assign(ReviewMode, ImpactMode);
+Object.assign(ReviewMode, SecPicsMode);
 
 const LAYER_FILES = 12; // an open layer lists this many of its files in the left column
 // An action in a file's header ("Viewed", "Whole file"): drawn as a button 30 px high (27 pt at the usual 90 % zoom; a
