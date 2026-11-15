@@ -84,7 +84,7 @@ export function changedSymbols(path, symbols, ch) {
     let isNew = true, declared = false;
     for (let l = s.line; l <= s.end; l++) if (!ch.added.has(l)) { isNew = false; break; }
     for (let l = s.nameLine; l <= s.sigEnd; l++) if (ch.added.has(l)) declared = true;
-    const now = (ch.text.get(s.nameLine) ?? "").trim(), word = new RegExp(`(^|[^\\w$])${s.name.replace(/[$]/g, "\\$")}([^\\w$]|$)`);
+    const now = (ch.text.get(s.nameLine) ?? "").trim(), word = new RegExp(`(^|[^\\w$])${s.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\w$]|$)`); // the name is the PR's text, never a pattern
     const old = ch.removed.find((r) => word.test(r.text) && /[({=:]|\b(def|func|function|class|fn|interface|struct|enum)\b/.test(r.text))?.text.trim() ?? null;
     // ponytail: a one-line function whose body changed reads as a changed declaration (the line is the declaration).
     const sig = !isNew && declared && old !== now ? { old, now } : null;
