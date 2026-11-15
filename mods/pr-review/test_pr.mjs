@@ -1,5 +1,6 @@
 // Run: node test_pr.mjs
 import assert from "node:assert/strict";
+import * as pr from "./pr.js"; // the newer tests name what they use
 import { diffRows, buildPrompt, nextChange, splitPatch, selection, lineLabel, anchorRow, buildReview, hunksOf, budget,
   mapReview, suspectComment, fileRows, fileTree, reviewRequest, stepKey, lowValue, lineKey, rangeOf, codeOf, isStale } from "./pr.js";
 
@@ -693,7 +694,10 @@ console.log("ok");
   assert.deepEqual(v.arch.nodes.map((n) => n.zone ?? null), ["z2", "z2", "z2", "z2", "z2", "z2", "z2", "z3"]);
   assert.deepEqual(v.arch.edges.map((e) => Boolean(e.crosses)), [false, false, false, false, true, true, false, false]);
   assert.deepEqual([v.access.map((r) => r.id), v.threats.map((t) => t.id), v.securityTrigger.run], [["acc1", "acc2"], ["t1"], true]);
-  assert.deepEqual(v.securityFrom, { source: "security", head, at: security.at, older: false, why: null });
+  assert.deepEqual(v.securityFrom, { source: "security", head, at: security.at, older: false, why: null, predates: true });
+  // A run made under the current rules says so; an older one gets the note that offers the re-run.
+  assert.equal(pr.secNote(v), "run predates the current security rules: re-run");
+  assert.equal(pr.secNote(pr.withSecurity(ai, { ...security, rules: pr.SEC_RULES }, null, head)), null);
   const s2 = withSecurity(ai, { ...security, gates: [{ where: { access: "acc1" }, check: "token", source: "code" }], effective_zones: [{ node: "handler", drawn: "authenticated", effective: "public" }] }, ctx, head);
   assert.deepEqual([s2.gates.length, s2.effectiveZones[0].effective, v.gates, v.effectiveZones], [1, "public", [], []], "gates and effective zones of the security run; an older block has none");
   assert.equal(ai.arch.zones, undefined, "the analysis itself is not changed");
@@ -1097,4 +1101,27 @@ console.log("ok");
     { head: "h", zones: [{ id: "fd", trust: "authenticated", nodes: ["handler"] }, { id: "rc", trust: "internal", nodes: ["consumer", "queue"] }], crossing: [], access: [], threats: [], effective_zones: direct }, null, "h");
   assert.deepEqual(ai.effectiveZones.map((z) => [z.node, z.effective, z.via]), [["handler", "public", []], ["consumer", "public", ["e0"]], ["mailer", "public", ["e0", "e1"]]], "withSecurity gives the passed-on zones");
   console.log("ok effective zones");
+}
+
+// One count of security findings: a finding a named threat with result "finding" stands on is ⛨ whatever its effect
+// (a flood is about availability and still an attack); the reviewers' findings get their threats from the security
+// view when the run did not write them; a defect named as a threat and a placeholder do not count. A zone of
+// operator scripts only is the operator's zone in an older run too.
+{
+  const flood = { id: "f1", reviewer: "security", file: "t.tf", line: 3, severity: "medium", category: "availability", impact: "degraded_operation", title: "One limit for everyone", detail: "" };
+  const bug = { id: "f2", reviewer: "security", file: "s.sh", line: 9, severity: "medium", category: "bug", impact: "edge_case", title: "The loop never ends", detail: "" };
+  const plain = { id: "f3", reviewer: "claude", file: "a.py", line: 1, severity: "high", category: "bug", impact: "dead_path", title: "Never called", detail: "" };
+  const sec = { zones: [{ id: "z1", trust: "public", nodes: ["gw"] }, { id: "z2", trust: "authenticated", nodes: ["tool"] }], access: [{ id: "acc1", principal_kind: "operator", node: "tool" }],
+    threats: [{ id: "t1", where: { access: "acc0" }, result: "finding", findings: ["f1"] }, { id: "t2", where: { access: "acc1" }, result: "finding", findings: ["f2"], goal: "Not an attacker goal." },
+      { id: "t3", where: { access: "acc1" }, result: "not_assessed", findings: [], derived: true }] };
+  assert.equal(pr.isSecurity(flood), false, "by itself a flood is about availability");
+  const list = pr.withThreats([flood, bug, plain], sec);
+  assert.deepEqual(list.map((f) => [f.id, f.threats ?? null, pr.isSecurity(f)]), [["f1", ["t1"], true], ["f2", null, false], ["f3", null, false]]);
+  assert.equal(pr.withThreats(list, sec), list, "nothing to add: the same array");
+  assert.deepEqual([pr.secByEffect(list[0]), pr.secByEffect({ ...list[0], impact: "unauthorized_access" }), pr.secByEffect({ security: true })], [false, true, true], "⛨ through a threat alone is not security by effect");
+  const merged = pr.mergeFindings(list).findings, counts = pr.findingCounts(merged, () => "open");
+  assert.deepEqual([merged.find((f) => f.id === "f1").security, merged.find((f) => f.id === "f1").threats, counts.security], [true, ["t1"], 1], "the chip, the navigation and the verdict count it");
+  const v = pr.withSecurity({ arch: { nodes: [{ id: "gw" }, { id: "tool" }], edges: [] }, access: [] }, sec);
+  assert.deepEqual(v.arch.zones.map((z) => z.trust), ["public", "operator"], "an admin workstation is the operator's zone, not authenticated or public");
+  console.log("ok one count of security findings");
 }

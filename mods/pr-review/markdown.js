@@ -5,7 +5,7 @@
 // GitHub draws it. A security finding is in here in full: this is for the person's own use, nothing is posted.
 import { taskList, taskHead, verdictParts, findingCounts, componentLine, CERTAINTY, SEVERITY_SCALE, levels, isGuard } from "./pr.js";
 import { transitionText } from "./arch.js";
-import { resPathView, asideOf, threatCited, skipText } from "./views.js";
+import { resPathView, asideOf, threatCited, skipText, guardLine } from "./views.js";
 import { resWord, resToolText, resVerdict, resWatch } from "./views.js"; // wave R2: the page's words, verdict and watch list
 // The pages' own sources, so a page and its Markdown say the same: the crossings and their picture, the scope table,
 // the map as the Architecture page draws it, the paths' order and verdict, a finding's facts.
@@ -267,7 +267,7 @@ export function overviewMd({ pr, head, ai = null, findings = [], statusOf = () =
   const list = taskList(ai?.asks ?? [], findings, ai?.unlinked ?? [], statusOf), verdict = said ?? (ai || findings.length ? verdictParts(list, findingCounts(findings, statusOf), { failed: checks.filter((c) => c.ok === false).length }) : []);
   const line = (f) => `- ${findingLine(f, statusOf(f))}`, cx = codeContext(code);
   const before = (r) => [`- **${ROW_KIND[r.kind] ?? r.kind}:** ${r.finding ? findingLine(r.finding, statusOf(r.finding)) : `${flat(r.title)}${r.where ? ` (\`${r.where}\`)` : ""}`}${r.ask && !r.finding ? ` (${ASK[r.ask.state] ?? r.ask.state})` : ""}`,
-    Boolean(r.why) && `  - ${flat(r.why)}`, (r.asks ?? []).length > 0 && `  - Breaks: ${r.asks.map((x) => flat(x.short || x.text || x)).join("; ")}`, r.finding && CERTAINTY[r.finding.certainty] && r.finding.path_certainty && `  - Reach: ${r.finding.path_certainty}`, (r.also ?? []).length > 0 && `  - Same cause also at ${r.also.join(", ")}`,
+    Boolean(r.why) && `  - ${flat(r.why)}`, (r.asks ?? []).length > 0 && `  - Breaks: ${r.asks.map((x) => flat(x.short || x.text || x)).join("; ")}`, r.finding?.path_certainty && `  - ${{ assumed: "assumed reachable", confirmed: "confirmed reachable", derived: "reachable by the code" }[r.finding.path_certainty] ?? `reach ${r.finding.path_certainty}`}`, (r.also ?? []).length > 0 && `  - Same cause also at ${r.also.join(", ")}`,
     Boolean(r.url) && `  - ${r.url}`, "", ...(r.finding ? cx.block(r.finding.file, r.finding.line, r.finding.end) : cx.at(r.where))];
   const does = ai ? doesList(ai) : [], surface = ai ? surfaceLine(ai.access, ai.scope?.checked ?? []) : null, rel = [...(related?.open ?? []).filter((p) => !p.stacked || p.above), ...(related?.merged ?? []).map((p) => ({ ...p, merged: true }))];
   const ask = (r) => [`- **${ASK[r.ask.state] ?? r.ask.state}**: ${flat(r.ask.text)}`, Boolean(r.ask.why) && `  - Why: ${flat(r.ask.why)}`, r.unlinked && "  - No finding backs this state.", ...r.findings.map((f) => `  ${line(f)}`)];
@@ -463,7 +463,10 @@ export function securityMd({ pr, head, ai = null, findings = [], statusOf = () =
   const effLines = [...(eff ?? [])].map(([id, v]) => `- ${flat(label(id))}: ${v.cond ? `${v.trust[0].toUpperCase()}${v.trust.slice(1)} if ${v.cond.replace(/^if crossing /, "")}` : `Reachable as ${v.trust}`}. Drawn in ${flat(v.zone?.name ?? v.drawn)} (${v.drawn}), but ${flat(v.why)}${v.cond ? ` ${v.cond}` : ""}.`);
   return doc(prLine({ pr, head }), "", "# Security", "",
     `${count(list.length, "unresolved security finding")}${list.length ? `: ${sevCount(list)}` : cited.length ? " about access or data" : ""}.${cited.length ? ` ${count(cited.length, "other unresolved finding backs", "other unresolved findings back")} a threat named here (${sevCount(cited)}).` : ""}`, "",
-    rows.length > 0 && [secSentence(rows, list.length, cited.length), ""],
+    // As the page counts: ⛨ findings once per cause, the findings behind a threat, the guards this PR loosens.
+    rows.length > 0 && [secSentence(rows, findingCounts(findings, statusOf).security, cited.length, guards.filter((g) => g.loosened).length), ""],
+    // pr.js secNote: a run from before the current rules of the security view.
+    Boolean(ai?.securityFrom?.predates) && ["This security review is older than the current rules for guards, operators and taken-over roles, so a crossing it calls not assessed may only be left open by the old prompt. Re-run it for the current view.", ""],
     [`## Trust boundary crossings (${changed.length}${rest.length ? `, and ${rest.length} unchanged` : ""})`, "",
       "The ways in, the rights and the calls this PR opens or changes across a trust boundary, each in full.", "",
       !rows.length && "The data names no crossing: no zones, no way in and no right into another zone. The security review names them.",
@@ -480,7 +483,7 @@ export function securityMd({ pr, head, ai = null, findings = [], statusOf = () =
       ...ordered.flatMap((f, k) => [`### ${k + 1}. ${flat(f.title)}`, "", findingBody(f, { status: statusOf(f), asks: ai?.asks ?? [], h: "####", extra: [why.has(f.id) && `- **Order:** ${why.get(f.id)}`, ...reach(f), ...proof(f)], cx, more: moreOf(f) })])],
     !ordered.length && ["## Findings (0)", "", "No unresolved security finding.", ""],
     guards.length > 0 && [`## Guards (${guards.length})`, "", "Rules that take a right away: they protect their resource and are no way in.", "",
-      ...guards.map((g) => `- ${flat(g.text)}${(g.threats ?? []).map((x) => ` Holds against: ${flat(x.threat)} (${String(x.result ?? "").replace(/_/g, " ")}${x.evidence ? `, \`${x.evidence}\`` : ""}).`).join("")}`), ""],
+      ...guards.map((g) => `- ${flat(guardLine(g, (x) => `\`${x}\``))}`), ""],
     exposureMd(ai, "##"), blastMd(ai, "##"),
     grantsOf(ai?.access).length > 0 && [`## Rights granted (${grantsOf(ai.access).length})`, "", ...table(["Resource", "Kind", "Who", "May", "Auth", "Used by the code", "Where"],
       grantsOf(ai.access).map((x) => [x.resource, x.kind, x.principal, (x.actions ?? []).join("; "), x.auth, x.used === undefined ? "" : x.used ? "yes" : "no", x.at ? `\`${x.at}\`` : ""]))],

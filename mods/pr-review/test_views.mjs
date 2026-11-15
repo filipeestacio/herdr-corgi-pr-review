@@ -648,7 +648,7 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.equal(crossingsOf({ arch, access: [{ ...access[1], principal: "Somebody else" }] })[0].unmapped, true);
   assert.deepEqual([inProcess({ label: "calls x in-process" }), inProcess({ label: "SQS event source" }), inProcess({ label: "imports x", in_process: false })], [true, false, false]);
   assert.ok(rows.every(crossingChanged));
-  assert.equal(secSentence(rows, 1), "The way in is Api, open to anyone on the internet; its check (token, in the code) holds only if FRONT_DESK_TOKEN is set, and an unresolved high finding says it does not: Token never set. Behind it: mail any member. It also adds or changes 1 right into another zone, 1 call over a trust boundary, 1 call that bypasses a boundary and 1 operator way. 1 of 5 crossings is assessed, 4 not assessed. 1 security finding is unresolved.");
+  assert.equal(secSentence(rows, 1), "The way in is Api, open to anyone on the internet; its check (token, in the code) holds only if FRONT_DESK_TOKEN is set, and an unresolved high finding says it does not: Token never set. Behind it: mail any member. It also adds or changes 1 right into another zone, 1 call over a trust boundary, 1 call that bypasses a boundary and 1 operator way. 1 of 5 crossings is assessed, 4 not assessed. 1 security cause is unresolved.");
   assert.equal(secSentence([], 0), "This PR opens no way in from the public side that the data names. No security finding is unresolved.");
   assert.deepEqual(crossingsOf({}), []);
   // The run's bypasses decide which call in one process is a row; its reach_conflict is shown in its own words.
@@ -767,7 +767,7 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.equal(crossingsOf({ arch, access: access.slice(1, 2), gates, threats: threats.slice(1, 3) })[0].result, "not_assessed", "a defect alone assesses nothing");
   assert.equal(wayText(wayOf(rows[2], rows, arch)), "anyone on the internet → ‖ token, in the code → handler → no check: one process → consumer", "way 4 passes gate 1 and starts with the principal");
   assert.equal(wayText(wayOf(rows[0], rows, arch)), "anyone on the internet → ‖ token, in the code → handler → consumer → Mailer");
-  assert.match(secSentence(rows, 2), /All 5 crossings are assessed\. 2 security findings are unresolved\./);
+  assert.match(secSentence(rows, 2), /All 5 crossings are assessed\. 2 security causes are unresolved\./);
   const eff = passZones(new Map([["handler", { trust: "public", drawn: "authenticated" }]]), arch, () => "if crossing 1 fails open");
   assert.deepEqual([...eff].map(([k, v]) => [k, v.trust, v.cond ?? null]), [["handler", "public", null], ["consumer", "public", "if crossing 1 fails open"], ["mailer", "public", "if crossing 1 fails open"]]);
 }
@@ -1043,6 +1043,29 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.deepEqual(blastOf(arch, access).map((b) => b.text), ["If fn role is taken over, it can secrets:Get on Secrets; logs:Put on log group fn-policy."], "by principal behind the way in; no guard, no operator");
   assert.equal(skipText("git diff not run: Bash denied, read the changed files instead"), "git diff not run: read the changed files instead");
   assert.equal(skipText("tests not reviewed"), "tests not reviewed");
+  // Second round: a guard says what it holds against (its threat, else the run's own words) and whether the PR
+  // narrows or removes it; the sentence names such guards; an operator's script stands in the operator's zone.
+  const { guardLine } = await import("./views.js");
+  const loose = asideOf({ arch, access: [{ ...access[3], change: "narrowed", holds_against: "another role publishes forged events." }, { ...access[4], change: "removed" }], threats: [] }).guards;
+  assert.deepEqual(loose.map((g) => guardLine(g)), [
+    "Guard at Topic: denies events:Put to everyone but the fn role (resource policy, infra.tf:1). Holds against: another role publishes forged events. This PR narrows it: check what it no longer stops.",
+    "Guard at Sink: denies store:* without TLS to anyone in the account (infra.tf:1). The run does not say what it holds against. This PR removes it: check what it no longer stops."]);
+  assert.equal(guardLine(aside.guards[0], (s) => `<${s}>`), "Guard at Topic: denies events:Put to everyone but the fn role (resource policy, infra.tf:1). Holds against: Another principal publishes directly (mitigated, <infra.tf:2>).");
+  assert.match(secSentence(rows, 1, 0, 2), /It narrows or removes 2 guards\. .*1 security cause is unresolved\.$/);
+  // A finding that is ⛨ only through its threat stands at that threat's crossing: not at every way in that reaches its
+  // line, and it does not say that a way in's check fails.
+  const viaThreat = { ...findings[0], security: true, threats: ["t1"], severity: "high", reachable_from: ["acc1", "acc2"] };
+  const vt = crossingsOf({ arch, access, threats: threats.map((x) => (x.id === "t1" ? { ...x, where: { access: "acc2" } } : x)), findings: [viaThreat] });
+  assert.deepEqual([vt[0].key, vt[0].findings.length, vt.find((r) => r.key === "e:2").findings.length], ["a:acc1", 0, 1]);
+  assert.doesNotMatch(secSentence(crossingsOf({ arch, access, threats, findings: [viaThreat] }), 1), /says it does not/);
+  const opArch = { ...arch, zones: arch.zones.map((z) => (z.id === "z4" ? { ...z, trust: "operator" } : z)) };
+  assert.deepEqual(crossingsOf({ arch: opArch, access, threats, findings })[1].from, { name: "Laptop", trust: "operator" });
+  // The run may put the operator's row at what the script reaches instead of at the script: still one way with the call.
+  const atTarget = crossingsOf({ arch: opArch, access: access.map((x) => (x.id === "acc6" ? { ...x, node: "policies" } : x)), threats, findings }).filter((r) => r.ends.to === "policies");
+  assert.deepEqual(atTarget.map((r) => [r.key, r.kind, r.ends.from, r.aliases]), [["a:acc6", "operator", "tool", ["e:4"]]]);
+  // ... or names the script as the principal and no card at all.
+  const asPrincipal = crossingsOf({ arch: opArch, access: access.map((x) => (x.id === "acc6" ? { ...x, node: undefined, principal_node: "tool" } : x)), threats, findings }).filter((r) => r.ends.to === "policies");
+  assert.deepEqual(asPrincipal.map((r) => [r.key, r.kind, r.ends.from, r.aliases]), [["a:acc6", "operator", "tool", ["e:4"]]]);
   assert.equal(skipText("git diff (the tool was denied, so I read the files at HEAD)"), "git diff (I read the files at HEAD)");
   assert.equal(skipText("the shell: not available, so no tests were run"), "no tests were run");
   console.log("ok guards, operator ways and the findings behind threats");
