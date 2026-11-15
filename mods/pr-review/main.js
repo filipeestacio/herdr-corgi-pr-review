@@ -24,7 +24,7 @@ import { tabArgs } from "./threads.js"; // a new Claude tab with the PR's text: 
 import { loadDiff, saveDiff } from "./diffcache.js";
 import { setupBanner, renderSetup, loadSetup, runSetup, openUrl, readConfig } from "./setup-view.js";
 import { chip, PRIORITY_TIP } from "./stack.js";
-import { panelState, bodyTab, DONE_DAYS, diffTooLarge, filesToDiff, isOpenPr, byState, listRows, riskSignal, progressText, pendingText, rowMarks, mineGroups, progressRows, removedText, withPick, openSig, panelShown, byRef, fileRisk, leftNow, wrapCode, codeCols, sliceSpans, markLabel, spaceFolders, headBranch, spaceBranches, branchPrQuery, branchPrs, spaceOrder, focusedPr, spaceEmpty } from "./views.js";
+import { panelState, bodyTab, DONE_DAYS, diffTooLarge, filesToDiff, isOpenPr, byState, listRows, riskSignal, progressText, pendingText, rowMarks, mineGroups, progressRows, removedText, withPick, openSig, panelShown, byRef, fileRisk, leftNow, wrapCode, codeCols, sliceSpans, markLabel, spaceFolders, headBranch, spaceBranches, branchPrQuery, branchPrs, spaceOrder, focusedPr, spaceEmpty, worktreePrs } from "./views.js";
 import { keepLast } from "./views.js"; // every cache has a limit
 import { ReviewMode, startReview, startExplore, saveKey, flowCard, modelPills, modelLabel, renderReviews, renderAgentBar, renderKeys, renderCardMenu, renderMini } from "./review.js";
 import { highlightJob, highlightStep, langOf, firstLineOf, colors, renderLine, editorSyntax } from "./syntax.js";
@@ -192,7 +192,13 @@ export default class PrReview extends View {
     // For keys and scripted demos: a listed PR's row click (pick:<number>, the shown source's list).
     else if (c === "pick:branch") this.choose(null, cx); // the list's "Current branch" row
     else if (name === "file" && arg && this.files.some((f) => f.path === arg)) this.pick(arg, cx); // file:<path>, a file row's click in the shown diff
-    else if (name === "pick") { const pr = byRef(this.listNow(), arg); if (pr) this.pickTarget(pr, cx); } // pick:<number | owner/repo#number | url>
+    // pick:<number | owner/repo#number | url>: a row of the shown list; else a PR of another list (the source shown
+    // stays as it is), else, named with its repo, any PR as "Open PR…" takes it (a click on a mark in the Worktrees mod).
+    else if (name === "pick") {
+      const pr = byRef(this.listNow(), arg) ?? byRef(this.knownPrs(), arg), ref = pr ? null : parsePrRef(arg);
+      if (pr) this.pickTarget(pr, cx);
+      else if (ref) { this.openRefInput.set_value(arg); this.openRef(cx); }
+    }
   }
 
   key() { return this.prSel?.url ?? JSON.stringify(location()); }
@@ -214,6 +220,7 @@ export default class PrReview extends View {
     if (doc) this.prs = doc.prs ?? [];
     this.dropMinimized();
     if (this.prSel) this.prSel = this.prs.find((p) => p.url === this.prSel.url) ?? this.prSel; // fresh updatedAt: the diff cache stamp
+    this.publishWorktrees();
     cx.notify();
     return doc;
   }
@@ -822,7 +829,7 @@ export default class PrReview extends View {
     if (!key) { this.srcLists[now] = { key: null, prs: [], why }; return shown(); } // nothing to ask GitHub about here: the list says what to do
     const before = await readTextFile(sourcesFile()).catch(() => null), doc = JSON.parse(before ?? "{}");
     if (stale()) return;
-    if (!force && doc[key] && Date.now() - doc[key].at < SOURCE_MS) { this.srcLists[now] = { key, why, ...doc[key] }; return shown(); }
+    if (!force && doc[key] && Date.now() - doc[key].at < SOURCE_MS) { this.srcLists[now] = { key, why, ...doc[key] }; this.publishWorktrees(); return shown(); }
     const busy = (this.srcBusy ??= new Set()); // by list: neighbours can be fetched at the same time
     if (busy.has(key)) return; // this list is being fetched: that answer serves this ask too
     busy.add(key);
@@ -831,7 +838,7 @@ export default class PrReview extends View {
     busy.delete(key);
     const here = now === "review" || !stale(); // another space's list: kept in sources.json for it, not shown in this one
     if (prs instanceof Error) { if (here) { this.srcLists[now] = { ...this.srcLists[now], loading: false, error: `gh: ${String(prs.message ?? prs).slice(0, 160)}` }; cx.notify(); } return; }
-    if (here) { this.srcLists[now] = { key, why, prs, at: Date.now() }; this.dropMinimized(); }
+    if (here) { this.srcLists[now] = { key, why, prs, at: Date.now() }; this.dropMinimized(); this.publishWorktrees(); }
     for (let attempt = 0; attempt < 3; attempt++) { // compare-and-swap: another copy may write it too
       const old = await readTextFile(sourcesFile()).catch(() => null);
       try { await writeTextFile(sourcesFile(), JSON.stringify(pruneSources({ ...JSON.parse(old ?? "{}"), [key]: { at: Date.now(), prs } }, SOURCE_KEEP)), old); break; } catch { /* again */ }
@@ -867,7 +874,24 @@ export default class PrReview extends View {
 
   // Optional Go to (mods/goto/PROVIDERS.md) integration: PR links there become "Review PR", and reviews in progress
   // are findable. Go to hands the PR over through shared "pr.goto"; render picks it up. Without goto nothing happens.
+  // Every PR the panel knows in the contexts the view shows: your session PRs, the lists fetched, the reviews in progress.
+  knownPrs() {
+    return [...this.prs, ...Object.values(this.srcLists ?? {}).flatMap((l) => l?.prs ?? []), ...(shared("review.open") ?? []).map((r) => r.target ?? r)].filter(shownIn);
+  }
+  // Optional Worktrees (its PROVIDERS.md) integration: which PR belongs to which branch, from what the panel already
+  // has (no fetch, no timer). Only with that mod there (shared "worktrees.api"), and written only when the list
+  // changed: a shared write redraws every mod of the window. A click on a mark there picks the PR here.
+  publishWorktrees() {
+    if (this.part || !shared("worktrees.api")) return;
+    const prs = worktreePrs([this.knownPrs()]), sig = JSON.stringify(prs);
+    if (sig === this.wtSig) return;
+    this.wtSig = sig;
+    const p = shared("worktrees.providers") ?? [];
+    if (!p.includes("review")) setShared("worktrees.providers", [...p, "review"]);
+    setShared("worktrees.prs.review", { at: Date.now(), run: [["pr-review.pick:{repo}#{number}", {}]], prs });
+  }
   publishGoto() {
+    this.publishWorktrees(); // the reviews in progress changed, or the copy starts
     const p = shared("goto.providers") ?? [];
     if (!p.includes("review")) setShared("goto.providers", [...p, "review"]);
     const open = { key: "pr.goto", value: { url: "{url}", repo: "{owner}/{repo}", number: "{number}" } };
@@ -1252,6 +1276,8 @@ export default class PrReview extends View {
     if (shared("pr.goto")?.url && !this.gotoQueued) { this.gotoQueued = true; cx.timer.after(0, (cx) => { this.gotoQueued = false; this.takeGoto(cx); }); }
     // shared() hands out a new object each time: compared by what the items are made of (views.js openSig), not by identity.
     if (openSig(shared("review.open")) !== this.gotoSig) { this.gotoSig = openSig(shared("review.open")); cx.timer.after(0, () => this.publishGoto()); }
+    // Worktrees came (or went), or the view shows other contexts: its list again (written only when it differs).
+    { const wk = `${Boolean(shared("worktrees.api"))}|${viewKey()}`; if (wk !== this.wtKey) { this.wtKey = wk; cx.timer.after(0, () => this.publishWorktrees()); } }
     if (this.spaceSeen !== undefined && location().space !== this.spaceSeen) { this.spaceSeen = location().space; cx.timer.after(0, (cx) => this.onSpace(cx)); }
     if (!this.scanQueued && this.scanDue()) { this.scanQueued = true; cx.timer.after(0, (cx) => { this.scanQueued = false; this.scanIfDue(cx); }); }
     // The selection is never dropped here: a PR the view hides gets a banner instead.
