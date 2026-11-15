@@ -7,6 +7,7 @@ import { levels } from "./pr.js";
 import { markLine } from "./arch.js";
 import { archLayout, archFocus, stateLayout, transitionText, sourceStyle, hasSources, pathMark, SPEC_TIP, ARCH, LABEL } from "./arch.js";
 import { clampText, MARK_CARD_H } from "./arch.js"; // wave C2: a mark's finding in two lines
+import { bundleChips, markRoom } from "./arch.js"; // finding chips of a state diagram that would touch are one; a card's mark takes one or two lines
 import { flowArch, seqLayout, wrapCount, SEQ, solidOver } from "./views.js";
 import { readableFade } from "./views.js"; // wave R2: dimmed text stays readable
 
@@ -75,10 +76,10 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
   // A mark's row: the chip and the finding it is about (arch.js markLine); a click opens that finding (opts.onFinding).
   // stacked: the finding on a line of its own under the chip (above a call's text, where the row is narrow).
   // Wave C2 V1: the finding in up to two lines, cut at a word (arch.js clampText); w: the room for its text in px.
-  const markRow = (m, cid, h, stacked = false, w = 160) => { const ml = markLine(m, 40), text = clampText(ml.text, Math.max(8, Math.floor(w / 6)), 2).text;
+  const markRow = (m, cid, h, stacked = false, w = 160, lines = 2) => { const ml = markLine(m, 40), text = clampText(ml.text, Math.max(8, Math.floor(w / 6)), 2).text;
     return (stacked ? v_flex().items_start() : h_flex().items_start()).id(`${cid}-r`).flex_none().h(h).gap(stacked ? 1 : 4).tooltip(markTip(m))
     .when(Boolean(opts.onFinding && ml.top), (e) => e.cursor_pointer().on_click((_e, cx) => { opts.onFinding(ml.top, cx); cx.stop_propagation(); }))
-    .child(markChip(m, cid)).child(div().when(!stacked, (e) => e.flex_1()).when(stacked, (e) => e.flex_none()).w_full().min_w(0).h(28).overflow_hidden().whitespace_normal().line_height(1.3).text_size(10.5).text_color(t.foreground).child(text)); };
+    .child(markChip(m, cid)).child(div().when(!stacked, (e) => e.flex_1()).when(stacked, (e) => e.flex_none()).w_full().min_w(0).h(14 * lines).overflow_hidden().whitespace_normal().line_height(1.3).text_size(10.5).text_color(t.foreground).child(text)); };
   // opts.zoom (the person's zoom): a line is at least one device pixel wide, or it is not drawn when zoomed far out.
   const thin = Math.max(1.5, 1 / (opts.zoom || 1)), W = (p) => (opts.hl === p.num ? thin + 1 : thin);
   const dim = (el, on, by = fade) => (on ? el.opacity(by) : el);
@@ -141,7 +142,7 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
   const groups = L.groups.flatMap((g, i) => (g.bare ? [] : [div().id(`${id}-g${i}`).absolute().left(g.x).top(g.y).w(g.w).h(g.h).rounded(12).border_1().border_dashed()
     // Opaque: the grid stays in the space between systems, never behind a frame's cards and call labels.
     .border_color(g.trust ? trustColor(t, g.trust) : t.border).bg(g.trust ? solidOver(t.background, trustColor(t, g.trust) + "0f") : t.background).child(h_flex().px(PAD_IN).h(26).items_center().gap(6).text_size(11.5)
-      .child(div().flex_1().min_w(0).truncate().font_semibold().text_color(t.foreground).child(g.label ?? ""))
+      .child(div().id(`${id}-gl${i}`).flex_1().min_w(0).truncate().font_semibold().text_color(t.foreground).tooltip(g.label ?? "").child(g.label ?? "")) // the name gives way, the level (kind) stays
       .child(div().flex_none().text_color(g.trust ? trustColor(t, g.trust) : t.muted).child(g.kind ?? "")))]));
   // A call over a trust boundary: two bars across its line, before the arrow; the tooltip names both zones (opts.zones).
   const zoneById = new Map((opts.zones ?? []).map((z) => [z.id, z])), zoneOfN = (nid) => zoneById.get(L.nodes.find((x) => x.id === nid)?.zone);
@@ -175,7 +176,7 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
         .when(Boolean(st.chip), (e) => e.child(specTag(t, `${id}-sp${i}`))))
       .when(n.descLines > 0, (e) => e.child(div().flex_none().h(n.descLines * 15).overflow_hidden().text_size(11).line_height(1.35).whitespace_normal().text_color(t.muted).child(n.desc)))
       .children(decorate ? decorate(n) : [])
-      .when(Boolean(marks?.nodes?.get(n.id)), (e) => e.child(markRow(marks.nodes.get(n.id), `${id}-m${i}`, MARK_CARD_H, true, n.w - 20)))
+      .when(Boolean(marks?.nodes?.get(n.id)), (e) => { const room = markRoom(marks.nodes.get(n.id), n.w - 20); return e.child(markRow(marks.nodes.get(n.id), `${id}-m${i}`, room.h, true, n.w - 20, room.lines)); })
       .child(div().flex_1())
       // No type word here: it was cut off in most cards (the glyph's tooltip and the card's panel name the type). A
       // narrow card (Fit, a layer's flow) has no room for the link either: its panel has it.
@@ -219,7 +220,7 @@ function flowModel(v, fit = true) {
 }
 const cap = (s) => String(s ?? "").replace(/^./, (c) => c.toUpperCase());
 // Trust zones (arch.js zoneArch): a colour per trust level, none of them the severity red.
-const TRUST = { public: "ansi3", authenticated: "ansi4", internal: "ansi6", data: "ansi5" };
+const TRUST = { public: "ansi3", operator: "ansi2", authenticated: "ansi4", internal: "ansi6", data: "ansi5" };
 const trustColor = (t, trust) => t[TRUST[trust] ?? "ansi6"];
 // Whether a picture has something about trust to explain: zones as frames or as dots on cards, or a call over a boundary.
 export const hasTrust = (L) => Boolean(L) && (L.groups.some((g) => g.trust) || L.nodes.some((n) => n.zone) || L.paths.some((p) => p.crosses));
@@ -249,7 +250,7 @@ export function archLegend(L, t, id, title, opts = {}, big = false) {
   return v_flex().id(id).flex_none().gap(2).p(big ? 12 : 10).rounded(10).border_1().border_color(t.border).bg(t.surface)
     .child(div().pb(4).text_size(big ? 13 : 12).font_semibold().text_color(t.muted).child(title))
     .children(rows.map((p) => h_flex().id(`${id}-r${p.num}`).gap(8).items_start().px(6).py(3).rounded(6).tooltip("Hover to highlight this connection in the picture")
-      .when(opts.hl === p.num, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).when(Boolean(F) && !F.paths.has(p.num), (e) => e.opacity(0.4))
+      .when(opts.hl === p.num, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).when(Boolean(F) && !F.paths.has(p.num), (e) => e.opacity(readableFade(t.muted, t.surface, 0.4))) // its grey text stays at 4.5:1
       .when(Boolean(opts.onHl), (e) => e.on_hover((on, cx) => opts.onHl(on ? p.num : null, cx)))
       .child(div().flex_none().mt(1).w(18).h(18).flex().items_center().justify_center().rounded_full().border_1()
         .border_color(opts.hl === p.num || p.status ? t.accent : t.muted).text_size(11).text_color(t.foreground).child(String(p.num)))
@@ -371,7 +372,7 @@ export function visualCard(v, t, id, onJump, wrapX = null, wide = null, opts = {
     body = v_flex().gap(6)
       .child((wrapX ?? nativeX)(`${id}-fs`, L.width + 4, L.height + 4, archView(L, t, `${id}-av`, onJump ? (n, _e, cx) => { onJump(place(n), cx); cx.stop_propagation(); } : null, null, {}), 6))
       // A picture wider than its room says so instead of being scaled down.
-      .when(P ? P.over : L.width > FLOW_FITS, (e) => e.child(div().h(16).flex_none().text_size(10.5).text_color(t.dim).child("Scroll sideways for the whole picture →")))
+      .when(P ? P.over : L.width > FLOW_FITS, (e) => e.child(div().h(16).flex_none().text_size(10.5).text_color(t.muted).child("Scroll sideways for the whole picture →")))
       .child(archLegend(L, t, `${id}-lg`, "Edges"));
   }
   return v_flex().id(id).flex_none().mt(4).p(10).gap(8).rounded(8).border_1().border_color(t.border).bg(t.surface).when(Boolean(P), (e) => e.h(P.h - 4).overflow_hidden())
@@ -427,8 +428,6 @@ export function stateView(L, t, id, onJump, marks = null) {
     e.segments.forEach((s, k) => {
       els.push(s.y1 === s.y2 ? hline(`${id}-e${i}-${k}`, s.x1, s.x2, s.y1, c, e.dashed) : vline(`${id}-e${i}-${k}`, s.x1, s.y1, s.y2, c, e.dashed));
     });
-    if (mk(e)) els.push(jump(div().id(`${id}-m${i}`).absolute().left(e.arrow.x + 7).top(e.arrow.y - 16).px(4).h(15).flex().items_center().rounded(4).border_1().border_color(c).bg(t.background)
-      .text_size(9.5).text_color(t.foreground).tooltip(`${e.text || "Transition"}${findTip(mk(e))}`).child(`${cap(mk(e).severity)} · ${mk(e).findings.length}`), e.at ?? e.evidence));
     els.push(div().id(`${id}-a${i}`).absolute().left(e.arrow.x - 5).top(e.arrow.y - 11).text_size(9).text_color(c).child("▼"));
     if (e.text && e.labelAt) els.push(jump(div().id(`${id}-l${i}`).absolute().left(e.labelAt.x).top(e.labelAt.y).w(e.labelAt.w).h(13).text_size(10.5).text_color(mk(e) ? c : e.changed ? t.accent : t.muted)
       .tooltip([e.text, sourceStyle(e.source).tip, e.evidence].filter(Boolean).join("\n") + findTip(mk(e))).child(div().truncate().when(Boolean(e.labelAt.left), (x) => x.text_right()).child(e.text)), e.at ?? e.evidence));
@@ -464,15 +463,30 @@ export function stateView(L, t, id, onJump, marks = null) {
     return out;
   }));
   const loops = L.loops.flatMap((l, i) => [div().id(`${id}-o${i}`).absolute().left(l.x).top(l.y).w(14).h(12).rounded(6).border(1.5).border_color(col(l)).when(l.dashed, (e) => e.border_dashed()).tooltip(`${l.text || "self-transition"}${findTip(mk(l))}`),
-    ...(mk(l) ? [div().id(`${id}-om${i}`).absolute().left(l.x - 2).top(l.y - 16).px(4).h(15).flex().items_center().rounded(4).border_1().border_color(col(l)).bg(t.background).text_size(9.5).text_color(t.foreground)
-      .tooltip(`${l.text || "Self-transition"}${findTip(mk(l))}`).child(`${cap(mk(l).severity)} · ${mk(l).findings.length}`)] : []),
     ...(l.text ? [div().id(`${id}-ol${i}`).absolute().left(l.x + 17).top(l.y - 1).max_w(l.w).text_size(10.5).text_color(l.changed ? t.accent : t.muted).tooltip(l.text).child(div().truncate().child(`↺ ${l.text}`))] : [])]);
   const stubs = L.stubs.flatMap((s, i) => {
     const c = /retry/i.test(s.text) ? t.ansi3 : t.ansi1;
     return [hline(`${id}-sl${i}`, s.x1, s.x2, s.y, c, s.dashed), div().id(`${id}-sc${i}`).absolute().left(s.chip.x).top(s.chip.y).w(s.chip.w).h(s.chip.h).px(5).flex().items_center()
       .rounded(5).border_1().border_color(c).when(s.dashed, (e) => e.border_dashed()).bg(t.background).text_size(10.5).text_color(t.foreground).tooltip(s.text).child(div().truncate().child(s.text))];
   });
-  return div().id(id).relative().flex_none().w(L.width).h(L.height + 2).children([gridBg(t, L.width, L.height + 2), ...els, ...nodes, ...kids, ...loops, ...stubs]);
+  // The finding chips, one per marked transition at its arrow (a self-loop: over its ring). Chips that would touch
+  // (several transitions end side by side at one state) are one chip, "5 findings" in the highest severity's colour,
+  // with every transition and its findings in the tooltip; the lines keep their own colours and the list of
+  // transitions under the diagram its severity per row.
+  const SEV_RANK = ["high", "medium", "low"], chipText = (m) => `${cap(m.severity)} · ${m.findings.length}`, named = (s) => (/^\d+$/.test(s) ? `Transition ${s}` : s);
+  const marked = [...L.edges.map((e, i) => ({ e, key: `m${i}`, x: e.arrow.x + 7, y: e.arrow.y - 16, text: e.text || "Transition" })),
+    ...L.loops.map((l, i) => ({ e: l, key: `om${i}`, x: l.x - 2, y: l.y - 16, text: l.text || "Self-transition" }))].filter((c) => mk(c.e))
+    .map((c) => ({ ...c, m: mk(c.e), w: Math.ceil(chipText(mk(c.e)).length * 6) + 10 }));
+  const chip = (key, x, y, c, tip, text) => div().id(`${id}-${key}`).absolute().left(x).top(y - 1).px(4).h(16).flex().items_center().rounded(4).border_1().border_color(c).bg(t.background).text_size(10.5).text_color(t.foreground).tooltip(tip).child(text);
+  const chips = bundleChips(marked).map((g, k) => {
+    if (g.length === 1) return jump(chip(g[0].key, g[0].x, g[0].y, col(g[0].e), `${g[0].text}${findTip(g[0].m)}`, chipText(g[0].m)), g[0].e.at ?? g[0].e.evidence);
+    const all = [...new Map(g.flatMap((c) => c.m.findings).map((f) => [f.id ?? f.title, f])).values()], sev = SEV_RANK.find((s) => g.some((c) => c.m.severity === s)) ?? g[0].m.severity;
+    // Right of the bundle's last arrow, so it covers no arrowhead (a self-loop's chip sits over its ring, not beside an arrow).
+    const arrows = g.filter((c) => c.key.startsWith("m")), bx = arrows.length ? Math.max(...arrows.map((c) => c.x)) : Math.min(...g.map((c) => c.x));
+    return jump(chip(`mb${k}`, bx, Math.min(...g.map((c) => c.y)), sevC({ severity: sev }),
+      `${all.length} unresolved findings at ${g.length} transitions that end here:\n\n${g.map((c) => `${named(c.text)} (${c.m.severity})\n${c.m.findings.slice(0, 5).map((f) => `· ${f.title}`).join("\n")}`).join("\n\n")}`, `${all.length} findings`), g[0].e.at ?? g[0].e.evidence);
+  });
+  return div().id(id).relative().flex_none().w(L.width).h(L.height + 2).children([gridBg(t, L.width, L.height + 2), ...els, ...nodes, ...kids, ...loops, ...stubs, ...chips]);
 }
 
 // The PR triage card (pr.js triageOf): priority, title, the why in an accent quote bar, chips, repo and number.
@@ -484,7 +498,7 @@ export function triageCard(t, id, pr, tri, onClick) {
       .child(div().flex_1().min_w(0).truncate().font_semibold().text_size(12).child(pr.title ?? `#${pr.number}`)))
     .when(Boolean(tri.why), (e) => e.child(div().pl(8).border_l(3).border_color(t.accent).text_size(11.5).line_height(1.4).text_color(t.foreground).whitespace_normal().child(tri.why)))
     .child(h_flex().flex_wrap().gap(4).children(tri.chips.map((c, k) => chip(t, c, /security/i.test(c) ? t.ansi1 : t.muted, false, `${id}-ch${k}`, triageTip(c)))))
-    .child(div().id(`${id}-rp`).text_size(10.5).text_color(t.dim).tooltip("Repository and PR number").child(`${pr.repo} #${pr.number}`));
+    .child(div().id(`${id}-rp`).text_size(10.5).text_color(t.muted).tooltip("Repository and PR number").child(`${pr.repo} #${pr.number}`));
 }
 
 // A faint grid behind a picture (graph paper): one painted path (window.paint_path) with a line every GRID px, as many

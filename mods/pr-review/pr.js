@@ -466,11 +466,12 @@ export function sameClaim(a, b) {
   return both > 0 && both / (x.size + y.size - both) >= 0.35;
 }
 // ⛨ only for real security: a source whose effect is access without permission or exposed data (or lost data, when
-// its category says security). A security reviewer's finding about availability or correctness is a finding with its
-// source, without ⛨. A source without an impact (an older cache, an AI suggestion) keeps the rule from before: the
+// its category says security), or one a named threat of the threat model stands on (`threats`: the ids of the threats
+// with result "finding" that cite it; a flood at a public way in is about availability and still an attack). Any other
+// finding of a security reviewer about availability or correctness is a finding with its source, without ⛨. A source without an impact (an older cache, an AI suggestion) keeps the rule from before: the
 // security reviewer found it or its category says security.
 const SEC_IMPACT = new Set(["unauthorized_access", "data_exposure"]);
-export const isSecurity = (x) => (x.impact ? SEC_IMPACT.has(x.impact) || (x.impact === "data_loss" && x.category === "security") : x.reviewer === "security" || x.category === "security");
+export const isSecurity = (x) => (x.threats?.length > 0) || (x.impact ? SEC_IMPACT.has(x.impact) || (x.impact === "data_loss" && x.category === "security") : x.reviewer === "security" || x.category === "security");
 const NEAR = 3; // lines between two findings of one defect at most (PR #2: 19/20, 21/23, 33/35; template.yaml 14-17/18)
 const SPAN = 30; // a finding's own range counts up to this many lines past its first (a model's end can be anything)
 // Lines between two findings' ranges (line..end), 0 when they overlap.
@@ -545,7 +546,7 @@ export function mergeFindings(findings, suspects = [], status = {}, publicFiles 
     return { ...lead, line, id: (held ?? lead).id, ids: g.map((x) => x.id), end: Math.max(line, ...lines, ...g.map((x) => whole(x.end))), step: g.find((x) => x.step)?.step ?? null,
       suggestion: lead.suggestion || g.find((x) => x.suggestion)?.suggestion || "", ...(coded ? { head: coded.head, code: coded.code } : {}),
       ...Object.fromEntries(Object.keys(all[0]).map((k) => [k, fact(k)])), criteria: [...new Set(all.flatMap((x) => x.criteria))],
-      security: g.some(isSecurity),
+      security: g.some(isSecurity), threats: [...new Set(g.flatMap((x) => x.threats ?? []))],
       sources: g.map((x) => ({ id: x.id, reviewer: x.reviewer, severity: x.severity, title: x.title, detail: x.detail ?? "", suggestion: x.suggestion ?? "" })) };
   });
   out.sort((a, b) => rank(a) - rank(b) || a.file.localeCompare(b.file) || a.line - b.line);
@@ -910,7 +911,7 @@ const reachAssumed = (f) => (f.path_certainty ?? f.certainty) === "assumed";
 // ("⛨ 2 high · 0/5 criteria"), from the same parts so the two never disagree.
 export function verdictParts(l, c, { failed = 0, toVerify = 0 } = {}) {
   const sec = l.security, secHigh = sec.filter((f) => f.severity === "high").length, open = c.unresolved ? count(c.unresolved, "unresolved finding") : "No unresolved findings";
-  const assumed = sec.filter(reachAssumed).length, reach = !assumed ? "" : assumed === sec.length ? " (reach assumed)" : ` (reach assumed for ${assumed})`;
+  const assumed = sec.filter(reachAssumed).length, reach = !assumed ? "" : assumed === sec.length ? " (assumed reachable)" : ` (${assumed} assumed reachable)`; // words, not the noun "reach": that an attacker gets there is assumed
   return [sec.length === 1 && { key: "security", text: `1 security cause, ${sec[0].severity}${reach}`, short: `⛨ 1 ${sec[0].severity}`, tone: "security" },
     sec.length > 1 && { key: "security", text: `${sec.length} security causes, ${secHigh || "none"} high${reach}`, short: secHigh ? `⛨ ${secHigh} high` : `⛨ ${sec.length}`, tone: "security" },
     l.criteria > 0 && { key: "criteria", text: metText(l), short: `${l.met}/${l.criteria} criteria`, tone: l.met === l.criteria ? "ok" : "plain" },
@@ -1111,7 +1112,7 @@ export function funnelLine(x, name = (k) => k) {
 // (the analysis' components: {at: "file:line", owner}), else null.
 export const ownerOf = (f, components = []) => (components ?? []).find((c) => c?.owner && String(c.at ?? "").replace(/:\d+.*$/, "") === f.file)?.owner ?? null;
 
-// "Quick wins first": by effort, the ones without one last; within one effort the order stays (severity, file, line).
+// The order "Quickest fix" of the Findings tab: by effort, the ones without one last; within one effort the order stays (severity, file, line).
 export const hasEffort = (list) => list.some((f) => EFFORTS.includes(f.effort));
 export const quickFirst = (list) => { const r = (f) => (EFFORTS.indexOf(f.effort) + EFFORTS.length + 1) % (EFFORTS.length + 1); return [...list].sort((a, b) => r(a) - r(b)); };
 
@@ -1130,7 +1131,7 @@ export const quickFirst = (list) => { const r = (f) => (EFFORTS.indexOf(f.effort
 // checks: the consumer handler that /remind calls in-process stands where the front desk stands. Returns the cards that
 // stand more exposed than drawn: [{node, drawn, effective, where (the place whose check would have to fail, from the
 // direct entry; null when the drawn zone itself is passed on), via: [edge ids e<k> it was passed along]}]. Pure.
-const TRUSTS = ["public", "authenticated", "internal", "data"];
+const TRUSTS = ["public", "operator", "authenticated", "internal", "data"];
 export function effectiveZonesOf(arch, gates = [], direct = []) {
   const nodes = arch?.nodes ?? [], edges = arch?.edges ?? [], trustOf = new Map((arch?.zones ?? []).map((z) => [z.id, z.trust]));
   const byId = new Map(nodes.map((n) => [n.id, n])), hosts = (n) => (Array.isArray(n?.runs_in) ? n.runs_in : n?.runs_in ? [n.runs_in] : []);
@@ -1166,7 +1167,11 @@ export function withSecurity(ai, security = null, ctx = null, head = null) {
     const had = Boolean(own.arch?.zones?.length || own.access?.length);
     return { ...ai, own, arch: own.arch, access: own.access, threats: [], gates: [], effectiveZones: [], bypasses: [], securityTrigger: trigger, securityFrom: had ? { source: "analysis", head: null, at: null, older: false, why: null } : null };
   }
-  const zones = (security.zones ?? []).filter((z) => z?.id), zoneOf = new Map(zones.flatMap((z) => (z.nodes ?? []).map((n) => [n, z.id])));
+  // A zone that holds only the cards an operator or a pipeline acts through (its scripts) is the operator's zone: a
+  // run from before that trust level called an admin workstation authenticated or public.
+  const scripts = new Set((security.access ?? []).filter((x) => ["operator", "ci"].includes(x?.principal_kind) && x.node).map((x) => x.node));
+  const zones = (security.zones ?? []).filter((z) => z?.id).map((z) => ((z.nodes ?? []).length && z.nodes.every((n) => scripts.has(n)) && z.trust !== "operator" ? { ...z, trust: "operator" } : z));
+  const zoneOf = new Map(zones.flatMap((z) => (z.nodes ?? []).map((n) => [n, z.id])));
   // A crossing call by its ends: the security run may have looked at an older picture, where e<k> is another edge.
   const crosses = new Map((security.crossing ?? []).map((c) => [`${c.from}\u0000${c.to}`, c]));
   const arch = own.arch && { ...own.arch, zones: zones.map(({ id, name, trust, evidence }) => ({ id, name: name ?? id, trust, evidence: evidence ?? "" })),
@@ -1182,7 +1187,8 @@ export function withSecurity(ai, security = null, ctx = null, head = null) {
     effectiveZones: arch ? effectiveZonesOf(arch, security.gates ?? [], security.effective_zones ?? []) : security.effective_zones ?? [],
     bypasses: security.bypasses ?? [],
     securityTrigger: trigger,
-    securityFrom: { source: "security", head: security.head ?? null, at: security.at ?? null, older: Boolean(why), why } };
+    // predates: the run was made under older rules of the security view (SEC_RULES): its words may be the old prompt's.
+    securityFrom: { source: "security", head: security.head ?? null, at: security.at ?? null, older: Boolean(why), why, predates: (security.rules ?? 1) < SEC_RULES } };
 }
 
 // Whether the security review starts by itself after the analysis (review.js securityNow): related.py's trigger says
@@ -1439,6 +1445,24 @@ export function blockerOf(path, ladder, budget, effects = [], deps = []) {
 }
 
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+// Dependencies that fail or are overloaded (block.downstream, one entry per dependency the PR uses anew or differently,
+// a case for each way it fails): the words for a case, and the dependency's card on the map (its own node, else the
+// card its call leads to). A case decides nothing by itself: where it breaks it names a path, and the path blocks by
+// the rules above.
+export const RES_WHEN = { slow: "slow", overloaded: "overloaded", down: "down", bad_answer: "bad answer", recovers: "recovers" };
+const WHEN_IS = { slow: "is slow", overloaded: "is overloaded", down: "is down", bad_answer: "answers wrong", recovers: "comes back" };
+const WHEN_MARK = { ...RES_WHEN, bad_answer: "wrong answer", recovers: "back again" };
+export function downstreamOf(block, arch) {
+  const ids = new Set((block?.paths ?? []).map((p) => p.id)), edges = arch?.edges ?? [];
+  return (block?.downstream ?? []).map((d) => ({ ...d, card: d.node ?? edges[Number(/^e(\d+)$/.exec(d.edge ?? "")?.[1] ?? -1)]?.to ?? null,
+    cases: (d.cases ?? []).map((c) => ({ ...c, path: ids.has(c.path) ? c.path : null })) }));
+}
+// What the map marks at a dependency on the chosen path: the cases that break on it ("✕ when slow, down"); a card's
+// mark line is short, so the cases only partly handled stay in the dependency's row.
+const downMarks = (id, downstream) => downstream.flatMap((d) => {
+  const on = d.cases.filter((c) => c.path === id && c.handled === "no").map((c) => WHEN_MARK[c.when] ?? c.when).join(", ");
+  return d.card && on ? [{ at: d.card, mark: `✕ when ${on}` }] : [];
+});
 // The block of a run with its derived parts, at this.ai.resilience; null without one. head: today's head (older:
 // the run looked at another one). findings: the findings file's (or merged) findings. A path whose findings were all
 // there before this PR (introduced_here false: their lines stand unchanged in the base) is pre_existing and blocks
@@ -1450,11 +1474,12 @@ export function withResilience(ai, block, head = null, findings = []) {
   const deps = block.deps ?? [], intro = new Map(findings.flatMap((f) => (f.ids ?? [f.id]).map((id) => [id, f.introduced_here ?? null])));
   // also_security: one of the path's findings is also a security finding (⛨, or found by the security run too).
   const sec = new Set(findings.filter((f) => f.security || (f.sources ?? []).some((x) => x.reviewer === "security")).flatMap((f) => f.ids ?? [f.id]));
+  const downstream = downstreamOf(block, ai.arch);
   const paths = block.paths.map((raw) => {
     const reach = reachOf(raw, ai.arch), p = { ...raw, reach, ...viaOf(raw, ai.arch, reach) }, said = p.findings.map((id) => (intro.has(id) ? intro.get(id) : null));
     const pre = !said.length || said.includes(true) ? false : said.every((x) => x === false) ? true : "unknown";
     const ladder = ladderOf(p, deps), budget = budgetOf(p, deps), blocker = pre === true ? null : blockerOf(p, ladder, budget, block.effects ?? [], deps);
-    return { ...p, reach: [...p.reach], ladder, budget, marks: marksOf(p, deps), pre_existing: pre, blocker: blocker && pre === "unknown" ? { ...blocker, unclear: true } : blocker,
+    return { ...p, reach: [...p.reach], ladder, budget, marks: [...marksOf(p, deps), ...downMarks(p.id, downstream)], pre_existing: pre, blocker: blocker && pre === "unknown" ? { ...blocker, unclear: true } : blocker,
       also_security: p.findings.some((id) => sec.has(id)) };
   });
   // Not possible today (C2 D3): the run says so (possible_today false), or the path leaves a part that delivers (a queue,
@@ -1500,7 +1525,17 @@ export function withResilience(ai, block, head = null, findings = []) {
   const byPlace = new Map();
   for (const b of (block.blind_spots ?? []).filter((x) => spotsOf(x) === "watch")) byPlace.set(fileOf(b.at), `${b.failure} (${b.at}): seen as ${b.signal ?? "a signal"}, but nothing alarms on it`);
   for (const d of deps.filter((x) => x.mode === "async")) { const key = d.edge ?? d.node ?? fileOf(d.at); if (![...byPlace.keys()].includes(key)) byPlace.set(key, `the age of the oldest message at ${d.edge ?? d.node ?? d.at}`); }
+  // What the code cannot tell about a dependency (a case not_checkable) is a question for after the merge, one line each.
+  for (const d of downstream) {
+    const open = d.cases.filter((c) => c.handled === "not_checkable"), why = [...new Set(open.map((c) => c.how.replace(/\.$/, "")).filter(Boolean))].join("; ");
+    const whens = open.map((c) => WHEN_IS[c.when] ?? c.when).map((w, k, all) => (k && w.startsWith("is ") && all[0].startsWith("is ") ? w.slice(3) : w)); // "is slow or overloaded"
+    if (open.length) byPlace.set(`dep:${d.dep}:${d.entry ?? ""}`, `${d.dep}${d.entry ? `, from ${d.entry},` : ""} ${whens.length > 1 ? `${whens.slice(0, -1).join(", ")} or ${whens.at(-1)}` : whens[0]} (${d.at || open[0].at || "no place"}): ${why || "the code cannot tell what happens"}`);
+  }
   const watch = [...new Set(byPlace.values())];
+  // The dependencies in a sentence: "2 dependencies, 10 cases: 4 not handled, 1 partly, 3 handled and 2 not checkable."; "" without any.
+  const cases = downstream.flatMap((d) => d.cases), ch = (h) => cases.filter((c) => c.handled === h).length;
+  const caseParts = [[ch("no"), "not handled"], [ch("partly"), "partly"], [ch("yes"), "handled"], [ch("not_checkable"), "not checkable"]].filter(([n]) => n).map(([n, w]) => `${n} ${w}`);
+  const downstreamLine = downstream.length ? `${plural(downstream.length, "dependency", "dependencies")}, ${plural(cases.length, "case")}: ${caseParts.length > 1 ? `${caseParts.slice(0, -1).join(", ")} and ${caseParts.at(-1)}` : caseParts[0]}.` : "";
   // The parts the PR adds, weighed against their cost (additions): "This PR adds 4 parts: 2 justified, 1 questionable,
   // 1 solves nothing here."; "" without any.
   const adds = block.additions ?? [], by = (r) => adds.filter((a) => a.result === r).length;
@@ -1510,7 +1545,7 @@ export function withResilience(ai, block, head = null, findings = []) {
   // A run from before the prompt named the edges by id counted them itself, mostly from 1: its e<k> may point one call
   // off. Not safely correctable, so it is said (edgeNote) instead of guessed.
   const edgeNote = !block.edge_ids && (deps.some((d) => d.edge) || paths.some((p) => p.steps.some((s) => /^e\d+$/.test(s)))) ? "run predates edge ids: re-run" : null;
-  return { ...ai, resilience: { ...block, paths, blockers: blockers.map((p) => p.id), summary, watch, unseen, additionsLine, edgeNote, older: Boolean(block.head && head && block.head !== head),
+  return { ...ai, resilience: { ...block, paths, downstream, downstreamLine, blockers: blockers.map((p) => p.id), summary, watch, unseen, additionsLine, edgeNote, older: Boolean(block.head && head && block.head !== head),
     counts: { paths: paths.length, blockers: blockers.length, once_wired: wired, mitigated: mitigated.length, not_assessed: na,
       checks_clean: checks.filter((c) => c.result === "clean").length, not_checkable: checks.filter((c) => c.result === "not_checkable").length,
       additions: { justified: by("justified"), questionable: by("questionable"), unjustified: by("unjustified") } } } };
@@ -1551,3 +1586,22 @@ export const RUN_TYPICAL = { resilience: { sonnet: { usd: 0.25, s: 92, measured:
 // A rule that takes a right away or narrows it (an access row with effect "deny"; a security run from before that
 // field wrote "deny …" as its actions): a guard at its resource, not a grant, a way in or a crossing.
 export const isGuard = (x) => x?.effect === "deny" || ((x?.actions ?? []).length > 0 && x.actions.every((a) => /^\s*(deny|denies|block|blocks)\b/i.test(String(a))));
+
+// The rules a security view is made under (reviewers.py RULES writes them into each view): 2 since guards, the
+// operator's trust level and a taken-over role rated by the width of its grant. An older run stays readable; what it
+// calls "not assessed" may be the older prompt's, so the page says so and offers the re-run (as edgeNote for Resilience).
+export const SEC_RULES = 2;
+export const secNote = (ai) => (ai?.securityFrom?.predates ? "run predates the current security rules: re-run" : null);
+// A threat that only names a defect ("Not an attacker goal") is no assessment of a boundary.
+export const isDefect = (t) => /not an attacker('s)? goal|no attacker|not exploitable|no abuse path|no abuse/i.test(`${t?.goal ?? ""} ${t?.note ?? ""}`);
+// The reviewers' findings with the threats that stand on them (`threats`: ids), for a findings file whose security
+// run did not write them yet: a named threat with result "finding" that cites the finding. The same array when
+// nothing changes.
+export function withThreats(findings, security) {
+  const cites = new Map();
+  for (const t of security?.threats ?? []) if (!t.derived && t.result === "finding" && !isDefect(t)) for (const id of t.findings ?? []) cites.set(id, [...(cites.get(id) ?? []), t.id]);
+  return (findings ?? []).some((f) => !f.threats && cites.has(f.id)) ? findings.map((f) => (!f.threats && cites.has(f.id) ? { ...f, threats: cites.get(f.id) } : f)) : findings ?? [];
+}
+// Security by its own effect (access or data, or the older rule), apart from a threat that stands on it: a finding
+// that is ⛨ only through a threat belongs to that threat's crossing, not to every way in that reaches its line.
+export const secByEffect = (f) => (f?.threats?.length ? isSecurity({ ...f, threats: null }) : Boolean(f?.security ?? isSecurity(f ?? {})));
