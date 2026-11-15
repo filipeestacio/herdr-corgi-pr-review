@@ -50,7 +50,7 @@ import { withResilience, resilienceStart, RUN_TYPICAL } from "./pr.js"; // the R
 import { keepLast } from "./views.js"; // every cache has a limit
 import { resDepRows, resMeta, resFade, resShown, resRefs } from "./views.js"; // Resilience: dependencies that fail or are overloaded; a path's second line; readable dimming
 import { wayOf, wayText, passZones, runsIn } from "./views.js"; // panel round 3: ways through every gate, zones passed on
-import { transitionMarks, effectiveFrom, inProcess, mapArch, crossingsOf, crossingChanged, secSentence, TRUST_ORDER, asideOf, threatCited, blastOf, skipText, guardLine } from "./views.js";
+import { transitionMarks, effectiveFrom, inProcess, mapArch, crossingsOf, crossingChanged, crossOnce, secSentence, TRUST_ORDER, asideOf, threatCited, blastOf, skipText, guardLine } from "./views.js";
 import { trustLegend, hasTrust } from "./stack.js";
 import { scopeTable, scopeConflicts, runSummary, AREA_NAME, areaFindings, surfaceOf, EXPOSURE, reachLevel, secOrder, extraWays } from "./views.js";
 import * as TH from "./threads.js";
@@ -516,6 +516,7 @@ export const ReviewMode = {
     else if (name === "res-clean") { this.page = "res"; this.resClean = !this.resClean; }
     else if (name === "res-probe-open") { this.page = "res"; this.resProbeOpen = this.resProbeOpen === arg ? null : arg; } // a probe's script and output
     else if (name === "cross") { this.page = "blast"; this.tab = "steps"; if (arg === "quiet") this.crossQuiet = !this.crossQuiet; else if (arg === "unchanged") this.crossAll = !this.crossAll; else this.crossOpen = this.crossOpen === arg ? null : arg || null; } // a click on a row of "Trust boundary crossings" (its key: a:<access id> | e:<edge index>)
+    else if (name === "cross-also") { this.page = "blast"; this.tab = "steps"; this.crossAlso = new Set(this.crossAlso ?? []); if (!this.crossAlso.delete(arg)) this.crossAlso.add(arg); } // a click on "2 more at this place" of a crossing (its key)
     else if (name === "vis") { this.toggleVis(arg); } // a click on a folded or open state diagram over a layer's code (vis|<layer>|<k>)
     else if (name === "run-model") { const [kind, tier] = String(arg).split(":"); if (["sonnet", "opus"].includes(tier)) this.updateDeep(cx, (d) => ({ ...d, runModels: { ...(d.runModels ?? {}), [`${this.deepKey()}|${kind}`]: tier === this.runTier(kind).tier ? null : tier } })); else this.offerMenu = this.offerMenu === kind ? null : kind; } // run-model:<kind> opens Change model, run-model:<kind>:<tier> picks one
     else if (name === "scope-row") { this.page = "blast"; this.scopeRow = this.scopeRow === arg ? null : arg || null; } // a click on a row of "What each run checked" (<area> or run:<kind>)
@@ -4009,15 +4010,19 @@ export const ReviewMode = {
     const now = rows.filter(crossingChanged), hidden = rows.length - now.length, shown = [...now, ...(this.crossAll ? rows.filter((r) => !crossingChanged(r)) : [])];
     const RES = { finding: ["Finding", t.ansi1, true], mitigated: ["Mitigated", t.ansi2, false], not_assessed: ["Not assessed", t.muted, false] };
     const KIND = { entry: "Way in", right: "Right", call: "Call", bypass: "In-process call", operator: "Operator way" };
-    const na = (x, word = "not assessed") => (x ? x : div().text_color(t.dim).child(word));
+    const na = (x, word = "not assessed") => (x ? x : div().text_color(t.muted).child(word)); // muted, not dim: a word to read ("not named") needs 4.5:1
     // A path names cards, frames (a deployment) and "internet".
     const arch = this.ai?.arch, nodeOf = (id) => arch?.nodes.find((n) => n.id === id), label = (id) => nodeOf(id)?.label ?? (arch?.groups ?? []).find((g) => g.id === id)?.label ?? (id === "internet" ? "Internet" : id);
     // ponytail: an operator's row shares its card with the way in; its "Also here" would repeat that row's.
     const marks = this.archMarksNow(), here = (r) => (r.kind === "operator" ? [] : [...new Set([...(marks.nodes.get(r.ends.to)?.findings ?? []), ...(r.edge !== undefined ? marks.edges.get(r.edge)?.findings ?? [] : [])])].filter((f) => !r.findings.includes(f)));
     const extra = this.secExtra(rows); // a way in this PR opens that the task does not ask for
     const goTo = (f) => (_e, cx) => { const j = this.pageParts.indexOf(`f:${f.id}`); if (j >= 0) this.pageScrolls.blast.scroll_to_item(j); else { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); } cx.stop_propagation(); cx.notify(); };
-    const flist = (k, list, id) => v_flex().gap(2).children(list.slice(0, 3).map((f) => h_flex().id(`rv-sec-cr-${id}-${k}-${f.id}`).gap(4).items_start().cursor_pointer().tooltip(plain(f.title)).on_click(goTo(f))
-      .child(badge(t, f.severity, t[SEV[f.severity]] ?? t.accent)).child(div().flex_1().min_w(0).whitespace_normal().child(plain(f.title))))).when(list.length > 3, (e) => e.child(div().text_color(t.muted).child(`and ${list.length - 3} more`)));
+    const flist = (k, list, id, max = 3) => v_flex().gap(2).children(list.slice(0, max).map((f) => h_flex().id(`rv-sec-cr-${id}-${k}-${f.id}`).gap(4).items_start().cursor_pointer().tooltip(plain(f.title)).on_click(goTo(f))
+      .child(badge(t, f.severity, t[SEV[f.severity]] ?? t.accent)).child(div().flex_1().min_w(0).whitespace_normal().child(plain(f.title))))).when(list.length > max, (e) => e.child(div().text_color(t.muted).child(`and ${list.length - max} more`)));
+    // A finding stands in full at the first crossing that names it; a later one refers to it (views.js crossOnce).
+    const once = crossOnce(shown, (r) => rows.indexOf(r) + 1);
+    const again = (k, { f, at }) => h_flex().id(`rv-sec-cr-r-${k}-${f.id}`).gap(4).items_center().cursor_pointer().text_color(t.muted).hover((x) => x.text_color(t.foreground)).tooltip(plain(f.title)).on_click(goTo(f))
+      .child(div().flex_none().child(`shown at crossing ${at}:`)).child(div().min_w(0).truncate().child(plain(f.title)));
     const dot = (s) => String(s ?? "").replace(/\.+$/, "");
     const strip = (r) => {
       // The way as a chain (views.js wayOf): whoever arrives, each gate on it, this crossing's own gate before its
@@ -4043,7 +4048,7 @@ export const ReviewMode = {
       const open = this.crossOpen === r.key || (r.aliases ?? []).includes(this.crossOpen), num = rows.indexOf(r) + 1, res = RES[r.result], failOpen = r.kind === "entry" && r.findings.some((f) => f.impact === "unauthorized_access");
       const check = r.kind === "bypass" ? div().text_color(t.ansi3).child("none: one process, no boundary in between") : r.check ? v_flex().child(r.check).when(Boolean(r.expects), (e) => e.child(div().text_size(TYPE.small).text_color(t.muted).child(`expects ${r.expects}`)))
         .when(Boolean(r.at), (e) => e.child(div().id(`rv-sec-cr-at-${k}`).text_color(t.accent).cursor_pointer().hover((x) => x.underline()).on_click((_e, cx) => { this.jumpTo(r.at, cx); cx.stop_propagation(); }).child(`${r.at} ↗`))) : na(null, "no check named");
-      const also = here(r);
+      const also = here(r), alsoOpen = Boolean(this.crossAlso?.has(r.key)), mine = once.get(r.key) ?? { first: r.findings, again: [] };
       return v_flex().id(`rv-sec-cr-${k}`).gap(6).pl(12).pr(8).py(8).rounded(8).border_l(3).border_color(r.result === "finding" ? t.ansi1 : r.result === "mitigated" ? t.ansi2 : t.border)
         .bg(open ? t.selected : t.background).when(!crossingChanged(r), (e) => e.text_color(t.muted))
         .child(v_flex().id(`rv-sec-crh-${k}`).gap(6).cursor_pointer().tooltip(open ? "Fold the way" : "Show the way: who arrives, the gate, what lies behind it").on_click((_e, cx) => { this.crossOpen = open ? null : r.key; cx.notify(); })
@@ -4065,8 +4070,14 @@ export const ReviewMode = {
           .when(r.kind === "operator" && r.valueFrom !== undefined, (x) => x.child(div().text_color(r.valueFrom ? t.muted : t.ansi3).child(r.valueFrom ? `set at ${r.valueFrom}` : "set nowhere in the repository")))
           .when(extra.has(r.key), (x) => x.child(div().id(`rv-sec-extra-${k}`).text_color(t.ansi3).whitespace_normal().tooltip(extra.get(r.key).why || "The task check marks this as extra")
             .child(`The task does not ask for “${extra.get(r.key).text}”, and this PR opens it here.`)))))
-        .when(r.findings.length > 0, (e) => e.child(v_flex().pl(28).gap(2).child(flist(k, r.findings, "f"))))
-        .when(also.length > 0, (e) => e.child(v_flex().pl(28).gap(2).child(div().text_size(TYPE.small).text_color(t.muted).child("Also at this place")).child(flist(k, also, "h"))))
+        .when(r.findings.length > 0, (e) => e.child(v_flex().pl(28).gap(2).child(flist(k, mine.first, "f")).children(mine.again.map((x) => again(k, x)))))
+        // The other findings at the same place: folded to a line, so the six cards stay short and the picture under
+        // them comes up; they are all in the list of findings under the picture.
+        .when(also.length > 0, (e) => e.child(v_flex().pl(28).gap(2)
+          .child(div().id(`rv-sec-cr-also-${k}`).text_size(TYPE.small).text_color(t.muted).cursor_pointer().hover((x) => x.text_color(t.foreground)).tooltip(alsoOpen ? "Fold them" : "Other unresolved findings on the same card or call, which this crossing's threats do not name")
+            .on_click((_e, cx) => { this.crossAlso = new Set(this.crossAlso ?? []); if (!this.crossAlso.delete(r.key)) this.crossAlso.add(r.key); cx.stop_propagation(); cx.notify(); })
+            .child(alsoOpen ? "Also at this place ▾" : `${also.length} ${r.findings.length ? "more" : also.length === 1 ? "finding" : "findings"} at this place ▸`))
+          .when(alsoOpen, (x) => x.child(flist(k, also, "h", also.length)))))
         .when(open, (e) => e.child(strip(r)));
     };
     // If a frame with a way in is compromised: what its principal may do (views.js secBlast, by principal behind a way in).

@@ -1140,3 +1140,13 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.equal(resShown(null).paths.length, 0);
   console.log("ok resilience ids as numbers");
 }
+
+// Acceptance, UX 3: among the crossings a finding stands in full once, later crossings refer to the first by its number.
+{
+  const { crossOnce } = await import("./views.js");
+  const f1 = { id: "f1" }, f2 = { id: "f2" }, rows = [{ key: "a:1", findings: [f1, f2] }, { key: "e:3", findings: [] }, { key: "e:4", findings: [f2, { id: "f3" }] }];
+  const once = crossOnce(rows, (r) => rows.indexOf(r) + 10);
+  assert.deepEqual([...once].map(([k, v]) => [k, v.first.map((f) => f.id), v.again.map((x) => [x.f.id, x.at])]), [["a:1", ["f1", "f2"], []], ["e:3", [], []], ["e:4", ["f3"], [["f2", 10]]]]);
+  assert.equal(crossOnce(null).size, 0);
+  console.log("ok crossings name a finding once");
+}

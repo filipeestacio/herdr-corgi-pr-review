@@ -504,7 +504,7 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   // second wording (the text has it as Certainty and Preconditions).
   const NOT_COPIED = [/recommended because/, /^Re-run \(/, /^Run probe/, /^last run .* ago/, /^A click shows the way\.$/, /^Verify (all \d+ )?with an agent/, /^Derived from the code that was read;$/, /^It needs nothing else:$/, /^it holds as the code stands\.$/, /lit on the map, the rest dimmed/, /^Open a path to light it on the map\.$/,
     /^in a sandbox, without network, at most 30 s$/, /^\d+ more: /, /^\d+ [^.]*(criteria|high|medium|low|observable|blockers?|paths?) ▸$/, /^GitHub read .* ago/, /^call over a trust boundary$/, /^Look inside/, /Ask names it/, /^This analysis has no further details for this card\.$/, /^“Look inside” reads/, /^“↻ Refresh diagrams”/,
-    /^and \d+ more in the Findings tab$/, /^Ask about this layer$/, /^A finding sent to Fix stays unresolved and shows here/, /^not counted as findings$/];
+    /^and \d+ more in the Findings tab$/, /^\d+ (more|findings?) at this place ▸$/, /^shown at crossing \d+:$/, /^Ask about this layer$/, /^A finding sent to Fix stays unresolved and shows here/, /^not counted as findings$/];
   const norm = (x) => String(x).toLowerCase().replace(/,? \d+ (s|min|h|d|days?) ago/g, "").replace(/#\d+;|#quot;|#lt;|#gt;/g, " ").replace(/[^a-z0-9äöüß]+/g, " ").trim();
   const drawn = (states, part) => { const all = new Set(); for (const st of states) { st(); S.texts = null; S.lists.length = 0; v.render(cx); S.lists.length = 0; S.texts = all; part(); } S.texts = null; return [...all]; };
   const missing = (texts, md) => { const text = norm(md), segs = [...new Set(texts.flatMap((x) => x.split(/(?<=[.;:])\s+|\s·\s|\n+/)).map((x) => x.replace(/^\*\*Suggested:\*\*\s*/, "").replace(/ and \d+ more$/, "")))].filter((x) => x.trim().length >= 20 && x.trim().split(/\s+/).length >= 4);
@@ -601,6 +601,19 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   v.command("md-part:0", cx); sums("Findings, a section left out");
   assert.ok(new RegExp(`^# \\d+ unresolved findings?[^\\n]*\\n\\nLeft out of this text: ${v.mdShown().parts[0].title.replace(/[()]/g, "\\$&")}\\.$`, "m").test(mdJoinOf(v)), "the section left out is named under the title");
   v.command("md-close", cx);
+  // UX 3: the Security page. The other findings at a crossing's place are folded to a line (the picture comes up), a
+  // click unfolds them; a finding named by two crossings stands in full at the first and is a reference at the second.
+  v.command("page:blast", cx); v.crossAll = true;
+  const sec = () => { S.ids = new Set(); S.clicks.clear(); const got = texts(() => v.pageView(tt)), ids = [...S.ids]; S.ids = null; return { got, ids }; };
+  const folded = sec(), alsoRows = folded.ids.filter((x) => /^rv-sec-cr-also-\d+$/.test(x));
+  assert.ok(alsoRows.length > 0 && !folded.ids.some((x) => /^rv-sec-cr-h-/.test(x)) && !folded.got.includes("Also at this place"), "the other findings at a place are folded");
+  assert.ok(folded.got.some((x) => /^\d+ (more|findings?) at this place ▸$/.test(x)), "the fold says how many");
+  click(alsoRows[0], "the other findings of a crossing"); const unfolded = sec();
+  assert.ok(unfolded.ids.some((x) => /^rv-sec-cr-h-/.test(x)) && unfolded.got.includes("Also at this place ▾"), "a click unfolds them");
+  click(alsoRows[0], "fold them again");
+  const full = folded.ids.filter((x) => /^rv-sec-cr-f-/.test(x)).map((x) => x.replace(/^rv-sec-cr-f-\d+-/, "")), refs = folded.ids.filter((x) => /^rv-sec-cr-r-/.test(x)).map((x) => x.replace(/^rv-sec-cr-r-\d+-/, ""));
+  assert.equal(new Set(full).size, full.length, "a finding stands in full at one crossing only");
+  assert.ok(refs.length > 0 && refs.every((id) => full.includes(id)) && folded.got.some((x) => /^shown at crossing \d+:$/.test(x)), "the second crossing that names it refers to the first");
 }
 await settle();
 assert.deepEqual(late, [], "a spawned task threw");

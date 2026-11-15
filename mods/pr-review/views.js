@@ -1578,3 +1578,16 @@ export function resShown(res) {
   const paths = resOrder((res?.paths ?? []).map((p) => resPathView(p, res ?? {}))), nums = new Map(paths.map((p, k) => [p.id, k + 1])), say = (s) => (s ? resRefs(s, nums) : s);
   return { nums, say, paths: paths.map((p) => ({ ...p, note: say(p.note), wired: p.wired && { ...p.wired, today: say(p.wired.today) }, race: p.race && { ...p.race, note: say(p.race.note) } })) };
 }
+
+// ---- Security page: a finding stands in full once among the crossings (acceptance, UX 3), at the first crossing that
+// names it; a later crossing refers to that one by its number. rows: the crossings shown, in their order; num(r): a
+// row's number in the list. -> Map(row key -> {first: [finding], again: [{f, at}]}). Pure.
+export function crossOnce(rows, num = (r) => rows.indexOf(r) + 1) {
+  const seen = new Map(), out = new Map();
+  for (const r of rows ?? []) {
+    const first = [], again = [];
+    for (const f of r.findings ?? []) { if (seen.has(f.id)) again.push({ f, at: seen.get(f.id) }); else { seen.set(f.id, num(r)); first.push(f); } }
+    out.set(r.key, { first, again });
+  }
+  return out;
+}
