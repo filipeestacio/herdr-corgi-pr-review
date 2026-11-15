@@ -40,7 +40,7 @@ import { mdTarget, secPicture, secBlast, resNoPicture } from "./views.js"; // Co
 const MD_W = textW("⧉ Copy as Markdown…", TYPE.small) + 22; // the button's width on a layer's head, where clicks are placed by x
 import { plainText } from "./pr.js";
 import { pollDue, pollAfter, windowActive } from "./pr.js"; // background fetches (ghTick)
-import { hasSources, archLayout, archBands } from "./arch.js";
+import { hasSources, archLayout, archSearch, archBands } from "./arch.js";
 import { archMarks, transitionText, MARK_CARD_ROWS } from "./arch.js";
 import { markRoom, FIT as ARCH_FIT, ARCH as ARCH_SIZE } from "./arch.js"; // a card's mark takes the lines its finding needs
 import { resStartOf, resPicture, budgetBar, resCardOf, resSentence, resMarksOn } from "./views.js";
@@ -3455,8 +3455,31 @@ export const ReviewMode = {
     // no "‖" on a call in one process.
     const memo = (this.fitMemos ??= {});
     if (!(slot in memo) && Object.keys(memo).length >= 8) delete memo[Object.keys(memo)[0]]; // a layout per kind of map shown, the oldest goes
-    if (memo[slot]?.key !== key) memo[slot] = { key, L: archLayout(mapArch(a, this.ai?.access, this.ai?.bypasses ?? []), this.archMode, (n) => (m.nodes.has(n.id) ? markRoom(m.nodes.get(n.id), (fit ? ARCH_FIT.W : ARCH_SIZE.W) - 20).rows : 0) + (more?.has(n.id) ? resMarkRows(more.get?.(n.id) ?? 1) : 0), fit, { labels: true, labelPx: labelPx ?? undefined, marked: (es) => es.some((i) => m.edges.has(i)) }) };
+    if (memo[slot]?.key !== key) {
+      const args = [mapArch(a, this.ai?.access, this.ai?.bypasses ?? []), this.archMode, (n) => (m.nodes.has(n.id) ? markRoom(m.nodes.get(n.id), (fit ? ARCH_FIT.W : ARCH_SIZE.W) - 20).rows : 0) + (more?.has(n.id) ? resMarkRows(more.get?.(n.id) ?? 1) : 0), fit, { labels: true, labelPx: labelPx ?? undefined, marked: (es) => es.some((i) => m.edges.has(i)) }];
+      memo[slot] = this.layoutLater({ key, L: archLayout(...args) }, args, () => memo[slot]);
+    }
     return memo[slot].L;
+  },
+  // A map's better layout (arch.js archSearch: long lines through the picture, cards at the place that suits them) takes
+  // a full layout per try, more than a render may (Herdr stops a script slice after ~50 ms): the memo shows archLayout's
+  // picture at once, and the search runs after the render, a few tries per slice (layoutMore). The picture changes once,
+  // when the search is through and found a better one. live(): the memo's entry now; a replaced one is not searched on.
+  layoutLater(entry, args, live) { (this.layoutJobs ??= []).push({ entry, args, live }); return entry; },
+  layoutMore(cx) {
+    if (this.layoutBusy || !this.layoutJobs?.length) return;
+    this.layoutBusy = true;
+    cx.spawn(async (cx) => {
+      try {
+        for (let job, t = Date.now(); (job = this.layoutJobs.shift());) {
+          for (let g = null, r = null; job.live() === job.entry;) {
+            if (Date.now() - t > 12) { await new Promise((res) => cx.timer.after(0, res)); t = Date.now(); continue; } // a fresh slice
+            r = (g ??= archSearch(...job.args)).next();
+            if (r.done) { if (JSON.stringify(r.value) !== JSON.stringify(job.entry.L)) { job.entry.L = r.value; cx.notify(); } break; }
+          }
+        }
+      } finally { this.layoutBusy = false; }
+    });
   },
   // ---- sideways scrollers inside the scrolling page (the architecture canvas, the flow, state-machine and blast
   // pictures): clipped at their box, the content moved by left(-x); wheel and trackpad through wheelStep (one axis per
@@ -4034,7 +4057,8 @@ export const ReviewMode = {
       const { groups, nodes: cards, edges } = secPicture(rows, a, num), nodes = new Map(cards.map((n) => [n.id, n])); // views.js: the same picture as the page's Markdown
       const marks = { nodes: new Map([...marksAll.nodes].filter(([id]) => nodes.has(id))), edges: new Map() };
       // Fit: narrow cards, so the zones fit the page's width more often (the Data column was cut off).
-      this.secMemo = { key, marks, L: archLayout({ groups, nodes: [...nodes.values()], edges }, "diff", (n) => (marks.nodes.has(n.id) ? MARK_CARD_ROWS : 0) + (eff.has(n.id) ? 1 : 0), true, { labels: true, lines: () => true }) };
+      const args = [{ groups, nodes: [...nodes.values()], edges }, "diff", (n) => (marks.nodes.has(n.id) ? MARK_CARD_ROWS : 0) + (eff.has(n.id) ? 1 : 0), true, { labels: true, lines: () => true }];
+      this.secMemo = this.layoutLater({ key, marks, L: archLayout(...args) }, args, () => this.secMemo); // the search for the better layout: after the render
     }
     const { L, marks } = this.secMemo;
     const opts = { ...this.archOpts("blast"), marks, numbers: false, zoom: settings().zoom || 1, onFocus: (id, cx) => { this.fh.focus(); this.secCard(id, cx); } };
@@ -5361,6 +5385,8 @@ export const ReviewMode = {
     if (this.pendingScroll && at[this.pendingScroll] !== undefined) { this.scrollTo(this.tab === "steps" ? "steps" : "files", this.pendingScroll); this.top.hold = true; this.pendingScroll = null; }
     if (this.scrollCompose && at.compose !== undefined) { this.lists[this.tab === "steps" ? "steps" : "files"].scroll_to_item(at.compose, "center"); this.scrollCompose = false; }
     this.uiChanged(cx);
+    // The maps laid out in this render: their search after it (layoutMore), queued once per render.
+    if (!this.layoutTick) { this.layoutTick = true; cx.timer.after(0, (cx) => { this.layoutTick = false; this.layoutMore(cx); }); }
     this.syn = colors(t);
     // Per row array (memoRows keeps them across renders), so a render neither hashes nor tokenizes a big diff again:
     // uncolored until drainHighlight fills in the spans.
