@@ -490,7 +490,13 @@ export function sameDefect(x, y) {
   // events.py 19/20/20, all dead_path). The first lines, not the ranges: a range over a whole function (13-31) would
   // take in every finding inside it.
   const crit = (x.criteria ?? []).some((c) => (y.criteria ?? []).includes(c));
-  return (gap(x, y) <= NEAR && claim) || (Math.abs(x.line - y.line) <= NEAR && (impact || crit)) || (shared && gap(x, y) <= RES_NEAR && (claim || impact));
+  // One effect, said by each source in its own sentence (`effect`), at ranges at most NEAR apart (acceptance, PR #2,
+  // reminders.py:21-23: the double mail in three wordings, "Members get two identical reminder mails per loan." and
+  // "Members get two reminder mails per loan, not one."; the security review's title scores 0.18 and 0.27 against the other two, the effects
+  // 0.55 to 0.78; the effect of the finding about atomicity on line 22 scores 0.07 to 0.15 against them). Only in one file and only this near: across files the same effect
+  // has different causes (no reminder goes out because nothing publishes, and because nothing calls the job).
+  const effect = Boolean(x.effect && y.effect) && sameClaim(x.effect, y.effect);
+  return (gap(x, y) <= NEAR && (claim || effect)) || (Math.abs(x.line - y.line) <= NEAR && (impact || crit)) || (shared && gap(x, y) <= RES_NEAR && (claim || impact));
 }
 // Two findings in different files are one cause (same_cause) when they have the same effect and make the same claim,
 // or when one's text names the other's file and both name the same resource (PR #2: the empty token, handler.py:9

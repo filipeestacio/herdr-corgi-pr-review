@@ -1172,3 +1172,36 @@ console.log("ok");
   assert.deepEqual(knownOf(null, null), { analysis: null, findings: null, status: null }); assert.equal(riskSignal(knownOf(null, null)), null);
   console.log("ok the panel's marks are the review's");
 }
+
+// Acceptance, engineer (merging): one effect said in each source's own sentence, at ranges at most 3 lines apart, is one
+// finding, also when the titles are worded apart and the impact classes differ (PR #2, reminders.py:21-23, the double
+// mail in three wordings). What says another effect stays apart, as does the same effect further away or in another
+// file, and two findings about different named resources.
+{
+  const { mergeFindings, sameDefect, sameCause } = await import("./pr.js");
+  const F = (id, reviewer, line, end, severity, impact, title, effect, extra = {}) => ({ id, reviewer, file: "library/reminders.py", line, end, severity, category: "bug", impact, title, effect, detail: "", suggestion: "", ...extra });
+  const sec = F("s", "security", 21, 23, "medium", "edge_case", "send_reminders mails directly and also publishes an event the consumer mails again", "Members get two identical reminder mails per loan.");
+  const ana = F("a", "analysis", 21, 21, "high", "breaks_requirement", "Reminder is mailed here and again by the consumer", "Members get two reminder mails per loan, not one.");
+  const cl23 = F("c23", "claude", 23, 23, "high", "breaks_requirement", "Reminder mailed twice: directly and again by the consumer", "Each member gets two reminder emails per due loan.");
+  const atom = F("c22", "claude", 22, 22, "medium", "degraded_operation", "Mail is sent before the state change and event, with no atomicity", "Duplicate mails, or a loan marked reminded without an event or mail.");
+  const at = (f) => `${f.line}-${f.end} ${f.severity} ${f.ids.join("+")}`;
+  assert.deepEqual(mergeFindings([sec, ana, atom, cl23]).findings.map(at), ["21-23 high s+a+c23", "22-22 medium c22"], "the double mail once, with its three sources; the other statement apart");
+  assert.deepEqual(mergeFindings([sec, ana, cl23]).findings[0].sources.map((x) => `${x.reviewer} ${x.severity}`), ["security medium", "analysis high", "claude high"]);
+  assert.equal(mergeFindings([{ ...sec, effect: "" }, { ...ana, effect: "" }]).findings.length, 2, "without the effect sentences the titles decide, as before");
+  assert.equal(sameDefect(sec, atom), false, "another effect, another impact: two findings");
+  assert.equal(mergeFindings([{ ...sec, end: 21 }, { ...ana, line: 25, end: 25 }]).findings.length, 2, "the same effect four lines away is another place");
+  assert.equal(mergeFindings([sec, { ...ana, file: "library/consumer.py" }]).findings.length, 2, "another file never joins");
+  assert.equal(sameDefect({ ...sec, title: "MAIL_FROM is not set" }, { ...ana, title: "SMTP_HOST is not set" }), false, "two titles about different named resources are never one, whatever the effect");
+  // The impact rule of wave C2 is as it was: the statement about atomicity, when its impact class is the security
+  // finding's, joins through that source (on PR #2 it was a source of the security review's entry before, too).
+  assert.deepEqual(mergeFindings([sec, ana, { ...atom, impact: "edge_case" }, cl23]).findings.map(at), ["21-23 high s+a+c22+c23"]);
+  // Across files there is no such rule: the same effect has different causes (acceptance: api.py:15 and status.py:39
+  // stay two findings without a "same cause"; their titles score 0.27, under the 0.35 that tells one claim, their
+  // effects 0.14, and neither text names the other's file).
+  const api = { id: "api", file: "library/api.py", line: 15, impact: "breaks_requirement", title: "give_back still changes status outside transition", effect: "Returned loans publish no event, and status changes happen in several places.", detail: "`api.give_back` calls `LoanStore.give_back`, which writes `returned_on` directly." };
+  const st = { id: "st", file: "library/status.py", line: 39, impact: "breaks_requirement", title: "transition is not the only place status changes; loan.returned is never published", effect: "Returns publish no event and are not checked against the state machine.", detail: "LoanStore.give_back (loans.py:41) and api.give_back set returned_on directly." };
+  assert.equal(sameCause(api, st), false);
+  const same = { ...st, effect: api.effect };
+  assert.equal(sameCause(api, same), false, "the same effect sentence in two files is not one cause by itself");
+  console.log("ok one effect near by is one finding");
+}
