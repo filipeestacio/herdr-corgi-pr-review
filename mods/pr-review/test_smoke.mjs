@@ -464,7 +464,7 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   // What a page draws for itself and a text does not need: offers and prices of runs, ages, buttons, hints how to use
   // the page, lines that only fold or count what the text has in full, and the certainty said in the page's own
   // second wording (the text has it as Certainty and Preconditions).
-  const NOT_COPIED = [/recommended because/, /^Re-run \(/, /^Run probe/, /^last run .* ago/, /^A click shows the way\.$/, /^Verify (all \d+ )?with an agent/, /^Derived from the code that was read;$/, /^It needs nothing else:$/, /^it holds as the code stands\.$/, /lit on the map, the rest dimmed/,
+  const NOT_COPIED = [/recommended because/, /^Re-run \(/, /^Run probe/, /^last run .* ago/, /^A click shows the way\.$/, /^Verify (all \d+ )?with an agent/, /^Derived from the code that was read;$/, /^It needs nothing else:$/, /^it holds as the code stands\.$/, /lit on the map, the rest dimmed/, /^Open a path to light it on the map\.$/,
     /^in a sandbox, without network, at most 30 s$/, /^\d+ more: /, /^\d+ [^.]*(criteria|high|medium|low|observable|blockers?|paths?) ▸$/, /^GitHub read .* ago/, /^call over a trust boundary$/, /^Look inside/, /Ask names it/, /^This analysis has no further details for this card\.$/, /^“Look inside” reads/, /^“↻ Refresh diagrams”/,
     /^and \d+ more in the Findings tab$/, /^Ask about this layer$/, /^A finding sent to Fix stays unresolved and shows here/, /^not counted as findings$/];
   const norm = (x) => String(x).toLowerCase().replace(/,? \d+ (s|min|h|d|days?) ago/g, "").replace(/#\d+;|#quot;|#lt;|#gt;/g, " ").replace(/[^a-z0-9äöüß]+/g, " ").trim();
@@ -507,6 +507,15 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   v.command("page:res", cx);
   check("Resilience", drawn([...paths.map((p) => () => v.command(`res-path:${p.id}`, cx)), () => { v.command("res-more", cx); v.command("res-clean", cx); v.command("res-add", cx); v.command("res-probe-open:r1", cx); }], page),
     { flowchart: 1 + paths.filter((p) => (p.via ?? []).length > 0).length, sequenceDiagram: (v.resNow().races ?? []).filter((r) => paths.some((p) => (p.findings ?? []).some((id) => (r.findings ?? []).includes(id)))).length });
+  // With dependencies that fail: their part is in the text and in the preview's list.
+  {
+    const dn = [{ dep: "Mailer", kind: "external", mode: "sync", at: "library/mailer.py:14", cases: [{ when: "slow", handled: "no", how: "waits up to 7 s", effect: "The request hangs until its timeout.", path: paths[0].id, findings: [] },
+      { when: "down", at: "library/mailer.py:19", handled: "yes", how: "fails fast", effect: "", path: null, findings: [] }, { when: "recovers", at: null, handled: "not_checkable", how: "", effect: "", path: null, findings: [] }] }];
+    const keep = v.find.resilience; v.find.resilience = { ...keep, downstream: dn }; if (v.ai.resilience) v.ai.resilience = { ...v.ai.resilience, downstream: dn };
+    const md = check("Resilience with dependencies", drawn([() => v.command("res-path:", cx)], page), {});
+    assert.ok(mdParts(md).parts.some((p) => /^When a dependency fails \(1\)$/.test(p.title)) && /- Mailer \(/.test(md), "the dependencies are a part of the text and of the preview");
+    v.find.resilience = keep; if (v.ai.resilience) delete v.ai.resilience.downstream;
+  }
   v.command("page:overview", cx); v.rulesOpen = true; v.relOpen = true;
   check("Overview", drawn([() => {}, ...[...v.ai.asks.map((x) => x.id), "other"].map((k) => () => v.command(`criterion:${k}`, cx))], page), {});
   v.command("page:arch", cx);
@@ -516,7 +525,8 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   check("a layer", drawn([() => {}], () => { v.stepRow(st, 0, tt); v.item({ t: "step", s: st, i: 0 }, tt); }), { stateDiagram: (st.visuals ?? []).filter((x) => x.kind === "state_machine").length });
   v.command("findings", cx); v.ffocus = null;
   const all = drawn([() => {}], () => v.findingsPane(tt));
-  check("the Findings tab", all, {});
+  const tab = check("the Findings tab", all, {});
+  assert.ok(mdParts(tab).parts.length <= 6 && mdParts(tab).parts.some((p) => /^High \(\d+\)$/.test(p.title)), "the preview lists the findings by severity, not one by one");
   const f = v.findings().find((x) => x.sources.length > 1); v.ffocus = f.id;
   const one = drawn(["reported", "evidence", "sent", "verified", "in_pr"].map((k) => () => { v.fstep = { id: f.id, key: k }; }), () => v.findingsPane(tt)).filter((x) => !all.includes(x));
   check("an open finding", one, {}); v.fstep = null;

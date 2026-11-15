@@ -5485,7 +5485,8 @@ export const ReviewMode = {
     const cs = codeStats(mdJoin(this.mdShown(true))), box = (on) => div().w(16).flex_none().text_color(on ? t.accent : t.muted).child(on ? "☑" : "☐");
     const row = (id, on, label, size, click, tip) => h_flex().id(id).tooltip(tip).gap(8).px(6).h(24).items_center().rounded(6).cursor_pointer().hover((s) => s.bg(t.hover)).on_click(click)
       .child(box(on)).child(div().flex_1().min_w(0).truncate().text_color(on ? t.foreground : t.muted).child(label)).child(div().flex_none().text_size(12).text_color(t.muted).child(size));
-    return v_flex().id("rv-mdprev").absolute().top(8).right(12).w(640).max_h_full().overflow_y_scroll().p(14).gap(10).rounded(10).border_1().border_color(t.border).bg(t.popover).shadow_lg()
+    // In a frame as wide as the pane at most (a narrow window: the preview shrinks with it and never leaves the pane).
+    return div().id("rv-mdprev-frame").absolute().top(8).bottom(8).right(0).w(664).max_w_full().px(12).child(v_flex().id("rv-mdprev").w_full().max_h_full().overflow_y_scroll().p(14).gap(10).rounded(10).border_1().border_color(t.border).bg(t.popover).shadow_lg()
       .text_size(13).text_color(t.foreground).on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .child(h_flex().gap(8).items_center().child(div().flex_1().font_semibold().text_size(14).child(`Copy ${m.name} as Markdown`))
         .child(pill("rv-mdprev-x", t, "✕", (_e, cx) => { this.mdPrev = null; cx.notify(); }).tooltip("Close without copying").accessibility_label("Close")))
@@ -5500,7 +5501,7 @@ export const ReviewMode = {
       .child(h_flex().gap(8).items_center()
         .child(div().flex_1().text_size(12.5).text_color(t.muted).child(`${lines.length} lines · ${doc.parts.length - off.size} of ${doc.parts.length} sections${p.code && cs.blocks ? ` · ${codeStats(text).blocks} code blocks` : ""}`))
         .child(pill("rv-mdprev-cancel", t, "Cancel", (_e, cx) => { this.mdPrev = null; cx.notify(); }).tooltip("Close without copying"))
-        .child(pill("rv-mdprev-copy", t, "Copy", (_e, cx) => { this.mdCopy(); cx.notify(); }, true, t.foreground).tooltip("Copy the chosen sections to the clipboard as Markdown")));
+        .child(pill("rv-mdprev-copy", t, "Copy", (_e, cx) => { this.mdCopy(); cx.notify(); }, true, t.foreground).tooltip("Copy the chosen sections to the clipboard as Markdown"))));
   },
   // What Copy as Markdown copies where the person is (views.js mdTarget): the open finding or the unresolved ones on
   // the Findings tab, the open layer of the analysis, the page shown, else the Overview.
