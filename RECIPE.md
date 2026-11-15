@@ -47,7 +47,7 @@ corners and a 1 px `border`:
 - **Walkthrough** replaces the diff with the AI analysis in reading order, one layer at a time.
 - **Setup** replaces the diff with three groups (Required, Optional, Go to definition): each program with ✓ in
   `ansi2`, `missing` in `ansi1`, `not installed` in `muted` or `logged out` in `ansi3`, what it enables
-  ("Go to definition in Java needs jdtls"), the install command in mono, `Copy` and `Install in terminal`.
+  ("Go to definition and Impact in Java need jdtls"), the install command in mono, `Copy` and `Install in terminal`.
 
 **The review layout** (`mods/pr-review/review-layout.json`, written to `layouts/` on first use): a column, no system
 title bar (traffic lights at 12, 16):

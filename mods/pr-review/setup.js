@@ -1,7 +1,8 @@
 // Setup: which programs pr-review uses, what each enables, how to install it. Pure (setup-view.js runs the checks).
 // A mod can't install programs: Setup only shows the command, and "Install in terminal" pre-types it for you.
 
-// need: required (the panel can't work without it), optional (one feature), lsp (go-to-definition for a language).
+// need: required (the panel can't work without it), optional (one feature), lsp (go-to-definition, hover and the
+// Architecture page's Impact picture for a language).
 // also: more programs the same item needs. auth: how to log in, when the check says logged out.
 export const TOOLS = [
   { id: "git", need: "required", what: "Diffs, checkouts and review worktrees", mac: "brew install git", linux: "sudo apt install git" },
@@ -55,10 +56,19 @@ export function report({ found = {}, auth = {} } = {}, os = "darwin") {
     const have = [t.id, ...(t.also ?? [])].every((n) => Boolean(found[n]));
     const loggedOut = have && t.auth && auth[t.id] === false;
     const status = !have ? (t.need === "required" ? "missing" : "optional-missing") : loggedOut ? "logged-out" : "ok";
-    const what = t.need === "lsp" ? `Go to definition in ${t.lang} needs ${[t.id, ...(t.also ?? [])].join(" + ")}` : t.what;
+    const what = t.need === "lsp" ? `Go to definition and Impact in ${t.lang} need ${[t.id, ...(t.also ?? [])].join(" + ")}` : t.what;
     const install = status === "logged-out" ? t.auth : status === "ok" ? null : (os === "linux" ? t.linux : t.mac) ?? null;
     return { id: t.id, need: t.need, status, what, install, path: found[t.id] ?? null };
   });
+}
+
+// The bridge's "<program> is not installed" (lsp_bridge.py) with how to get it: the language it is for and this OS's
+// install command from the list above, or where the list is. Any other message comes back as it is.
+export function installHint(message, os = "darwin") {
+  const name = /^(\S+) is not installed$/.exec(String(message ?? ""))?.[1], t = name && TOOLS.find((x) => x.id === name || (x.also ?? []).includes(name));
+  if (!t) return message;
+  const cmd = os === "linux" ? t.linux : t.mac;
+  return `${name} is not installed${t.lang ? ` (the language server for ${t.lang})` : ""}. ${cmd ? `Install it with \`${cmd}\`; the panel's Setup (PRs ▾ → Setup) offers the same command.` : "The panel's Setup (PRs ▾ → Setup) lists it; there is no one-line install for this system."}`;
 }
 
 // Required tools missing or logged out: what the PR panel's banner names.

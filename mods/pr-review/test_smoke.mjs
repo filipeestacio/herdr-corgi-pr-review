@@ -539,6 +539,13 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   state({ state: "ok", model: { ...rich, servers: [], functions: [] } }, "no language server for the PR's files");
   state({ state: "busy", done: 2, of: 7 }, "asking"); state({ state: "busy", done: 0, of: 0, message: "Java index is building…" }, "a server still loading");
   state({ state: "error", message: "pyright-langserver is not installed" }, "failed"); assert.ok(ids().has("rv-impact-run"));
+  { // A language server that is missing: the section names the install command and Setup.
+    const real = globalThis.fetch; S.exec = async (_c, args) => (args.at(-1) === "start" ? { code: 0, stdout: JSON.stringify({ port: 1, token: "t" }), stderr: "" } : { code: 1, stdout: "", stderr: "stub" });
+    globalThis.fetch = async () => ({ status: 200, json: async () => ({ status: "error", message: "pyright-langserver is not installed" }) });
+    try { v.worktree = { url: v.prSel.url, head: v.head, path: "/h/w" }; v.impactSt = null; v.impactRun(cx); await settle(); await settle(); S.texts = new Set(); draw(v, "Impact: the language server is not installed");
+      assert.ok([...S.texts].some((x) => x.includes("Install it with `npm install -g pyright`") && x.includes("Setup")), "the missing server's install command is in the section");
+    } finally { S.texts = null; globalThis.fetch = real; S.exec = null; v.worktree = null; }
+  }
   state({ state: "idle" }, "not checked out");
   // The run: the checkout is there and the PR is trusted, so the next frame starts it; the bridge answers over fetch.
   const realFetch = globalThis.fetch, asked = [];

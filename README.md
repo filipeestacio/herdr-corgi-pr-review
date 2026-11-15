@@ -154,9 +154,19 @@ in but not run.
 | `codex` (optional) | the Codex reviewer, offered only when installed | `npm install -g @openai/codex` | same |
 | `acli` (optional) | the Jira ticket a PR names, in the task check | `brew tap atlassian/homebrew-acli && brew install acli` | see Atlassian's docs |
 
-Optional language servers turn on go-to-definition, hover and the Impact picture for their language; a missing one
-only turns them off for that language: `typescript-language-server` + `tsc` (TypeScript, JavaScript), `pyright-langserver` (Python),
-`gopls` (Go), `rust-analyzer` (Rust), `jdtls` (Java), `terraform-ls` (Terraform), `clangd` (C, C++).
+Language servers are optional. Each turns on go-to-definition, hover and the Architecture page's Impact picture
+(who calls what the PR changes) for its language. Without one, those three are off for that language and nothing
+else changes; the Impact section then names the missing server and its install command. Setup checks them too.
+
+| Language | Language server | macOS | Linux |
+|---|---|---|---|
+| TypeScript, JavaScript | `typescript-language-server` + `tsc` | `npm install -g typescript-language-server typescript` | same |
+| Python | `pyright-langserver` | `npm install -g pyright` | same |
+| Go | `gopls` | `brew install gopls` | `go install golang.org/x/tools/gopls@latest` |
+| Rust | `rust-analyzer` (only for PRs you trust) | `rustup component add rust-analyzer` | same |
+| Java | `jdtls` | `brew install jdtls` | see the Eclipse JDT LS docs |
+| Terraform | `terraform-ls` | `brew install hashicorp/tap/terraform-ls` | see HashiCorp's docs |
+| C, C++ | `clangd` | `xcode-select --install` | `sudo apt install clangd` |
 
 The reviewers use Claude Code's `/security-review` and a `/code-review` command; without the command in your
 Claude setup the same review runs as a plain prompt.

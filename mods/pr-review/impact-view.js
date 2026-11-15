@@ -5,12 +5,14 @@
 // section itself. Nothing here costs money: no model is asked.
 import { div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { readTextFile, writeTextFile, appHome, settings } from "herdr";
+import { readTextFile, writeTextFile, appHome, settings, shared } from "herdr";
 import { archLayout, markRoom, ARCH } from "./arch.js";
 import { archView } from "./stack.js";
 import { TYPE } from "./views.js";
 import { hash } from "./pr.js";
 import { call, supported } from "./defs.js";
+import { installHint } from "./setup.js";
+import { SETUP_KEY } from "./setup-view.js";
 import { computeImpact, impactArch, impactLines, impactMarks, impactRows, fullName, MARKS, MARK_ORDER, SIG } from "./impact.js";
 
 const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -112,8 +114,10 @@ export const ImpactMode = {
         .catch((e) => ({ status: "error", message: String(e?.message ?? e) }));
       if (this.impactSt !== st) return;
       if (r.status === "starting" && tries < 60) { st.message = r.message; cx.notify(); return cx.timer.after(2000, (cx) => { if (this.impactSt === st) this.impactRun(cx, tries + 1); }); }
-      if (r.status !== "ok") { st.state = "error"; st.message = r.message || "the language server did not answer"; return cx.notify(); }
-      st.state = "ok"; st.model = { ...r.model, head: this.worktree?.head ?? this.head ?? null, at: new Date().toISOString() };
+      // A language server that is not installed: the message says how to get it (setup.js, the same list as Setup).
+      const hint = (m) => installHint(m, shared(SETUP_KEY)?.os);
+      if (r.status !== "ok") { st.state = "error"; st.message = hint(r.message || "the language server did not answer"); return cx.notify(); }
+      st.state = "ok"; st.model = { ...r.model, failed: (r.model.failed ?? []).map(hint), head: this.worktree?.head ?? this.head ?? null, at: new Date().toISOString() };
       writeTextFile(this.impactFile(key), JSON.stringify(st.model)).catch(() => null);
       cx.notify();
     });
