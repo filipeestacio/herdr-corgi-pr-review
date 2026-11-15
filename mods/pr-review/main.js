@@ -26,7 +26,7 @@ import { loadDiff, saveDiff } from "./diffcache.js";
 import { setupBanner, renderSetup, loadSetup, runSetup, openUrl, readConfig } from "./setup-view.js";
 import { chip, PRIORITY_TIP, layoutPump } from "./stack.js";
 import { panelState, bodyTab, DONE_DAYS, diffTooLarge, filesToDiff, isOpenPr, byState, listRows, riskSignal, progressText, pendingText, rowMarks, mineGroups, progressRows, removedText, withPick, openSig, panelShown, byRef, fileRisk, leftNow, wrapCode, codeCols, sliceSpans, markLabel, textW, panelButtons, panelHit, panelPress, PANEL_EDGE, spaceFolders, headBranch, spaceBranches, branchPrQuery, branchPrs, spaceOrder, focusedPr, spaceEmpty, worktreePrs } from "./views.js";
-import { keepLast } from "./views.js"; // every cache has a limit
+import { keepLast, dragPath } from "./views.js"; // every cache has a limit; a file head's path to drag
 import { ReviewMode, startReview, startExplore, saveKey, flowCard, modelPills, modelLabel, renderReviews, renderAgentBar, renderKeys, renderCardMenu, renderMini } from "./review.js";
 import { highlightJob, highlightStep, langOf, firstLineOf, colors, renderLine, editorSyntax } from "./syntax.js";
 import { TYPE } from "./views.js"; // the text sizes (U34)
@@ -1349,6 +1349,8 @@ export default class PrReview extends View {
     const pr = this.part === "mini" ? shared("review.minimized")?.target : this.prSel, w = shared("review.worktree");
     return pr ? (w?.url === pr.url ? w.path ?? null : null) : !this.part && this.branchPicked ? this.root ?? null : null;
   }
+  // A file head's path to drag onto a terminal: the file in that checkout, or null (views.js dragPath).
+  fileDragPath(f) { return dragPath(this.checkoutRoot(), f); }
   // A PR from a source that is not trusted: a click opens the file alone, never its folder.
   editorForeign() { const pr = this.part === "mini" ? shared("review.minimized")?.target : this.prSel; return pr ? !this.trustedPr(pr) : false; }
   // A click: one process; the link says "Opening …" for three seconds, a failure is a toast (editor-view.js startOpen).
@@ -1578,8 +1580,9 @@ export default class PrReview extends View {
     const allFiles = this.files.length <= FILES_MAX || this.moreFiles === this.files || this.files.findIndex((f) => f.path === this.open) >= FILES_MAX, listed = allFiles ? this.files : this.files.slice(0, FILES_MAX);
     const files = () => div().flex_none().h(Math.max(44, Math.min(this.files.length * 28 + 12, Math.max(200, Math.floor((this.panelH ?? 0) * 0.4))))).relative() // every file, up to 40 % of the panel.border_b(1).border_color(t.border)
       .child(v_flex().id(`pr-files-${this.uid}`).absolute().inset_0().overflow_y_scroll().p(6).children(listed.map((f) => {
-        const parts = f.path.split("/"), name = parts.pop(), n = this.comments.filter((c) => c.file === f.path).length;
-        return h_flex().id(`f-${f.path}`).h(28).flex_none().px(8).gap(8).items_center().rounded(7).cursor_pointer().tooltip(f.path)
+        const parts = f.path.split("/"), name = parts.pop(), n = this.comments.filter((c) => c.file === f.path).length, drag = this.fileDragPath(f);
+        return h_flex().id(`f-${f.path}`).h(28).flex_none().px(8).gap(8).items_center().rounded(7).cursor_pointer().tooltip(drag ? `${f.path}. Drag it onto a terminal to paste its path.` : f.path)
+          .when(Boolean(drag), (e) => e.drag_paths([drag])) // a click still picks the file
           .when(this.open === f.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.fh.focus(); this.askTop = false; this.pick(f.path, cx); })
           .child(h_flex().flex_1().min_w(0).child(div().text_color(t.dim).truncate().child(parts.length ? parts.join("/") + "/" : "")).child(div().min_w(0).truncate().child(name)))
           .children(rowMarks(this.fileMarks?.get(f.path), null).map((m) => chip(t, markLabel(div, t, m), t[m.color] ?? t.muted, m.security, `f-r-${f.path}`,

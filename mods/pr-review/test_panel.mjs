@@ -420,6 +420,9 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   S.clicks.get(`pr-files-more-${v.uid}`)(null, cx); v.files = many; got = rowsOf(); assert.deepEqual([fileIds(got), got.includes(`pr-files-more-${v.uid}`)], [450, false], "Show 250 more files lists them all");
   v.moreFiles = null; v.open = "src/f300.py"; v.files = many; assert.equal(fileIds(rowsOf()), 450, "the open file is past the 200th: all are listed");
   v.files = [{ path: "a.py", add: 1, del: 0 }]; v.open = "a.py";
+  // A file row drags as the file's path in the branch's repo; a deleted file and a row without a checkout do not.
+  { const drags = (root) => { v.root = root; v.files = [{ path: "a.py", add: 1, del: 0 }, { path: "gone.py", add: 0, del: 3, status: "deleted" }]; S.drags = []; v.error = null; v.render(cx); const d = S.drags; S.drags = null; return d; };
+    const was = v.root; assert.deepEqual([drags("/co/r"), drags(null)], [["/co/r/a.py"], []]); v.root = was; v.files = [{ path: "a.py", add: 1, del: 0 }]; }
   // A line to bring into view: j goes to the next change and asks the list for it; a new file starts at the top.
   const asked = []; v.diffList = { scroll_to_item: (i, how) => asked.push([i, how]) };
   v.comments = []; v.error = null; v.scrollRow = 30; v.sel = null; v.askTop = false; v.render(cx); v.scrollRow = "top"; v.render(cx);

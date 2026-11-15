@@ -23,6 +23,7 @@ S.el = () => {
         if (k === "when") return a[0] ? a[1](p) : p;
         if (k === "map") return a[0](p);
         if (k === "id") S.ids?.add(String(a[0])); // a test that asks what was drawn sets S.ids = new Set()
+        if (k === "drag_paths") S.drags?.push(...a[0]); // … and S.drags = [] for the paths that can be dragged
         if (k === "child" && typeof a[0] === "string") S.texts?.add(a[0]); // … and S.texts = new Set() for the texts drawn
         if (k === "children") { for (const c of a[0]) if (bad(c)) S.errs.push(`children: ${c} at ${where()}`); return p; }
         a.forEach((v, i) => { if (bad(v)) S.errs.push(`${String(k)}(arg ${i} = ${v}) at ${where()}`); });

@@ -249,3 +249,13 @@ console.log("render ok");
   S.runs = null;
   console.log("tab names and focus ok");
 }
+
+// A file head in the big diff drags as the file's path in the review's checkout; without a checkout nothing drags.
+{
+  const v = review(2), heads = () => { S.drags = []; ok("file heads", () => { v.render(cx); layout(0); }); const d = S.drags; S.drags = null; return d; };
+  v.tab = "files"; v.collapsed = new Set();
+  assert.deepEqual(heads(), [], "no checkout: no path to drag");
+  v.worktree = { url: v.prSel.url, head: "h", path: "/h/w" };
+  assert.deepEqual(heads(), ["/h/w/src/f0.ts", "/h/w/src/f1.ts"]);
+  console.log("drag paths ok");
+}

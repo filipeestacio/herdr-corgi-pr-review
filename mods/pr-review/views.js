@@ -1,6 +1,7 @@
 // Pure helpers for the panel's state (main.js) and a layer's flow picture (stack.js visualCard). No gpui imports, so
 // node tests them (test_views.mjs).
 import { transitionText } from "./arch.js";
+import { safeFile } from "./editor.js";
 import { isSecurity, priceOf, isGuard, isDefect, secByEffect } from "./pr.js";
 import { RES_WHEN } from "./pr.js"; // Resilience: the words for a dependency's cases
 export { isDefect };
@@ -1783,3 +1784,8 @@ export function placeOf(at) {
 // A file's patch (its lines, header first) is about a symbolic link (git mode 120000): what it points at comes from
 // the PR, so no editor link is offered for it.
 export const patchSymlink = (lines) => (lines ?? []).slice(0, 8).some((l) => /^(new file mode|deleted file mode|old mode|new mode) 120000$/.test(l) || /^index [0-9a-f]+\.\.[0-9a-f]+ 120000$/.test(l));
+// A file's head drags as its path in the local checkout (Herdr's drag_paths: dropped on a terminal, the quoted path
+// is typed there, without Enter). Only a file that is there and is the checkout's own: null without a checkout, for
+// a file the diff deletes, for a symlink it adds or changes (the path would name what the PR points it at) and for a
+// path that is absolute or leaves the checkout (editor.js safeFile).
+export const dragPath = (root, f) => (root && f && f.status !== "deleted" && !patchSymlink(f.lines) ? safeFile(root, f.path) : null);

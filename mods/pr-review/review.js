@@ -5439,7 +5439,10 @@ export const ReviewMode = {
         .children(((m) => (m ? [div().id(`rv-fh-ed-${f.path}`).tooltip(m.tip).accessibility_label(`Open in ${editorFull(m.id)}`).w(FILE_EDIT).flex_none().truncate().text_size(TYPE.small).text_color(m.busy ? t.dim : t.muted).child(m.text),
           div().id(`rv-fh-edm-${f.path}`).tooltip("Other editors, Copy path, Look again").accessibility_label("Other editors").w(FILE_EDIT_MORE).flex_none().text_size(TYPE.small).text_color(t.muted).child("▾")] : []))(this.fileEditMark(f)))
         .child(div().id(`rv-fh-st-${f.path}`).tooltip(`File ${f.status} (${letter} in the file tree)`).w(70).flex_none().text_size(TYPE.small).font_semibold().text_color(t[col]).child(`${String(f.status ?? "")[0]?.toUpperCase() ?? ""}${String(f.status ?? "").slice(1)}`))
-        .child(mono(div()).flex_1().min_w(0).truncate().font_semibold().text_size(TYPE.body).child(f.status === "renamed" ? `${f.from} → ${f.path}` : f.path))
+        // The name drags as the file's path in the checkout (main.js fileDragPath); a click on it still folds the file.
+        .child(((drag) => mono(div()).flex_1().min_w(0).truncate().font_semibold().text_size(TYPE.body)
+          .when(Boolean(drag), (e) => e.id(`rv-fh-path-${f.path}`).tooltip("Drag this onto a terminal to paste the file's path.").drag_paths([drag]))
+          .child(f.status === "renamed" ? `${f.from} → ${f.path}` : f.path))(this.fileDragPath(f)))
         .when(n > 0, (e) => e.child(div().id(`rv-fh-cm-${f.path}`).tooltip(`${n} pending comments in this file`).px(8).text_size(TYPE.small).text_color(t.accent).child(`● ${n}`)))
         .child(div().id(`rv-fh-ad-${f.path}`).tooltip(`${f.add} lines added`).px(4).text_size(TYPE.small).text_color(t.ansi2).child(`+${f.add}`)).child(div().id(`rv-fh-dl-${f.path}`).tooltip(`${f.del} lines removed`).pl(2).pr(16).text_size(TYPE.small).text_color(t.ansi1).child(`−${f.del}`));
     }

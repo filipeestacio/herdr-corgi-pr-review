@@ -1296,3 +1296,14 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.deepEqual(["a/b.py:9-14", "a/b.py:9:3", "a/b.py", "a/b.py:9", "", null].map(placeOf), [{ file: "a/b.py", line: 9 }, { file: "a/b.py", line: 9 }, { file: "a/b.py", line: null }, { file: "a/b.py", line: 9 }, null, null]);
   console.log("ok place");
 }
+
+// A file head's path to drag onto a terminal: the file in the local checkout, and only one that is the checkout's own.
+{
+  const { dragPath } = await import("./views.js");
+  const link = ["diff --git a/l b/l", "new file mode 120000", "index 0000000..1de5659"];
+  assert.equal(dragPath("/co/r", { path: "src/a b.ts", status: "modified", lines: [] }), "/co/r/src/a b.ts");
+  assert.equal(dragPath("/co/r/", { path: "./src/../a.ts", status: "added" }), "/co/r/a.ts");
+  assert.deepEqual([dragPath(null, { path: "a.ts" }), dragPath("/co/r", { path: "a.ts", status: "deleted" }), dragPath("/co/r", { path: "l", status: "added", lines: link }),
+    dragPath("/co/r", { path: "/etc/passwd" }), dragPath("/co/r", { path: "../../etc/passwd" }), dragPath("/co/r", null)], [null, null, null, null, null, null]);
+  console.log("drag path ok");
+}

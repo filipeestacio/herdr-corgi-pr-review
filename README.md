@@ -176,6 +176,11 @@ opens those. More editors: `"editors": [{"id", "name", "folder": [argv…], "fil
 `pr-review.config.json`, with `{dir}`, `{file}` and `{line}`. With `"dryRun": true`, or with a file `editor.dry-run` in the
 Herdr home, no editor is started: the click says what it would have run.
 
+**Drag a file onto a terminal.** A file's name in the big diff's file head and a file's row in the panel can be
+dragged onto a terminal: Herdr types the file's path in the local checkout there, quoted and without Enter. A click
+does what it did before. Nothing drags without a local checkout, for a file the PR deletes, or for a symlink the PR
+adds or changes.
+
 Language servers are optional. Each turns on go-to-definition, hover and the Architecture page's Impact picture
 (who calls what the PR changes) for its language. Without one, those three are off for that language and nothing
 else changes; the Impact section then names the missing server and its install command. Setup checks them too.
