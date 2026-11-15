@@ -99,7 +99,8 @@ export function chooseEditor(root, id) {
 export function editorMenu(target) {
   const r = roots.get(target.root) ?? { linked: false };
   return E.menuItems({ now: editorFor(target, null), found: stored()?.found ?? {}, extra, linked: r.linked, file: target.file ?? null, line: target.line ?? null })
-    .map((m) => [m.label, false, m.act === null ? "editor-none" : m.act === "copy" ? "editor-copy" : m.act === "look" ? "editor-look" : `editor-${m.act}`]);
+    .map((m) => [m.kind === "copy" ? `${m.text} (${m.hint})` : m.hint ? `${m.text} · ${m.hint}` : m.text, false,
+      m.kind === "editor" ? `editor-use:${m.id}` : m.kind === "copy" ? "editor-copy" : m.kind === "again" ? "editor-look" : "editor-none"]);
 }
 export function openEditorMenu(view, target) {
   view.editorTarget = target;
