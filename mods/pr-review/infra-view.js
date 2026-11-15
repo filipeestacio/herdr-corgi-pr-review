@@ -1,7 +1,8 @@
 // "Infrastructure changes" as a part of the Architecture page: infra.js has the data, the words and the layout, this
 // file draws them. o: {model: infra.js infraModel, pic: infra.js infraPicture (null without cards), canvas(L,
 // decorate, marks): the picture in the page's sideways scroller (review.js archCanvas), onJump(at, cx), hl: the
-// highlighted line's number, onHl(num | null, cx)}.
+// highlighted line's number, onHl(num | null, cx), edit(id, at): the short "open in the editor" link for a place
+// (review.js editAt; [] without an editor or a checkout)}.
 import { div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { TYPE } from "./views.js";
@@ -10,17 +11,23 @@ import { infraSource, infraSummary, noticeText, rowText, foldText, unreadText } 
 export function infraSection(t, o) {
   const m = o.model, P = o.pic;
   // A card's lines (infra.js cardLines), 18 px each as the layout counts them: what stands out with a sign (⚠ a
-  // reference to something removed, ≈ an estimate), a changed argument leads to its own line in the diff.
+  // reference to something removed, ≈ an estimate), a changed argument leads to its own line in the diff. The first
+  // line carries the link to the resource's place in the person's editor (the line's own, else the card's); a card
+  // without lines has it in its free lower left corner, which takes no row of the layout.
+  const ed = (n, at = null) => (o.edit && (at ?? n.at) ? o.edit(`rv-infra-ed${n.col}-${n.row}`, at ?? n.at) : []);
   const decorate = (n) => (n.lines?.length ? [v_flex().flex_none().h(n.lines.reduce((k, l) => k + l.rows, 0) * 18).children(n.lines.map((l, k) => h_flex().id(`rv-infra-l${n.col}-${n.row}-${k}`).flex_none().h(l.rows * 18).gap(4).items_start().pt(2).text_size(TYPE.micro).line_height(1.35)
     .text_color(l.bad ? t.ansi1 : l.estimate ? t.ansi3 : t.foreground).tooltip(l.text)
     .when(Boolean(l.at), (e) => e.cursor_pointer().hover((s) => s.underline()).on_click((_e, cx) => { o.onJump(l.at, cx); cx.stop_propagation(); }))
     .when(Boolean(l.bad || l.estimate), (e) => e.child(div().flex_none().child(l.bad ? "⚠" : "≈")))
-    .child(l.rows > 1 ? div().flex_1().min_w(0).h(l.rows * 18 - 4).overflow_hidden().whitespace_normal().child(l.text) : div().flex_1().min_w(0).truncate().child(l.text))))] : []);
+    .child(l.rows > 1 ? div().flex_1().min_w(0).h(l.rows * 18 - 4).overflow_hidden().whitespace_normal().child(l.text) : div().flex_1().min_w(0).truncate().child(l.text))
+    .children(k === 0 ? ed(n, l.at) : [])))] : ed(n).map((e) => div().absolute().left(0).bottom(6).child(e)));
   // The references whose text is not on their line in the picture (a line that fans out, one that runs under the cards).
   const addr = new Map(m.cards.map((c) => [c.id, c.addr])), nameOf = (id) => addr.get(id) ?? P.L.nodes.find((n) => n.id === id)?.label ?? id, loose = P ? P.L.paths.filter((p) => !p.text || p.text.cut) : [];
-  const line = (id, text, at, color = t.muted) => div().id(id).text_size(TYPE.small).line_height(1.5).whitespace_normal().text_color(color)
-    .when(Boolean(at), (e) => e.cursor_pointer().hover((s) => s.text_color(t.foreground)).tooltip("Show this place in the diff").on_click((_e, cx) => o.onJump(at, cx))).child(text)
-    .children(at && o.edit ? o.edit(`${id}-ed`, at) : []); // "↗ editor": the resource's place in the person's editor
+  // A line under the picture: its text leads to its place in the diff; the short editor link stands at its end, in the same row.
+  const line = (id, text, at, color = t.muted) => h_flex().flex_1().min_w(0).gap(8).items_start()
+    .child(div().id(id).min_w(0).text_size(TYPE.small).line_height(1.5).whitespace_normal().text_color(color)
+      .when(Boolean(at), (e) => e.cursor_pointer().hover((s) => s.text_color(t.foreground)).tooltip("Show this place in the diff").on_click((_e, cx) => o.onJump(at, cx))).child(text))
+    .children(at && o.edit ? o.edit(`${id}-ed`, at) : []);
   return v_flex().w_full().gap(8).pt(6)
     .child(div().text_size(TYPE.body).font_semibold().text_color(t.muted).child(`Infrastructure changes · ${m.total}`))
     .child(div().text_size(TYPE.small).text_color(t.muted).whitespace_normal().child(infraSource(m)))
