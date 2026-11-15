@@ -1033,6 +1033,28 @@ console.log("ok");
   assert.deepEqual([run5.counts.blockers, run5.paths.find((p) => p.id === "p2").triggers, run5.paths.find((p) => p.id === "p1").blocker?.why],
     [2, ["p2", "p3"], "a visible effect happens twice"], "a poison message and a batch over its timeout come back from one queue: one blocker; the double mail stays its own");
   assert.deepEqual([withResilience(mapReview({ steps: [] }, []), null).resilience, withResilience(mapReview({ steps: [] }, []), { paths: [] }).resilience.summary], [null, "The run found no path a failure takes through this change."]);
+  // Dependencies that fail or are overloaded: each with its card on the map (its node, else where its call leads), a
+  // case's path only when the run has it; the chosen path marks the dependency with the cases that break on it; what
+  // the code cannot tell is asked after the merge; one sentence counts the cases. A case alone blocks nothing.
+  {
+    const { downstreamOf } = await import("./pr.js");
+    const pic = { ...mapReview({ steps: [] }, []), arch: { nodes: [{ id: "handler" }, { id: "mailer" }, { id: "queue" }], edges: [{ from: "handler", to: "mailer" }, { from: "handler", to: "queue" }] } };
+    const downstream = [{ dep: "Mailer", kind: "external", node: null, edge: "e0", at: "library/mailer.py:14", mode: "sync", cases: [
+      { when: "slow", at: "library/mailer.py:16", handled: "no", how: "waits up to 7 s", path: "p1", findings: [] }, { when: "overloaded", at: "library/mailer.py:17", handled: "partly", how: "retries at once", path: "p1", findings: [] },
+      { when: "down", at: "library/mailer.py:19", handled: "no", how: "drops the mail", path: "p2", findings: [] }, { when: "slow", at: null, handled: "not_checkable", how: "", path: null, findings: [] }, { when: "bad_answer", at: null, handled: "not_checkable", how: "The provider's answer is not in the code.", path: null, findings: [] },
+      { when: "recovers", at: null, handled: "not_checkable", how: "", path: "p7", findings: [] }] },
+    { dep: "LoanEvents", kind: "queue", node: "queue", edge: "e1", at: "library/events.py:20", mode: "async", entry: "the publisher", cases: [{ when: "down", at: "library/events.py:20", handled: "yes", how: "raises", path: null, findings: [] }] }];
+    const dr = withResilience(pic, { edge_ids: true, downstream, paths: [P("p1", "request", ["handler", "e0"], "finding", ["no_backoff", "backpressure"], { findings: ["x"] }), P("p2", "request", ["handler"], "mitigated", [], { limited_by: "a.py:1" })] }).resilience;
+    assert.deepEqual(dr.downstream.map((d) => d.card), ["mailer", "queue"]);
+    assert.deepEqual(dr.downstream[0].cases.map((c) => c.path), ["p1", "p1", "p2", null, null, null], "a path the run does not have is no link");
+    assert.deepEqual(dr.paths.find((p) => p.id === "p1").marks.filter((m) => m.at === "mailer").map((m) => m.mark), ["✕ when slow"]);
+    assert.deepEqual(dr.paths.find((p) => p.id === "p2").marks.filter((m) => m.at === "mailer").map((m) => m.mark), ["✕ when down"]);
+    assert.equal(dr.paths.find((p) => p.id === "p1").blocker, null, "retrying at once and a wait that backs up are findings, alone no blockers");
+    assert.equal(dr.downstreamLine, "2 dependencies, 7 cases: 2 not handled, 1 partly, 1 handled and 3 not checkable.");
+    assert.ok(dr.watch.includes("Mailer is slow, answers wrong or comes back (library/mailer.py:14): The provider's answer is not in the code"), JSON.stringify(dr.watch));
+    const none = withResilience(pic, { paths: [] }).resilience;
+    assert.deepEqual([none.downstream, none.downstreamLine, downstreamOf(null, null)], [[], "", []], "an older run has no dependencies: nothing is shown");
+  }
   // Before the run: what the diff adds, without a model (PR #2's template and handler).
   const files = splitPatch(["diff --git a/template.yaml b/template.yaml", "--- a/template.yaml", "+++ b/template.yaml", "@@ -0,0 +1,6 @@", "+  LoanEvents:", "+    Type: AWS::SQS::Queue",
     "+  FrontDesk:", "+    Type: AWS::Serverless::Function", "+        Type: HttpApi", "+    Type: AWS::Serverless::Function",

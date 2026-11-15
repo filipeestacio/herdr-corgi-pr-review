@@ -7,6 +7,7 @@ import { taskList, taskHead, verdictParts, findingCounts, componentLine, CERTAIN
 import { transitionText } from "./arch.js";
 import { resPathView } from "./views.js";
 import { resWord, resToolText, resVerdict, resWatch } from "./views.js"; // wave R2: the page's words, verdict and watch list
+import { resDepRows } from "./views.js"; // Resilience: dependencies that fail or are overloaded
 
 const STATE = { open: "Unresolved", progress: "Fix sent", fixed: "Fixed", dismissed: "Dismissed", recheck: "Unresolved, line changed" };
 const SOURCE = { analysis: "Analysis", security: "Security review", claude: "Claude code review", codex: "Codex review", ai: "AI note" };
@@ -401,8 +402,14 @@ export function resilienceMd({ pr, head, res = null, names = new Map(), arch = n
   };
   const checks = (res.checks ?? []).filter((c) => c.result !== "not_checkable").map((c) => `- ${c.check}: ${String(c.result).replace(/_/g, " ")}${c.why ? `, ${flat(c.why)}` : ""}${c.at ? ` (${c.at})` : ""}`);
   const w = resWatch(res, arch), watch = w.watch.length || w.before.length || (res.blind_spots ?? []).length ? w.watch.map((x) => x.text) : res.watch ?? [];
+  // Dependencies that fail or are overloaded: a line each, its cases under it with the path (by its number here) that
+  // shows how the case spreads, and what happens then.
+  const deps = resDepRows(res, order).flatMap((d) => [`- ${flat(d.dep)} (${[d.what, d.entry && `from ${flat(d.entry)}`, d.at].filter(Boolean).join(", ")})`,
+    ...d.cases.map((c) => `  - ${flat(c.text)}${c.number ? `, path ${c.number}` : c.at ? ` (${c.at})` : ""}${c.effect ? `. ${flat(c.effect)}` : ""}`),
+    ...(d.open.length ? [`  - The code cannot tell: ${d.open.join(", ")}.`] : [])]);
   const nc = [...(res.checks ?? []).filter((c) => c.result === "not_checkable").map((c) => `${c.check}: ${c.why ?? ""}`), ...(res.not_checked ?? []).filter((x) => !resToolText(x))];
   return doc(prLine({ pr, head }), "", "# Resilience", "", flat(resVerdict(order) ?? res.summary ?? ""), res.head ? `Analysis of ${String(res.head).slice(0, 7)}.` : "", "", ...order.map(path),
+    deps.length ? ["## When a dependency fails", "", ...deps, ""] : [],
     checks.length ? ["## Other checks", "", ...checks, ""] : [], nc.length ? ["## Not checkable", "", ...nc.map((x) => `- ${flat(x)}`), ""] : [],
     w.before.length ? ["## Before merge, not observable", "", ...w.before.map((x) => `- ${flat(x.text)}${x.at ? ` (${x.at})` : ""}`), ""] : [],
     watch.length ? ["## After merge, watch", "", ...watch.map((x) => `- ${flat(x)}`)] : []);

@@ -1439,6 +1439,24 @@ export function blockerOf(path, ladder, budget, effects = [], deps = []) {
 }
 
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+// Dependencies that fail or are overloaded (block.downstream, one entry per dependency the PR uses anew or differently,
+// a case for each way it fails): the words for a case, and the dependency's card on the map (its own node, else the
+// card its call leads to). A case decides nothing by itself: where it breaks it names a path, and the path blocks by
+// the rules above.
+export const RES_WHEN = { slow: "slow", overloaded: "overloaded", down: "down", bad_answer: "bad answer", recovers: "recovers" };
+const WHEN_IS = { slow: "is slow", overloaded: "is overloaded", down: "is down", bad_answer: "answers wrong", recovers: "comes back" };
+const WHEN_MARK = { ...RES_WHEN, bad_answer: "wrong answer", recovers: "back again" };
+export function downstreamOf(block, arch) {
+  const ids = new Set((block?.paths ?? []).map((p) => p.id)), edges = arch?.edges ?? [];
+  return (block?.downstream ?? []).map((d) => ({ ...d, card: d.node ?? edges[Number(/^e(\d+)$/.exec(d.edge ?? "")?.[1] ?? -1)]?.to ?? null,
+    cases: (d.cases ?? []).map((c) => ({ ...c, path: ids.has(c.path) ? c.path : null })) }));
+}
+// What the map marks at a dependency on the chosen path: the cases that break on it ("✕ when slow, down"); a card's
+// mark line is short, so the cases only partly handled stay in the dependency's row.
+const downMarks = (id, downstream) => downstream.flatMap((d) => {
+  const on = d.cases.filter((c) => c.path === id && c.handled === "no").map((c) => WHEN_MARK[c.when] ?? c.when).join(", ");
+  return d.card && on ? [{ at: d.card, mark: `✕ when ${on}` }] : [];
+});
 // The block of a run with its derived parts, at this.ai.resilience; null without one. head: today's head (older:
 // the run looked at another one). findings: the findings file's (or merged) findings. A path whose findings were all
 // there before this PR (introduced_here false: their lines stand unchanged in the base) is pre_existing and blocks
@@ -1450,11 +1468,12 @@ export function withResilience(ai, block, head = null, findings = []) {
   const deps = block.deps ?? [], intro = new Map(findings.flatMap((f) => (f.ids ?? [f.id]).map((id) => [id, f.introduced_here ?? null])));
   // also_security: one of the path's findings is also a security finding (⛨, or found by the security run too).
   const sec = new Set(findings.filter((f) => f.security || (f.sources ?? []).some((x) => x.reviewer === "security")).flatMap((f) => f.ids ?? [f.id]));
+  const downstream = downstreamOf(block, ai.arch);
   const paths = block.paths.map((raw) => {
     const reach = reachOf(raw, ai.arch), p = { ...raw, reach, ...viaOf(raw, ai.arch, reach) }, said = p.findings.map((id) => (intro.has(id) ? intro.get(id) : null));
     const pre = !said.length || said.includes(true) ? false : said.every((x) => x === false) ? true : "unknown";
     const ladder = ladderOf(p, deps), budget = budgetOf(p, deps), blocker = pre === true ? null : blockerOf(p, ladder, budget, block.effects ?? [], deps);
-    return { ...p, reach: [...p.reach], ladder, budget, marks: marksOf(p, deps), pre_existing: pre, blocker: blocker && pre === "unknown" ? { ...blocker, unclear: true } : blocker,
+    return { ...p, reach: [...p.reach], ladder, budget, marks: [...marksOf(p, deps), ...downMarks(p.id, downstream)], pre_existing: pre, blocker: blocker && pre === "unknown" ? { ...blocker, unclear: true } : blocker,
       also_security: p.findings.some((id) => sec.has(id)) };
   });
   // Not possible today (C2 D3): the run says so (possible_today false), or the path leaves a part that delivers (a queue,
@@ -1500,7 +1519,17 @@ export function withResilience(ai, block, head = null, findings = []) {
   const byPlace = new Map();
   for (const b of (block.blind_spots ?? []).filter((x) => spotsOf(x) === "watch")) byPlace.set(fileOf(b.at), `${b.failure} (${b.at}): seen as ${b.signal ?? "a signal"}, but nothing alarms on it`);
   for (const d of deps.filter((x) => x.mode === "async")) { const key = d.edge ?? d.node ?? fileOf(d.at); if (![...byPlace.keys()].includes(key)) byPlace.set(key, `the age of the oldest message at ${d.edge ?? d.node ?? d.at}`); }
+  // What the code cannot tell about a dependency (a case not_checkable) is a question for after the merge, one line each.
+  for (const d of downstream) {
+    const open = d.cases.filter((c) => c.handled === "not_checkable"), why = [...new Set(open.map((c) => c.how.replace(/\.$/, "")).filter(Boolean))].join("; ");
+    const whens = open.map((c) => WHEN_IS[c.when] ?? c.when);
+    if (open.length) byPlace.set(`dep:${d.dep}:${d.entry ?? ""}`, `${d.dep}${d.entry ? `, from ${d.entry},` : ""} ${whens.length > 1 ? `${whens.slice(0, -1).join(", ")} or ${whens.at(-1)}` : whens[0]} (${d.at || open[0].at || "no place"}): ${why || "the code cannot tell what happens"}`);
+  }
   const watch = [...new Set(byPlace.values())];
+  // The dependencies in a sentence: "2 dependencies, 10 cases: 4 not handled, 1 partly, 3 handled and 2 not checkable."; "" without any.
+  const cases = downstream.flatMap((d) => d.cases), ch = (h) => cases.filter((c) => c.handled === h).length;
+  const caseParts = [[ch("no"), "not handled"], [ch("partly"), "partly"], [ch("yes"), "handled"], [ch("not_checkable"), "not checkable"]].filter(([n]) => n).map(([n, w]) => `${n} ${w}`);
+  const downstreamLine = downstream.length ? `${plural(downstream.length, "dependency", "dependencies")}, ${plural(cases.length, "case")}: ${caseParts.length > 1 ? `${caseParts.slice(0, -1).join(", ")} and ${caseParts.at(-1)}` : caseParts[0]}.` : "";
   // The parts the PR adds, weighed against their cost (additions): "This PR adds 4 parts: 2 justified, 1 questionable,
   // 1 solves nothing here."; "" without any.
   const adds = block.additions ?? [], by = (r) => adds.filter((a) => a.result === r).length;
@@ -1510,7 +1539,7 @@ export function withResilience(ai, block, head = null, findings = []) {
   // A run from before the prompt named the edges by id counted them itself, mostly from 1: its e<k> may point one call
   // off. Not safely correctable, so it is said (edgeNote) instead of guessed.
   const edgeNote = !block.edge_ids && (deps.some((d) => d.edge) || paths.some((p) => p.steps.some((s) => /^e\d+$/.test(s)))) ? "run predates edge ids: re-run" : null;
-  return { ...ai, resilience: { ...block, paths, blockers: blockers.map((p) => p.id), summary, watch, unseen, additionsLine, edgeNote, older: Boolean(block.head && head && block.head !== head),
+  return { ...ai, resilience: { ...block, paths, downstream, downstreamLine, blockers: blockers.map((p) => p.id), summary, watch, unseen, additionsLine, edgeNote, older: Boolean(block.head && head && block.head !== head),
     counts: { paths: paths.length, blockers: blockers.length, once_wired: wired, mitigated: mitigated.length, not_assessed: na,
       checks_clean: checks.filter((c) => c.result === "clean").length, not_checkable: checks.filter((c) => c.result === "not_checkable").length,
       additions: { justified: by("justified"), questionable: by("questionable"), unjustified: by("unjustified") } } } };

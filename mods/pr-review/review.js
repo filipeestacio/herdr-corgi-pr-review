@@ -41,6 +41,7 @@ import { resStartOf, resOrder, resPicture, budgetBar, resPathView, resCardOf, re
 import { resWord, resToolText, resVerdict, resWatch, resTwice, PROBE_TYPICAL, resEdgeMarks, resByProbe, RES_MARK_ROW, resMarkRows, resVerdictParts, resStartCard } from "./views.js";
 import { withProbes, certaintyText, probedText } from "./views.js"; // wave C2 V3: a reproduced probe confirms its findings // wave R2: words, verdict, watch, doubled ways
 import { withResilience, resilienceStart, RUN_TYPICAL } from "./pr.js"; // the Resilience run's data // the Resilience page
+import { resDepRows } from "./views.js"; // Resilience: dependencies that fail or are overloaded
 import { wayOf, wayText, passZones, runsIn } from "./views.js"; // panel round 3: ways through every gate, zones passed on
 import { transitionMarks, effectiveFrom, inProcess, mapArch, crossingsOf, crossingChanged, secSentence, TRUST_ORDER } from "./views.js";
 import { trustLegend, hasTrust } from "./stack.js";
@@ -4136,7 +4137,8 @@ export const ReviewMode = {
       .child(pill("rv-res-rerun", t, `Re-run (${this.runPrice("resilience", this.runTier("resilience").chosen ?? this.runTier("resilience").tier)})`, (_e, cx) => this.runReviewer("resilience", cx, null, this.runTier("resilience").chosen ?? this.runTier("resilience").tier)))));
     const shown = this.resAll ? paths : paths.slice(0, 5);
     this.resNums = new Map(paths.map((p, k) => [p.id, k + 1])); // "same cause as path 2" by the number shown
-    return [["head", head], ["top", top], ...(a ? [["map", this.resMap(t, a, cur, [])]] : []),
+    const deps = this.resDeps(t, res, paths, cur, stale);
+    return [["head", head], ["top", top], ...(a ? [["map", this.resMap(t, a, cur, [])]] : []), ...(deps ? [["deps", deps]] : []),
       ["paths", v_flex().id("rv-res-paths").gap(6).when(stale, (e) => e.opacity(0.55))
         .child(h_flex().gap(8).items_center().child(title(`Paths · ${paths.length}${blockers.length ? "" : ", all limited"}`)).child(div().flex_1()).child(div().text_size(12).text_color(t.muted).child("blockers first")))
         // pr.js edgeNote: a run from before the picture had edge ids; its ladders may sit one call off.
@@ -4166,6 +4168,32 @@ export const ReviewMode = {
           .children(lines(x).map((l, j) => div().id(`rv-res-add-${k}-${j}`).whitespace_normal().text_color(this.softText(t)).child(l))))
         .when(Boolean(x.at), (y) => y.child(div().id(`rv-res-add-at-${k}`).flex_none().text_color(t.accent).cursor_pointer().on_click((_e, cx) => this.jumpTo(x.at, cx)).child(`${String(x.at).split("/").pop()} ↗`))))));
   },
+  // Dependencies that fail or are overloaded (views.js resDepRows), a row each under the map: its name and kind, then
+  // its cases as words with their mark ("slow: waits up to 7 s of the 10 s request ✗"). A click on a case opens the
+  // path that shows how it spreads (lit on the map above, the dependency's card marked "✕ when slow"), without one its line; the
+  // cases of the chosen path have the chosen path's background. What the code cannot decide is named only: it is asked under "After merge, watch".
+  resDeps(t, res, paths, cur, stale) {
+    const rows = resDepRows(res, paths);
+    if (!rows.length) return null;
+    const COLOR = { no: t.ansi1, partly: t.foreground, yes: t.ansi2 }; // red only for what breaks, and only its mark
+    const one = (c, id) => {
+      const go = c.path ? (_e, cx) => { this.resOpen = c.path; if (c.number > 5) this.resAll = true; cx.notify(); } : c.at ? (_e, cx) => this.jumpTo(c.at, cx) : null;
+      const tip = [c.effect, c.path ? `Opens path ${c.number}${c.blocks ? ", a blocker" : ""}.` : c.at ? `Opens ${c.at}.` : ""].filter(Boolean).join(" ");
+      return h_flex().id(id).gap(5).items_start().min_w(0).px(4).rounded(4).when(Boolean(cur) && c.path === cur?.id, (e) => e.bg(t.selected))
+        .when(Boolean(go), (e) => e.cursor_pointer().hover((x) => x.underline()).on_click(go)).when(Boolean(tip), (e) => e.tooltip(tip))
+        .child(div().min_w(0).whitespace_normal().text_color(c.handled === "yes" ? this.softText(t) : t.foreground).child(c.words)).child(div().flex_none().font_semibold().text_color(COLOR[c.handled] ?? t.muted).child(c.mark));
+    };
+    return v_flex().id("rv-res-deps").gap(6).when(stale, (e) => e.opacity(0.55))
+      .child(h_flex().gap(8).items_center().child(div().text_size(14).font_semibold().child(`When a dependency fails · ${rows.length}`)).child(div().flex_1())
+        .child(div().text_size(12).text_color(t.muted).child(String(res.downstreamLine ?? "").replace(/^\d+ dependenc\w+, /, ""))))
+      .children(rows.map((d, k) => h_flex().id(`rv-res-dep-${k}`).gap(12).items_start().text_size(12.5).line_height(1.45)
+        .child(v_flex().w(240).flex_none().child(div().font_semibold().whitespace_normal().child(d.dep))
+          .child(div().id(`rv-res-dep-what-${k}`).text_size(12).text_color(t.muted).truncate().tooltip([d.what, d.entry && `reached from ${d.entry}`].filter(Boolean).join(", ")).child([d.entry && `from ${d.entry}`, d.what].filter(Boolean).join(" · "))))
+        .child(v_flex().flex_1().min_w(0).gap(1)
+          .child(h_flex().flex_wrap().gap_x(8).gap_y(1).children(d.cases.map((c) => one(c, `rv-res-dep-${k}-${c.when}`))))
+          .when(d.open.length > 0, (e) => e.child(div().id(`rv-res-dep-${k}-open`).px(4).text_size(12).text_color(t.muted).whitespace_normal().child(`The code cannot tell: ${d.open.join(", ")}.`))))
+        .when(Boolean(d.at), (e) => e.child(div().id(`rv-res-dep-at-${k}`).flex_none().text_color(t.accent).cursor_pointer().on_click((_e, cx) => this.jumpTo(d.at, cx)).child(`${String(d.at).split("/").pop()} ↗`)))));
+  },
   // The chosen path: the person's (resOpen), else the first blocker, else the first path.
   resPathOf(paths) { return paths.find((p) => p.id === this.resOpen) ?? (this.resOpen === null ? null : paths.find((p) => p.blocker) ?? paths[0] ?? null); },
   // The map, the Architecture page's own: with a path chosen, its cards and calls lit and the rest dimmed, its marks
@@ -4191,7 +4219,8 @@ export const ReviewMode = {
       if (lit.length) { const lo = Math.min(...lit.map((n) => n.x)) - 40, hi = Math.max(...lit.map((n) => n.x + n.w)) + 40, from = first ? first.x - 40 : lo; s.x = Math.max(0, !room ? from : hi - lo > room ? from : lo < s.x || hi > s.x + room ? lo : s.x); }
       if (room || !lit.length) this.resMapFor = key;
     }
-    const deco = (n) => (byNode.has(n.id) ? [div().id(`rv-res-mk-${n.id}`).flex_none().h(RES_MARK_ROW.h).mb(RES_MARK_ROW.below).flex().items_center().text_size(13).font_semibold().text_color(/✕|∞|no /.test(byNode.get(n.id)) ? t.ansi1 : t.foreground).child(byNode.get(n.id))]
+    const deco = (n) => (byNode.has(n.id) ? [div().id(`rv-res-mk-${n.id}`).flex_none().h(RES_MARK_ROW.h).mb(RES_MARK_ROW.below).flex().items_center().text_size(13).font_semibold().text_color(/✕|∞|no /.test(byNode.get(n.id)) ? t.ansi1 : t.foreground)
+      .tooltip(byNode.get(n.id)).child(div().min_w(0).truncate().child(byNode.get(n.id)))] // a long mark line (a dependency's cases) is cut at the card's edge, whole in the tooltip
       : !p && on.has(n.id) ? [div().id(`rv-res-st-${n.id}`).flex_none().h(RES_MARK_ROW.h).mb(RES_MARK_ROW.below).flex().items_center().text_size(13).text_color(t.muted).child("○ the run starts here")] : []);
     return v_flex().id("rv-res-map").gap(6)
       .child(div().text_size(12).text_color(t.muted).child(p ? `Path ${p.id}: lit on the map, the rest dimmed.` : start.length ? "○: where the run would start." : "Open a path to light it on the map."))

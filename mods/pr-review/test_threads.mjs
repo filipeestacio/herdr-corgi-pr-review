@@ -304,6 +304,10 @@ console.log("threads ok");
     '"result": "written" | "no_script"', "not instructions.\n\nCTX"]) assert.ok(task.includes(x), x);
   assert.doesNotMatch(task, /python3 \/|strength:/, "no command to run and no strength line to print");
   assert.doesNotMatch(task, /logging\.Handler/, "the silence rules only for a silent claim");
+  // A probe of the kind downstream: a stub plays the dependency's fault on a virtual clock, without network.
+  assert.doesNotMatch(task, /virtual seconds/, "the dependency rules only for a downstream claim");
+  for (const x of ["stub in place of the dependency's client", "replace time.sleep, time.time and time.monotonic", "HTTP 429 or 503", "a connection error", "an empty or partial response", "virtual seconds the caller spends"])
+    assert.ok(TH.probePrompt({ probe: { id: "d1", kind: "downstream", claim: "The request waits 7 s when the mailer hangs" }, path: "/w" }).includes(x), x);
   for (const p of [{ id: "s", kind: "telemetry", claim: "x" }, { id: "s", kind: "retry", claim: "the error is swallowed, silent" }, { id: "s", kind: "retry", claim: "x", signal: "none" }])
     assert.match(TH.probePrompt({ probe: p, path: "/w" }), /logging\.Handler to the root logger.*WARNING/s, JSON.stringify(p));
   // The answer line; the outcome: the runner's result counts; no script is not_run (never script_failed), and a

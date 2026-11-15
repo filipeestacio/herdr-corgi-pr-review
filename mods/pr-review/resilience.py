@@ -14,7 +14,7 @@ import review
 
 S, STRINGS, INT, BOOL = review.S, review.STRINGS, {"type": "integer"}, {"type": "boolean"}
 NUM = {"type": "number"}
-AREAS = ["retries", "timeouts", "redelivery", "effects", "state", "races", "load", "db", "caches", "clocks", "observability", "operations"]
+AREAS = ["retries", "timeouts", "redelivery", "effects", "state", "races", "load", "db", "caches", "clocks", "observability", "operations", "dependencies"]
 MODES = ["sync", "async", "in_process"]
 EXHAUSTED = ["raise", "dlq", "swallowed"]
 CONTEXT_KINDS = ["trace", "id_only", "inherited", "none", "broken"]
@@ -27,13 +27,18 @@ CHECK_RESULTS = ["finding", "clean", "not_checkable", "elsewhere"]
 PATH_KINDS = ["retry", "timeout", "race", "state", "effect", "load", "silent", "request", "other"]
 ADD_RESULTS = ["justified", "questionable", "unjustified"]
 LIKELIHOOD = ["likely", "possible", "rare", "cannot_happen"]
-PROBE_KINDS = ["retry", "redelivery", "race", "idempotency", "clock", "db_count", "telemetry", "budget"]
+PROBE_KINDS = ["retry", "redelivery", "race", "idempotency", "clock", "db_count", "telemetry", "budget", "downstream"]
+# A dependency the PR starts to use or uses differently, and what it can do to the PR's code (downstream[].cases).
+DEP_KINDS = ["external", "internal", "database", "queue", "cache", "secret_store", "config_store", "identity_provider", "other"]
+WHENS = ["slow", "overloaded", "down", "bad_answer", "recovers"]
+HANDLED = ["yes", "partly", "no", "not_checkable"]
 PROBE_ID = re.compile(r"[A-Za-z0-9_-]{1,40}")  # a probe id: a file name, a branch, a write rule (threads.js PROBE_ID, probe.py ID)
 STRENGTHS = ["runs_pr_code", "forced_schedule", "models_env"]
 # What a path breaks, in the words pr.js turns into a blocker's reason (pr.js RES_BLOCKING).
 FAILING = ["unbounded_retry", "no_dlq", "poison_message", "over_timeout", "duplicate_effect", "lost_effect", "swallowed_retry",
            "shared_resource", "no_timeout_public", "silent", "removed_signal", "reads_foreign_state", "race", "no_jitter", "no_alarm",
-           "no_breaker", "no_trace", "cardinality", "n_plus_one", "unbounded_queue", "no_throttle", "stale_cache", "clock", "dishonest_response"]
+           "no_breaker", "no_trace", "cardinality", "n_plus_one", "unbounded_queue", "no_throttle", "stale_cache", "clock", "dishonest_response",
+           "no_backoff", "thundering_herd", "unchecked_answer", "backpressure"]
 # What a function raises out of itself: its platform's error metric shows it (Lambda Errors), whatever else is silent.
 RAISING = {"poison_message", "over_timeout", "no_dlq"}
 FINDS = {"findings": {**STRINGS, "description": "ids of findings that show it: an existing finding's id from the list, or the ref of a new one"}}
@@ -71,6 +76,10 @@ SCHEMA = {
     "additions": {"type": "array", "items": {"type": "object", "required": ["what", "kind", "at", "solves", "likelihood", "cost", "simpler", "result"], "properties": {
         "what": S, "kind": S, "at": AT, "solves": S, "likelihood": {"enum": LIKELIHOOD}, "cost": {"type": "object", "properties": {"mental": S, "ops": S, "money": S}},
         "simpler": S, "result": {"enum": ADD_RESULTS}, "purpose": S, "works_today": BOOL, "broken_by": S, "next": S, **FINDS}}},
+    "downstream": {"type": "array", "items": {"type": "object", "required": ["dep", "kind", "node", "at", "mode", "cases"], "properties": {
+        "dep": S, "kind": {"enum": DEP_KINDS}, "node": S, "edge": S, "at": AT, "mode": {"enum": MODES}, "entry": S,
+        "cases": {"type": "array", "items": {"type": "object", "required": ["when", "handled", "how"], "properties": {
+            "when": {"enum": WHENS}, "at": AT, "handled": {"enum": HANDLED}, "how": S, "effect": S, "path": S, **FINDS}}}}}},
     "probes": {"type": "array", "items": {"type": "object", "required": ["id", "claim", "of", "kind", "strength"], "properties": {
         "id": S, "claim": S, "of": S, "kind": {"enum": PROBE_KINDS}, "strength": {"enum": STRENGTHS}}}},
     "not_checked": STRINGS}
@@ -105,6 +114,23 @@ STEPS = (
     "code, or clearly central (elsewhere: no finding);\n"
     "- operations: rollback (migrations both ways, a flag), health and readiness, graceful shutdown, limits and quotas, "
     "new single points of failure, defaults that only bite under load.\n"
+    "- dependencies that fail or are overloaded: for every dependency this PR starts to use or uses differently (an "
+    "external service, an internal service, a database, a queue, a cache, a secret or config store, an identity provider), "
+    "seen from the code that calls it and separately for each way in that reaches it when what happens differs (a "
+    "request that waits for it and a queue consumer that calls it; for a queue its publisher and its consumer), "
+    "decide each of these cases from the code: slow (it answers late or hangs: who waits how long at which line, "
+    "what is held meanwhile (a thread, a connection, a concurrency slot), whether the caller runs into its own timeout "
+    "first, whether the wait backs up to the way in); overloaded (it answers 429 or 503 or throttles: whether the code "
+    "reacts with backoff, Retry-After or shedding load, or adds load with retries at once, retries on several layers, "
+    "or every caller refilling a cache at once after it expires); down (connection error, 5xx, DNS: a fallback or "
+    "failing fast, what the user sees, whether the work is lost or caught up later); bad answer (a success that is "
+    "empty, partial or stale, part of a batch failed: whether the code checks it); recovers (the dependency is back "
+    "after an outage: whether the system gets back by itself, what it does with what piled up meanwhile (a retry "
+    "storm, a backlog that drains at full speed into the next dependency, a cold cache) and whether lost work is "
+    "caught up). A case that breaks is "
+    "a path like any other, with its finding; a case the code handles names the line that handles it; what only a "
+    "measurement can tell (real latency, the provider's limits) is not_checkable. A circuit breaker is no default "
+    "answer: name one only where a failing path of this PR needs it;\n"
     "- every public route's request, always: each synchronous call it makes, the time the request can spend in them "
     "against its timeout, its throttle, and whether its answer is honest (a 2xx only when the work really happened or "
     "is safely queued); one path of kind request for each synchronous dependency in such a request, e.g. a route that "
@@ -160,9 +186,20 @@ ASK = (
     "failing path of this PR; questionable: small use against its cost; unjustified: it solves nothing that can happen "
     "here, or it is a retry layer under another one; a bug that keeps it from working changes works_today, never result), purpose (what it is for, one sentence), next (one sentence with a "
     "verb: keep, drop or change it, together with what its findings ask, e.g. \"Keep the queue, add a dead-letter queue, "
-    "drop the mailer retry\"), findings); checks (one row for each of cors, cache_control, rollback, limits, cardinality, clocks, health, shutdown, "
+    "drop the mailer retry\"), findings); downstream (one per dependency the PR starts to use or uses differently: dep (its name), "
+    "kind (" + ", ".join(DEP_KINDS) + "), node (the picture's node that stands for the dependency itself, e.g. the mailer or "
+    "the queue, not its caller; \"\" when the picture has none), edge (the picture's e<k> of the call that reaches it on "
+    "this way in), at (the call's file:line), mode (sync when the caller waits for its answer, async when "
+    "it hands over and goes on), entry (the way in that reaches it, e.g. \"POST /remind\" or \"the queue consumer\"; one "
+    "entry per way in when what happens differs), cases (one for each of " + ", ".join(WHENS) + ": "
+    "when, at (the file:line that decides it: the timeout, the retry loop, the except clause, the missing check), handled "
+    "(yes: the code limits it at that line; partly and no only with the path and the finding that show it; not_checkable: "
+    "the code cannot tell), how (what the code does, at most eight words with the number that matters, e.g. \"waits up to 7 s of the 10 s request\", \"retries at once, 3 times\", \"fails "
+    "fast\"), effect (one sentence: what the user or the next caller gets, and whether work is lost or caught up), path "
+    "(for partly and no: the id of the path that shows how it spreads), findings)); checks (one row for each of cors, cache_control, rollback, limits, cardinality, clocks, health, shutdown, "
     "and any other check you made beyond the paths: result finding|clean|not_checkable|elsewhere, at, why); probes (r1, r2, …: a small "
-    "script that would show a claim with stubs and a forced schedule, never sleep: claim (one sentence with the number "
+    "script that would show a claim with stubs and a forced schedule, never sleep; for a dependency's case that breaks, "
+    "kind downstream: a stub plays the dependency slow, throttled, failing or answering wrong on a virtual clock: claim (one sentence with the number "
     "it would show), of (a path, race, effect or blind spot id), kind, strength); not_checked. Every list may be empty.")
 
 
@@ -254,7 +291,29 @@ def view(answer, findings, pic, known, changed=None):
                   "works_today": a.get("works_today") if isinstance(a.get("works_today"), bool) else None, "broken_by": str(a.get("broken_by") or "")}
                  for a in lst("additions") if a.get("what")]
     retry_under_redelivery(deps, additions)
-    return {"deps": deps, "effects": effects, "state": state, "races": races, "additions": additions,
+    # Dependencies that fail or are overloaded: per dependency one case for each way it fails (slow, overloaded, down,
+    # bad_answer, recovers), once each, in that order. A decided case (yes, partly, no) names the line that decides it,
+    # else it is not_checkable; its path is one of this run's (the run's own id, mapped to the id it got here). A case
+    # that breaks (no, partly) is shown by a finding, its own or its path's (no second system of findings); without
+    # one it is a question for after the merge: not_checkable.
+    pids = {str(p.get("id")): f"p{k}" for k, p in enumerate(lst("paths"), 1) if p.get("id")}
+    shown = {p["id"] for p in paths if p["findings"]}
+    downstream = []
+    for d in lst("downstream"):
+        cases = {}
+        for c in d.get("cases") or []:
+            if not isinstance(c, dict) or c.get("when") not in WHENS or c["when"] in cases:
+                continue
+            where, found, path = at(c.get("at")) or None, fids(c.get("findings")), pids.get(str(c.get("path") or ""))
+            handled = (enum(c.get("handled"), HANDLED) if where else None) or "not_checkable"
+            if handled in ("no", "partly") and not found and path not in shown:
+                handled = "not_checkable"
+            cases[c["when"]] = {"when": c["when"], "at": where, "handled": handled, "how": str(c.get("how") or ""), "effect": str(c.get("effect") or ""), "findings": found, "path": path}
+        if d.get("dep") and cases:
+            downstream.append({"dep": str(d["dep"]), "kind": enum(d.get("kind"), DEP_KINDS) or "other", "node": d.get("node") if d.get("node") in nodes else None,
+                               "edge": d.get("edge") if d.get("edge") in edges else None, "at": at(d.get("at")), "mode": enum(d.get("mode"), MODES), "entry": str(d.get("entry") or ""),
+                               "cases": [cases[w] for w in WHENS if w in cases]})
+    return {"deps": deps, "effects": effects, "state": state, "races": races, "additions": additions, "downstream": downstream,
             "db_calls": [{"entry": str(d.get("entry") or ""), "per_request": str(d.get("per_request") or ""),
                           "calls": [{"op": c.get("op"), "target": c.get("target"), "at": at(c.get("at")), "in_loop": bool(c.get("in_loop"))} for c in d.get("calls") or [] if isinstance(c, dict)]}
                          for d in lst("db_calls")],
