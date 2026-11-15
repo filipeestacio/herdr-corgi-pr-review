@@ -59,6 +59,7 @@ const SOURCE_MS = 3 * 60 * 1000, SOURCE_KEEP = 20, PICKED_KEEP = 20;
 const GH_FIELDS = "number,title,author,headRefName,headRefOid,baseRefName,updatedAt,isDraft,reviewDecision,additions,deletions,url";
 const REVIEW = { APPROVED: ["approved", "ansi2"], CHANGES_REQUESTED: ["changes requested", "ansi1"], REVIEW_REQUIRED: ["review required", "ansi3"] };
 const BRANCH = "branch"; // shared "pr.selected": the current branch was picked (not a PR)
+const CMD_STALE = 3000; // ms a command may be running before its loop counts as stopped (listen)
 const HL_STALE = 2000; // ms a highlight slice may be busy before it counts as stopped (Herdr stops one after ~50 ms)
 const SEC_MARK = "⛨"; // security's own mark in a PR row (a shield), next to the word
 // A PR's head as GitHub last gave it ({at, sha} by url) and the asks under way: one for every copy of the mod (the
@@ -119,7 +120,7 @@ export default class PrReview extends View {
     this.uid = Math.random().toString(36).slice(2, 8);
     // The minimized chip's copy sits in the main layouts also while the panel does not: it keeps a click on a PR mark
     // of the Worktrees mod ("want:<owner/repo#n>") for the panel (wantPick).
-    if (this.part === "mini") cx.spawn(async () => { for (;;) { const c = String(await nextCommand()); if (c.startsWith("want:")) this.wantPick(c.slice(5)); } });
+    if (this.part === "mini") this.listen(cx, (c) => { if (c.startsWith("want:")) this.wantPick(c.slice(5)); }, false);
     if (this.part === "bar" || this.part === "reviews" || this.part === "agentbar" || this.part === "keys" || this.part === "cmenu" || this.part === "mini") return;
     this.announces = true; // Go to's keys: published while this copy runs, cleared in close()
     this.files = []; this.rows = []; this.sel = null; this.selEnd = null; this.from = 0; this.question = "";
@@ -149,7 +150,7 @@ export default class PrReview extends View {
     if (before === BRANCH) this.branchPicked = true; else if (before) this.restoring = !this.picking;
     if (visible() && this.branchPicked) this.refresh(cx);
     // Key commands (keys.json "pr-review.<name>"): picker (the PR list), source:mine|repo|review, merged, setup, walkthrough, review, finish.
-    cx.spawn(async (cx) => { for (;;) { this.panelCommand(String(await nextCommand()), cx); cx.notify(); } });
+    this.listen(cx, (c, cx) => this.panelCommand(c, cx));
     cx.spawn(async (cx) => {
       try {
         await this.loadPrs(cx);
@@ -1253,7 +1254,27 @@ export default class PrReview extends View {
     setShared("goto.items.review", null);
   }
 
+  // This copy's commands (keys.json "pr-review.<name>", herdr-app do): a loop on nextCommand(). A command that throws
+  // is said in the footer and the loop goes on. One whose slice Herdr stops (a task may run about a second: 0.4 s
+  // went through, 1.5 s did not) takes the loop's task with it, and no key of the review did anything from then on:
+  // cmdAt is the time the running command started (0: none runs), and a frame that finds it older than CMD_STALE
+  // starts the loop again (stillListening). redraw: whether a command is followed by a frame.
+  listen(cx, run, redraw = true) {
+    this.cmdRun = run; this.cmdRedraw = redraw; this.cmdAt = 0;
+    cx.spawn(async (cx) => {
+      for (;;) {
+        const c = String(await nextCommand());
+        this.cmdAt = Date.now();
+        try { run(c, cx); } catch (e) { this.note = `The command "${c.split(":")[0]}" failed: ${String(e).replace(/^Error: /, "")}`; }
+        this.cmdAt = 0;
+        if (redraw) cx.notify();
+      }
+    });
+  }
+  stillListening(cx) { if (this.cmdAt && Date.now() - this.cmdAt > CMD_STALE) this.listen(cx, this.cmdRun, this.cmdRedraw); }
+
   render(cx) {
+    this.stillListening(cx);
     if (this.announces && !shared("goto.handlers.review") && !this.announceQueued) {
       this.announceQueued = true;
       cx.timer.after(0, () => { this.announceQueued = false; this.publishGoto(); });

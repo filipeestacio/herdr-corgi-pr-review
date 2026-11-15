@@ -120,6 +120,25 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   S.exec = null; S.props = null; await settle();
 }
 
+// ---- the command loop goes on after a command that threw, and starts again after one that Herdr stopped
+{
+  const waiters = []; S.nextCommand = () => new Promise((r) => waiters.push(r));
+  const v = await openReview(PR2()), send = async (c) => { waiters.shift()(c); await settle(); };
+  assert.equal(waiters.length, 1, "the review waits for its commands");
+  await send("findings"); assert.equal(v.tab, "findings");
+  const command = v.command; v.command = () => { throw new Error("boom"); };
+  await send("files"); assert.equal(v.note, 'The command "files" failed: boom', "a command that throws is said");
+  v.command = command;
+  await send("files"); assert.equal(v.tab, "files", "and the next one runs");
+  // Stopped by Herdr: the loop's task is gone with its wait, and cmdAt was never taken back.
+  waiters.length = 0; v.cmdAt = Date.now() - 10000;
+  frame(v); await settle();
+  assert.equal(waiters.length, 1, "the next frame starts the loop again");
+  await send("comments"); assert.equal(v.tab, "comments", "and commands run again");
+  frame(v); await settle(); assert.equal(waiters.length, 1, "a loop that waits is not started twice");
+  S.nextCommand = null;
+}
+
 // ---- frames that Herdr stopped: the view draws less there
 // (A stopped frame leaves `drawing` set: no code of the mod runs after it. Two in a row on one tab and page count.)
 {

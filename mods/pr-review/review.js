@@ -437,7 +437,7 @@ export const ReviewMode = {
     this.fh.focus();
     cx.timer.after(400, () => this.fh.focus());
     // Commands for keys.json ("pr-review.files") and scripts (herdr-app do pr-review.step:2).
-    cx.spawn(async (cx) => { for (;;) { const c = await nextCommand(); this.command(String(c), cx); cx.notify(); } });
+    this.listen(cx, (c, cx) => this.command(c, cx)); // main.js: goes on after a command that threw or was stopped
   },
 
   command(c, cx) {
