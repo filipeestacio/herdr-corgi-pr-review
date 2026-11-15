@@ -1,0 +1,2894 @@
+{
+ "v": 2,
+ "infra": 0,
+ "servers": [
+  "TypeScript"
+ ],
+ "uncovered": [],
+ "failed": [],
+ "functions": [
+  {
+   "id": "web/src/features/checkout/CheckoutSessionContext.ts#24",
+   "path": "web/src/features/checkout/CheckoutSessionContext.ts",
+   "name": "useCheckoutSession",
+   "kind": "function",
+   "container": "",
+   "line": 24,
+   "end": 42,
+   "nameLine": 24,
+   "character": 16,
+   "isNew": false,
+   "sig": {
+    "old": "export function useCheckoutSession(): CheckoutSession {",
+    "now": "export function useCheckoutSession(scope: SessionScope): CheckoutSession {"
+   },
+   "callers": [
+    {
+     "id": "web/src/pages/cart/CartPageContainer.tsx#20",
+     "name": "renderCartPageContai",
+     "kind": "function",
+     "path": "web/src/pages/cart/CartPageContainer.tsx",
+     "line": 20,
+     "sites": [
+      {
+       "line": 23,
+       "text": "const value = useCheckoutSession(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/checkout/CheckoutStepsLayout.tsx#57",
+     "name": "summarizeCheckoutStepsL",
+     "kind": "function",
+     "path": "web/src/pages/checkout/CheckoutStepsLayout.tsx",
+     "line": 57,
+     "sites": [
+      {
+       "line": 60,
+       "text": "const value = useCheckoutSession(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/checkout/PaymentStepForm.tsx#94",
+     "name": "preparePaymentStepFor",
+     "kind": "function",
+     "path": "web/src/pages/checkout/PaymentStepForm.tsx",
+     "line": 94,
+     "sites": [
+      {
+       "line": 97,
+       "text": "const value = useCheckoutSession(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/CheckoutPage.tsx#131",
+     "name": "renderCheckoutPage",
+     "kind": "function",
+     "path": "web/src/features/checkout/CheckoutPage.tsx",
+     "line": 131,
+     "sites": [
+      {
+       "line": 134,
+       "text": "const value = useCheckoutSession(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/OrderSummaryCard.tsx#168",
+     "name": "summarizeOrderSummaryCa",
+     "kind": "function",
+     "path": "web/src/features/checkout/OrderSummaryCard.tsx",
+     "line": 168,
+     "sites": [
+      {
+       "line": 171,
+       "text": "const value = useCheckoutSession(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/PaymentStep.tsx#205",
+     "name": "renderPaymentStep",
+     "kind": "function",
+     "path": "web/src/features/checkout/PaymentStep.tsx",
+     "line": 205,
+     "sites": [
+      {
+       "line": 208,
+       "text": "const value = useCheckoutSession(input);",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/VoucherField.tsx#242",
+     "name": "summarizeVoucherField",
+     "kind": "function",
+     "path": "web/src/features/checkout/VoucherField.tsx",
+     "line": 242,
+     "sites": [
+      {
+       "line": 245,
+       "text": "const value = useCheckoutSession(input);",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/checkout-saga.ts#279",
+     "name": "preparecheckoutsaga",
+     "kind": "function",
+     "path": "web/src/features/checkout/checkout-saga.ts",
+     "line": 279,
+     "sites": [
+      {
+       "line": 282,
+       "text": "const value = useCheckoutSession(input);",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/PaymentStep.tsx#316",
+     "name": "refreshPaymentStep2",
+     "kind": "function",
+     "path": "web/src/features/checkout/PaymentStep.tsx",
+     "line": 316,
+     "sites": [
+      {
+       "line": 319,
+       "text": "const value = useCheckoutSession(input);",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/__tests__/CheckoutSessionContext.test.ts#10",
+     "name": "useCheckoutSession case 1",
+     "kind": "function",
+     "path": "web/src/features/checkout/__tests__/CheckoutSessionContext.test.ts",
+     "line": 10,
+     "sites": [
+      {
+       "line": 12,
+       "text": "expect(useCheckoutSession(sample)).toMatchSnapshot();",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": true
+    },
+    {
+     "id": "web/src/features/checkout/__tests__/CheckoutSessionContext.test.ts#22",
+     "name": "useCheckoutSession case 2",
+     "kind": "function",
+     "path": "web/src/features/checkout/__tests__/CheckoutSessionContext.test.ts",
+     "line": 22,
+     "sites": [
+      {
+       "line": 24,
+       "text": "expect(useCheckoutSession(sample)).toMatchSnapshot();",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": true
+    }
+   ],
+   "outside": 0,
+   "more": 0
+  },
+  {
+   "id": "web/src/features/checkout/price-breakdown-by-region.ts#18",
+   "path": "web/src/features/checkout/price-breakdown-by-region.ts",
+   "name": "priceBreakdown",
+   "kind": "function",
+   "container": "",
+   "line": 18,
+   "end": 36,
+   "nameLine": 18,
+   "character": 16,
+   "isNew": false,
+   "sig": null,
+   "callers": [
+    {
+     "id": "web/src/pages/account/OrderHistoryList.tsx#353",
+     "name": "refreshOrderHistoryLi",
+     "kind": "function",
+     "path": "web/src/pages/account/OrderHistoryList.tsx",
+     "line": 353,
+     "sites": [
+      {
+       "line": 356,
+       "text": "const value = priceBreakdown(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/account/SavedAddressesPanel.tsx#390",
+     "name": "buildSavedAddresses",
+     "kind": "function",
+     "path": "web/src/pages/account/SavedAddressesPanel.tsx",
+     "line": 390,
+     "sites": [
+      {
+       "line": 393,
+       "text": "const value = priceBreakdown(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/components/minicart/MiniCartDrawer.tsx#27",
+     "name": "loadMiniCartDrawer",
+     "kind": "function",
+     "path": "web/src/components/minicart/MiniCartDrawer.tsx",
+     "line": 27,
+     "sites": [
+      {
+       "line": 30,
+       "text": "const value = priceBreakdown(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/components/price/PriceTagWithTax.tsx#64",
+     "name": "handleChangePriceTagWithTa",
+     "kind": "function",
+     "path": "web/src/components/price/PriceTagWithTax.tsx",
+     "line": 64,
+     "sites": [
+      {
+       "line": 67,
+       "text": "const value = priceBreakdown(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/services/orders/order-export-job.ts#101",
+     "name": "selectorderexportjob",
+     "kind": "function",
+     "path": "web/src/services/orders/order-export-job.ts",
+     "line": 101,
+     "sites": [
+      {
+       "line": 104,
+       "text": "const value = priceBreakdown(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/services/orders/refund-calculator.ts#138",
+     "name": "validaterefundcalculat",
+     "kind": "function",
+     "path": "web/src/services/orders/refund-calculator.ts",
+     "line": 138,
+     "sites": [
+      {
+       "line": 141,
+       "text": "const value = priceBreakdown(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/services/mail/order-confirmation-mail.ts#175",
+     "name": "onRetryorderconfirmat",
+     "kind": "function",
+     "path": "web/src/services/mail/order-confirmation-mail.ts",
+     "line": 175,
+     "sites": [
+      {
+       "line": 178,
+       "text": "const value = priceBreakdown(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/admin/reports/revenue-by-region-report.ts#212",
+     "name": "submitrevenuebyregio",
+     "kind": "function",
+     "path": "web/src/admin/reports/revenue-by-region-report.ts",
+     "line": 212,
+     "sites": [
+      {
+       "line": 215,
+       "text": "const value = priceBreakdown(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/admin/vouchers/VoucherPreviewDialog.tsx#249",
+     "name": "mapRowsVoucherPreview",
+     "kind": "function",
+     "path": "web/src/admin/vouchers/VoucherPreviewDialog.tsx",
+     "line": 249,
+     "sites": [
+      {
+       "line": 252,
+       "text": "const value = priceBreakdown(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/cart/CartPageContainer.tsx#286",
+     "name": "renderCartPageContai",
+     "kind": "function",
+     "path": "web/src/pages/cart/CartPageContainer.tsx",
+     "line": 286,
+     "sites": [
+      {
+       "line": 289,
+       "text": "const value = priceBreakdown(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/checkout/CheckoutStepsLayout.tsx#323",
+     "name": "summarizeCheckoutStepsL",
+     "kind": "function",
+     "path": "web/src/pages/checkout/CheckoutStepsLayout.tsx",
+     "line": 323,
+     "sites": [
+      {
+       "line": 326,
+       "text": "const value = priceBreakdown(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/checkout/PaymentStepForm.tsx#360",
+     "name": "preparePaymentStepFor",
+     "kind": "function",
+     "path": "web/src/pages/checkout/PaymentStepForm.tsx",
+     "line": 360,
+     "sites": [
+      {
+       "line": 363,
+       "text": "const value = priceBreakdown(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/account/OrderHistoryList.tsx#397",
+     "name": "refreshOrderHistoryLi2",
+     "kind": "function",
+     "path": "web/src/pages/account/OrderHistoryList.tsx",
+     "line": 397,
+     "sites": [
+      {
+       "line": 400,
+       "text": "const value = priceBreakdown(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/account/SavedAddressesPanel.tsx#34",
+     "name": "buildSavedAddresses2",
+     "kind": "function",
+     "path": "web/src/pages/account/SavedAddressesPanel.tsx",
+     "line": 34,
+     "sites": [
+      {
+       "line": 37,
+       "text": "const value = priceBreakdown(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/components/minicart/MiniCartDrawer.tsx#71",
+     "name": "loadMiniCartDrawer2",
+     "kind": "function",
+     "path": "web/src/components/minicart/MiniCartDrawer.tsx",
+     "line": 71,
+     "sites": [
+      {
+       "line": 74,
+       "text": "const value = priceBreakdown(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/components/price/PriceTagWithTax.tsx#108",
+     "name": "handleChangePriceTagWithTa2",
+     "kind": "function",
+     "path": "web/src/components/price/PriceTagWithTax.tsx",
+     "line": 108,
+     "sites": [
+      {
+       "line": 111,
+       "text": "const value = priceBreakdown(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/services/orders/order-export-job.ts#145",
+     "name": "selectorderexportjob2",
+     "kind": "function",
+     "path": "web/src/services/orders/order-export-job.ts",
+     "line": 145,
+     "sites": [
+      {
+       "line": 148,
+       "text": "const value = priceBreakdown(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/services/orders/refund-calculator.ts#182",
+     "name": "validaterefundcalculat2",
+     "kind": "function",
+     "path": "web/src/services/orders/refund-calculator.ts",
+     "line": 182,
+     "sites": [
+      {
+       "line": 185,
+       "text": "const value = priceBreakdown(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/services/mail/order-confirmation-mail.ts#219",
+     "name": "onRetryorderconfirmat2",
+     "kind": "function",
+     "path": "web/src/services/mail/order-confirmation-mail.ts",
+     "line": 219,
+     "sites": [
+      {
+       "line": 222,
+       "text": "const value = priceBreakdown(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/admin/reports/revenue-by-region-report.ts#256",
+     "name": "submitrevenuebyregio2",
+     "kind": "function",
+     "path": "web/src/admin/reports/revenue-by-region-report.ts",
+     "line": 256,
+     "sites": [
+      {
+       "line": 259,
+       "text": "const value = priceBreakdown(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/admin/vouchers/VoucherPreviewDialog.tsx#293",
+     "name": "mapRowsVoucherPreview2",
+     "kind": "function",
+     "path": "web/src/admin/vouchers/VoucherPreviewDialog.tsx",
+     "line": 293,
+     "sites": [
+      {
+       "line": 296,
+       "text": "const value = priceBreakdown(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/OrderSummaryCard.tsx#330",
+     "name": "loadOrderSummaryCa",
+     "kind": "function",
+     "path": "web/src/features/checkout/OrderSummaryCard.tsx",
+     "line": 330,
+     "sites": [
+      {
+       "line": 333,
+       "text": "const value = priceBreakdown(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/ShippingStep.tsx#367",
+     "name": "handleChangeShippingStep",
+     "kind": "function",
+     "path": "web/src/features/checkout/ShippingStep.tsx",
+     "line": 367,
+     "sites": [
+      {
+       "line": 370,
+       "text": "const value = priceBreakdown(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/checkout-reducer.ts#404",
+     "name": "selectcheckoutreduce",
+     "kind": "function",
+     "path": "web/src/features/checkout/checkout-reducer.ts",
+     "line": 404,
+     "sites": [
+      {
+       "line": 407,
+       "text": "const value = priceBreakdown(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/CheckoutPage.tsx#41",
+     "name": "validateCheckoutPage",
+     "kind": "function",
+     "path": "web/src/features/checkout/CheckoutPage.tsx",
+     "line": 41,
+     "sites": [
+      {
+       "line": 44,
+       "text": "const value = priceBreakdown(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/OrderSummaryCard.tsx#78",
+     "name": "onRetryOrderSummaryCa2",
+     "kind": "function",
+     "path": "web/src/features/checkout/OrderSummaryCard.tsx",
+     "line": 78,
+     "sites": [
+      {
+       "line": 81,
+       "text": "const value = priceBreakdown(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/VoucherField.tsx#115",
+     "name": "loadVoucherField",
+     "kind": "function",
+     "path": "web/src/features/checkout/VoucherField.tsx",
+     "line": 115,
+     "sites": [
+      {
+       "line": 118,
+       "text": "const value = priceBreakdown(input);",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/__tests__/price-breakdown-by-region.test.ts#10",
+     "name": "priceBreakdown case 1",
+     "kind": "function",
+     "path": "web/src/features/checkout/__tests__/price-breakdown-by-region.test.ts",
+     "line": 10,
+     "sites": [
+      {
+       "line": 12,
+       "text": "expect(priceBreakdown(sample)).toMatchSnapshot();",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": true
+    },
+    {
+     "id": "web/src/features/checkout/__tests__/price-breakdown-by-region.test.ts#22",
+     "name": "priceBreakdown case 2",
+     "kind": "function",
+     "path": "web/src/features/checkout/__tests__/price-breakdown-by-region.test.ts",
+     "line": 22,
+     "sites": [
+      {
+       "line": 24,
+       "text": "expect(priceBreakdown(sample)).toMatchSnapshot();",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": true
+    },
+    {
+     "id": "web/src/features/checkout/__tests__/price-breakdown-by-region.test.ts#34",
+     "name": "priceBreakdown case 3",
+     "kind": "function",
+     "path": "web/src/features/checkout/__tests__/price-breakdown-by-region.test.ts",
+     "line": 34,
+     "sites": [
+      {
+       "line": 36,
+       "text": "expect(priceBreakdown(sample)).toMatchSnapshot();",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": true
+    }
+   ],
+   "outside": 0,
+   "more": 0
+  },
+  {
+   "id": "web/src/features/checkout/CheckoutSessionContext.ts#61",
+   "path": "web/src/features/checkout/CheckoutSessionContext.ts",
+   "name": "CheckoutSessionProvider",
+   "kind": "function",
+   "container": "",
+   "line": 61,
+   "end": 79,
+   "nameLine": 61,
+   "character": 16,
+   "isNew": false,
+   "sig": null,
+   "callers": [
+    {
+     "id": "web/src/components/price/PriceTagWithTax.tsx#152",
+     "name": "handleChangePriceTagWithTa",
+     "kind": "function",
+     "path": "web/src/components/price/PriceTagWithTax.tsx",
+     "line": 152,
+     "sites": [
+      {
+       "line": 155,
+       "text": "const value = CheckoutSessionProvider(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/services/orders/order-export-job.ts#189",
+     "name": "selectorderexportjob",
+     "kind": "function",
+     "path": "web/src/services/orders/order-export-job.ts",
+     "line": 189,
+     "sites": [
+      {
+       "line": 192,
+       "text": "const value = CheckoutSessionProvider(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/services/orders/refund-calculator.ts#226",
+     "name": "validaterefundcalculat",
+     "kind": "function",
+     "path": "web/src/services/orders/refund-calculator.ts",
+     "line": 226,
+     "sites": [
+      {
+       "line": 229,
+       "text": "const value = CheckoutSessionProvider(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/services/mail/order-confirmation-mail.ts#263",
+     "name": "onRetryorderconfirmat",
+     "kind": "function",
+     "path": "web/src/services/mail/order-confirmation-mail.ts",
+     "line": 263,
+     "sites": [
+      {
+       "line": 266,
+       "text": "const value = CheckoutSessionProvider(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/admin/reports/revenue-by-region-report.ts#300",
+     "name": "submitrevenuebyregio",
+     "kind": "function",
+     "path": "web/src/admin/reports/revenue-by-region-report.ts",
+     "line": 300,
+     "sites": [
+      {
+       "line": 303,
+       "text": "const value = CheckoutSessionProvider(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/admin/vouchers/VoucherPreviewDialog.tsx#337",
+     "name": "mapRowsVoucherPreview",
+     "kind": "function",
+     "path": "web/src/admin/vouchers/VoucherPreviewDialog.tsx",
+     "line": 337,
+     "sites": [
+      {
+       "line": 340,
+       "text": "const value = CheckoutSessionProvider(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/cart/CartPageContainer.tsx#374",
+     "name": "renderCartPageContai",
+     "kind": "function",
+     "path": "web/src/pages/cart/CartPageContainer.tsx",
+     "line": 374,
+     "sites": [
+      {
+       "line": 377,
+       "text": "const value = CheckoutSessionProvider(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/checkout/CheckoutStepsLayout.tsx#411",
+     "name": "summarizeCheckoutStepsL",
+     "kind": "function",
+     "path": "web/src/pages/checkout/CheckoutStepsLayout.tsx",
+     "line": 411,
+     "sites": [
+      {
+       "line": 414,
+       "text": "const value = CheckoutSessionProvider(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/checkout/PaymentStepForm.tsx#48",
+     "name": "preparePaymentStepFor",
+     "kind": "function",
+     "path": "web/src/pages/checkout/PaymentStepForm.tsx",
+     "line": 48,
+     "sites": [
+      {
+       "line": 51,
+       "text": "const value = CheckoutSessionProvider(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/account/OrderHistoryList.tsx#85",
+     "name": "refreshOrderHistoryLi",
+     "kind": "function",
+     "path": "web/src/pages/account/OrderHistoryList.tsx",
+     "line": 85,
+     "sites": [
+      {
+       "line": 88,
+       "text": "const value = CheckoutSessionProvider(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/account/SavedAddressesPanel.tsx#122",
+     "name": "buildSavedAddresses",
+     "kind": "function",
+     "path": "web/src/pages/account/SavedAddressesPanel.tsx",
+     "line": 122,
+     "sites": [
+      {
+       "line": 125,
+       "text": "const value = CheckoutSessionProvider(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/components/minicart/MiniCartDrawer.tsx#159",
+     "name": "loadMiniCartDrawer",
+     "kind": "function",
+     "path": "web/src/components/minicart/MiniCartDrawer.tsx",
+     "line": 159,
+     "sites": [
+      {
+       "line": 162,
+       "text": "const value = CheckoutSessionProvider(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/components/price/PriceTagWithTax.tsx#196",
+     "name": "handleChangePriceTagWithTa2",
+     "kind": "function",
+     "path": "web/src/components/price/PriceTagWithTax.tsx",
+     "line": 196,
+     "sites": [
+      {
+       "line": 199,
+       "text": "const value = CheckoutSessionProvider(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/services/orders/order-export-job.ts#233",
+     "name": "selectorderexportjob2",
+     "kind": "function",
+     "path": "web/src/services/orders/order-export-job.ts",
+     "line": 233,
+     "sites": [
+      {
+       "line": 236,
+       "text": "const value = CheckoutSessionProvider(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/ShippingStep.tsx#270",
+     "name": "submitShippingStep",
+     "kind": "function",
+     "path": "web/src/features/checkout/ShippingStep.tsx",
+     "line": 270,
+     "sites": [
+      {
+       "line": 273,
+       "text": "const value = CheckoutSessionProvider(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/checkout-reducer.ts#307",
+     "name": "mapRowscheckoutreduce",
+     "kind": "function",
+     "path": "web/src/features/checkout/checkout-reducer.ts",
+     "line": 307,
+     "sites": [
+      {
+       "line": 310,
+       "text": "const value = CheckoutSessionProvider(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/CheckoutPage.tsx#344",
+     "name": "renderCheckoutPage",
+     "kind": "function",
+     "path": "web/src/features/checkout/CheckoutPage.tsx",
+     "line": 344,
+     "sites": [
+      {
+       "line": 347,
+       "text": "const value = CheckoutSessionProvider(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/__tests__/CheckoutSessionContext.test.ts#10",
+     "name": "CheckoutSessionProvider case 1",
+     "kind": "function",
+     "path": "web/src/features/checkout/__tests__/CheckoutSessionContext.test.ts",
+     "line": 10,
+     "sites": [
+      {
+       "line": 12,
+       "text": "expect(CheckoutSessionProvider(sample)).toMatchSnapshot();",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": true
+    }
+   ],
+   "outside": 0,
+   "more": 0
+  },
+  {
+   "id": "web/src/features/checkout/cart-totals.ts#9",
+   "path": "web/src/features/checkout/cart-totals.ts",
+   "name": "cartTotals",
+   "kind": "function",
+   "container": "",
+   "line": 9,
+   "end": 27,
+   "nameLine": 9,
+   "character": 16,
+   "isNew": false,
+   "sig": null,
+   "callers": [
+    {
+     "id": "web/src/services/mail/order-confirmation-mail.ts#381",
+     "name": "onRetryorderconfirmat",
+     "kind": "function",
+     "path": "web/src/services/mail/order-confirmation-mail.ts",
+     "line": 381,
+     "sites": [
+      {
+       "line": 384,
+       "text": "const value = cartTotals(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/admin/reports/revenue-by-region-report.ts#418",
+     "name": "submitrevenuebyregio",
+     "kind": "function",
+     "path": "web/src/admin/reports/revenue-by-region-report.ts",
+     "line": 418,
+     "sites": [
+      {
+       "line": 421,
+       "text": "const value = cartTotals(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/admin/vouchers/VoucherPreviewDialog.tsx#55",
+     "name": "mapRowsVoucherPreview",
+     "kind": "function",
+     "path": "web/src/admin/vouchers/VoucherPreviewDialog.tsx",
+     "line": 55,
+     "sites": [
+      {
+       "line": 58,
+       "text": "const value = cartTotals(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/cart/CartPageContainer.tsx#92",
+     "name": "renderCartPageContai",
+     "kind": "function",
+     "path": "web/src/pages/cart/CartPageContainer.tsx",
+     "line": 92,
+     "sites": [
+      {
+       "line": 95,
+       "text": "const value = cartTotals(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/checkout/CheckoutStepsLayout.tsx#129",
+     "name": "summarizeCheckoutStepsL",
+     "kind": "function",
+     "path": "web/src/pages/checkout/CheckoutStepsLayout.tsx",
+     "line": 129,
+     "sites": [
+      {
+       "line": 132,
+       "text": "const value = cartTotals(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/checkout/PaymentStepForm.tsx#166",
+     "name": "preparePaymentStepFor",
+     "kind": "function",
+     "path": "web/src/pages/checkout/PaymentStepForm.tsx",
+     "line": 166,
+     "sites": [
+      {
+       "line": 169,
+       "text": "const value = cartTotals(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/account/OrderHistoryList.tsx#203",
+     "name": "refreshOrderHistoryLi",
+     "kind": "function",
+     "path": "web/src/pages/account/OrderHistoryList.tsx",
+     "line": 203,
+     "sites": [
+      {
+       "line": 206,
+       "text": "const value = cartTotals(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/account/SavedAddressesPanel.tsx#240",
+     "name": "buildSavedAddresses",
+     "kind": "function",
+     "path": "web/src/pages/account/SavedAddressesPanel.tsx",
+     "line": 240,
+     "sites": [
+      {
+       "line": 243,
+       "text": "const value = cartTotals(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/components/minicart/MiniCartDrawer.tsx#277",
+     "name": "loadMiniCartDrawer",
+     "kind": "function",
+     "path": "web/src/components/minicart/MiniCartDrawer.tsx",
+     "line": 277,
+     "sites": [
+      {
+       "line": 280,
+       "text": "const value = cartTotals(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/components/price/PriceTagWithTax.tsx#314",
+     "name": "handleChangePriceTagWithTa",
+     "kind": "function",
+     "path": "web/src/components/price/PriceTagWithTax.tsx",
+     "line": 314,
+     "sites": [
+      {
+       "line": 317,
+       "text": "const value = cartTotals(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/services/orders/order-export-job.ts#351",
+     "name": "selectorderexportjob",
+     "kind": "function",
+     "path": "web/src/services/orders/order-export-job.ts",
+     "line": 351,
+     "sites": [
+      {
+       "line": 354,
+       "text": "const value = cartTotals(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/services/orders/refund-calculator.ts#388",
+     "name": "validaterefundcalculat",
+     "kind": "function",
+     "path": "web/src/services/orders/refund-calculator.ts",
+     "line": 388,
+     "sites": [
+      {
+       "line": 391,
+       "text": "const value = cartTotals(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/checkout-reducer.ts#25",
+     "name": "refreshcheckoutreduce",
+     "kind": "function",
+     "path": "web/src/features/checkout/checkout-reducer.ts",
+     "line": 25,
+     "sites": [
+      {
+       "line": 28,
+       "text": "const value = cartTotals(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/CheckoutPage.tsx#62",
+     "name": "buildCheckoutPage",
+     "kind": "function",
+     "path": "web/src/features/checkout/CheckoutPage.tsx",
+     "line": 62,
+     "sites": [
+      {
+       "line": 65,
+       "text": "const value = cartTotals(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/OrderSummaryCard.tsx#99",
+     "name": "loadOrderSummaryCa",
+     "kind": "function",
+     "path": "web/src/features/checkout/OrderSummaryCard.tsx",
+     "line": 99,
+     "sites": [
+      {
+       "line": 102,
+       "text": "const value = cartTotals(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/ShippingStep.tsx#136",
+     "name": "handleChangeShippingStep",
+     "kind": "function",
+     "path": "web/src/features/checkout/ShippingStep.tsx",
+     "line": 136,
+     "sites": [
+      {
+       "line": 139,
+       "text": "const value = cartTotals(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/PaymentStep.tsx#173",
+     "name": "refreshPaymentStep",
+     "kind": "function",
+     "path": "web/src/features/checkout/PaymentStep.tsx",
+     "line": 173,
+     "sites": [
+      {
+       "line": 176,
+       "text": "const value = cartTotals(input);",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/VoucherField.tsx#210",
+     "name": "buildVoucherField",
+     "kind": "function",
+     "path": "web/src/features/checkout/VoucherField.tsx",
+     "line": 210,
+     "sites": [
+      {
+       "line": 213,
+       "text": "const value = cartTotals(input);",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/__tests__/cart-totals.test.ts#10",
+     "name": "cartTotals case 1",
+     "kind": "function",
+     "path": "web/src/features/checkout/__tests__/cart-totals.test.ts",
+     "line": 10,
+     "sites": [
+      {
+       "line": 12,
+       "text": "expect(cartTotals(sample)).toMatchSnapshot();",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": true
+    },
+    {
+     "id": "web/src/features/checkout/__tests__/cart-totals.test.ts#22",
+     "name": "cartTotals case 2",
+     "kind": "function",
+     "path": "web/src/features/checkout/__tests__/cart-totals.test.ts",
+     "line": 22,
+     "sites": [
+      {
+       "line": 24,
+       "text": "expect(cartTotals(sample)).toMatchSnapshot();",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": true
+    },
+    {
+     "id": "web/src/features/checkout/__tests__/cart-totals.test.ts#34",
+     "name": "cartTotals case 3",
+     "kind": "function",
+     "path": "web/src/features/checkout/__tests__/cart-totals.test.ts",
+     "line": 34,
+     "sites": [
+      {
+       "line": 36,
+       "text": "expect(cartTotals(sample)).toMatchSnapshot();",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": true
+    },
+    {
+     "id": "web/src/features/checkout/__tests__/cart-totals.test.ts#46",
+     "name": "cartTotals case 4",
+     "kind": "function",
+     "path": "web/src/features/checkout/__tests__/cart-totals.test.ts",
+     "line": 46,
+     "sites": [
+      {
+       "line": 48,
+       "text": "expect(cartTotals(sample)).toMatchSnapshot();",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": true
+    }
+   ],
+   "outside": 0,
+   "more": 0
+  },
+  {
+   "id": "web/src/features/checkout/shipping-options.ts#33",
+   "path": "web/src/features/checkout/shipping-options.ts",
+   "name": "shippingOptionsFor",
+   "kind": "function",
+   "container": "",
+   "line": 33,
+   "end": 51,
+   "nameLine": 33,
+   "character": 16,
+   "isNew": false,
+   "sig": null,
+   "callers": [
+    {
+     "id": "web/src/pages/cart/CartPageContainer.tsx#247",
+     "name": "renderCartPageContai",
+     "kind": "function",
+     "path": "web/src/pages/cart/CartPageContainer.tsx",
+     "line": 247,
+     "sites": [
+      {
+       "line": 250,
+       "text": "const value = shippingOptionsFor(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/checkout/CheckoutStepsLayout.tsx#284",
+     "name": "summarizeCheckoutStepsL",
+     "kind": "function",
+     "path": "web/src/pages/checkout/CheckoutStepsLayout.tsx",
+     "line": 284,
+     "sites": [
+      {
+       "line": 287,
+       "text": "const value = shippingOptionsFor(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/checkout/PaymentStepForm.tsx#321",
+     "name": "preparePaymentStepFor",
+     "kind": "function",
+     "path": "web/src/pages/checkout/PaymentStepForm.tsx",
+     "line": 321,
+     "sites": [
+      {
+       "line": 324,
+       "text": "const value = shippingOptionsFor(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/account/OrderHistoryList.tsx#358",
+     "name": "refreshOrderHistoryLi",
+     "kind": "function",
+     "path": "web/src/pages/account/OrderHistoryList.tsx",
+     "line": 358,
+     "sites": [
+      {
+       "line": 361,
+       "text": "const value = shippingOptionsFor(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/account/SavedAddressesPanel.tsx#395",
+     "name": "buildSavedAddresses",
+     "kind": "function",
+     "path": "web/src/pages/account/SavedAddressesPanel.tsx",
+     "line": 395,
+     "sites": [
+      {
+       "line": 398,
+       "text": "const value = shippingOptionsFor(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/components/minicart/MiniCartDrawer.tsx#32",
+     "name": "loadMiniCartDrawer",
+     "kind": "function",
+     "path": "web/src/components/minicart/MiniCartDrawer.tsx",
+     "line": 32,
+     "sites": [
+      {
+       "line": 35,
+       "text": "const value = shippingOptionsFor(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/components/price/PriceTagWithTax.tsx#69",
+     "name": "handleChangePriceTagWithTa",
+     "kind": "function",
+     "path": "web/src/components/price/PriceTagWithTax.tsx",
+     "line": 69,
+     "sites": [
+      {
+       "line": 72,
+       "text": "const value = shippingOptionsFor(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/services/orders/order-export-job.ts#106",
+     "name": "selectorderexportjob",
+     "kind": "function",
+     "path": "web/src/services/orders/order-export-job.ts",
+     "line": 106,
+     "sites": [
+      {
+       "line": 109,
+       "text": "const value = shippingOptionsFor(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/services/orders/refund-calculator.ts#143",
+     "name": "validaterefundcalculat",
+     "kind": "function",
+     "path": "web/src/services/orders/refund-calculator.ts",
+     "line": 143,
+     "sites": [
+      {
+       "line": 146,
+       "text": "const value = shippingOptionsFor(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/services/mail/order-confirmation-mail.ts#180",
+     "name": "onRetryorderconfirmat",
+     "kind": "function",
+     "path": "web/src/services/mail/order-confirmation-mail.ts",
+     "line": 180,
+     "sites": [
+      {
+       "line": 183,
+       "text": "const value = shippingOptionsFor(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/admin/reports/revenue-by-region-report.ts#217",
+     "name": "submitrevenuebyregio",
+     "kind": "function",
+     "path": "web/src/admin/reports/revenue-by-region-report.ts",
+     "line": 217,
+     "sites": [
+      {
+       "line": 220,
+       "text": "const value = shippingOptionsFor(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/CheckoutPage.tsx#254",
+     "name": "validateCheckoutPage",
+     "kind": "function",
+     "path": "web/src/features/checkout/CheckoutPage.tsx",
+     "line": 254,
+     "sites": [
+      {
+       "line": 257,
+       "text": "const value = shippingOptionsFor(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/OrderSummaryCard.tsx#291",
+     "name": "onRetryOrderSummaryCa",
+     "kind": "function",
+     "path": "web/src/features/checkout/OrderSummaryCard.tsx",
+     "line": 291,
+     "sites": [
+      {
+       "line": 294,
+       "text": "const value = shippingOptionsFor(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/__tests__/shipping-options.test.ts#10",
+     "name": "shippingOptionsFor case 1",
+     "kind": "function",
+     "path": "web/src/features/checkout/__tests__/shipping-options.test.ts",
+     "line": 10,
+     "sites": [
+      {
+       "line": 12,
+       "text": "expect(shippingOptionsFor(sample)).toMatchSnapshot();",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": true
+    }
+   ],
+   "outside": 0,
+   "more": 0
+  },
+  {
+   "id": "web/src/features/checkout/address-form-schema.ts#12",
+   "path": "web/src/features/checkout/address-form-schema.ts",
+   "name": "addressSchema",
+   "kind": "constant",
+   "container": "",
+   "line": 12,
+   "end": 30,
+   "nameLine": 12,
+   "character": 16,
+   "isNew": false,
+   "sig": null,
+   "callers": [
+    {
+     "id": "web/src/pages/account/OrderHistoryList.tsx#328",
+     "name": "refreshOrderHistoryLi",
+     "kind": "function",
+     "path": "web/src/pages/account/OrderHistoryList.tsx",
+     "line": 328,
+     "sites": [
+      {
+       "line": 331,
+       "text": "const value = addressSchema(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/account/SavedAddressesPanel.tsx#365",
+     "name": "buildSavedAddresses",
+     "kind": "function",
+     "path": "web/src/pages/account/SavedAddressesPanel.tsx",
+     "line": 365,
+     "sites": [
+      {
+       "line": 368,
+       "text": "const value = addressSchema(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/components/minicart/MiniCartDrawer.tsx#402",
+     "name": "loadMiniCartDrawer",
+     "kind": "function",
+     "path": "web/src/components/minicart/MiniCartDrawer.tsx",
+     "line": 402,
+     "sites": [
+      {
+       "line": 405,
+       "text": "const value = addressSchema(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/components/price/PriceTagWithTax.tsx#39",
+     "name": "handleChangePriceTagWithTa",
+     "kind": "function",
+     "path": "web/src/components/price/PriceTagWithTax.tsx",
+     "line": 39,
+     "sites": [
+      {
+       "line": 42,
+       "text": "const value = addressSchema(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/services/orders/order-export-job.ts#76",
+     "name": "selectorderexportjob",
+     "kind": "function",
+     "path": "web/src/services/orders/order-export-job.ts",
+     "line": 76,
+     "sites": [
+      {
+       "line": 79,
+       "text": "const value = addressSchema(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/services/orders/refund-calculator.ts#113",
+     "name": "validaterefundcalculat",
+     "kind": "function",
+     "path": "web/src/services/orders/refund-calculator.ts",
+     "line": 113,
+     "sites": [
+      {
+       "line": 116,
+       "text": "const value = addressSchema(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/services/mail/order-confirmation-mail.ts#150",
+     "name": "onRetryorderconfirmat",
+     "kind": "function",
+     "path": "web/src/services/mail/order-confirmation-mail.ts",
+     "line": 150,
+     "sites": [
+      {
+       "line": 153,
+       "text": "const value = addressSchema(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/admin/reports/revenue-by-region-report.ts#187",
+     "name": "submitrevenuebyregio",
+     "kind": "function",
+     "path": "web/src/admin/reports/revenue-by-region-report.ts",
+     "line": 187,
+     "sites": [
+      {
+       "line": 190,
+       "text": "const value = addressSchema(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/admin/vouchers/VoucherPreviewDialog.tsx#224",
+     "name": "mapRowsVoucherPreview",
+     "kind": "function",
+     "path": "web/src/admin/vouchers/VoucherPreviewDialog.tsx",
+     "line": 224,
+     "sites": [
+      {
+       "line": 227,
+       "text": "const value = addressSchema(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/OrderSummaryCard.tsx#261",
+     "name": "summarizeOrderSummaryCa",
+     "kind": "function",
+     "path": "web/src/features/checkout/OrderSummaryCard.tsx",
+     "line": 261,
+     "sites": [
+      {
+       "line": 264,
+       "text": "const value = addressSchema(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/ShippingStep.tsx#298",
+     "name": "prepareShippingStep",
+     "kind": "function",
+     "path": "web/src/features/checkout/ShippingStep.tsx",
+     "line": 298,
+     "sites": [
+      {
+       "line": 301,
+       "text": "const value = addressSchema(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/checkout-reducer.ts#335",
+     "name": "refreshcheckoutreduce",
+     "kind": "function",
+     "path": "web/src/features/checkout/checkout-reducer.ts",
+     "line": 335,
+     "sites": [
+      {
+       "line": 338,
+       "text": "const value = addressSchema(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/checkout-saga.ts#372",
+     "name": "summarizecheckoutsaga",
+     "kind": "function",
+     "path": "web/src/features/checkout/checkout-saga.ts",
+     "line": 372,
+     "sites": [
+      {
+       "line": 375,
+       "text": "const value = addressSchema(input);",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": false
+    }
+   ],
+   "outside": 0,
+   "more": 0
+  },
+  {
+   "id": "web/src/features/checkout/payment-intent-client.ts#47",
+   "path": "web/src/features/checkout/payment-intent-client.ts",
+   "name": "createIntent",
+   "kind": "method",
+   "container": "PaymentIntentClient",
+   "line": 47,
+   "end": 65,
+   "nameLine": 47,
+   "character": 16,
+   "isNew": false,
+   "sig": null,
+   "callers": [
+    {
+     "id": "web/src/components/price/PriceTagWithTax.tsx#409",
+     "name": "handleChangePriceTagWithTa",
+     "kind": "function",
+     "path": "web/src/components/price/PriceTagWithTax.tsx",
+     "line": 409,
+     "sites": [
+      {
+       "line": 412,
+       "text": "const value = createIntent(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/services/orders/order-export-job.ts#46",
+     "name": "selectorderexportjob",
+     "kind": "function",
+     "path": "web/src/services/orders/order-export-job.ts",
+     "line": 46,
+     "sites": [
+      {
+       "line": 49,
+       "text": "const value = createIntent(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/services/orders/refund-calculator.ts#83",
+     "name": "validaterefundcalculat",
+     "kind": "function",
+     "path": "web/src/services/orders/refund-calculator.ts",
+     "line": 83,
+     "sites": [
+      {
+       "line": 86,
+       "text": "const value = createIntent(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/services/mail/order-confirmation-mail.ts#120",
+     "name": "onRetryorderconfirmat",
+     "kind": "function",
+     "path": "web/src/services/mail/order-confirmation-mail.ts",
+     "line": 120,
+     "sites": [
+      {
+       "line": 123,
+       "text": "const value = createIntent(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/admin/reports/revenue-by-region-report.ts#157",
+     "name": "submitrevenuebyregio",
+     "kind": "function",
+     "path": "web/src/admin/reports/revenue-by-region-report.ts",
+     "line": 157,
+     "sites": [
+      {
+       "line": 160,
+       "text": "const value = createIntent(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/admin/vouchers/VoucherPreviewDialog.tsx#194",
+     "name": "mapRowsVoucherPreview",
+     "kind": "function",
+     "path": "web/src/admin/vouchers/VoucherPreviewDialog.tsx",
+     "line": 194,
+     "sites": [
+      {
+       "line": 197,
+       "text": "const value = createIntent(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/cart/CartPageContainer.tsx#231",
+     "name": "renderCartPageContai",
+     "kind": "function",
+     "path": "web/src/pages/cart/CartPageContainer.tsx",
+     "line": 231,
+     "sites": [
+      {
+       "line": 234,
+       "text": "const value = createIntent(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/checkout/CheckoutStepsLayout.tsx#268",
+     "name": "summarizeCheckoutStepsL",
+     "kind": "function",
+     "path": "web/src/pages/checkout/CheckoutStepsLayout.tsx",
+     "line": 268,
+     "sites": [
+      {
+       "line": 271,
+       "text": "const value = createIntent(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/ShippingStep.tsx#305",
+     "name": "handleChangeShippingStep",
+     "kind": "function",
+     "path": "web/src/features/checkout/ShippingStep.tsx",
+     "line": 305,
+     "sites": [
+      {
+       "line": 308,
+       "text": "const value = createIntent(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/checkout-reducer.ts#342",
+     "name": "selectcheckoutreduce",
+     "kind": "function",
+     "path": "web/src/features/checkout/checkout-reducer.ts",
+     "line": 342,
+     "sites": [
+      {
+       "line": 345,
+       "text": "const value = createIntent(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/CheckoutPage.tsx#379",
+     "name": "validateCheckoutPage",
+     "kind": "function",
+     "path": "web/src/features/checkout/CheckoutPage.tsx",
+     "line": 379,
+     "sites": [
+      {
+       "line": 382,
+       "text": "const value = createIntent(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/OrderSummaryCard.tsx#416",
+     "name": "onRetryOrderSummaryCa",
+     "kind": "function",
+     "path": "web/src/features/checkout/OrderSummaryCard.tsx",
+     "line": 416,
+     "sites": [
+      {
+       "line": 419,
+       "text": "const value = createIntent(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/PaymentStep.tsx#53",
+     "name": "handleChangePaymentStep",
+     "kind": "function",
+     "path": "web/src/features/checkout/PaymentStep.tsx",
+     "line": 53,
+     "sites": [
+      {
+       "line": 56,
+       "text": "const value = createIntent(input);",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/__tests__/payment-intent-client.test.ts#10",
+     "name": "createIntent case 1",
+     "kind": "function",
+     "path": "web/src/features/checkout/__tests__/payment-intent-client.test.ts",
+     "line": 10,
+     "sites": [
+      {
+       "line": 12,
+       "text": "expect(createIntent(sample)).toMatchSnapshot();",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": true
+    },
+    {
+     "id": "web/src/features/checkout/__tests__/payment-intent-client.test.ts#22",
+     "name": "createIntent case 2",
+     "kind": "function",
+     "path": "web/src/features/checkout/__tests__/payment-intent-client.test.ts",
+     "line": 22,
+     "sites": [
+      {
+       "line": 24,
+       "text": "expect(createIntent(sample)).toMatchSnapshot();",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": true
+    }
+   ],
+   "outside": 0,
+   "more": 0
+  },
+  {
+   "id": "web/src/features/checkout/payment-intent-client.ts#88",
+   "path": "web/src/features/checkout/payment-intent-client.ts",
+   "name": "confirmIntent",
+   "kind": "method",
+   "container": "PaymentIntentClient",
+   "line": 88,
+   "end": 106,
+   "nameLine": 88,
+   "character": 16,
+   "isNew": false,
+   "sig": null,
+   "callers": [
+    {
+     "id": "web/src/services/mail/order-confirmation-mail.ts#90",
+     "name": "onRetryorderconfirmat",
+     "kind": "function",
+     "path": "web/src/services/mail/order-confirmation-mail.ts",
+     "line": 90,
+     "sites": [
+      {
+       "line": 93,
+       "text": "const value = confirmIntent(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/admin/reports/revenue-by-region-report.ts#127",
+     "name": "submitrevenuebyregio",
+     "kind": "function",
+     "path": "web/src/admin/reports/revenue-by-region-report.ts",
+     "line": 127,
+     "sites": [
+      {
+       "line": 130,
+       "text": "const value = confirmIntent(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/admin/vouchers/VoucherPreviewDialog.tsx#164",
+     "name": "mapRowsVoucherPreview",
+     "kind": "function",
+     "path": "web/src/admin/vouchers/VoucherPreviewDialog.tsx",
+     "line": 164,
+     "sites": [
+      {
+       "line": 167,
+       "text": "const value = confirmIntent(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/cart/CartPageContainer.tsx#201",
+     "name": "renderCartPageContai",
+     "kind": "function",
+     "path": "web/src/pages/cart/CartPageContainer.tsx",
+     "line": 201,
+     "sites": [
+      {
+       "line": 204,
+       "text": "const value = confirmIntent(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/checkout/CheckoutStepsLayout.tsx#238",
+     "name": "summarizeCheckoutStepsL",
+     "kind": "function",
+     "path": "web/src/pages/checkout/CheckoutStepsLayout.tsx",
+     "line": 238,
+     "sites": [
+      {
+       "line": 241,
+       "text": "const value = confirmIntent(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/checkout/PaymentStepForm.tsx#275",
+     "name": "preparePaymentStepFor",
+     "kind": "function",
+     "path": "web/src/pages/checkout/PaymentStepForm.tsx",
+     "line": 275,
+     "sites": [
+      {
+       "line": 278,
+       "text": "const value = confirmIntent(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/account/OrderHistoryList.tsx#312",
+     "name": "refreshOrderHistoryLi",
+     "kind": "function",
+     "path": "web/src/pages/account/OrderHistoryList.tsx",
+     "line": 312,
+     "sites": [
+      {
+       "line": 315,
+       "text": "const value = confirmIntent(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/checkout-reducer.ts#349",
+     "name": "mapRowscheckoutreduce",
+     "kind": "function",
+     "path": "web/src/features/checkout/checkout-reducer.ts",
+     "line": 349,
+     "sites": [
+      {
+       "line": 352,
+       "text": "const value = confirmIntent(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/CheckoutPage.tsx#386",
+     "name": "renderCheckoutPage",
+     "kind": "function",
+     "path": "web/src/features/checkout/CheckoutPage.tsx",
+     "line": 386,
+     "sites": [
+      {
+       "line": 389,
+       "text": "const value = confirmIntent(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/__tests__/payment-intent-client.test.ts#10",
+     "name": "confirmIntent case 1",
+     "kind": "function",
+     "path": "web/src/features/checkout/__tests__/payment-intent-client.test.ts",
+     "line": 10,
+     "sites": [
+      {
+       "line": 12,
+       "text": "expect(confirmIntent(sample)).toMatchSnapshot();",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": true
+    }
+   ],
+   "outside": 0,
+   "more": 0
+  },
+  {
+   "id": "web/src/features/checkout/voucher-rules.ts#21",
+   "path": "web/src/features/checkout/voucher-rules.ts",
+   "name": "applyVoucher",
+   "kind": "function",
+   "container": "",
+   "line": 21,
+   "end": 39,
+   "nameLine": 21,
+   "character": 16,
+   "isNew": false,
+   "sig": null,
+   "callers": [
+    {
+     "id": "web/src/pages/cart/CartPageContainer.tsx#23",
+     "name": "renderCartPageContai",
+     "kind": "function",
+     "path": "web/src/pages/cart/CartPageContainer.tsx",
+     "line": 23,
+     "sites": [
+      {
+       "line": 26,
+       "text": "const value = applyVoucher(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/checkout/CheckoutStepsLayout.tsx#60",
+     "name": "summarizeCheckoutStepsL",
+     "kind": "function",
+     "path": "web/src/pages/checkout/CheckoutStepsLayout.tsx",
+     "line": 60,
+     "sites": [
+      {
+       "line": 63,
+       "text": "const value = applyVoucher(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/checkout/PaymentStepForm.tsx#97",
+     "name": "preparePaymentStepFor",
+     "kind": "function",
+     "path": "web/src/pages/checkout/PaymentStepForm.tsx",
+     "line": 97,
+     "sites": [
+      {
+       "line": 100,
+       "text": "const value = applyVoucher(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/account/OrderHistoryList.tsx#134",
+     "name": "refreshOrderHistoryLi",
+     "kind": "function",
+     "path": "web/src/pages/account/OrderHistoryList.tsx",
+     "line": 134,
+     "sites": [
+      {
+       "line": 137,
+       "text": "const value = applyVoucher(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/account/SavedAddressesPanel.tsx#171",
+     "name": "buildSavedAddresses",
+     "kind": "function",
+     "path": "web/src/pages/account/SavedAddressesPanel.tsx",
+     "line": 171,
+     "sites": [
+      {
+       "line": 174,
+       "text": "const value = applyVoucher(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/components/minicart/MiniCartDrawer.tsx#208",
+     "name": "loadMiniCartDrawer",
+     "kind": "function",
+     "path": "web/src/components/minicart/MiniCartDrawer.tsx",
+     "line": 208,
+     "sites": [
+      {
+       "line": 211,
+       "text": "const value = applyVoucher(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/CheckoutPage.tsx#245",
+     "name": "buildCheckoutPage",
+     "kind": "function",
+     "path": "web/src/features/checkout/CheckoutPage.tsx",
+     "line": 245,
+     "sites": [
+      {
+       "line": 248,
+       "text": "const value = applyVoucher(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/OrderSummaryCard.tsx#282",
+     "name": "loadOrderSummaryCa",
+     "kind": "function",
+     "path": "web/src/features/checkout/OrderSummaryCard.tsx",
+     "line": 282,
+     "sites": [
+      {
+       "line": 285,
+       "text": "const value = applyVoucher(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/ShippingStep.tsx#319",
+     "name": "handleChangeShippingStep",
+     "kind": "function",
+     "path": "web/src/features/checkout/ShippingStep.tsx",
+     "line": 319,
+     "sites": [
+      {
+       "line": 322,
+       "text": "const value = applyVoucher(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/checkout-saga.ts#356",
+     "name": "buildcheckoutsaga",
+     "kind": "function",
+     "path": "web/src/features/checkout/checkout-saga.ts",
+     "line": 356,
+     "sites": [
+      {
+       "line": 359,
+       "text": "const value = applyVoucher(input);",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/__tests__/voucher-rules.test.ts#10",
+     "name": "applyVoucher case 1",
+     "kind": "function",
+     "path": "web/src/features/checkout/__tests__/voucher-rules.test.ts",
+     "line": 10,
+     "sites": [
+      {
+       "line": 12,
+       "text": "expect(applyVoucher(sample)).toMatchSnapshot();",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": true
+    },
+    {
+     "id": "web/src/features/checkout/__tests__/voucher-rules.test.ts#22",
+     "name": "applyVoucher case 2",
+     "kind": "function",
+     "path": "web/src/features/checkout/__tests__/voucher-rules.test.ts",
+     "line": 22,
+     "sites": [
+      {
+       "line": 24,
+       "text": "expect(applyVoucher(sample)).toMatchSnapshot();",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": true
+    },
+    {
+     "id": "web/src/features/checkout/__tests__/voucher-rules.test.ts#34",
+     "name": "applyVoucher case 3",
+     "kind": "function",
+     "path": "web/src/features/checkout/__tests__/voucher-rules.test.ts",
+     "line": 34,
+     "sites": [
+      {
+       "line": 36,
+       "text": "expect(applyVoucher(sample)).toMatchSnapshot();",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": true
+    }
+   ],
+   "outside": 0,
+   "more": 0
+  },
+  {
+   "id": "web/src/features/checkout/tax-rates-by-country.ts#14",
+   "path": "web/src/features/checkout/tax-rates-by-country.ts",
+   "name": "taxRateFor",
+   "kind": "function",
+   "container": "",
+   "line": 14,
+   "end": 32,
+   "nameLine": 14,
+   "character": 16,
+   "isNew": false,
+   "sig": null,
+   "callers": [
+    {
+     "id": "web/src/pages/account/OrderHistoryList.tsx#393",
+     "name": "refreshOrderHistoryLi",
+     "kind": "function",
+     "path": "web/src/pages/account/OrderHistoryList.tsx",
+     "line": 393,
+     "sites": [
+      {
+       "line": 396,
+       "text": "const value = taxRateFor(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/pages/account/SavedAddressesPanel.tsx#30",
+     "name": "buildSavedAddresses",
+     "kind": "function",
+     "path": "web/src/pages/account/SavedAddressesPanel.tsx",
+     "line": 30,
+     "sites": [
+      {
+       "line": 33,
+       "text": "const value = taxRateFor(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/components/minicart/MiniCartDrawer.tsx#67",
+     "name": "loadMiniCartDrawer",
+     "kind": "function",
+     "path": "web/src/components/minicart/MiniCartDrawer.tsx",
+     "line": 67,
+     "sites": [
+      {
+       "line": 70,
+       "text": "const value = taxRateFor(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/components/price/PriceTagWithTax.tsx#104",
+     "name": "handleChangePriceTagWithTa",
+     "kind": "function",
+     "path": "web/src/components/price/PriceTagWithTax.tsx",
+     "line": 104,
+     "sites": [
+      {
+       "line": 107,
+       "text": "const value = taxRateFor(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/services/orders/order-export-job.ts#141",
+     "name": "selectorderexportjob",
+     "kind": "function",
+     "path": "web/src/services/orders/order-export-job.ts",
+     "line": 141,
+     "sites": [
+      {
+       "line": 144,
+       "text": "const value = taxRateFor(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/OrderSummaryCard.tsx#178",
+     "name": "onRetryOrderSummaryCa",
+     "kind": "function",
+     "path": "web/src/features/checkout/OrderSummaryCard.tsx",
+     "line": 178,
+     "sites": [
+      {
+       "line": 181,
+       "text": "const value = taxRateFor(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/__tests__/tax-rates-by-country.test.ts#10",
+     "name": "taxRateFor case 1",
+     "kind": "function",
+     "path": "web/src/features/checkout/__tests__/tax-rates-by-country.test.ts",
+     "line": 10,
+     "sites": [
+      {
+       "line": 12,
+       "text": "expect(taxRateFor(sample)).toMatchSnapshot();",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": true
+    }
+   ],
+   "outside": 0,
+   "more": 0
+  },
+  {
+   "id": "web/src/features/checkout/order-summary-view-model.ts#16",
+   "path": "web/src/features/checkout/order-summary-view-model.ts",
+   "name": "OrderSummaryViewModel",
+   "kind": "class",
+   "container": "",
+   "line": 16,
+   "end": 34,
+   "nameLine": 16,
+   "character": 16,
+   "isNew": false,
+   "sig": null,
+   "callers": [
+    {
+     "id": "web/src/components/price/PriceTagWithTax.tsx#215",
+     "name": "handleChangePriceTagWithTa",
+     "kind": "function",
+     "path": "web/src/components/price/PriceTagWithTax.tsx",
+     "line": 215,
+     "sites": [
+      {
+       "line": 218,
+       "text": "const value = OrderSummaryViewModel(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/services/orders/order-export-job.ts#252",
+     "name": "selectorderexportjob",
+     "kind": "function",
+     "path": "web/src/services/orders/order-export-job.ts",
+     "line": 252,
+     "sites": [
+      {
+       "line": 255,
+       "text": "const value = OrderSummaryViewModel(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    },
+    {
+     "id": "web/src/services/orders/refund-calculator.ts#289",
+     "name": "validaterefundcalculat",
+     "kind": "function",
+     "path": "web/src/services/orders/refund-calculator.ts",
+     "line": 289,
+     "sites": [
+      {
+       "line": 292,
+       "text": "const value = OrderSummaryViewModel(input);",
+       "mark": "outside"
+      }
+     ],
+     "mark": "outside",
+     "test": false
+    }
+   ],
+   "outside": 0,
+   "more": 0
+  },
+  {
+   "id": "web/src/features/checkout/cart-line-item.ts#7",
+   "path": "web/src/features/checkout/cart-line-item.ts",
+   "name": "lineItemKey",
+   "kind": "function",
+   "container": "",
+   "line": 7,
+   "end": 25,
+   "nameLine": 7,
+   "character": 16,
+   "isNew": false,
+   "sig": null,
+   "callers": [
+    {
+     "id": "web/src/features/checkout/checkout-reducer.ts#326",
+     "name": "selectcheckoutreduce",
+     "kind": "function",
+     "path": "web/src/features/checkout/checkout-reducer.ts",
+     "line": 326,
+     "sites": [
+      {
+       "line": 329,
+       "text": "const value = lineItemKey(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/CheckoutPage.tsx#363",
+     "name": "validateCheckoutPage",
+     "kind": "function",
+     "path": "web/src/features/checkout/CheckoutPage.tsx",
+     "line": 363,
+     "sites": [
+      {
+       "line": 366,
+       "text": "const value = lineItemKey(input);",
+       "mark": "untouched"
+      }
+     ],
+     "mark": "untouched",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/checkout-saga.ts#400",
+     "name": "selectcheckoutsaga",
+     "kind": "function",
+     "path": "web/src/features/checkout/checkout-saga.ts",
+     "line": 400,
+     "sites": [
+      {
+       "line": 403,
+       "text": "const value = lineItemKey(input);",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": false
+    },
+    {
+     "id": "web/src/features/checkout/__tests__/cart-line-item.test.ts#10",
+     "name": "lineItemKey case 1",
+     "kind": "function",
+     "path": "web/src/features/checkout/__tests__/cart-line-item.test.ts",
+     "line": 10,
+     "sites": [
+      {
+       "line": 12,
+       "text": "expect(lineItemKey(sample)).toMatchSnapshot();",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": true
+    }
+   ],
+   "outside": 0,
+   "more": 0
+  },
+  {
+   "id": "web/src/features/checkout/cart-line-item.ts#30",
+   "path": "web/src/features/checkout/cart-line-item.ts",
+   "name": "mergeLineItems",
+   "kind": "function",
+   "container": "",
+   "line": 30,
+   "end": 48,
+   "nameLine": 30,
+   "character": 16,
+   "isNew": false,
+   "sig": null,
+   "callers": [
+    {
+     "id": "web/src/features/checkout/__tests__/cart-line-item.test.ts#10",
+     "name": "mergeLineItems case 1",
+     "kind": "function",
+     "path": "web/src/features/checkout/__tests__/cart-line-item.test.ts",
+     "line": 10,
+     "sites": [
+      {
+       "line": 12,
+       "text": "expect(mergeLineItems(sample)).toMatchSnapshot();",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": true
+    },
+    {
+     "id": "web/src/features/checkout/__tests__/cart-line-item.test.ts#22",
+     "name": "mergeLineItems case 2",
+     "kind": "function",
+     "path": "web/src/features/checkout/__tests__/cart-line-item.test.ts",
+     "line": 22,
+     "sites": [
+      {
+       "line": 24,
+       "text": "expect(mergeLineItems(sample)).toMatchSnapshot();",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": true
+    }
+   ],
+   "outside": 0,
+   "more": 0
+  },
+  {
+   "id": "web/src/features/checkout/checkout-analytics-events.ts#11",
+   "path": "web/src/features/checkout/checkout-analytics-events.ts",
+   "name": "trackStep",
+   "kind": "function",
+   "container": "",
+   "line": 11,
+   "end": 29,
+   "nameLine": 11,
+   "character": 16,
+   "isNew": false,
+   "sig": null,
+   "callers": [],
+   "outside": 0,
+   "more": 0
+  },
+  {
+   "id": "web/src/features/checkout/delivery-date-estimate.ts#19",
+   "path": "web/src/features/checkout/delivery-date-estimate.ts",
+   "name": "estimateDelivery",
+   "kind": "function",
+   "container": "",
+   "line": 19,
+   "end": 37,
+   "nameLine": 19,
+   "character": 16,
+   "isNew": false,
+   "sig": null,
+   "callers": [
+    {
+     "id": "web/src/features/checkout/__tests__/delivery-date-estimate.test.ts#10",
+     "name": "estimateDelivery case 1",
+     "kind": "function",
+     "path": "web/src/features/checkout/__tests__/delivery-date-estimate.test.ts",
+     "line": 10,
+     "sites": [
+      {
+       "line": 12,
+       "text": "expect(estimateDelivery(sample)).toMatchSnapshot();",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": true
+    }
+   ],
+   "outside": 0,
+   "more": 0
+  },
+  {
+   "id": "web/src/features/checkout/voucher-rules.ts#58",
+   "path": "web/src/features/checkout/voucher-rules.ts",
+   "name": "isStackable",
+   "kind": "function",
+   "container": "",
+   "line": 58,
+   "end": 76,
+   "nameLine": 58,
+   "character": 16,
+   "isNew": false,
+   "sig": null,
+   "callers": [],
+   "outside": 0,
+   "more": 0
+  }
+ ],
+ "skipped": 0,
+ "ms": 41870
+}

@@ -806,7 +806,8 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   const NOT_COPIED = [/recommended because/, /^Re-run \(/, /^Run probe/, /^last run .* ago/, /^A click shows the way\.$/, /^Verify (all \d+ )?with an agent/, /^Derived from the code that was read;$/, /^It needs nothing else:$/, /^it holds as the code stands\.$/, /lit on the map, the rest dimmed/, /^Open a path to light it on the map\.$/,
     /^in a sandbox, without network, at most 30 s$/, /^\d+ more: /, /^\d+ [^.]*(criteria|high|medium|low|observable|blockers?|paths?) ▸$/, /^GitHub read .* ago/, /^call over a trust boundary$/, /^Look inside/, /Ask names it/, /^This analysis has no further details for this card\.$/, /^“Look inside” reads/, /^“↻ Refresh diagrams”/,
     /^and \d+ more in the Findings tab$/, /^\d+ (more|findings?) at this place ▸$/, /^shown at crossing \d+:$/, /^Ask about this layer$/, /^A finding sent to Fix stays unresolved and shows here/, /^not counted as findings$/, /^Each call has its own scale\.$/, /^Scroll sideways for the whole picture →$/, /^References without their text in the picture$/, /^Analyze in the left column\.$/,
-    /^Point at a card to see what it refers to and what refers to it\.$/, /^A click keeps the card chosen\.$/];
+    /^Point at a card to see what it refers to and what refers to it\.$/, /^A click keeps the card chosen\.$/,
+    /^Point at a file to see every changed symbol it calls\.$/, /^A click keeps the file chosen\.$/];
   const norm = (x) => String(x).toLowerCase().replace(/,? \d+ (s|min|h|d|days?) ago/g, "").replace(/#\d+;|#quot;|#lt;|#gt;/g, " ").replace(/[^a-z0-9äöüß]+/g, " ").trim();
   const drawn = (states, part, w = v) => { const all = new Set(); for (const st of states) { st(); S.texts = null; S.lists.length = 0; w.render(cx); S.lists.length = 0; S.texts = all; part(); } S.texts = null; return [...all]; };
   const missing = (texts, md) => { const text = norm(md), segs = [...new Set(texts.flatMap((x) => x.split(/(?<=[.;:])\s+|\s·\s|\n+/)).map((x) => x.replace(/^\*\*Suggested:\*\*\s*/, "").replace(/ and \d+(?: m(?:o(?:re?)?)?)?…?$/, "")))].filter((x) => x.trim().length >= 20 && x.trim().split(/\s+/).length >= 4);
@@ -903,6 +904,25 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     click(`rv-infra-d0-${k}-at`, "the card's line"); assert.ok(w.page === null && w.fsel?.path === "infra/stacks/notifications/functions.tf", "its line leads to the diff");
     act(w, "infra-card:aws_sqs_queue.inbox", "Infrastructure changes: a card chosen by its address"); assert.equal(w.infraMemo.dense.names.get(w.infraFocus), "aws_sqs_queue.inbox");
     act(w, "infra-card:", "Infrastructure changes: no card chosen"); assert.equal(w.infraFocus, null);
+  }
+  // A large PR's Impact (demo/fixtures/review/impact-dense.json, invented: 16 changed symbols, 141 callers): no picture
+  // with lines, a row per changed symbol with its callers by file. A click on a file keeps it chosen and names the
+  // symbols it calls; the page and its Markdown agree.
+  {
+    const w = await open({ ...PR2, impact: null, analysis: fx("analysis-s.json"), findings: fx("findings-s.json") });
+    act(w, "page:arch", "Impact, many callers: the page"); w.impactSt = { key: w.impactKey(), state: "ok", model: JSON.parse(fx("impact-dense.json")) };
+    S.ids = new Set(); draw(w, "Impact: many callers"); const ids = S.ids; S.ids = null;
+    assert.ok(w.pageParts.includes("impact") && ids.has("rv-impact-dense") && ids.has("rv-impact-rest") && !ids.has("rv-impact-canvas") && ids.has("rv-impact-d10") && !ids.has("rv-impact-d11") && w.impactSt.dense && !w.impactSt.L, "eleven rows and the rest in one line, nothing laid out");
+    const text = check("Impact (many callers)", drawn([() => {}], () => w.pageView(tt), w), {}, w);
+    assert.ok(/## Impact \(16 changed symbols, 141 callers, 19 tests\)[\s\S]*- `useCheckoutSession` \(`web\/src\/features\/checkout\/CheckoutSessionContext\.ts:24`\): signature changed, 5 callers keep the old call;[\s\S]*5 changed symbols have no caller outside this PR: lineItemKey \(3 in the PR\)/.test(text), "the text has the rows in the page's order");
+    assert.ok(!/```mermaid\nflowchart LR\n {2}subgraph group0\["Callers not in this PR/.test(text), "and no flowchart of 141 callers");
+    const file = w.impactSt.dense.symbols[1].groups.outside.files[0].path;
+    click("rv-impact-d1-o0", "a caller file of a row"); const said = drawn([() => {}], () => w.pageView(tt), w);
+    assert.ok(w.impactFocus === file && said.some((x) => x.startsWith(`${file.split("/").pop()} calls `) && x.includes(" of the changed symbols: ")), "a click keeps the file and the strip names the symbols it calls");
+    click("rv-impact-d1-o0", "the same file again"); assert.equal(w.impactFocus, null, "a second click lets it go");
+    act(w, `impact:file:${file}`, "Impact: a caller file chosen by its path"); assert.equal(w.impactFocus, file);
+    act(w, "impact:file:", "Impact: no file chosen"); assert.equal(w.impactFocus, null);
+    click("rv-impact-d0-name", "a changed symbol's name"); await settle(); draw(w, "Impact, many callers: a symbol's place");
   }
   // Back to this review: opening the other ones above put their PR in the stand-in's shared state, and the next
   // frame of `v` would take it for a new target and start over (then the layer checked below was "All changes"
