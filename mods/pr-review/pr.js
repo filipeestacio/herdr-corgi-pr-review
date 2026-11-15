@@ -1576,3 +1576,7 @@ export function resilienceStart(files = []) {
 // What a resilience run typically costs and takes, for runOffer before a first run: Sonnet measured on the demo PR #2
 // (3 runs with effort high: $0.21-0.31, 89-94 s); Opus scaled by its output price and not measured (measured: false).
 export const RUN_TYPICAL = { resilience: { sonnet: { usd: 0.25, s: 92, measured: true }, opus: { usd: 0.33, s: 140, measured: false } } };
+
+// A rule that takes a right away or narrows it (an access row with effect "deny"; a security run from before that
+// field wrote "deny …" as its actions): a guard at its resource, not a grant, a way in or a crossing.
+export const isGuard = (x) => x?.effect === "deny" || ((x?.actions ?? []).length > 0 && x.actions.every((a) => /^\s*(deny|denies|block|blocks)\b/i.test(String(a))));

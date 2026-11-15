@@ -3,9 +3,9 @@
 // analysis as review.js holds it (pr.js mapReview), the merged findings (pr.js mergeFindings) and their states, and
 // returns text that starts with the PR and commit it is about. Pictures are Mermaid: an agent reads it as text and
 // GitHub draws it. A security finding is in here in full: this is for the person's own use, nothing is posted.
-import { taskList, taskHead, verdictParts, findingCounts, componentLine, CERTAINTY, SEVERITY_SCALE, levels } from "./pr.js";
+import { taskList, taskHead, verdictParts, findingCounts, componentLine, CERTAINTY, SEVERITY_SCALE, levels, isGuard } from "./pr.js";
 import { transitionText } from "./arch.js";
-import { resPathView } from "./views.js";
+import { resPathView, crossingsOf, crossingChanged, asideOf, threatCited, skipText } from "./views.js";
 import { resWord, resToolText, resVerdict, resWatch } from "./views.js"; // wave R2: the page's words, verdict and watch list
 import { resDepRows } from "./views.js"; // Resilience: dependencies that fail or are overloaded
 
@@ -228,19 +228,48 @@ const scopeRows = (checked) => table(["Area", "Result", "Note"], (checked ?? [])
 // the analysis' security areas and each reviewer run that looked at one (or does not say what it looked at) with what
 // it read, checked and skipped. runs: pr.js runsOf.
 export function securityMd({ pr, head, ai = null, findings = [], statusOf = () => "open", runs = {} }) {
-  const list = bySeverity(findings.filter((f) => f.security && unresolved(statusOf(f)))), own = (ai?.scope?.checked ?? []).filter((c) => AREAS.includes(c.area));
+  const open = findings.filter((f) => unresolved(statusOf(f)));
+  const list = bySeverity(open.filter((f) => f.security)), all = ai?.scope?.checked ?? [], own = all.filter((c) => AREAS.includes(c.area));
+  // The unresolved findings a named threat stands on without being ⛨ (their effect is not access or data): a flood
+  // at a public way in, a script that can leave a guardrail off. Counted apart, listed in full.
+  const cited = bySeverity(threatCited(ai?.threats, open).filter((f) => !f.security));
   const shown = Object.entries(runs).filter(([kind, r]) => kind === "security" || !r.scope?.checked?.length || r.scope.checked.some((c) => AREAS.includes(c.area)));
-  const run = ([kind, r]) => [`### ${SOURCE[kind] ?? kind}: ${r.state ?? "not run"}${r.model ? ` (${r.model})` : ""}`, "", Boolean(r.error) && `Error: ${flat(r.error)}`,
-    r.scope?.read?.length > 0 && `Read: ${r.scope.read.map(flat).join("; ")}`, "", ...scopeRows(r.scope?.checked), r.scope?.skipped?.length > 0 && ["Skipped:", ...r.scope.skipped.map((s) => `- ${flat(s)}`)], ""];
-  const ordered = byReach(list, ai);
-  return doc(prLine({ pr, head }), "", "# Security", "", `${count(list.length, "unresolved security finding")}${list.length ? `: ${sevCount(list)}` : ""}.${list.length > 1 ? " Most reachable first: from the internet before signed-in callers before inside only, then over a trust boundary, then severity." : ""}`, "",
-    ordered.length > 0 && ["## Findings", "", ...ordered.flatMap((f, k) => [`### ${k + 1}. ${flat(f.title)}`, "", findingBody(f, { status: statusOf(f), asks: ai?.asks ?? [], h: "####", extra: reachLines(f, ai) })])],
-    exposureMd(ai, "##"), blastMd(ai, "##"),
+  // Codex answers in text and a small Claude pass turns it into findings: an older run carries that pass's model.
+  const model = (kind, r) => (!r.model ? "" : kind === "codex" && /^claude/i.test(r.model) ? ` (Codex; its text turned into findings by ${r.model})` : ` (${r.model})`);
+  const run = ([kind, r]) => { const skipped = (r.scope?.skipped ?? []).map(skipText).filter(Boolean);
+    return [`### ${SOURCE[kind] ?? kind}: ${r.state ?? "not run"}${model(kind, r)}`, "", Boolean(r.error) && `Error: ${flat(r.error)}`,
+      r.state === "done" && !r.scope && "This run reported no scope: it does not say what it read or checked.",
+      r.scope?.read?.length > 0 && `Read: ${r.scope.read.map(flat).join("; ")}`, "", ...scopeRows(r.scope?.checked), skipped.length > 0 && ["Skipped:", ...skipped.map((s) => `- ${flat(s)}`)], ""]; };
+  const ordered = byReach(list, ai), body = (f) => findingBody(f, { status: statusOf(f), asks: ai?.asks ?? [], h: "####", extra: reachLines(f, ai) });
+  return doc(prLine({ pr, head }), "", "# Security", "", `${count(list.length, "unresolved security finding")}${list.length ? `: ${sevCount(list)}` : cited.length ? " about access or data" : ""}.${list.length > 1 ? " Most reachable first: from the internet before signed-in callers before inside only, then over a trust boundary, then severity." : ""}${cited.length ? ` ${count(cited.length, "other unresolved finding backs", "other unresolved findings back")} a threat of the threat model (${sevCount(cited)}).` : ""}`, "",
+    ordered.length > 0 && ["## Findings", "", ...ordered.flatMap((f, k) => [`### ${k + 1}. ${flat(f.title)}`, "", body(f)])],
+    cited.length > 0 && ["## Findings behind a threat", "", "Not about access or data, but a named threat stands on each of them.", "", ...cited.flatMap((f, k) => [`### ${k + 1}. ${flat(f.title)}`, "", body(f)])],
+    crossingsMd(ai, open, "##"), exposureMd(ai, "##"), blastMd(ai, "##"),
     grantsOf(ai?.access).length > 0 && ["## Rights granted", "", ...table(["Resource", "Kind", "Who", "May", "Auth", "Used by the code", "Where"],
       grantsOf(ai.access).map((x) => [x.resource, x.kind, x.principal, (x.actions ?? []).join("; "), x.auth, x.used === undefined ? "" : x.used ? "yes" : "no", x.at ? `\`${x.at}\`` : ""]))],
     ["## What was checked", "", "Each list is the model's own report of what it looked at.", "",
-      own.length > 0 && ["### Analysis", "", ...scopeRows(own)], !own.length && ["### Analysis", "", ai ? "This analysis does not say which areas it checked." : "No analysis of this diff yet.", ""],
+      own.length > 0 && ["### Analysis", "", ...scopeRows(own)],
+      !own.length && ["### Analysis", "", !ai ? "No analysis of this diff yet." : all.length ? `The analysis checked no security area (it reports ${all.map((c) => String(c.area ?? "").replace(/_/g, " ")).join(", ")}); the security areas are the security review's.` : "This analysis does not say which areas it checked.", ""],
       ...shown.map(run), !shown.length && "No reviewer has looked at security."]);
+}
+
+// The threat model as the Security page has it: each crossing of a trust boundary this PR opens or changes (views.js
+// crossingsOf) with who arrives, the check, what it holds on and its result; the named threats under it; then the
+// guards (rules that take a right away, with the threat they hold against). Nothing without crossings and guards.
+function crossingsMd(ai, open, h) {
+  const data = { arch: ai?.arch ?? null, access: ai?.access ?? [], threats: ai?.threats ?? [], gates: ai?.gates ?? [], bypasses: ai?.bypasses ?? [], findings: open };
+  const rows = crossingsOf(data), now = rows.filter(crossingChanged), aside = asideOf(data);
+  if (!now.length && !aside.guards.length) return [];
+  const KIND = { entry: "way in", right: "right", call: "call", bypass: "in-process call", operator: "operator way" }, na = now.filter((r) => r.result === "not_assessed").length;
+  const result = (r) => (r.result === "not_assessed" ? `not assessed. ${flat(r.reason)}` : r.result);
+  const threats = now.flatMap((r) => r.threats.map((x) => [rows.indexOf(r) + 1, x]));
+  return [now.length > 0 && [`${h} Trust boundary crossings`, "", `${count(now.length, "crossing")} this PR opens or changes: ${now.length - na} assessed, ${na} not assessed.${rows.length > now.length ? ` ${count(rows.length - now.length, "more crossing is", "more crossings are")} unchanged.` : ""}`, "",
+      ...table(["#", "From → to", "Kind", "Who", "Check", "Holds only if", "Result", "Findings"],
+        now.map((r) => [rows.indexOf(r) + 1, `${r.from.name} → ${r.to.name}: ${r.what}`, KIND[r.kind] ?? r.kind, r.identity ?? "", [r.check, r.at && `\`${r.at}\``].filter(Boolean).join(" at ") || "none named", r.holds_if ?? "", result(r), r.findings.map((f) => flat(f.title)).join("; ")])),
+      threats.length > 0 && ["", "Threats named at these crossings:", "", ...table(["Crossing", "Id", "STRIDE", "Threat", "Result", "Evidence or note"],
+        threats.map(([n, x]) => [n, x.id ?? "", x.stride ?? "", x.threat, String(x.result ?? "").replace(/_/g, " "), [x.evidence && `\`${x.evidence}\``, x.note].filter(Boolean).join("; ")]))], ""],
+    aside.guards.length > 0 && [`${h} Guards`, "", "Rules that take a right away: they protect their resource and are no way in.", "",
+      ...aside.guards.map((g) => `- ${flat(g.text)}${g.threats.map((x) => ` Holds against: ${flat(x.threat)} (${String(x.result ?? "").replace(/_/g, " ")}${x.evidence ? `, \`${x.evidence}\`` : ""}).`).join("")}`), ""]];
 }
 
 // ---- ways in, the way to a finding, what a taken-over zone may do
@@ -251,7 +280,8 @@ export function securityMd({ pr, head, ai = null, findings = [], statusOf = () =
 const isEntry = (x) => Boolean(x.public) || /route|endpoint|api|url|http|gateway|ingress/i.test(String(x.kind ?? ""));
 const unchecked = (x) => (x.auth_kind ? x.auth_kind === "none" : /^(|none|no|nothing|unauthenticated|-|–)$/i.test(String(x.auth ?? "").trim().replace(/[\s.(:;,].*$/, "")));
 const entriesOf = (access) => (access ?? []).filter(isEntry).map((x, k) => ({ x, k, r: !x.public ? 2 : unchecked(x) ? 0 : 1 })).sort((a, b) => a.r - b.r || a.k - b.k).map(({ x }) => x);
-const grantsOf = (access) => (access ?? []).filter((x) => !isEntry(x));
+// A guard takes a right away (crossingsMd lists it); two derived operator rows that say the same are one.
+const grantsOf = (access) => (access ?? []).filter((x, k, all) => !isEntry(x) && !isGuard(x) && !(x.derived && all.findIndex((y) => y.derived && y.resource === x.resource && y.principal === x.principal && y.node === x.node) < k));
 const AUTH_KIND = { none: "none", code: "in the code", gateway: "at the gateway", iam: "IAM" };
 const checkOf = (x) => (unchecked(x) ? "none" : [AUTH_KIND[x.auth_kind], flat(x.auth)].filter(Boolean).join(": ") || "not stated");
 const yesNo = (v) => (v === true ? "yes" : v === false ? "no" : "not stated");
@@ -284,11 +314,19 @@ function blastMd(ai, h) {
     const own = nodes.filter((n) => n.zone === z.id);
     if (own.length && own.every((n) => n.type === "external")) return null;
     const names = new Set([z.name, z.id, ...own.flatMap((n) => [n.id, n.label]), ...(ai?.components ?? []).filter((c) => own.some((n) => n.id === c.node)).map((c) => c.name)].filter(Boolean).map(norm));
-    const rights = access.filter((x) => names.has(norm(x.principal)));
+    // Whose right: the principal's card or frame when the run names it (principal_node), else by name; guards aside.
+    const hosted = (n) => (Array.isArray(n.runs_in) ? n.runs_in.length > 0 : Boolean(n.runs_in)); // a frame's zone: the one its own cards carry
+    const inZone = (id) => (nodes.some((n) => n.id === id) ? zoneOf(id) : (nodes.find((n) => n.group === id && n.zone && !hosted(n)) ?? nodes.find((n) => n.group === id && n.zone))?.zone) === z.id;
+    const rights = access.filter((x) => !isGuard(x) && !x.public && (x.principal_node ? inZone(x.principal_node) : names.has(norm(x.principal))));
     const out = (a?.edges ?? []).filter((e) => own.some((n) => n.id === e.from) && zoneOf(e.to) !== z.id);
     const reached = [...new Set(out.map((e) => zoneOf(e.to)).filter(Boolean))].map((id) => zones.find((x) => x.id === id)).filter(Boolean);
     const free = [...new Set(out.filter((e) => !zoneOf(e.to)).map((e) => e.to))];
-    const can = rights.length ? `it can ${rights.map(right).join("; ")}` : "no right in this PR names it";
+    // With the principal's card named (a newer run): by principal, each right on its card or, off the map, its kind
+    // and resource; else as before, "it can … on <resource>".
+    // An operator's right works through its script or workflow (the row's card), not on it.
+    const on = (x) => `${(x.actions ?? []).map(flat).join(", ") || "use"} ${["operator", "ci"].includes(x.principal_kind) ? "through" : "on"} ${nodes.some((n) => n.id === x.node) ? name(x.node) : [x.kind, flat(x.resource)].filter(Boolean).join(" ")}${x.used === false ? " (granted, not used by the code)" : ""}`;
+    const who = [...new Set(rights.filter((x) => x.principal_node).map((x) => flat(x.principal)))];
+    const can = !rights.length ? "no right in this PR names it" : who.length ? who.map((p) => `${p} can ${rights.filter((x) => flat(x.principal) === p).map(on).join("; ")}`).join(". ") : `it can ${rights.map(right).join("; ")}`;
     const via = [...reached.map((x) => `${flat(x.name ?? x.id)} (${x.trust ?? "trust not stated"})`), free.length && `${count(free.length, "card")} outside every zone (${free.map(name).join("; ")})`].filter(Boolean);
     return `- **${flat(z.name ?? z.id)}** (${z.trust ?? "trust not stated"}): If it is compromised, ${can}. ${via.length ? `Its calls reach ${via.join(" and ")}.` : "It calls nothing outside its zone."}`;
   }).filter(Boolean);
