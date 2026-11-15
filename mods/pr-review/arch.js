@@ -867,3 +867,24 @@ export function markLine(m, words = 5) {
 // A finding's mark in a card: its chip, and under it the finding in up to two lines over the card's width (47 px); the
 // layout gives such a card MARK_CARD_ROWS extra rows of 18 px (review.js archL, the Security map), its gap included.
 export const MARK_CARD_H = 47, MARK_CARD_ROWS = 3;
+
+// Chips drawn at absolute places ([{x, y, w}], all h high) that would touch or stand closer than gap are one bundle:
+// -> the bundles in the chips' order, each a list of its chips (a state diagram's finding chips where several
+// transitions end side by side, stack.js stateView).
+export function bundleChips(chips, h = 15, gap = 4) {
+  const touch = (a, b) => a.x < b.x + b.w + gap && b.x < a.x + a.w + gap && Math.abs(a.y - b.y) < h + gap, out = [];
+  for (const c of chips) {
+    const hit = out.filter((g) => g.some((o) => touch(o, c)));
+    if (!hit.length) out.push([c]);
+    else { hit[0].push(c); for (const g of hit.slice(1)) { hit[0].push(...g); out.splice(out.indexOf(g), 1); } } // c joins bundles that were apart
+  }
+  return out;
+}
+
+// The room a card's mark takes: its chip and the finding in one line, or in two when it needs them (w: the room for
+// the text in px, 6 px a character, as stack.js markRow cuts it). A short finding does not hold a second line open.
+// -> {lines, rows: the layout's extra rows of 18 px, h: the mark's height in the card}
+export function markRoom(m, w) {
+  const lines = Math.min(2, Math.max(1, clampText(markLine(m, 40).text, Math.max(8, Math.floor(w / 6)), 2).lines));
+  return { lines, rows: 1 + lines, h: 19 + 14 * lines };
+}
