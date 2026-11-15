@@ -437,7 +437,10 @@ export const rowText = (r) => [`${r.addr} ${STATE[r.status]}`, ...r.changes.map(
 export function infraArch(model) {
   // A card's place is a row of its own, the file's name with its line and never wrapped (its folder is the frame's
   // title or in the tooltip): in the description a long path was broken in the middle of the file's name.
-  const node = (c) => ({ id: c.id, label: c.name, description: `${c.kind === "data" ? "data " : ""}${c.type}`, group: c.group, type: c.type, at: `${c.file}:${c.line}`, status: c.status === "added" ? "new" : c.status,
+  // Its title is the type and the name, the type first: Terraform resources of one thing often share a name (a bucket,
+  // its policy, its lifecycle), and with the name alone as the title they read as the same card several times. Each
+  // part fits a line of the title (the whole address is the tooltip).
+  const node = (c) => ({ id: c.id, label: `${clip(typeTitle(c), ARCH.TITLE_CH)} · ${clip(c.name, ARCH.TITLE_CH - 2)}`, description: "", evidence: c.addr, group: c.group, type: c.type, at: `${c.file}:${c.line}`, status: c.status === "added" ? "new" : c.status,
     source: c.status === "unchanged" ? "existing" : undefined, word: c.status === "replaced" ? "MAY BE REPLACED" : undefined, dashed: c.status === "replaced",
     lines: [{ text: `${baseOf(c.file)}:${c.line}`, tip: `${c.file}:${c.line}`, at: `${c.file}:${c.line}`, place: true, rows: 1 }, ...cardLines(c)] });
   const seen = new Set(), edges = [];
@@ -461,6 +464,10 @@ export function infraMarks(model, findings) {
 // ---- many resources: cards by file instead of a graph
 
 const baseOf = (path) => path.slice(path.lastIndexOf("/") + 1);
+const clip = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+/** A type without its provider: "aws_s3_bucket" → "s3_bucket", "AWS::SQS::Queue" → "SQS::Queue"; a type of one word stays. */
+export const shortType = (type) => (type.startsWith("AWS::") ? type.slice(5) : /^[a-z0-9]+_./.test(type) ? type.slice(type.indexOf("_") + 1) : type);
+const typeTitle = (c) => `${c.kind === "data" ? "data " : ""}${shortType(c.type)}`;
 /** The section is a list by file, not a graph: more changed resources or more references than a picture with lines can show. */
 export const isDense = (model) => model.cards.filter((c) => c.status !== "unchanged").length > INFRA_DENSE.cards || model.edges.length > INFRA_DENSE.edges;
 export const denseText = () => `More than ${INFRA_DENSE.cards} resources or ${INFRA_DENSE.edges} references: they stand by file with what stands out first, and no lines are drawn.`;
@@ -470,8 +477,9 @@ const STATE_RANK = { replaced: 2, removed: 3, changed: 4, added: 5, unchanged: 6
 /**
  * The model for the list: {groups: [{file, dir, base, kind, types: [[type, n]], cards, more: cards left out}], refs:
  * Map(card id → {to: [{id, label}], from: [{id, label}]}), names: Map(card id → address), uniform: the one state all
- * changed cards share or null, marks: infraMarks}. A card: {id, name, type, status, line, at, lines: cardLines, mark:
- * its findings or null, to, from: how many it refers to and how many refer to it}. Pure.
+ * changed cards share or null, marks: infraMarks}. A card: {id, name, type: its type without the provider (the card's
+ * title: resources often share a name), status, line, at, lines: cardLines, mark: its findings or null, to, from: how
+ * many it refers to and how many refer to it}. Pure.
  */
 export function infraDense(model, findings = []) {
   const marks = infraMarks(model, findings), refs = new Map(model.cards.map((c) => [c.id, { to: [], from: [] }])), kind = new Map(model.groups.map((g) => [g.id, g.kind]));
@@ -481,10 +489,10 @@ export function infraDense(model, findings = []) {
   for (const c of model.cards) by.set(c.file, [...(by.get(c.file) ?? []), c]);
   const groups = [...by].map(([file, list]) => {
     const sorted = list.map((c) => ({ c, r: rank(c) })).sort((a, b) => a.r[0] - b.r[0] || a.r[1] - b.r[1] || a.c.line - b.c.line), types = new Map();
-    for (const c of list) types.set(c.type, (types.get(c.type) ?? 0) + 1);
+    for (const c of list) types.set(typeTitle(c), (types.get(typeTitle(c)) ?? 0) + 1);
     return { file, dir: file.slice(0, file.lastIndexOf("/") + 1), base: baseOf(file), kind: kind.get(list[0].group) ?? "", best: sorted[0].r, types: [...types].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])), more: Math.max(0, sorted.length - INFRA_DENSE.perFile),
       // ponytail: at most perFile cards of a file are drawn (the rest is counted, the Markdown table has all); page them if a file ever has more that matter.
-      cards: sorted.slice(0, INFRA_DENSE.perFile).map(({ c }) => ({ id: c.id, name: c.name, type: `${c.kind === "data" ? "data " : ""}${c.type}`, status: c.status, line: c.line, at: `${c.file}:${c.line}`, lines: cardLines(c), mark: marks.nodes.get(c.id) ?? null, to: refs.get(c.id).to.length, from: refs.get(c.id).from.length })) };
+      cards: sorted.slice(0, INFRA_DENSE.perFile).map(({ c }) => ({ id: c.id, name: c.name, type: typeTitle(c), status: c.status, line: c.line, at: `${c.file}:${c.line}`, lines: cardLines(c), mark: marks.nodes.get(c.id) ?? null, to: refs.get(c.id).to.length, from: refs.get(c.id).from.length })) };
   }).sort((a, b) => a.best[0] - b.best[0] || a.best[1] - b.best[1] || a.file.localeCompare(b.file));
   const states = new Set(model.cards.filter((c) => c.status !== "unchanged").map((c) => c.status));
   return { groups, refs, names: new Map(model.cards.map((c) => [c.id, c.addr])), uniform: states.size === 1 ? [...states][0] : null, marks };

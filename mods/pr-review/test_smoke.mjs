@@ -897,7 +897,7 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     assert.ok(w.pageParts.includes("infra") && ids.has("rv-infra-dense") && !ids.has("rv-infra-canvas") && ids.has("rv-infra-g2") && S.clicks.has("rv-infra-d0-13") && !w.infraMemo.pic, "three files of cards, and no picture laid out");
     const text = check("Infrastructure changes (many resources)", drawn([() => {}], () => w.pageView(tt), w), {}, w);
     assert.ok(/## Infrastructure changes \(34\)[\s\S]*34 resources: 34 added\. More than 12 resources or 15 references/.test(text) && !/```mermaid\nflowchart LR\n {2}subgraph group0\["infra/.test(text), "the text says the same and has no flowchart of them");
-    const k = w.infraMemo.dense.groups[0].cards.findIndex((c) => c.name === "router" && c.type === "aws_lambda_function"), id = w.infraMemo.dense.groups[0].cards[k].id;
+    const k = w.infraMemo.dense.groups[0].cards.findIndex((c) => c.name === "router" && c.type === "lambda_function"), id = w.infraMemo.dense.groups[0].cards[k].id;
     click(`rv-infra-d0-${k}`, "a card of the list by file"); const said = drawn([() => {}], () => w.pageView(tt), w);
     assert.ok(w.infraFocus === id && w.page === "arch" && said.some((x) => x.startsWith("aws_lambda_function.router refers to 3: aws_iam_role.workers (role)")), "a click keeps the card and the strip names its references");
     click(`rv-infra-d0-${k}-at`, "the card's line"); assert.ok(w.page === null && w.fsel?.path === "infra/stacks/notifications/functions.tf", "its line leads to the diff");
