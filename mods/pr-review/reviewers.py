@@ -593,7 +593,7 @@ def codex_review(req):
     pick = ["-c", f"model={json.dumps(req['codexModel'])}"] if req.get("codexModel") else []  # else Codex's own default
     r = subprocess.run([codex, "review", "--base", f"origin/{req['base']}",
                         "-c", 'sandbox_mode="read-only"', "-c", 'approval_policy="never"', *pick],
-                       cwd=req["worktree"], capture_output=True, text=True, timeout=TIMEOUT)
+                       cwd=req["worktree"], capture_output=True, text=True, timeout=TIMEOUT, env=llm.env_for(None))
     ms = int((time.monotonic() - started) * 1000)
     text = (r.stdout or "") + ("\n" + r.stderr if r.returncode != 0 else "")
     used = re.search(r"tokens used[:\s]*([\d,.]+)", text, re.I)

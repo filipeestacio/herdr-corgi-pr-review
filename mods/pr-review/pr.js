@@ -484,8 +484,24 @@ export const resourcesOf = (title) => new Set([...String(title).matchAll(/`([^`\
 export function sameDefect(x, y) {
   const rx = resourcesOf(x.title), ry = resourcesOf(y.title), shared = [...rx].some((r) => ry.has(r));
   if (rx.size && ry.size && !shared) return false;
-  const claim = sameClaim(x.title, y.title);
-  return (gap(x, y) <= NEAR && claim) || (shared && gap(x, y) <= RES_NEAR && (claim || (Boolean(x.impact) && x.impact === y.impact)));
+  const claim = sameClaim(x.title, y.title), impact = Boolean(x.impact) && x.impact === y.impact;
+  // One cause, worded differently: first lines at most NEAR apart with the same effect or a criterion in common (PR #2:
+  // events.py 19/20/20, all dead_path). The first lines, not the ranges: a range over a whole function (13-31) would
+  // take in every finding inside it.
+  const crit = (x.criteria ?? []).some((c) => (y.criteria ?? []).includes(c));
+  return (gap(x, y) <= NEAR && claim) || (Math.abs(x.line - y.line) <= NEAR && (impact || crit)) || (shared && gap(x, y) <= RES_NEAR && (claim || impact));
+}
+// Two findings in different files are one cause (same_cause) when they have the same effect and make the same claim,
+// or when one's text names the other's file and both name the same resource (PR #2: the empty token, handler.py:9
+// defaults it, template.yaml:14 never sets FRONT_DESK_TOKEN; each names the other's file).
+const textOf = (f) => [f.title, f.detail, f.code, ...(f.sources ?? []).flatMap((s) => [s.title, s.detail])].filter(Boolean).join("\n");
+const names = (f, file) => textOf(f).includes(String(file).split("/").pop());
+export function sameCause(x, y) {
+  if (x.file === y.file || !x.impact || x.impact !== y.impact) return false;
+  const titles = (f) => (f.sources?.length ? f.sources.map((s) => s.title) : [f.title]);
+  if (titles(x).some((a) => titles(y).some((b) => sameClaim(a, b)))) return true;
+  const rx = resourcesOf(textOf(x)), ry = resourcesOf(textOf(y));
+  return (names(x, y.file) || names(y, x.file)) && [...rx].some((r) => ry.has(r) && /^[A-Z][A-Z0-9]*_/.test(r));
 }
 
 // Findings (the reviewers' and the analysis') in one file that are one defect (sameDefect: line ranges at most NEAR
@@ -532,7 +548,13 @@ export function mergeFindings(findings, suspects = [], status = {}, publicFiles 
       security: g.some(isSecurity),
       sources: g.map((x) => ({ id: x.id, reviewer: x.reviewer, severity: x.severity, title: x.title, detail: x.detail ?? "", suggestion: x.suggestion ?? "" })) };
   });
-  return { findings: out.sort((a, b) => rank(a) - rank(b) || a.file.localeCompare(b.file) || a.line - b.line), notes };
+  out.sort((a, b) => rank(a) - rank(b) || a.file.localeCompare(b.file) || a.line - b.line);
+  // Across files: the later one of one cause points at the first (same_cause: its id, same_cause_at: its place).
+  for (const [k, f] of out.entries()) {
+    const first = out.slice(0, k).find((g) => !g.same_cause && sameCause(g, f));
+    if (first) Object.assign(f, { same_cause: first.id, same_cause_at: `${first.file}:${first.line}` });
+  }
+  return { findings: out, notes };
 }
 
 // The reviewer runs of the findings file, each with its state: running | done | failed (an entry from before it had
@@ -543,13 +565,18 @@ export const runsOf = (runs) => Object.fromEntries(Object.entries(runs ?? {}).ma
 
 // The one way findings are counted (tab, bar, Overview, the Findings header): unresolved is open, recheck and fix
 // sent; high/medium/low and security count the unresolved ones, so the severities add up to `unresolved`.
+// causes: the unresolved ones counted once per cause (a finding with same_cause whose first is unresolved too is not
+// counted again); security counts causes, so the empty token at two places is ⛨ 1.
 export function findingCounts(findings, statusOf) {
-  const c = { total: findings.length, unresolved: 0, sent: 0, fixed: 0, dismissed: 0, high: 0, medium: 0, low: 0, security: 0 };
+  const c = { total: findings.length, unresolved: 0, causes: 0, sent: 0, fixed: 0, dismissed: 0, high: 0, medium: 0, low: 0, security: 0 };
+  const open = findings.filter((f) => !["fixed", "dismissed"].includes(statusOf(f)));
   for (const f of findings) {
     const s = statusOf(f);
     if (s === "fixed" || s === "dismissed") { c[s] += 1; continue; }
     c.unresolved += 1; c[f.severity] = (c[f.severity] ?? 0) + 1;
     if (s === "progress") c.sent += 1;
+    if (followsOpen(f, open)) continue;
+    c.causes += 1;
     if (f.security) c.security += 1;
   }
   return c;
@@ -851,11 +878,13 @@ const linked = (a, f) => a.findings.some((id) => f.ids.includes(id)) || (f.crite
 // the findings that break it: the ask names them, or they name the ask; `unlinked`: the analysis says no finding backs
 // it), `extra` (what the task did not ask for) and `other` (unresolved findings that belong to no ask). `criteria` are
 // the asks the head line counts: the acceptance criteria when the analysis marks them, else every ask but the extras.
+// A finding of a cause whose first finding is still open (same_cause): it does not count again.
+const followsOpen = (f, open) => Boolean(f.same_cause) && open.some((g) => g !== f && (g.id === f.same_cause || (g.ids ?? []).includes(f.same_cause)));
 export function taskList(asks = [], findings = [], unlinked = [], statusOf = () => "open") {
   const open = findings.filter((f) => !["fixed", "dismissed"].includes(statusOf(f)));
   const row = (ask) => { const fs = findings.filter((f) => linked(ask, f)); return { ask, findings: fs, unlinked: !fs.length && unlinked.includes(ask.id) }; };
   const marked = asks.some((a) => a.acceptance === true), criteria = asks.filter((a) => a.state !== "extra" && (!marked || a.acceptance === true));
-  return { security: open.filter((f) => f.security), rows: asks.filter((a) => a.state !== "extra").map(row), extra: asks.filter((a) => a.state === "extra").map(row),
+  return { security: open.filter((f) => f.security && !followsOpen(f, open)), rows: asks.filter((a) => a.state !== "extra").map(row), extra: asks.filter((a) => a.state === "extra").map(row),
     other: open.filter((f) => !f.security && !asks.some((a) => linked(a, f))), marked, criteria: criteria.length, met: criteria.filter((a) => a.state === "met").length };
 }
 const count = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
@@ -1425,22 +1454,38 @@ export function withResilience(ai, block, head = null, findings = []) {
     return { ...p, reach: [...p.reach], ladder, budget, marks: marksOf(p, deps), pre_existing: pre, blocker: blocker && pre === "unknown" ? { ...blocker, unclear: true } : blocker,
       also_security: p.findings.some((id) => sec.has(id)) };
   });
+  // Not possible today (C2 D3): the run says so (possible_today false), or the path leaves a part that delivers (a queue,
+  // topic or stream) and does not work today (additions[].works_today false: nothing publishes to it). Its blocker
+  // waits as wired {why, at, today}: "blocks once wired", not counted with the blockers; the path that is missing (nothing
+  // publishes) still blocks.
+  const edges = ai.arch?.edges ?? [], idle = new Map((block.additions ?? []).filter((a) => a.works_today === false && /queue|topic|stream|bus/i.test(`${a.kind} ${a.what}`))
+    .flatMap((a) => [...reachOf({ steps: [a.at] }, ai.arch)].map((n) => [n, a])));
+  for (const p of paths) {
+    if (!p.blocker) continue;
+    const part = p.via.map((e) => edges[Number(e.slice(1))]?.from).map((n) => idle.get(n)).find(Boolean);
+    if (p.possible_today !== false && !part) continue;
+    const why = p.possible_today === false && p.note ? p.note : part?.broken_by ? `not possible today: ${part.broken_by[0].toLowerCase()}${part.broken_by.slice(1).replace(/\.$/, "")}` : "not possible today";
+    Object.assign(p, { wired: { ...p.blocker, today: why }, blocker: null });
+  }
   // One cause blocks once: a blocking path with the reason of an earlier one and a finding or a call in common, or the
   // same action or the same place, is that path again (same_cause: its id; the first lists all in triggers): the missing
   // dead-letter queue behind p1 (a record raises) and p2 (the batch outlasts its timeout) is one blocker with two triggers.
   const spots = (p) => new Set([...p.findings, ...p.steps.filter((s) => deps.some((d) => d.edge === s || d.at === s))]);
   const act = (p) => String(p.action ?? "").trim().toLowerCase().replace(/[.\s]+$/, "");
   // the same unlimited redelivery: a poison message and a batch over its timeout both come back from one queue
-  const again = (p) => REDELIVERY.has(p.blocker.why) && p.ladder?.factors.find((f) => f.n === null)?.at;
-  for (const [k, p] of paths.entries()) {
-    const first = p.blocker && paths.slice(0, k).find((q) => q.blocker && !q.same_cause && ((q.blocker.why === p.blocker.why && [...spots(p)].some((x) => spots(q).has(x))) ||
-      (act(p) && act(p) === act(q)) || (p.blocker.at && p.blocker.at === q.blocker.at) || (again(p) && again(p) === again(q))));
-    if (first) { Object.assign(p, { blocker: null, same_cause: first.id }); first.triggers = [...(first.triggers ?? [first.id]), p.id]; }
+  // The same for the blockers that wait until the path is wired (key "wired"), each among its own kind.
+  for (const key of ["blocker", "wired"]) {
+    const again = (p) => REDELIVERY.has(p[key].why) && p.ladder?.factors.find((f) => f.n === null)?.at;
+    for (const [k, p] of paths.entries()) {
+      const first = p[key] && paths.slice(0, k).find((q) => q[key] && !q.same_cause && ((q[key].why === p[key].why && [...spots(p)].some((x) => spots(q).has(x))) ||
+        (act(p) && act(p) === act(q)) || (p[key].at && p[key].at === q[key].at) || (again(p) && again(p) === again(q))));
+      if (first) { Object.assign(p, { [key]: null, same_cause: first.id }); first.triggers = [...(first.triggers ?? [first.id]), p.id]; }
+    }
   }
-  paths.sort((a, b) => Number(Boolean(b.blocker)) - Number(Boolean(a.blocker)));
+  paths.sort((a, b) => Number(Boolean(b.blocker)) - Number(Boolean(a.blocker)) || Number(Boolean(b.wired)) - Number(Boolean(a.wired)));
   const blockers = paths.filter((p) => p.blocker), found = paths.filter((p) => p.result === "finding"), mitigated = paths.filter((p) => p.result === "mitigated");
   const na = paths.filter((p) => p.result === "not_assessed").length, checks = block.checks ?? [];
-  const tail = na ? `; ${na} not assessed` : "";
+  const wired = paths.filter((p) => p.wired).length, tail = `${wired ? `; ${wired} ${wired === 1 ? "blocks" : "block"} once wired` : ""}${na ? `; ${na} not assessed` : ""}`;
   const summary = !paths.length ? "The run found no path a failure takes through this change."
     : blockers.length ? `${blockers.length} of ${plural(paths.length, "path")} ${blockers.length === 1 ? "blocks" : "block"} the merge: ${blockers[0].blocker.why}${blockers.length > 1 ? `, and ${blockers.length - 1} more` : ""}${tail}.`
       : found.length ? `${plural(found.length, "path")} with a finding, none blocks the merge${tail}.`
@@ -1463,7 +1508,7 @@ export function withResilience(ai, block, head = null, findings = []) {
   // off. Not safely correctable, so it is said (edgeNote) instead of guessed.
   const edgeNote = !block.edge_ids && (deps.some((d) => d.edge) || paths.some((p) => p.steps.some((s) => /^e\d+$/.test(s)))) ? "run predates edge ids: re-run" : null;
   return { ...ai, resilience: { ...block, paths, blockers: blockers.map((p) => p.id), summary, watch, unseen, additionsLine, edgeNote, older: Boolean(block.head && head && block.head !== head),
-    counts: { paths: paths.length, blockers: blockers.length, mitigated: mitigated.length, not_assessed: na,
+    counts: { paths: paths.length, blockers: blockers.length, once_wired: wired, mitigated: mitigated.length, not_assessed: na,
       checks_clean: checks.filter((c) => c.result === "clean").length, not_checkable: checks.filter((c) => c.result === "not_checkable").length,
       additions: { justified: by("justified"), questionable: by("questionable"), unjustified: by("unjustified") } } } };
 }
