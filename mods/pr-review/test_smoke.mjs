@@ -337,6 +337,44 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   const mini = new PrReview(); mini.init({}, cx); draw(mini, "the minimized review's chip");
   S.spaces = null; S.props = null;
 }
+// Fit never puts the map in rows: in a view narrower than the picture, Fit (on by itself, or chosen) draws one row to
+// scroll sideways, on the Architecture, Security and Resilience pages; only the Wrap switch draws rows.
+{
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json") });
+  for (const id of ["rv-arch-canvas", "rv-sec-canvas", "rv-res-canvas"]) v.hsOf(id).viewW = 420;
+  const rows = (what) => { S.ids = new Set(); draw(v, what); const got = [...S.ids].filter((x) => /-(band|cut)\d+$/.test(x)); S.ids = null; return got; };
+  for (const page of ["arch", "blast", "res"]) {
+    v.command(`page:${page}`, cx);
+    assert.ok(v.archFitOn(), "Fit is on by itself in a view narrower than the picture");
+    assert.deepEqual(rows(`${page}: Fit by itself`), [], `${page}: Fit by itself draws one row`);
+    v.archFit = true; assert.deepEqual(rows(`${page}: Fit chosen`), [], `${page}: Fit chosen draws one row`);
+    v.archFit = false; assert.deepEqual(rows(`${page}: Fit off`), [], `${page}: without Wrap the picture is one row`);
+    v.archFit = undefined;
+  }
+  v.command("page:arch", cx); v.command("arch-wrap", cx);
+  assert.ok(rows("arch: Wrap").length > 1, "Wrap puts the same picture in rows");
+  v.command("arch-wrap", cx);
+}
+// Copy as Markdown: its button is in the head of every page it can copy and nowhere else, and the footer names what
+// was copied. (The stand-in for exec fails, so nothing reaches a clipboard here.)
+{
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json") });
+  const drawn = (what) => { S.ids = new Set(); draw(v, what); const got = [...S.ids].filter((x) => /^rv-md(-|$)/.test(x)); S.ids = null; return got; };
+  const copied = (name) => { v.note = null; v.command("copy-md", cx); assert.ok(v.note?.startsWith(`Copied ${name} as Markdown (`) && v.note.endsWith("Nothing was posted."), `the footer after copying ${name}: ${v.note}`); };
+  for (const [page, name] of [["overview", "the Overview"], ["arch", "the architecture"], ["blast", "the Security page"], ["res", "the Resilience page"]]) {
+    v.command(`page:${page}`, cx);
+    assert.deepEqual(drawn(`${page}: Copy as Markdown`), ["rv-md"], `${page} has the button once`); copied(name);
+  }
+  v.command("order:reading", cx); v.command("step:0", cx);
+  assert.deepEqual(drawn("a layer: Copy as Markdown"), ["rv-md-l"], "the open layer's head has the button, the other layers' heads do not"); copied(`the layer "${v.steps()[0].title}"`);
+  v.command("findings", cx); v.ffocus = null;
+  assert.ok(drawn("Findings: Copy as Markdown").includes("rv-md-f"), "the Findings tab has the button"); copied("the unresolved findings");
+  v.command(`finding:${v.findings()[0].id}`, cx);
+  assert.ok(drawn("an open finding: Copy as Markdown").includes("rv-md-f")); copied("the open finding");
+  for (const tab of ["files", "comments"]) { v.command(tab, cx); assert.deepEqual(drawn(`${tab}: no Copy as Markdown`), [], `${tab} has no page to copy and no button`); }
+  const empty = await open({ ...PR2 });
+  for (const c of ["page:overview", "page:arch", "page:blast", "page:res", "findings", "copy-md"]) act(empty, c, `nothing analyzed yet: ${c}`);
+}
 await settle();
 assert.deepEqual(late, [], "a spawned task threw");
 console.log(`smoke ok: ${shown} frames`);

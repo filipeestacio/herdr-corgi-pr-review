@@ -585,15 +585,16 @@ export function areaFindings(area, k, findings) {
 // (`evidence` or `at`: "file:line" or "file:line-end"; a finding's own range counts). Returns Map(index in edges then
 // transitions -> {findings, severity: the highest}); a transition without a place has none.
 const RANK = { critical: 0, high: 1, medium: 2, low: 3 };
-// Wave C2 V4: a finding marks only the transition it names, not every transition in its lines: by breaks {from, to}
-// with the states' names, else the transition(s) whose line is nearest its own, within NEAR_T lines (ties: all).
+// Wave C2 V4: a finding marks only the transition it names, not every transition in its lines: by breaks.transition
+// {from, to} with the states' ids (one of them alone: every move out of or into that state), else the transition(s) whose line is nearest its own, within NEAR_T lines (ties: all).
 const NEAR_T = 3;
 export function transitionMarks(v, findings) {
   const out = new Map(), place = (s) => /^(.+?):(\d+)(?:-(\d+))?/.exec(String(s ?? "")), eq = (x, y) => String(x ?? "").toLowerCase() === String(y ?? "").toLowerCase();
   const ts = [...(v?.edges ?? []), ...(v?.transitions ?? [])].map((e, i) => { const m = place(e.evidence) ?? place(e.at); return { e, i, m: m && [m[1], Number(m[2]), Number(m[3] ?? m[2])] }; });
   const add = (i, f) => { const x = out.get(i) ?? { findings: [] }; x.findings.push(f); out.set(i, x); };
   for (const f of findings ?? []) {
-    const named = f.breaks && ts.filter(({ e }) => (f.breaks.from || f.breaks.to) && (!f.breaks.from || eq(f.breaks.from, e.from)) && (!f.breaks.to || eq(f.breaks.to, e.to)));
+    // breaks.transition is the analysis' word for it (review.py place); a plain from and to are an older analysis' or a call on the map.
+    const b = f.breaks?.transition ?? f.breaks, named = b && ts.filter(({ e }) => (b.from || b.to) && (!b.from || eq(b.from, e.from)) && (!b.to || eq(b.to, e.to)));
     if (named?.length) { named.forEach(({ i }) => add(i, f)); continue; }
     const lo = f.line ?? 0, hi = f.end ?? f.line ?? 0, file = (path) => f.file && (f.file === path || f.file.endsWith(`/${path}`) || path.endsWith(`/${f.file}`));
     const near = ts.filter(({ m }) => m && file(m[0]) && Math.max(0, m[1] - hi, lo - m[2]) <= NEAR_T), gap = ({ m }) => (lo >= m[1] && lo <= m[2] ? 0 : Math.abs(lo - m[1]));
@@ -1307,4 +1308,19 @@ export function resDepRows(res, paths = res?.paths ?? []) {
     cases: (d.cases ?? []).filter((c) => DEP_MARK[c.handled]).map((c) => ({ when: c.when, handled: c.handled, at: c.at ?? null, effect: c.effect ?? "", path: num.has(c.path) ? c.path : null,
       number: num.get(c.path) ?? null, blocks: blocks.has(c.path), words: `${RES_WHEN[c.when] ?? resWord(c.when)}: ${String(c.how || DEP_BARE[c.handled]).replace(/\.$/, "")}`, mark: DEP_MARK[c.handled] })).map((c) => ({ ...c, text: `${c.words} ${c.mark}` })),
     open: (d.cases ?? []).filter((c) => !DEP_MARK[c.handled]).map((c) => RES_WHEN[c.when] ?? resWord(c.when)) }));
+}
+
+// "Copy as Markdown": what it copies where the person is. kind picks the text (markdown.js), name completes the
+// footer's "Copied <name> as Markdown", tip is the button's help. layer: the open layer's title when it is one of the
+// analysis (not "All changes"); finding: one is open in the Findings tab. Files and Comments have no page of their
+// own to copy: the ⋯ menu's entry copies the Overview there.
+export function mdTarget({ tab, page = null, layer = null, finding = false } = {}) {
+  const tip = (what) => `Copies ${what} as Markdown to the clipboard, to hand to an agent or a person. Nothing is posted.`;
+  if (tab === "findings") return finding ? { kind: "finding", name: "the open finding", tip: tip("the open finding: where it is, who found it, how sure it is, its effect, detail and suggestion") }
+    : { kind: "findings", name: "the unresolved findings", tip: tip("every unresolved finding in full, most severe first. With a finding open: only that one") };
+  if (tab === "steps" && !page && layer) return { kind: "layer", name: `the layer "${layer}"`, tip: tip("this layer: what it is for, its files, the questions to check, its findings and pictures") };
+  if (tab === "steps" && page === "arch") return { kind: "arch", name: "the architecture", tip: tip("this page: the map as a Mermaid diagram, the cards, where a finding breaks the flow, the components and the other pictures") };
+  if (tab === "steps" && page === "blast") return { kind: "blast", name: "the Security page", tip: tip("this page: the unresolved security findings in full, the ways in, the rights granted and what was checked") };
+  if (tab === "steps" && page === "res") return { kind: "res", name: "the Resilience page", tip: tip("this page: the paths with their retries, time budget and action, the other checks and what to watch after the merge") };
+  return { kind: "overview", name: "the Overview", tip: tip("the Overview: the verdict, the criteria with their findings, what changed, the behavior and the repo's rules and checks") };
 }
