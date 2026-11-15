@@ -59,6 +59,7 @@ const SOURCE_MS = 3 * 60 * 1000, SOURCE_KEEP = 20, PICKED_KEEP = 20;
 const GH_FIELDS = "number,title,author,headRefName,headRefOid,baseRefName,updatedAt,isDraft,reviewDecision,additions,deletions,url";
 const REVIEW = { APPROVED: ["approved", "ansi2"], CHANGES_REQUESTED: ["changes requested", "ansi1"], REVIEW_REQUIRED: ["review required", "ansi3"] };
 const BRANCH = "branch"; // shared "pr.selected": the current branch was picked (not a PR)
+const HL_STALE = 2000; // ms a highlight slice may be busy before it counts as stopped (Herdr stops one after ~50 ms)
 const SEC_MARK = "⛨"; // security's own mark in a PR row (a shield), next to the word
 // A PR's head as GitHub last gave it ({at, sha} by url) and the asks under way: one for every copy of the mod (the
 // panel, then the review of the same PR), so opening the review does not ask again what the panel just asked.
@@ -889,10 +890,14 @@ export default class PrReview extends View {
   }
 
   // One slice of the open file's highlighting; the next one after a timer, until the file is done (then a redraw).
+  // hl.at: when the slice was asked for. Herdr stops a slice that takes too long without throwing, so the render gives
+  // a file up whose slice is older than HL_STALE (it stays plain); a tokenizer that throws leaves it plain as well.
   highlightMore(cx, hl) {
+    hl.at = Date.now();
     cx.timer.after(0, (cx) => {
-      if (this.hl !== hl) return; // another file opened meanwhile
-      const out = highlightStep(hl.job, 10);
+      if (this.hl !== hl || hl.spans) return; // another file opened meanwhile, or this one was given up
+      let out;
+      try { out = highlightStep(hl.job, 10); } catch { out = hl.rows.map(() => []); }
       if (out) { hl.spans = out; cx.notify(); } else this.highlightMore(cx, hl);
     });
   }
@@ -1264,7 +1269,7 @@ export default class PrReview extends View {
       const old = this.hl?.spans && this.hl.file === this.open ? this.hl : null;
       this.hl = { rows: this.rows, file: this.open, job: highlightJob(this.rows, langOf(this.open ?? "", this.rows.first)), spans: null, kept: old && this.rows.map((r, i) => (old.rows[i]?.text === r.text ? old.spans[i] : null)) };
       this.highlightMore(cx, this.hl);
-    }
+    } else if (!this.hl.spans && Date.now() - this.hl.at > HL_STALE) this.hl.spans = this.rows.map((_r, i) => this.hl.kept?.[i] ?? []); // its slice never came back
     this.spans = this.hl.spans ?? this.hl.kept;
     const diffId = `pr-diff-${this.uid}-${this.from}`; // a new id starts scrolled to the top: how j/k bring a change into view
     const state = this.view === "setup" ? "setup" : panelState({ chosen: this.prSel ?? (this.branchPicked || this.restoring), picking: this.picking });
