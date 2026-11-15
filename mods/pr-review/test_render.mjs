@@ -216,3 +216,20 @@ globalThis.__rv.store.set("review.minimized", { target: { url: "https://github.c
 renderMini();
 globalThis.__rv.store.set("review.minimized", null);
 console.log("render ok");
+
+// A state diagram over a layer's code: each transition's number and trigger is in the picture, a finding's chip stands
+// after the label of the transition it names, the legend names the kinds of line this picture has; where the card is
+// too narrow for the texts, the numbers alone.
+{
+  const { visualCard } = await import("./stack.js");
+  const T = (from, to, event, more = {}) => ({ from, to, event, changed: true, ...more });
+  const v = { kind: "state_machine", title: "Loan", nodes: ["borrowed", "reminded", "overdue", "returned"].map((id) => ({ id, label: id })),
+    transitions: [T("borrowed", "reminded", "loan.reminded"), T("borrowed", "overdue", "loan.overdue", { guard: "allowed by MOVES" }), T("reminded", "overdue", "loan.overdue"), T("borrowed", "returned", "loan.returned", { changed: false }), T("overdue", "overdue", "publish_overdue")] };
+  const marks = new Map([[1, { severity: "high", findings: [{ id: "x", title: "always raises" }] }]]);
+  const drawn = (wide) => { S.texts = new Set(); S.ids = new Set(); ok(`a state diagram at ${wide}`, () => visualCard(v, S.theme, "sd", null, null, wide, { bare: true, marks })); const got = { texts: [...S.texts], ids: [...S.ids] }; S.texts = S.ids = null; return got; };
+  const wide = drawn(900), narrow = drawn(300);
+  for (const x of ["1 · loan.reminded", "2 · loan.overdue", "3 · loan.overdue", "4 · loan.returned", "5 · publish_overdue", "High · 1", "Changed in this PR", "Unchanged", "Has a finding"]) assert.ok(wide.texts.includes(x), `${x} is in the picture`);
+  assert.ok(!wide.texts.includes("Spec only") && wide.ids.includes("sd-sv-l2-m"), "the chip is part of transition 2's label");
+  assert.ok(["1", "2", "3", "4", "5", "High · 1"].every((x) => narrow.texts.includes(x)) && !narrow.texts.includes("2 · loan.overdue"));
+  console.log("state diagram labels ok");
+}
