@@ -5,7 +5,7 @@ import { div, PathBuilder, Background } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { levels } from "./pr.js";
 import { markLine } from "./arch.js";
-import { archLayout, archFocus, stateLayout, transitionText, sourceStyle, hasSources, pathMark, SPEC_TIP, ARCH, LABEL } from "./arch.js";
+import { archQuick, layoutJob, layoutStep, archFocus, stateLayout, transitionText, sourceStyle, hasSources, pathMark, SPEC_TIP, ARCH, LABEL } from "./arch.js";
 import { clampText, MARK_CARD_H } from "./arch.js"; // wave C2: a mark's finding in two lines
 import { bundleChips, markRoom } from "./arch.js"; // finding chips of a state diagram that would touch are one; a card's mark takes one or two lines
 import { transitionLabel, SM } from "./arch.js"; // a state diagram's labels: number and trigger, their width, the loop's room
@@ -207,6 +207,41 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
   });
   return div().id(id).relative().flex_none().w(L.width + 4).h(L.height + 4).children([gridBg(t, L.width + 4, L.height + 4), ...groups, ...els, ...crossings, ...bypasses, ...nodes, ...states, ...texts, ...badges, ...chips, ...notes]);
 }
+// A picture's layout for a view that draws in a render: laidOut(args) gives a memo entry {L} with what a render can
+// afford at once (arch.js archQuick: archLayout's picture, for a big map a rough one) and queues the search for the
+// better layout (arch.js layoutJob: frames and long lines where they cross least, too much work for a render).
+// layoutPump(cx), called by the view in each render, works the queue off after the render: one slice of about 10 ms
+// per timer tick (layoutSlice), the job keeping its place between them. entry.L is replaced once, when the search is
+// through and its layout differs, and the view is told; no try in between is shown. entry: what else the memo keeps
+// (its key; an L it already has stays); live(): the memo's entry now, so a replaced one is not searched on. A search
+// that throws is dropped.
+// ponytail: one queue for all views of this module, the 24 newest entries; the view that pumps is the one told.
+const layoutQueue = [];
+let layoutTick = false;
+export function laidOut(args, entry = {}, live = () => entry) {
+  entry.L ??= archQuick(...args); // a model that laid its picture out itself (a pure module, no view) brings it
+  layoutQueue.push({ entry, args, live, job: null });
+  if (layoutQueue.length > 24) layoutQueue.shift();
+  return entry;
+}
+export function layoutPump(cx) {
+  if (layoutTick) return;
+  layoutTick = true;
+  cx.timer.after(0, layoutSlice);
+}
+export function layoutSlice(cx) {
+  layoutTick = false;
+  const q = layoutQueue[0];
+  if (!q) return;
+  try {
+    if (q.live() !== q.entry) layoutQueue.shift();
+    else {
+      const L = layoutStep(q.job ??= layoutJob(...q.args), 10);
+      if (L) { layoutQueue.shift(); if (JSON.stringify(L) !== JSON.stringify(q.entry.L)) { q.entry.L = L; cx.notify(); } }
+    }
+  } catch { layoutQueue.shift(); }
+  if (layoutQueue.length) layoutPump(cx);
+}
 const FLOW_FITS = 380;
 // A layer's flow laid out by archLayout, memoized like archModel. fit: its narrow cards (the layer column is about
 // 420 px); over the code there is room for the usual ones.
@@ -215,10 +250,11 @@ function flowModel(v, fit = true) {
   const key = `${fit}|${JSON.stringify(v)}`;
   if (!flowMemo.has(key)) {
     // labels: a call's text on its line, once archLayout takes that option (until then it is ignored, and every text is in the legend).
-    flowMemo.set(key, archLayout(flowArch(v), "diff", () => 0, fit, { labels: true }));
+    const args = [flowArch(v), "diff", () => 0, fit, { labels: true }];
+    flowMemo.set(key, laidOut(args, {}, () => flowMemo.get(key)));
     if (flowMemo.size > 12) flowMemo.delete(flowMemo.keys().next().value);
   }
-  return flowMemo.get(key);
+  return flowMemo.get(key).L;
 }
 const cap = (s) => String(s ?? "").replace(/^./, (c) => c.toUpperCase());
 // Trust zones (arch.js zoneArch): a colour per trust level, none of them the severity red.

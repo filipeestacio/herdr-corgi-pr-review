@@ -399,23 +399,26 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   act(v, "page:blast", "Security with a guard");
   await tour(v, "PR #2 with a guard, a right off the map and an operator's script");
 }
-// The Security page's map shows archLayout's picture at once; its better layout (arch.js archSearch: a full layout per
-// try, too much for a render) comes after the render, in slices (layoutMore): the memo's layout is replaced once, the
-// view is told, and the page draws with it.
+// The Security page's map shows archLayout's picture at once (the base layout: two lines round the picture); its
+// better layout (arch.js layoutJob: too much work for a render) comes after the render, in slices of a timer tick each
+// (stack.js layoutPump): the memo's layout is replaced once, the view is told once, and the page draws with it.
 {
   const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json") });
   act(v, "page:blast", "Security, the map at once");
-  const { lineStats, archLayout } = await import("./arch.js"), quick = v.secMemo.L, jobs = v.layoutJobs.length;
+  const { lineStats } = await import("./arch.js"), { layoutSlice, laidOut } = await import("./stack.js"), quick = v.secMemo.L, q = lineStats(quick);
+  assert.deepEqual([q.crossings, q.bends, q.around], [0, 10, 2], "the base layout, at once");
   let told = 0;
-  const later = { ...cx, notify() { told++; }, timer: { ...cx.timer, after: (_ms, f) => setImmediate(() => f(later)) }, spawn: (fn) => cx.spawn(() => fn(later)) };
-  v.layoutMore(later); await settle();
-  const s = lineStats(v.secMemo.L), q = lineStats(quick);
-  assert.ok(jobs > 0 && v.secMemo.L !== quick && told >= 1 && !v.layoutBusy && v.layoutJobs.length === 0, "searched after the render");
-  assert.ok(s.crossings <= q.crossings && s.bends < q.bends && s.around < q.around, `${JSON.stringify(s)} was ${JSON.stringify(q)}`);
+  const later = { ...cx, notify() { told++; }, timer: { ...cx.timer, after: (_ms, f) => setImmediate(() => f(later)) } };
+  layoutSlice(later); // the tick after the render (this test's renders have a timer that never fires)
+  for (let i = 0; i < 50 && v.secMemo.L === quick; i++) await settle();
+  const s = lineStats(v.secMemo.L);
+  assert.deepEqual([s.crossings, s.bends, s.around], [0, 8, 1], "after the search: fewer bends, one line less round the picture");
+  assert.ok(told >= 1, "the view is told");
   draw(v, "Security, the map after its search");
-  // A memo replaced meanwhile is not searched on: its job ends without a layout.
-  const gone = { key: "x", L: quick }; v.layoutLater(gone, [null], () => null); v.layoutMore(later); await settle();
-  assert.ok(gone.L === quick && !v.layoutBusy && archLayout(null).nodes.length === 0);
+  // A memo replaced meanwhile is not searched on: its entry keeps its layout, and nobody is told.
+  await settle(); told = 0;
+  const gone = laidOut([null], { key: "x" }, () => null), empty = gone.L; layoutSlice(later); await settle();
+  assert.ok(gone.L === empty && told === 0);
 }
 // Someone else's PR with reasons for a security review: the offers instead of a start.
 {

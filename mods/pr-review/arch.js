@@ -17,7 +17,7 @@
 // The Architecture page's picture (opts.labels) differs in two things: a call's text sits on its line, in the gutter
 // next to its number (the legend only lists what did not fit), and a call that cannot be a line to the next column but
 // whose target already has a drawn line is a "long" line, so the calls into one card meet at it: under (or over) the
-// picture, and after the search (archSearch, outside render) on the free way between the frames of the columns it
+// picture, and after the search (layoutJob, outside render) on the free way between the frames of the columns it
 // passes where that crosses nothing.
 
 export const ARCH = { W: 230, PAD: 12, HEAD: 30, GAP_Y: 18, GAP_G: 20, LANE: 12, GAP_MIN: 64, BADGE: 18, HOP: 8, PORT: 12,
@@ -67,10 +67,12 @@ const avg = (xs) => xs.reduce((s, x) => s + x, 0) / xs.length;
 
 // The order with the lowest cost: every permutation for up to 4 items (24 tries), else adjacent swaps from the given
 // order until nothing improves. ponytail: a full search of 6 items (720 layouts) timed the render out.
-export function bestOrder(items, cost, start = items) {
+// orderSteps is the same as a generator that yields after each order it has priced, so a caller working in slices
+// (layoutSteps) can stop inside a long search; bestOrder runs it in one go.
+export function* orderSteps(items, cost, start = items) {
   if (items.length <= 4) {
     let best = null, bestCost = Infinity;
-    for (const p of permutations(items)) { const k = cost(p); if (k < bestCost) { best = p; bestCost = k; } if (k === 0) break; }
+    for (const p of permutations(items)) { const k = cost(p); if (k < bestCost) { best = p; bestCost = k; } if (k === 0) break; yield "order"; }
     return best;
   }
   let order = [...start], cur = cost(order);
@@ -80,9 +82,13 @@ export function bestOrder(items, cost, start = items) {
       const next = [...order]; [next[i], next[i + 1]] = [next[i + 1], next[i]];
       const k = cost(next);
       if (k < cur) { order = next; cur = k; improved = true; }
+      yield "order";
     }
   }
   return order;
+}
+export function bestOrder(items, cost, start = items) {
+  for (let g = orderSteps(items, cost, start), r = g.next(); ; r = g.next()) if (r.done) return r.value;
 }
 export function permutations(list) {
   if (list.length <= 1) return [list];
@@ -182,11 +188,18 @@ export function archFocus(L, id) {
 // opts {labels: the Architecture page's picture (texts on the lines, long lines), marked(edge indexes): a path that
 // carries a mark (a finding breaks the flow there) keeps a row for it above its text}. A labelled path has `text`
 // {x, y, w, h, lines: [strings], cut, mark}; one whose text did not fit next to its line has none (the legend lists it).
-// opts.over, opts.near (Sets of long lines' keys), opts.pin, opts.still and opts.search are the layout's own: the tries
-// of the search at its end (archSearch).
+// opts.over, opts.near (Sets of long lines' keys), opts.pin, opts.still, opts.search and opts.rough are the layout's
+// own: the tries of the search at its end (layoutJob) and the rough pass (archQuick).
 export const FIT = { W: 160, TITLE_CH: 19, DESC_CH: 25, DESC_LINES: 2 };
 export const LABEL = { CH: 20, LINES: 3, CHW: 6.2, LH: 13, MARK: 50, LONG: 3 }; // MARK: a mark above a call's text, its chip and a line with the finding
 export function archLayout(arch, view = "diff", extra = () => 0, fit = false, opts = {}) {
+  for (let g = layoutSteps(arch, view, extra, fit, opts), r = g.next(); ; r = g.next()) if (r.done) return r.value;
+}
+// The layout as a generator, so the search at its end (layoutJob) can stop between two steps and go on in the next
+// slice: it yields after each order it has priced (of a column's groups, of a group column's cards, of a gutter's
+// lanes: the work that grows with the picture) and between the parts of a pass, and returns the layout. What it yields
+// names the step and is for measuring only. archLayout runs it in one go.
+function* layoutSteps(arch, view, extra, fit, opts) {
   const { PAD, HEAD, GAP_Y, GAP_G, LANE, GAP_MIN, BADGE, PORT, STUB, CHIP_H, CHIP_GAP, CH, FAN, ROW } = ARCH;
   const { W, TITLE_CH, DESC_CH } = fit ? FIT : ARCH, DESC_LINES = fit ? FIT.DESC_LINES : 3;
   const hide = view === "before" ? "new" : view === "after" ? "removed" : null;
@@ -258,7 +271,9 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
   const longs = [...forced, ...(opts.labels ? edges.filter((e) => canLong(e) && !forced.includes(e) && edges.some((x) => x.to === e.to && drawn(x))).slice(0, LABEL.LONG) : [])];
   const kindOf = (e) => (drawn(e) ? "next" : longs.includes(e) ? "long" : "stub");
   const nexts = edges.filter((e) => kindOf(e) === "next");
+  const rough = Boolean(opts.rough); // one pass without any search for an order (archQuick's picture of a big map)
 
+  yield "columns";
   // 2. Order: groups and nodes by the mean position of their neighbours, a few sweeps (ties keep the given order),
   // then per group column of up to 6 cards the order with the fewest swapped neighbour pairs.
   const nb = new Map(ids0.map((id) => [id, []]));
@@ -294,7 +309,7 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
     for (const a of longE) for (const b of longE) if (a !== b && !up(a) && !up(b) && col.get(a.from) === col.get(b.from) && row.get(a.from) < row.get(b.from) && col.get(a.to) > col.get(b.to)) n += 0.5;
     return n;
   };
-  for (let c = 0; c < ncol; c++) {
+  for (let c = 0; c < (rough ? 0 : ncol); c++) {
     const gs = gl.filter((g) => colIds(c).some((id) => gOf(id) === g)), slots = gs.map((g) => gl.indexOf(g));
     if (gs.length < 2 || gs.length > 4) continue;
     let best = gl, bestCost = swapped();
@@ -304,14 +319,15 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
       const k = swapped();
       if (k < bestCost) { best = gl; bestCost = k; }
       gl = prev;
+      yield "groups";
     }
     gl = best;
   }
-  for (let c = 0; c < ncol; c++) for (const g of gl) {
+  for (let c = 0; c < (rough ? 0 : ncol); c++) for (const g of gl) {
     const block = colIds(c).filter((id) => gOf(id) === g);
     if (block.length < 2 || block.length > 6) continue;
     const slots = block.map((id) => pos.get(id)).sort((a, b) => a - b), set = (order) => order.forEach((id, k) => pos.set(id, slots[k]));
-    set(bestOrder(block, (p) => { set(p); return swapped(); }));
+    set(yield* orderSteps(block, (p) => { set(p); return swapped(); }));
   }
   // opts.pin (card id -> its place in its frame's column): the search at the end tries each place for a card whose
   // long line runs between the frames, where no count of swapped pairs says which place is best.
@@ -320,6 +336,7 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
     order.splice(j, 0, id); order.forEach((x, k) => pos.set(x, slots[k]));
   }
 
+  yield "sweeps";
   // 3. Paths: stubs; fans (one source, three or more calls into one group, not from a state row); buses (same target, same
   // meaning share one lane and one port).
   const fanKey = (e) => `${e.from}>${gOf(e.to)}`, fanN = new Map();
@@ -386,6 +403,7 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
     size.set(id, { h: Math.max(72, content, need("l"), n.states.length ? 0 : need("r")), title, desc, stateTop });
   }
 
+  yield "sizes";
   // 6. Geometry. Column insets for fan spines (per group column), stub zones and lanes per gutter, then groups
   // stacked where their columns overlap (in barycentre order), cards stacked inside.
   const spine = new Map(), inset = Array(ncol).fill(0);
@@ -470,6 +488,7 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
     for (const [k, e] of slide) portY.set(k, e.y);
     return lines.filter(([s, t]) => s.y === t.y).length; // how many lines run straight
   };
+  yield "geometry";
   let straight = placePorts();
 
   // A frame stands lower than its place in the stack when more lines run straight for it: level with the cards that
@@ -491,14 +510,16 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
     if (deep) for (const g of new Set((dir > 0 ? outOf(f).map((p) => p.to) : into(f).map((p) => p.from[0])).map(gOf))) pull(frames.find((x) => x.g === g), dir, true);
     return true;
   };
-  for (const dir of opts.still ? [] : [1, -1]) for (const f of [...frames].sort((a, b) => dir * (a.lo - b.lo) || b.y - a.y)) for (const deep of [false, true]) {
+  for (const dir of opts.still || rough ? [] : [1, -1]) for (const f of [...frames].sort((a, b) => dir * (a.lo - b.lo) || b.y - a.y)) for (const deep of [false, true]) {
     const was = frames.map((x) => x.y), ports0 = [...portY];
     if (!pull(f, dir, deep)) break; // nothing to gain by a move
     if (count > straight) { straight = count; break; }
     frames.forEach((x, i) => moveF(x, was[i] - x.y)); // back, the ports too
     for (const [k, y] of ports0) portY.set(k, y);
+    yield "frame";
   }
 
+  yield "frames";
   // A long line that skips a column and has a free way between the frames (opts.near: its key; the search at the end
   // tries it) runs there instead of round the picture: through the stretch no frame of the columns it passes covers
   // (10 px off a frame, a lane off another such line) that is nearest to its card, level with its port where it can.
@@ -545,6 +566,7 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
     return { segs, arrow: { x: tx, y: ty, left: false } };
   };
 
+  yield "channels";
   // Lane order per gutter: the permutation (small gutters) or swaps with the fewest crossings inside the gutter. A long
   // line's way down from its card (out) and up to its target (in) take part, so its lane goes where it crosses the
   // fewest lines rather than always outermost; the start order is by where a line ends (the way down last).
@@ -565,7 +587,7 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
     const tyOf = (q) => (q.kind === "out" ? chanY.get(q.p.key) ?? (opts.over?.has(q.p.key) ? -Infinity : Infinity) : q.kind === "in" ? PY(q.p, "to", q.p.to) : q.kind === "trunk" ? Math.min(...q.branches.map((b) => PY(b, "to", b.to))) : PY(q, "to", q.to));
     const yOf = (q) => (q.kind === "out" ? PY(q.p, "from", q.p.from[0]) : q.kind === "in" ? cyOf(q.p) : Math.min(...ysOf(q)));
     const start = [...items].sort((a, b) => tyOf(a) - tyOf(b) || yOf(a) - yOf(b));
-    for (const [k, v] of trialOf(bestOrder(items, cost, start))) lane.set(k, v);
+    for (const [k, v] of trialOf(rough ? start : yield* orderSteps(items, cost, start))) lane.set(k, v);
   }
 
   for (const p of paths.filter((q) => q.kind === "next")) { const b = build(p, lane); p.segments = b.segs; p.arrow = b.arrow; }
@@ -615,8 +637,10 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
     for (const f of frames) f.y += dy;
     bottom += dy;
   }
+  yield "routes";
   const drawnP = [...paths.filter((p) => p.kind === "next" || p.kind === "long"), ...trunks], hops = crossings(drawnP), overlapping = overlapsOf(drawnP);
 
+  yield "hops";
   // Numbers in reading order: by the source's column, then where the line leaves it (top to bottom). A stub's chip
   // carries its number. ponytail: the chip keeps the width measured with its first number (same digit count up to 20).
   const startOf = (p) => (p.kind === "stub" ? { c: srcCol(p), y: p.chip.y + CHIP_H / 2 } : { c: srcCol(p), y: Math.min(...p.segments.filter((g) => g.y1 === g.y2 && g.x1 === at.get(p.from[0])?.x + W).map((g) => g.y1), p.segments[0].y1) });
@@ -644,6 +668,7 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
     Object.assign(p.text, tb); placed.push(tb);
   }
 
+  yield "badges";
   const outGroups = frames.map((f) => ({ ...groups.find((g) => g.id === f.g), x: colX[f.lo], y: f.y, w: colX[f.hi] + cw[f.hi] - colX[f.lo], h: f.h, cols: [f.lo, f.hi] }))
     .sort((a, b) => gIds.indexOf(a.id) - gIds.indexOf(b.id));
   const width = ncol ? colX[ncol - 1] + cw[ncol - 1] + gw[ncol - 1] : 0;
@@ -652,54 +677,78 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false, op
   // A long line from the top card of its column may run over the picture instead: each such line on its own, then all
   // of them, laid out again with their ports, lanes and card order facing up. The layout that crosses and covers the
   // fewest lines wins; a tie keeps every line under the picture.
-  if (opts.over || opts.near) return out;
+  if (opts.over || opts.near || rough) return out;
   const firstInCol = (id) => !nodes.some((m) => m.col === at.get(id).col && m.y < at.get(id).y), ups = longP.filter((p) => firstInCol(p.from[0])).map((p) => p.key);
   const tangle = (L) => L.hops.length + 2 * L.overlaps.length;
   let best = out, now = { over: new Set(), near: new Set(), pin: new Map() };
-  // While lines cross: each long line from the top card of its column over the picture, on its own and all together;
-  // then the same with no frame moved and no port slid (still), since straight lines must not cost crossings: that
-  // picture is the start (and stays the rule for the search) where it crosses and covers fewer lines. A picture that
-  // crosses nothing has nothing to gain by either and is laid out once.
+  // While lines cross: each long line from the top card of its column over the picture, on its own and all together
+  // (still: the same with no frame moved and no port slid, the search's first tries). A picture that crosses nothing
+  // has nothing to gain by it and is laid out once.
   const overs = [...ups.map((k) => [k]), ...(ups.length > 1 ? [ups] : [])];
-  for (const still of [false, true]) for (const set of [[], ...overs]) {
-    if (!tangle(best) || (!still && !set.length)) continue; // the first of them is `out`
-    const alt = archLayout(arch, view, extra, fit, { ...opts, still, over: new Set(set) });
-    if (tangle(alt) < tangle(best)) { best = alt; now = { ...now, still, over: new Set(set) }; }
+  function* family(still) {
+    for (const set of [[], ...overs]) {
+      if (!tangle(best) || (!still && !set.length)) continue; // the first of them is `out`
+      const alt = yield* layoutSteps(arch, view, extra, fit, { ...opts, still, over: new Set(set) });
+      if (tangle(alt) < tangle(best)) { best = alt; now = { ...now, still, over: new Set(set) }; }
+    }
   }
-  // So far what a render can afford. The search (archSearch, a try per step): each long line on its own, kept when the
-  // picture then crosses and covers fewer lines, else bends less, else is shorter: one that skips a column on the free
-  // way between the frames, with its card at each place of its frame's column (up to 6 cards), so it goes round the
-  // picture only when every way through costs a crossing; then its target at the top or the bottom of its frame's
-  // column, with the cards that call the target next to it, so the line's way in crosses no line into a card beside it.
+  yield* family(false);
+  // So far archLayout: what a render can afford, about one layout as before frames moved. The rest is the search
+  // (layoutJob), outside render. First, straight lines must not cost crossings: where the picture with no frame moved
+  // and no port slid crosses and covers fewer lines, that one is the start (and stays the rule for the tries below).
+  // Then each long line on its own, kept when the picture then crosses and covers fewer lines, else bends less, else
+  // is shorter: one that skips a column on the free way between the frames, with its card at each place of its
+  // frame's column (up to 6 cards), so it goes round the picture only when every way through costs a crossing; then
+  // its target at the top or the bottom of its frame's column, with the cards that call the target next to it, so
+  // the line's way in crosses no line into a card beside it.
   // ponytail: one line after the other, a full layout per try, no search over two lines at once. The tries are counted
   // by the picture's size (400 / its lines: 40 for ten lines, 8 for fifty), so a big picture tries its first long
-  // lines only; a count, not a clock, keeps the same data the same picture. A picture of more than 30 lines is not
-  // searched: one try of it takes longer than the slice a script gets.
-  function* search() {
-    let tries = paths.length > 30 ? 0 : Math.floor(400 / Math.max(1, paths.length));
-    const worth = (L) => { const s = lineStats(L); return [s.crossings + 2 * s.overlaps + 2 * s.covered, s.bends, s.length]; }, less = (a, b) => { const k = a.findIndex((v, i) => v !== b[i]); return k >= 0 && a[k] < b[k]; };
-    const attempt = (o) => { if (tries-- <= 0) return; const alt = archLayout(arch, view, extra, fit, { ...opts, ...o }); if (!less(worth(alt), worth(best))) return; best = alt; now = o; };
-    for (const p of longP) {
-      const id = p.from[0], block = nodes.filter((n) => n.col === at.get(id).col && gOf(n.id) === gOf(id)), was = now;
-      if (col.get(p.to) - srcCol(p) > 1) for (const j of block.length <= 6 ? block.keys() : [null]) {
-        attempt({ ...was, over: new Set([...was.over].filter((k) => k !== p.key)), near: new Set([...was.near, p.key]), pin: new Map([...was.pin, ...(j === null ? [] : [[id, j]])]) });
-        yield;
-      }
-      const side = [p.to, ...paths.filter((q) => q.kind === "next" && q.to === p.to).flatMap((q) => q.from)], held = now;
-      for (const end of [0, Infinity]) { attempt({ ...held, pin: new Map([...held.pin, ...side.map((x) => [x, end])]) }); yield; }
-    }
-    return best;
+  // lines only; a count, not a clock, keeps the same data the same picture however the slices fall.
+  if (!opts.search) return best;
+  yield* family(true);
+  let tries = Math.floor(400 / Math.max(1, paths.length));
+  const worth = (L) => { const s = lineStats(L); return [s.crossings + 2 * s.overlaps + 2 * s.covered, s.bends, s.length]; }, less = (a, b) => { const k = a.findIndex((v, i) => v !== b[i]); return k >= 0 && a[k] < b[k]; };
+  function* attempt(o) {
+    if (tries-- <= 0) return;
+    const alt = yield* layoutSteps(arch, view, extra, fit, { ...opts, ...o });
+    if (less(worth(alt), worth(best))) { best = alt; now = o; }
   }
-  return opts.search ? search() : best;
+  for (const p of longP) {
+    const id = p.from[0], block = nodes.filter((n) => n.col === at.get(id).col && gOf(n.id) === gOf(id)), was = now;
+    if (col.get(p.to) - srcCol(p) > 1) for (const j of block.length <= 6 ? block.keys() : [null])
+      yield* attempt({ ...was, over: new Set([...was.over].filter((k) => k !== p.key)), near: new Set([...was.near, p.key]), pin: new Map([...was.pin, ...(j === null ? [] : [[id, j]])]) });
+    const side = [p.to, ...paths.filter((q) => q.kind === "next" && q.to === p.to).flatMap((q) => q.from)], held = now;
+    for (const end of [0, Infinity]) yield* attempt({ ...held, pin: new Map([...held.pin, ...side.map((x) => [x, end])]) });
+  }
+  return best;
 }
-// The search for a better layout than archLayout's, which a render cannot afford in one go (Herdr stops a script slice
-// after about 50 ms, and each try is a full layout): a generator that makes one try per step and returns the best
-// layout at its end; archLayout's own when no try beat it. Run it outside render, a few steps per slice.
-export const archSearch = (arch, view = "diff", extra = () => 0, fit = false, opts = {}) => archLayout(arch, view, extra, fit, { ...opts, search: true });
-// The same in one go: for tests, and where nothing stops a slow call.
-export function archBest(...args) {
-  for (let g = archSearch(...args), r = g.next(); ; r = g.next()) if (r.done) return r.value;
+// What a render can afford. Herdr stops a script slice after about 50 ms and then shows the view's last frame under
+// "This view could not be re-rendered", for as long as the render stays that slow; its script engine takes about 20
+// times as long as node for this code. Up to QUICK_LINES calls that is archLayout (in the window 3 ms for 6 lines and
+// 7 ms for 9; a dense picture of 19 lines about 30 ms). More: one rough pass, the cards in the order of the barycentre
+// sweeps and the lanes in the order their lines end, with no search for a better order, no frame moved and no line
+// over the picture (in the window about 10 ms for 55 lines and 30 ms for 119, where archLayout would by that factor
+// take 150 ms and 800 ms): more crossings, but every card and line is there. The search (layoutJob) starts from archLayout's picture
+// either way and replaces the rough one when it is through (after about 0.7 s and 1.8 s for those two).
+export const QUICK_LINES = 16;
+export const archQuick = (arch, view = "diff", extra = () => 0, fit = false, opts = {}) => archLayout(arch, view, extra, fit, (arch?.edges?.length ?? 0) > QUICK_LINES ? { ...opts, rough: true } : opts);
+
+// The search for a better layout than archLayout's as a job that keeps its place (like syntax.js highlightJob and
+// highlightStep): a render cannot afford it (Herdr stops a script slice after about 50 ms, and the search lays the
+// picture out many times), so it runs after the render, a slice at a time. layoutStep works for about `ms`, then
+// returns null; once the search is through it returns the best layout (archLayout's own when no try beat it). The
+// result does not depend on where the slices fall. now: the clock, for tests.
+export const layoutJob = (arch, view = "diff", extra = () => 0, fit = false, opts = {}) => ({ steps: layoutSteps(arch, view, extra, fit, { ...opts, search: true }), n: 0 });
+export function layoutStep(job, ms = 10, now = Date.now) {
+  for (const end = now() + ms; ;) {
+    const r = job.steps.next();
+    job.n++; // the steps taken so far
+    if (r.done) return r.value;
+    if (now() >= end) return null;
+  }
 }
+// The search in one go: for tests, and where nothing stops a slow call.
+export const archBest = (...args) => layoutStep(layoutJob(...args), Infinity);
 
 // Where the unresolved findings sit on the picture. One that breaks the flow says where (`breaks`: {node}, or {from,
 // to, edge: "e<index>"} for a call); one that does not (a reviewer's, mostly) goes to the card of its file: the last

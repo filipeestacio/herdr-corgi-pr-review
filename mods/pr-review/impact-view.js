@@ -6,8 +6,8 @@
 import { div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { readTextFile, writeTextFile, appHome, settings, shared } from "herdr";
-import { archLayout, markRoom, ARCH } from "./arch.js";
-import { archView } from "./stack.js";
+import { markRoom, ARCH } from "./arch.js";
+import { archView, laidOut } from "./stack.js";
 import { TYPE } from "./views.js";
 import { hash } from "./pr.js";
 import { call, supported } from "./defs.js";
@@ -25,7 +25,8 @@ const button = (id, t, label, tip, click) => div().id(id).flex_none().whitespace
 /** The cards and calls laid out, with a line per row of a card and the room for a finding's mark. */
 export function impactLayout(model, marks) {
   const a = impactArch(model);
-  return { a, L: archLayout(a, "diff", (n) => rowsOf(n) + (marks.nodes.has(n.id) ? markRoom(marks.nodes.get(n.id), ARCH.W - 20).rows : 0)) };
+  const args = [a, "diff", (n) => rowsOf(n) + (marks.nodes.has(n.id) ? markRoom(marks.nodes.get(n.id), ARCH.W - 20).rows : 0)];
+  return laidOut(args, { a }); // what a render can afford now, the better layout after it (stack.js)
 }
 
 // A card's rows: its mark as a shape and its words (a caller), or what is known about a changed function.
