@@ -213,6 +213,40 @@ const all = [f("m1", "medium", { breaks: { node: "c" } }), sec, f("l1", "low"), 
   console.log("ok zones and the context for a checking agent");
 }
 
+// The Security page of a webhook PR (synthetic): the findings a threat stands on are counted apart and listed; the
+// crossings with their threats and the guards are in the export; a deny rule is no right; the blast radius is by the
+// principal's card; a run's tool words are left out; Codex is named as Codex; an analysis that checked other areas says so.
+{
+  const arch = { groups: [{ id: "acct", label: "Shop account", kind: "Cloud account" }],
+    zones: [{ id: "z1", name: "Hook function", trust: "public" }, { id: "z3", name: "Stores", trust: "data" }],
+    nodes: [{ id: "fn", group: "acct", zone: "z1", label: "hook fn" }, { id: "vault", group: "acct", zone: "z3", label: "Secrets" }, { id: "topic", group: "acct", zone: "z3", label: "Topic" }],
+    edges: [{ from: "fn", to: "vault", status: "new", crosses: true, label: "read" }] };
+  const access = [{ id: "acc1", resource: "route", kind: "route", principal: "anyone on the internet", principal_node: null, actions: ["call POST /hook"], public: true, auth: "token", auth_kind: "code", node: "fn", change: "added", at: "infra.tf:9" },
+    { id: "acc2", resource: "fn-policy", kind: "secret", principal: "fn role", principal_node: "fn", actions: ["secrets:Get"], public: false, auth: "IAM", auth_kind: "iam", node: "vault", change: "added", used: true, at: "infra.tf:20" },
+    { id: "acc3", resource: "fn-policy", kind: "log group", principal: "fn role", principal_node: "fn", actions: ["logs:Put"], public: false, auth: "IAM", auth_kind: "iam", change: "added", used: true, at: "infra.tf:24" },
+    { id: "acc4", resource: "topic-policy", kind: "topic", principal: "everyone but the fn role", principal_node: null, actions: ["deny events:Put"], public: false, auth: "resource policy", auth_kind: "iam", node: "topic", change: "added", at: "infra.tf:30" }];
+  const threats = [{ id: "t1", where: { access: "acc1" }, threat: "A flood crowds out real senders.", stride: "D", result: "finding", findings: ["flood"], note: "" },
+    { id: "t2", where: { access: "acc2" }, threat: "A taken-over fn role reads the secrets.", stride: "I", result: "mitigated", evidence: "infra.tf:20", note: "two secrets only", findings: [] },
+    { id: "t3", where: { access: "acc4" }, threat: "Another principal publishes directly.", stride: "S", result: "mitigated", evidence: "infra.tf:31", findings: [] }];
+  const gates = [{ where: { access: "acc1" }, principal: "anonymous", check: "token", at: "fn.py:4", source: "code", holds_if: "the hook secret is set", carries: ["body"] }];
+  const flood = f("flood", "medium", { title: "One limit for everyone", impact: "degraded_operation", category: "availability", reachable_from: ["acc1"], reachability: "authenticated" });
+  const ai = { arch, access, threats, gates, bypasses: [], asks: [], scope: { checked: [{ area: "correctness", result: "clean", note: "" }, { area: "tests", result: "clean", note: "" }] } };
+  const runs = { security: { state: "done", model: "m-1", scope: { read: ["fn.py"], checked: [{ area: "secrets", result: "clean", note: "" }], skipped: ["git diff not run: Bash denied, read the changed files instead"] } },
+    codex: { state: "done", model: "claude-small-1", scope: null } };
+  const text = securityMd({ ...base, ai, findings: [flood, f("other", "high")], statusOf: () => "open", runs });
+  assert.match(text, /# Security\n\n0 unresolved security findings about access or data\. 1 other unresolved finding backs a threat of the threat model \(1 medium\)\.\n\n## Findings behind a threat\n\n[^\n]*\n\n### 1\. One limit for everyone\n/);
+  assert.doesNotMatch(text, /T other/, "a finding no threat names stays on its own pages");
+  assert.match(text, /## Trust boundary crossings\n\n3 crossings this PR opens or changes: 2 assessed, 1 not assessed\.\n\n[^\n]*\n[^\n]*\n\| 1 \| anyone on the internet → Hook function: route \| way in \| anyone on the internet \| token, in the code at `fn\.py:4` \| the hook secret is set \| finding \| One limit for everyone \|\n\| 2 \| Hook function → Stores: fn-policy \(secrets:Get\); call: read \| right \| fn role \| IAM at `infra\.tf:20` \| - \| mitigated \| - \|\n\| 3 \| Operator \(deploy\) → Hook function: sets the configuration that check 1 holds on \| operator way \|/, 'the way in, the right with its call, and who sets what the check holds on');
+  assert.match(text, /\| 1 \| t1 \| D \| A flood crowds out real senders\. \| finding \| - \|\n\| 2 \| t2 \| I \| A taken-over fn role reads the secrets\. \| mitigated \| `infra\.tf:20`; two secrets only \|\n/);
+  assert.match(text, /## Guards\n\n[^\n]*\n\n- Guard at Topic: denies events:Put to everyone but the fn role \(resource policy, infra\.tf:30\)\. Holds against: Another principal publishes directly\. \(mitigated, `infra\.tf:31`\)\.\n/);
+  assert.match(text, /- \*\*Hook function\*\* \(public\): If it is compromised, fn role can secrets:Get on Secrets; logs:Put on log group fn-policy\. Its calls reach Stores \(data\)\.\n/, "the rights by the principal's card, each on its card or its kind and resource");
+  assert.doesNotMatch(/## Rights granted\n[\s\S]*?\n\n/.exec(text)[0], /topic-policy/, "a deny rule is no right granted");
+  assert.match(text, /### Analysis\n\nThe analysis checked no security area \(it reports correctness, tests\); the security areas are the security review's\.\n/);
+  assert.match(text, /Skipped:\n- git diff not run: read the changed files instead\n/, "what was left out stays, the tool's words go");
+  assert.match(text, /### Codex review: done \(Codex; its text turned into findings by claude-small-1\)\n\nThis run reported no scope: it does not say what it read or checked\.\n/);
+  console.log("ok security: threats, guards and the findings behind them");
+}
+
 // ---- Resilience: paths, ladder, budget, the race as a sequence diagram
 {
   const { resilienceMd } = await import("./markdown.js");

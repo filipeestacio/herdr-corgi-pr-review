@@ -1,7 +1,7 @@
 // Pure helpers for the panel's state (main.js) and a layer's flow picture (stack.js visualCard). No gpui imports, so
 // node tests them (test_views.mjs).
 import { transitionText } from "./arch.js";
-import { isSecurity, priceOf } from "./pr.js";
+import { isSecurity, priceOf, isGuard } from "./pr.js";
 
 // The panel is either picking a PR (none chosen yet, or PRs ▾ open) or showing the chosen one (its diff or walkthrough).
 // chosen: a PR, or the current branch picked from the list.
@@ -734,7 +734,10 @@ export function crossingsOf({ arch = null, access = [], threats = [], findings =
     const fs = [...new Set([...own, ...(findings ?? []).filter((f) => (f.ids ?? [f.id]).some((i) => cited.has(i)))])];
     const results = real.map((t) => RESULT[t.result]).filter(Boolean);
     const result = fs.length || results.includes("finding") ? "finding" : results.includes("mitigated") ? "mitigated" : "not_assessed";
-    const reason = result !== "not_assessed" ? null : ns.some(isDefect) ? "Only a defect is named here, not what an attacker could do across this boundary." : (ts.find((t) => t.derived)?.threat || "No threat names this crossing.");
+    // Why not assessed: the run's own reason at a threat it named (its note), before the placeholder's.
+    const said = real.find((t) => String(t.note ?? "").trim());
+    const reason = result !== "not_assessed" ? null : ns.some(isDefect) ? "Only a defect is named here, not what an attacker could do across this boundary."
+      : said ? `The run named a threat here and left it open: ${String(said.note).trim().replace(/\.$/, "")}.` : (ts.find((t) => t.derived)?.threat || "No threat names this crossing.");
     return { result, reason, findings: fs, threats: ns, stride: [...new Set(real.map((t) => t.stride).filter(Boolean))].join(""), goal: real.map((t) => t.goal).find(Boolean) ?? null,
       path: ns.map((t) => t.path).find((p) => Array.isArray(p) && p.length > 1) ?? null, evidence: ns.map((t) => t.evidence).find(Boolean) ?? null,
       conflicts: fs.filter((f) => conflicts.has(f.id)).map((f) => ({ f, ...conflicts.get(f.id) })), _ts: ts, _own: own };
@@ -747,6 +750,7 @@ export function crossingsOf({ arch = null, access = [], threats = [], findings =
   const changeOf = (x) => x.change ?? (x.opened_by_pr === true ? "added" : x.opened_by_pr === false ? "unchanged" : null);
   const rows = [];
   for (const x of access ?? []) {
+    if (notCrossing(x, threats, findings)) continue; // a guard, or a right on something the map does not show: asideOf
     const to = zoneOfNode(x.node), gate = (gates ?? []).find((g) => g.where?.access === x.id) ?? x.gate ?? {}, op = ["operator", "ci"].includes(x.principal_kind);
     // A way in starts outside, with whoever arrives (the principal); a right starts at its principal's frame or card.
     const pn = x.public ? null : principalNode(x), from = x.public ? null : pn ? zoneOfNode(pn) : null;
@@ -754,7 +758,7 @@ export function crossingsOf({ arch = null, access = [], threats = [], findings =
     const inner = !x.public && !op && from && to && from.trust === to.trust && from.name === to.name;
     rows.push(row({ inner, key: `a:${x.id ?? x.resource}`, kind: op ? "operator" : x.public ? "entry" : "right", from: x.public ? { name: x.principal || "Internet", trust: "public" } : pn ? z(from) : { name: x.principal ?? "unnamed", trust: null },
       to: z(to), identity: x.principal ?? null, expects: gate.principal ?? null, check: checkText(gate) ?? x.auth ?? null, at: gate.at ?? x.at ?? null, holds_if: gate.holds_if ?? null,
-      carries: gate.carries ?? null, change: changeOf(x), ends: { from: pn ? cardOf(pn) : null, to: x.node ?? null }, access: x, what: x.resource ?? "", actions: x.actions ?? [],
+      carries: gate.carries ?? null, change: changeOf(x), ends: { from: pn && !op ? cardOf(pn) : null, to: x.node ?? null }, access: x, what: x.resource ?? "", actions: x.actions ?? [],
       unmapped: !x.public && !op && !pn, unused: x.used === false, ...(op ? { valueFrom: x.value_from ?? null, derived: Boolean(x.derived) } : {}) },
     { threat: (t) => t.where?.access === x.id, finding: (f) => (homeOf.get(f) ?? []).includes(x.id) }));
   }
@@ -762,11 +766,11 @@ export function crossingsOf({ arch = null, access = [], threats = [], findings =
     const a = zoneOfNode(e.from), b = zoneOfNode(e.to), gate = (gates ?? []).find((g) => g.where?.edge === `e${i}` || (g.where?.from === e.from && g.where?.to === e.to)) ?? e.gate ?? {};
     const st = e.status === "new" ? "added" : e.status === "changed" || e.changed ? "changed" : e.status === "unchanged" ? "unchanged" : null;
     const match = { threat: (t) => t.where?.edge === `e${i}` || (t.where?.from === e.from && t.where?.to === e.to), finding: (f) => f.breaks?.edge === `e${i}` || (f.breaks?.from === e.from && f.breaks?.to === e.to) };
-    const base = { key: `e:${i}`, from: z(a), to: z(b), identity: frameOf(e.from) && !node(frameOf(e.from)) ? label(frameOf(e.from)) : label(e.from), expects: gate.principal ?? null, check: checkText(gate), at: gate.at ?? null, holds_if: gate.holds_if ?? null,
+    const base = { key: `e:${i}`, from: z(a), to: z(b), identity: frameOf(e.from) && !node(frameOf(e.from)) && frameOf(e.from) !== frameOf(e.to) ? label(frameOf(e.from)) : label(e.from), expects: gate.principal ?? null, check: checkText(gate), at: gate.at ?? null, holds_if: gate.holds_if ?? null,
       carries: gate.carries ?? null, change: st, ends: { from: e.from, to: e.to }, edge: i, what: e.label ?? "" };
     // In one process: no crossing. It bypasses a boundary when the code it reaches also gets calls from another frame
     // (a consumer written for a queue, here called directly), or the data marks it as a crossing.
-    if (inProcess(e) || (node(e.from)?.group && node(e.from)?.group === node(e.to)?.group)) {
+    if (inProcess(e) || (node(e.from)?.group && node(e.from)?.group === node(e.to)?.group && !e.crosses)) {
       const other = edges.some((x, j) => j !== i && x.to === e.to && node(x.from)?.group !== node(e.to)?.group && !inProcess(x));
       const named = (bypasses ?? []).length ? bypasses.some((x) => x.edge === `e${i}` || (x.from === e.from && x.to === e.to)) : inProcess(e) && (e.crosses || other);
       if (named) rows.push(row({ ...base, kind: "bypass", check: null, what: `${e.label ?? "a direct call"}: bypasses the boundary of ${label(e.to)}` }, match));
@@ -787,6 +791,18 @@ export function crossingsOf({ arch = null, access = [], threats = [], findings =
     rows.splice(rows.indexOf(c), 1, merged); rows.splice(rows.indexOf(r), 1);
   }
   for (const r of rows.filter((x) => x.inner)) rows.splice(rows.indexOf(r), 1);
+  // An operator's script or workflow is a card of its own: the operator's way is that row and the card's one call over
+  // a boundary together (who runs it, with which credentials, what it reaches), not a way to the script and a call.
+  for (const o of rows.filter((x) => x.kind === "operator" && !x.derived && x.ends.to)) {
+    const calls = rows.filter((x) => x.kind === "call" && x.ends.from === o.ends.to);
+    if (calls.length !== 1) continue;
+    const c = calls[0], merged = { ...o, ...judge([...new Set([...o._ts, ...c._ts])], [...new Set([...o._own, ...c._own])]), aliases: [c.key], to: c.to, edge: c.edge,
+      what: `${o.what}${o.actions?.length ? ` (${o.actions.join(", ")})` : ""}; call: ${c.what}`, check: o.check ?? c.check, at: o.at ?? c.at, ends: { from: o.ends.to, to: c.ends.to } };
+    rows.splice(rows.indexOf(o), 1, merged); rows.splice(rows.indexOf(c), 1);
+  }
+  // Two derived operator ways that say the same (an older run: one per check, both "configuration") are one.
+  const sameOp = (r) => `${r.identity}\u0000${r.what}\u0000${r.ends.to}`;
+  for (const r of rows.filter((x) => x.kind === "operator" && x.derived)) if (rows.find((x) => x.kind === "operator" && x.derived && sameOp(x) === sameOp(r)) !== r) rows.splice(rows.indexOf(r), 1);
   // An operator's way that sets what a check holds on: new with that check, and the findings that say the check fails.
   for (const o of rows.filter((x) => x.kind === "operator")) {
     const vars = String(`${o.what} ${(o.actions ?? []).join(" ")} ${o.access?.resource ?? ""}`).match(/\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b/g) ?? [];
@@ -804,6 +820,45 @@ export function crossingsOf({ arch = null, access = [], threats = [], findings =
   }
   return rows;
 }
+// An access row that is no crossing: a guard (pr.js isGuard: a rule that takes a right away protects its resource), or
+// a right of a mapped principal on something the map does not show (a role's own log group) that no threat and no
+// finding names. Both stay on the page under the crossings (asideOf), so nothing is lost.
+const namedAt = (x, threats, findings) => (threats ?? []).some((t) => !t.derived && t.where?.access === x.id) || (findings ?? []).some((f) => (f.reachable_from ?? []).includes(x.id));
+const offMap = (x, threats, findings) => !x.public && !["operator", "ci"].includes(x.principal_kind) && Boolean(x.principal_node) && !x.node && !namedAt(x, threats, findings);
+const notCrossing = (x, threats, findings) => isGuard(x) || offMap(x, threats, findings);
+// → {guards: [{row, text, threats: the named ones at it}], rights: [{row, text}]}: a guard as "Guard at <its card or
+// resource>: denies <what> to <who> (<rule>, <at>)", a right as "<who> may <what> on <resource> (<kind>, <at>)".
+export function asideOf({ arch = null, access = [], threats = [], findings = [] } = {}) {
+  const label = (id) => (arch?.nodes ?? []).find((n) => n.id === id)?.label ?? null, plainAct = (a) => String(a).replace(/^\s*(deny|denies|block|blocks)\s+/i, "");
+  const tail = (x) => [x.auth, x.at].filter(Boolean).join(", ");
+  return { guards: (access ?? []).filter(isGuard).map((x) => ({ row: x, threats: (threats ?? []).filter((t) => !t.derived && t.where?.access === x.id),
+      text: `Guard at ${label(x.node) ?? x.resource}: denies ${(x.actions ?? []).map(plainAct).join(", ") || "access"} to ${x.principal || "everyone else"}${tail(x) ? ` (${tail(x)})` : ""}.` })),
+    rights: (access ?? []).filter((x) => !isGuard(x) && offMap(x, threats, findings)).map((x) => ({ row: x,
+      text: `${x.principal || "A principal"} may ${(x.actions ?? []).join(", ") || "act"} on ${x.resource}${[x.kind, x.at].filter(Boolean).length ? ` (${[x.kind, x.at].filter(Boolean).join(", ")})` : ""}${x.used === false ? ", granted and not used" : ""}.` })) };
+}
+// The unresolved findings a named threat cites (a defect named as a threat aside): what the threat model stands on,
+// whatever their effect is called. findings: the unresolved ones; ids as in mergeFindings.
+export const threatCited = (threats, findings) => { const cited = new Set((threats ?? []).filter((t) => !t.derived && !isDefect(t)).flatMap((t) => t.findings ?? []));
+  return (findings ?? []).filter((f) => (f.ids ?? [f.id]).some((i) => cited.has(i))); };
+// What a taken-over principal behind a way in may do: the rights (guards aside) of every principal whose card or frame
+// stands in the zone of a way in's card, by principal, each right on its card's label or, off the map, its resource.
+// [{principal, node, frame, rights: [{actions, on, used}], text}]; [] without a way in or without zones.
+export function blastOf(arch, access) {
+  const nodes = arch?.nodes ?? [], node = (id) => nodes.find((n) => n.id === id), zoneOf = (id) => node(id)?.zone ?? nodes.find((n) => n.group === id && n.zone)?.zone ?? null;
+  const doors = new Set((access ?? []).filter((x) => x.public).map((x) => zoneOf(x.node)).filter(Boolean)), by = new Map();
+  for (const x of access ?? []) {
+    if (x.public || isGuard(x) || ["operator", "ci"].includes(x.principal_kind) || !x.principal_node || !doors.has(zoneOf(x.principal_node))) continue;
+    if (!by.has(x.principal)) by.set(x.principal, { node: x.principal_node, rights: [] });
+    by.get(x.principal).rights.push({ actions: x.actions ?? [], on: node(x.node)?.label ?? ([x.kind, x.resource].filter(Boolean).join(" ") || "a resource"), used: x.used });
+  }
+  // node: the principal's card or frame; frame: the frame that is or holds it (review.js adds what it reaches in one process).
+  return [...by].map(([principal, { node: pn, rights }]) => ({ principal, node: pn, frame: node(pn)?.group ?? pn, rights,
+    text: `If ${principal} is taken over, it can ${rights.map((r) => `${r.actions.join(", ") || "act"} on ${r.on}${r.used === false ? " (granted, not used)" : ""}`).join("; ")}.` }));
+}
+// A run's "left out" line without the words about its tools ("git diff not run: Bash denied, read the files" → "git
+// diff not run: read the files"): what it did not look at stays.
+export const skipText = (s) => String(s ?? "").replace(/(?:\bthe\s+)?\b(bash|tool|permission|sandbox|shell)\b:?[^,.;:()]*\b(denied|refused|not allowed|blocked|not available|unavailable)\b\s*[,;:]?\s*(?:(?:so|and)\s+)?/gi, "").trim();
+
 // Whether a crossing is new or changed in this PR (not said counts as such: better shown than hidden).
 // An operator's way derived from a gate's condition belongs to that gate, so it shows with it whatever its own change.
 export const crossingChanged = (r) => r.change === null || CHANGED.includes(r.change) || (r.kind === "operator" && Boolean(r.derived));
@@ -811,7 +866,7 @@ export const crossingChanged = (r) => r.change === null || CHANGED.includes(r.ch
 // The sentence over the Security page, from the data: the door and its check, the condition it holds on and whether a
 // finding says it breaks, what lies behind it, the other changes, and how many crossings are assessed. "Security · 0"
 // is never alone.
-export function secSentence(rows, openSecurity = 0) {
+export function secSentence(rows, openSecurity = 0, cited = 0) {
   const now = (rows ?? []).filter(crossingChanged), n = (k) => now.filter((r) => r.kind === k).length;
   const many = (c, one, more) => `${c} ${c === 1 ? one : more}`;
   const door = (r) => {
@@ -826,7 +881,9 @@ export function secSentence(rows, openSecurity = 0) {
   const rest = more.length ? ` It also adds or changes ${more.length > 1 ? `${more.slice(0, -1).join(", ")} and ${more.at(-1)}` : more[0]}.` : "";
   const na = now.filter((r) => r.result === "not_assessed").length;
   const tally = !now.length ? "" : !na ? ` ${now.length === 1 ? "The crossing is" : `All ${now.length} crossings are`} assessed.` : ` ${now.length - na} of ${many(now.length, "crossing", "crossings")} ${now.length - na === 1 ? "is" : "are"} assessed, ${na} not assessed.`;
-  return `${first}${rest}${tally} ${openSecurity ? `${many(openSecurity, "security finding is", "security findings are")} unresolved.` : "No security finding is unresolved."}`;
+  // cited: unresolved findings a threat stands on that are no ⛨ finding (their effect is not access or data).
+  const also = cited ? ` ${many(cited, "other unresolved finding backs", "other unresolved findings back")} a threat named here.` : "";
+  return `${first}${rest}${tally} ${openSecurity ? `${many(openSecurity, "security finding is", "security findings are")} unresolved.` : cited ? "No finding about access or data is unresolved." : "No security finding is unresolved."}${also}`;
 }
 
 // The security run's effective zones ([{node, drawn, effective, where}], derived from its gates) in the shape of
