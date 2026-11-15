@@ -189,4 +189,74 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   v.discardAll(cx); assert.deepEqual([v.discardAsk, v.comments.length], [true, 2], "the first click asks");
   v.discardAll(cx); assert.deepEqual([v.discardAsk, v.comments.length], [false, 0], "the second deletes them");
 }
+
+// ---- switching while something loads: the last pick wins, another space's list never lands here
+{
+  const { startReview } = await import("./review.js");
+  const pr = (repo, n) => ({ url: `https://github.com/${repo}/pull/${n}`, repo, number: n, title: `PR ${n}`, headSha: `h${n}`, base: "main", state: "open" });
+  const patch = (f) => `diff --git a/${f} b/${f}\n--- a/${f}\n+++ b/${f}\n@@ -1 +1 @@\n-x = 1\n+x = 2\n`;
+  const later = () => { let done; const p = new Promise((r) => { done = r; }); return { p, done }; };
+  const A = pr("o/a", 1), B = pr("o/b", 2), ok = (stdout) => ({ code: 0, stdout, stderr: "" }), no = { code: 1, stdout: "", stderr: "stub" };
+  S.props = {}; S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOString(), prs: [] }));
+  for (const k of ["pr.selected", "pr.picked", "pr.fromReview", "review.minimized", "review.target"]) Map.prototype.set.call(S.store, k, null);
+
+  // A PR picked while another one's diff still loads: its own load starts at once, the older answer is dropped.
+  const slow = later();
+  S.exec = async (cmd, args) => (cmd === "gh" && args[1] === "diff" ? (args[2] === A.url ? slow.p : ok(patch("b.py"))) : no);
+  const v = new PrReview(); v.init({}, cx); await flush();
+  v.choose(A, cx); await settle(); v.choose(B, cx); await flush();
+  assert.deepEqual([v.prSel.url, v.files.map((f) => f.path), v.loading], [B.url, ["b.py"], false], "the second pick shows without waiting for the first");
+  slow.done(ok(patch("a.py"))); await flush();
+  assert.deepEqual([v.files.map((f) => f.path), v.loading, v.pr?.number], [["b.py"], false, 2], "the first one's late answer changes nothing");
+
+  // A PR whose head is still asked for (a search result), then another pick: the late one does not take over.
+  const head = later();
+  S.exec = async (cmd, args) => (cmd === "gh" && args[1] === "view" && args[2] === A.url ? head.p : cmd === "gh" && args[1] === "diff" ? ok(patch("b.py")) : no);
+  v.pickTarget({ ...A, headSha: undefined }, cx); await settle(); v.choose(B, cx); await flush();
+  head.done(ok(JSON.stringify({ number: 1, title: "PR 1", headRefOid: "h1", headRefName: "x", baseRefName: "main", url: A.url, state: "OPEN" }))); await flush();
+  assert.equal(v.prSel.url, B.url, "the later pick stays");
+
+  // "This repo" asked in one space, answered after the person went to another: the list shown is the new space's.
+  const listA = later();
+  S.spaces = [{ id: "sa", active: true, folder: "/a", tabs: [] }];
+  S.exec = async (cmd, args, opt) => {
+    if (cmd === "git" && args.includes("--show-toplevel")) return ok(`${opt.cwd}\n${opt.cwd}/.git\norigin/main\n`);
+    if (cmd === "git" && args[0] === "remote") return ok(`https://github.com/o${opt.cwd}.git\n`);
+    if (cmd === "gh" && args[1] === "list") return args[3] === "o/a" ? listA.p : ok(JSON.stringify([{ number: 5, title: "five", url: "https://github.com/o/b/pull/5", headRefOid: "h5" }]));
+    return no;
+  };
+  Map.prototype.set.call(S.store, "pr.source", "repo");
+  const w = new PrReview(); w.init({}, cx); await flush(); w.loadSource(cx); await settle();
+  S.spaces = [{ id: "sb", active: true, folder: "/b", tabs: [] }]; w.onSpace(cx); await flush();
+  assert.deepEqual([w.srcLists.repo?.key, w.srcLists.repo?.prs.map((x) => x.number)], ["repo:o/b", [5]], "the new space's list");
+  listA.done(ok(JSON.stringify([{ number: 1, title: "one", url: A.url, headRefOid: "h1" }]))); await flush();
+  assert.deepEqual([w.srcLists.repo.key, w.spaceSlug?.slug, w.srcLists.repo.prs.map((x) => x.number)], ["repo:o/b", "o/b", [5]], "the first space's late answer is not shown here");
+
+  // "review" with the list shown and nothing chosen: the PR of the current branch, asked for then (no diff is made).
+  S.files.set("/h/mods/pr-review/review-layout.json", "{}"); // what startReview copies into layouts/ the first time
+  const calls = [];
+  S.exec = async (cmd, args, opt) => { calls.push(`${cmd} ${args.join(" ")}`);
+    if (cmd === "git" && args.includes("--show-toplevel")) return ok(`${opt.cwd}\n${opt.cwd}/.git\norigin/main\n`);
+    if (cmd === "gh" && args[1] === "view") return ok(JSON.stringify({ number: 8, title: "branch PR", url: "https://github.com/o/b/pull/8", baseRefName: "main", headRefOid: "h8" }));
+    return no; };
+  Map.prototype.set.call(S.store, "pr.selected", {});
+  const x = new PrReview(); x.init({}, cx); await flush(); calls.length = 0;
+  x.panelCommand("review", cx); await flush();
+  assert.deepEqual([S.store.get("review.target")?.url, S.store.get("review.target")?.cwd, calls.some((c) => c.includes(" diff "))], ["https://github.com/o/b/pull/8", "/b", false], "the branch's PR opens in the review");
+
+  // A second review while the first is minimized: its chip stays until the second is minimized, then it is the second's;
+  // both stay in the registry, and the panel gets the PR of the review that was left last.
+  Map.prototype.set.call(S.store, "review.target", A); S.props = { part: "review" };
+  const r1 = new PrReview(); r1.init({}, cx); await flush(); r1.command("minimize", cx);
+  assert.equal(S.store.get("review.minimized")?.target.url, A.url);
+  await startReview(B);
+  assert.deepEqual([S.store.get("review.minimized")?.target.url, S.store.get("review.target").url], [A.url, B.url], "the first one's chip is still there");
+  const r2 = new PrReview(); r2.init({}, cx); await flush(); r2.command("back", cx);
+  assert.deepEqual([S.store.get("review.minimized")?.target.url, S.store.get("pr.fromReview")?.url], [A.url, B.url], "Back from the second: the chip is the first's, the panel gets the second");
+  r2.command("minimize", cx);
+  assert.equal(S.store.get("review.minimized")?.target.url, B.url, "minimizing the second replaces the chip");
+  await startReview(B);
+  assert.equal(S.store.get("review.minimized"), null, "resuming it takes its chip away");
+  S.exec = null; S.props = {}; S.spaces = [{ id: "s1", active: true, folder: "/repo", tabs: [] }];
+}
 console.log("panel ok");

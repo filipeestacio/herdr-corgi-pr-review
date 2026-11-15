@@ -979,6 +979,9 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   const stack = (active) => ({ id: "root", children: [{ id: "panel", type: "column", children: [{ id: "panel-body", type: "stack", active, children: [{ id: "files", content: { mod: "files" } }, block] }] }] });
   assert.deepEqual([panelShown(side(false)), panelShown(side(true)), panelShown(stack("pr")), panelShown(stack("files")), panelShown({ id: "root", children: [bar] }), panelShown(null)],
     [true, false, true, false, null, null]);
+  const { leftNow } = await import("./views.js");
+  assert.equal(leftNow(new Set(["u2", "u3"]), [{ url: "u2", number: 2, state: "merged" }, { url: "u9", number: 9, state: "closed" }]), "#2 left In progress: its PR was merged.", "only the one that stood there before");
+  assert.equal(leftNow(undefined, [{ url: "u2", number: 2, state: "merged" }]), null, "at mount nothing moved: the dimmed row says it");
   const sel = withPick(withPick({ a: 1, b: 2 }, "a", 3), "c", 4, 2);
   assert.deepEqual(sel, { a: 3, c: 4 }, "set again moves to the end; the newest kept");
   console.log("ok panel relevance");

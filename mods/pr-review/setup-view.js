@@ -72,7 +72,7 @@ export function setupSummary(rows, at, now = Date.now()) {
 }
 
 export function renderSetup(view, t) {
-  const s = shared(SETUP_KEY), r = rows();
+  const s = shared(SETUP_KEY), r = rows(), blocked = (r ?? []).some((x) => x.status === "missing" || x.status === "logged-out");
   const btn = (id, label, click, strong = false, tip = "") => div().id(id).tooltip(tip).flex_none().px(8).h(24).flex().items_center().rounded(5).border_1()
     .border_color(strong ? t.accent : t.border).text_size(11).text_color(strong ? t.foreground : t.muted).cursor_pointer()
     .hover((st) => st.text_color(t.foreground)).on_click(click).child(label);
@@ -93,7 +93,10 @@ export function renderSetup(view, t) {
           .child(view.setupBusy ? "Checking…" : s ? setupSummary(r ?? [], s.at) : "Not checked yet."))
         .child(btn("setup-check", view.setupBusy ? "…" : "Check again", (_e, cx) => runSetup(view, cx, true), false, "Look for the programs again"))
         .child(btn("setup-close", "Close", (_e, cx) => { view.view = "diff"; cx.notify(); }, false, "Leave Setup and go back")))
-      .children(r ? GROUPS.map(([need, title]) => v_flex().flex_none().gap(2)
+      // Everything found: the list is folded behind one row; something missing or logged out: it is open.
+      .when(Boolean(r) && !blocked, (e) => e.child(div().id("setup-fold").flex_none().px(8).h(24).flex().items_center().rounded(6).cursor_pointer().text_size(11.5).text_color(t.muted).hover((st) => st.bg(t.hover).text_color(t.foreground))
+        .tooltip(view.setupOpen ? "Hide the list of programs" : "Show each program and what it is for").on_click((_e, cx) => { view.setupOpen = !view.setupOpen; cx.notify(); }).child(`${view.setupOpen ? "▾" : "▸"} The ${r.length} programs`)))
+      .children(r && (blocked || view.setupOpen) ? GROUPS.map(([need, title]) => v_flex().flex_none().gap(2)
         .child(div().px(8).pt(4).text_size(11).font_semibold().text_color(t.muted).child(title))
         .children(r.filter((x) => x.need === need).map(line))) : []))
     .child(Scrollbar.vertical("pr-setup").absolute().inset_0());
