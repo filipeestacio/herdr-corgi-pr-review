@@ -1,5 +1,5 @@
 // Stand-ins for gpui-kit, gpui-base and herdr, for the render tests (test_render.mjs, test_smoke.mjs): elements are
-// chainable proxies that record a null or non-finite argument, virtual lists record their size and render nothing until
+// chainable proxies that record a null or non-finite argument (and, when asked, the ids given), virtual lists record their size and render nothing until
 // asked, cx does nothing. Import it before main.js or review.js. Not a test itself.
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
@@ -14,6 +14,7 @@ S.el = () => {
       return (...a) => {
         if (k === "when") return a[0] ? a[1](p) : p;
         if (k === "map") return a[0](p);
+        if (k === "id") S.ids?.add(String(a[0])); // a test that asks what was drawn sets S.ids = new Set()
         if (k === "children") { for (const c of a[0]) if (bad(c)) S.errs.push(`children: ${c} at ${where()}`); return p; }
         a.forEach((v, i) => { if (bad(v)) S.errs.push(`${String(k)}(arg ${i} = ${v}) at ${where()}`); });
         return p;

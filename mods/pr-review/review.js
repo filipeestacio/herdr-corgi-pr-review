@@ -485,7 +485,7 @@ export const ReviewMode = {
     // sec-card:<node id> for a card of the Security page's picture.
     // page-part:<name> scrolls the open page until that part shows (pageView lists the names), as the wheel would.
     else if (name === "arch-view") { if (["diff", "before", "after"].includes(arg)) this.archMode = arg; }
-    else if (name === "arch-fit") { this.archFit = !this.archFitOn(); this.hsOf("rv-arch-canvas").x = 0; }
+    else if (name === "arch-fit") { this.archFit = !this.archFitOn(); this.hsOf("rv-arch-canvas").x = 0; this.doorShown = false; }
     else if (name === "arch-wrap") this.setArchWrap(!this.archWrapOn());
     else if (name === "sec-card") { this.page = "blast"; this.tab = "steps"; this.secCard(arg || null, cx); } // a click on a card of the Security page's picture ("": unlight)
     else if (name === "res-path") { this.page = "res"; this.tab = "steps"; this.resOpen = this.resOpen === arg ? null : arg || null; } // a click on a path of the Resilience page (its id; "" folds)
@@ -3116,8 +3116,9 @@ export const ReviewMode = {
     if (!a) return out([["head", this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams")], ["none", div().text_size(13.5).text_color(t.muted).child(this.ai ? "This analysis has no architecture picture (older analysis, or the PR touches no architecture). Re-analyze for one." : "No analysis yet: Analyze in the left column.")],
       ...(this.ai?.visuals?.length > 0 ? [["views", div().w_full().child(more())]] : [])]);
     const groups = new Set(a.nodes.map((n) => n.group)).size, L = this.archL(), fit = this.archFitOn(), marks = this.archMarksNow();
-    // The first time, the picture starts at the way in (the Internet card), wherever the layout put it.
-    if (!this.doorShown && L && !this.archWrapOn()) { const d = L.nodes.find((n) => n.id === "\0in"); if (d) this.hsOf("rv-arch-canvas").x = Math.max(0, d.x - 40); this.doorShown = true; }
+    // The first time, and after Fit changed the layout, the picture starts at the way in (the Internet card), wherever
+    // the layout put it. Not before the view is measured: Fit switches itself on then, and the cards move.
+    if (!this.doorShown && L && this.hsOf("rv-arch-canvas").viewW && !this.archWrapOn()) { const d = L.nodes.find((n) => n.id === "\0in"); if (d) this.hsOf("rv-arch-canvas").x = Math.max(0, d.x - 40); this.doorShown = true; }
     // The frames are the systems; a card's trust zone is a dot on it, ringed when it is really reachable from further out.
     const opts = { ...this.archOpts("arch"), marks, zoom: settings().zoom || 1, zones: a.zones ?? [], effective: this.effZones(a) }, count = (...st) => L.nodes.filter((n) => st.includes(n.status)).length; // of the cards shown (Before hides the added ones)
     return out([
@@ -3130,12 +3131,13 @@ export const ReviewMode = {
         .when(hasTrust(L), (e) => e.child(div().flex_none().child(trustLegend(L, t, a.zones))))
         .child(h_flex().flex_none().gap(2).p(2).rounded(7).border_1().border_color(t.border).child(seg("diff", "Structural diff")).child(seg("before", "Before")).child(seg("after", "After")))
         .child(div().id("rv-av-fit").flex_none().px(10).h(28).flex().items_center().rounded(7).border_1().border_color(fit ? t.accent : t.border).cursor_pointer().text_size(12.5)
-          .text_color(fit ? t.foreground : t.muted).tooltip(typeof this.archFit === "boolean" ? "Narrow cards with shorter texts, so more of the picture fits a row" : "Narrow cards with shorter texts: on by itself while the picture is wider than the view. A click decides for you").on_click((_e, cx) => { this.archFit = !fit; this.hsOf("rv-arch-canvas").x = 0; cx.notify(); }).child("Fit"))
+          .text_color(fit ? t.foreground : t.muted).tooltip(typeof this.archFit === "boolean" ? "Narrow cards with shorter texts, so more of the picture shows. It stays one row: scroll sideways for the rest" : "Narrow cards with shorter texts: on by itself while the picture is wider than the view. It stays one row: scroll sideways for the rest. A click decides for you").on_click((_e, cx) => { this.archFit = !fit; this.hsOf("rv-arch-canvas").x = 0; this.doorShown = false; cx.notify(); }).child("Fit"))
         .child(div().id("rv-av-wrap").flex_none().px(10).h(28).flex().items_center().rounded(7).border_1().border_color(this.archWrapOn() ? t.accent : t.border).cursor_pointer().text_size(12.5)
           .text_color(this.archWrapOn() ? t.foreground : t.muted).tooltip("On: a picture wider than the view goes on in a second row. Off: one row to scroll sideways")
           .on_click((_e, cx) => { this.setArchWrap(!this.archWrapOn()); cx.notify(); }).child("Wrap"))],
-      // Fit: narrow cards, and frames that do not fit the width go on in the next row whole (archBands never cuts a frame).
-      ["map", this.archCanvas(t, L, opts, { wrap: this.archWrapOn() || fit })],
+      // Fit only narrows the cards: the picture stays one row and scrolls sideways when it is still wider than the view.
+      // Rows (archBands) come from the Wrap switch alone.
+      ["map", this.archCanvas(t, L, opts)],
       ...(this.archFocus && a.nodes.some((x) => x.id === this.archFocus) ? [["card", this.archCard(t, a, marks)]] : []),
       ...(this.archFocus && this.drillAt(`arch:${this.archFocus}`) ? [["inside", this.drillPanel(t, `arch:${this.archFocus}`)]] : []),
       // Only the calls whose text is not on their line in the picture (a fan's, a stub's, a text cut short).
@@ -3316,9 +3318,8 @@ export const ReviewMode = {
   // Wrap: off by default (one row to scroll sideways); the choice is kept for every review (shared review.archWrap).
   archWrapOn() { return shared("review.archWrap") === true; },
   setArchWrap(on) { setShared("review.archWrap", on); this.hsOf("rv-arch-canvas").x = 0; },
-  // Fit (narrow cards): only when switched on; the picture wraps instead.
-  // Fit: the person's choice when there is one; else on as soon as the usual cards are wider than the view, so the
-  // picture opens with every frame in sight (the view's width is known after the first layout: until then, off).
+  // Fit (narrow cards, never rows): the person's choice when there is one; else on as soon as the usual cards are wider
+  // than the view, so more of the picture is in sight (the view's width is known after the first layout: until then, off).
   archFitOn() {
     if (typeof this.archFit === "boolean") return this.archFit;
     const s = this.hsOf("rv-arch-canvas"), L = s.viewW ? this.archL(false) : null;

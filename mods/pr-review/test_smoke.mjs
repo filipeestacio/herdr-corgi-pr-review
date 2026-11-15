@@ -185,6 +185,24 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   v.worktree = { url: v.prSel.url, head: v.head, path: "/h/w" }; v.repoVis = { [v.prSel.repo]: "PUBLIC" };
   for (const tab of ["files", "steps", "findings"]) act(v, tab, `someone else's PR, the trust question on ${tab}`);
 }
+// Fit never puts the map in rows: in a view narrower than the picture, Fit (on by itself, or chosen) draws one row to
+// scroll sideways, on the Architecture, Security and Resilience pages; only the Wrap switch draws rows.
+{
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json") });
+  for (const id of ["rv-arch-canvas", "rv-sec-canvas", "rv-res-canvas"]) v.hsOf(id).viewW = 420;
+  const rows = (what) => { S.ids = new Set(); draw(v, what); const got = [...S.ids].filter((x) => /-(band|cut)\d+$/.test(x)); S.ids = null; return got; };
+  for (const page of ["arch", "blast", "res"]) {
+    v.command(`page:${page}`, cx);
+    assert.ok(v.archFitOn(), "Fit is on by itself in a view narrower than the picture");
+    assert.deepEqual(rows(`${page}: Fit by itself`), [], `${page}: Fit by itself draws one row`);
+    v.archFit = true; assert.deepEqual(rows(`${page}: Fit chosen`), [], `${page}: Fit chosen draws one row`);
+    v.archFit = false; assert.deepEqual(rows(`${page}: Fit off`), [], `${page}: without Wrap the picture is one row`);
+    v.archFit = undefined;
+  }
+  v.command("page:arch", cx); v.command("arch-wrap", cx);
+  assert.ok(rows("arch: Wrap").length > 1, "Wrap puts the same picture in rows");
+  v.command("arch-wrap", cx);
+}
 await settle();
 assert.deepEqual(late, [], "a spawned task threw");
 console.log(`smoke ok: ${shown} frames`);
