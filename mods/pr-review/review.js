@@ -19,7 +19,7 @@ import { taskList, taskHead, verdictParts, reviewState, certaintyLine, severityT
 import { findingSteps, funnel, funnelLine, ownerOf, quickFirst, hasEffort, publicFiles, funnelShort, diffPath } from "./pr.js"; // the Findings tab
 import { withProof, PROOF_WORDS } from "./pr.js"; // Verify with an agent
 import { overviewMd, findingMd, findingsMd, layerMd, architectureMd, securityMd, verifyContextMd, resilienceMd } from "./markdown.js"; // Copy this page as Markdown
-import { mdParts, mdJoin, codeStats } from "./markdown.js"; // its preview: the text in sections, the code context counted
+import { mdParts, mdJoin, mdHead, mdLines, codeStats } from "./markdown.js"; // its preview: the text in sections, the code context counted
 import { highlightJob, highlightStep, highlightLines, langOf, colors, renderLine, refAt } from "./syntax.js";
 import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js";
 import { recommendModel, tierSteps } from "./pr.js";
@@ -5535,13 +5535,13 @@ export const ReviewMode = {
     if (!this.mdPrev) return;
     const m = this.mdNow(), doc = this.mdShown(), off = this.mdOff(doc), text = mdJoin(doc, off), left = off.size, cs = codeStats(text);
     copyText(text);
-    this.note = `Copied ${m.name} as Markdown (${text.trim().split("\n").length} lines${left ? `, ${doc.parts.length - left} of ${doc.parts.length} sections` : ""}${cs.blocks ? `, ${cs.blocks} code ${cs.blocks === 1 ? "block" : "blocks"}` : ""}) to the clipboard. Nothing was posted.`;
+    this.note = `Copied ${m.name} as Markdown (${mdLines(text)} lines${left ? `, ${doc.parts.length - left} of ${doc.parts.length} sections` : ""}${cs.blocks ? `, ${cs.blocks} code ${cs.blocks === 1 ? "block" : "blocks"}` : ""}) to the clipboard. Nothing was posted.`;
     this.mdPrev = null;
   },
   // The preview before copying: every section of the text with its size and a tick to leave it out, the code context
   // as one choice of its own, the size of what is chosen, the first lines as they will be copied, then Copy.
   mdPopover(t) {
-    const m = this.mdNow(), p = this.mdPrev, doc = this.mdShown(), off = this.mdOff(doc), text = mdJoin(doc, off), lines = text.trim().split("\n");
+    const m = this.mdNow(), p = this.mdPrev, doc = this.mdShown(), off = this.mdOff(doc), text = mdJoin(doc, off), lines = text.trim().split("\n"), total = mdLines(text);
     const cs = codeStats(mdJoin(this.mdShown(true))), box = (on) => div().w(16).flex_none().text_color(on ? t.accent : t.muted).child(on ? "☑" : "☐");
     const row = (id, on, label, size, click, tip) => h_flex().id(id).tooltip(tip).gap(8).px(6).h(24).items_center().rounded(6).cursor_pointer().hover((s) => s.bg(t.hover)).on_click(click)
       .child(box(on)).child(div().flex_1().min_w(0).truncate().text_color(on ? t.foreground : t.muted).child(label)).child(div().flex_none().text_size(TYPE.small).text_color(t.muted).child(size));
@@ -5552,14 +5552,17 @@ export const ReviewMode = {
         .child(pill("rv-mdprev-x", t, "✕", (_e, cx) => { this.mdPrev = null; cx.notify(); }).tooltip("Close without copying").accessibility_label("Close")))
       .child(div().text_size(TYPE.small).line_height(1.5).text_color(t.muted).whitespace_normal().child("Everything the page shows, also what is folded there, with every picture as Mermaid. It goes to the clipboard only; nothing is posted. Untick a section to leave it out."))
       .child(v_flex().gap(1)
-        .child(row("rv-mdprev-head", true, "Title and summary", `${doc.head.filter((l) => l.trim()).length} lines`, () => {}, "The PR, the commit and the page's first lines: always in the text"))
+        // The head is always in the text: no box, no pointer, no hover, so it does not look like a choice. Its size with
+        // the line that names what is left out, so the sizes above the foot add up to the foot's.
+        .child(h_flex().id("rv-mdprev-head").tooltip("The PR, the commit and the page's first lines. They are always in the text.").gap(8).px(6).h(24).items_center()
+          .child(div().w(16).flex_none()).child(div().flex_1().min_w(0).truncate().child("Title and summary")).child(div().flex_none().text_size(TYPE.small).text_color(t.muted).child(`always in the text · ${mdLines(mdHead(doc, off))} lines`)))
         .children(doc.parts.map((x, k) => row(`rv-mdprev-p${k}`, !off.has(k), x.title, `${x.n} ${x.n === 1 ? "line" : "lines"}`, (_e, cx) => { if (!p.off.delete(x.title)) p.off.add(x.title); cx.notify(); }, off.has(k) ? "Left out. Click to put it back in" : "In the text. Click to leave it out")))
         .when(cs.blocks > 0, (e) => e.child(row("rv-mdprev-code", p.code, `Code context (${cs.blocks} ${cs.blocks === 1 ? "block" : "blocks"}, ${cs.lines} lines)`, "inside the sections above",
           (_e, cx) => { p.code = !p.code; cx.notify(); }, "The lines each place names, from the diff with + and − marks, at most 12 lines a place, each place once. Click to leave the code out or put it in"))))
       .child(div().id("rv-mdprev-first").p(8).rounded(6).border_1().border_color(t.border).bg(t.background).font_family(settings().font_family ?? "JetBrains Mono").text_size(TYPE.small).line_height(1.5).text_color(t.muted)
-        .children(lines.slice(0, 14).map((l) => div().truncate().child(l || " "))).when(lines.length > 14, (e) => e.child(div().text_color(t.dim).child(`… ${lines.length - 14} more lines`))))
+        .children(lines.slice(0, 14).map((l) => div().truncate().child(l || " "))).when(lines.length > 14, (e) => e.child(div().text_color(t.dim).child(`… ${total - mdLines(lines.slice(0, 14))} more lines`))))
       .child(h_flex().gap(8).items_center()
-        .child(div().flex_1().text_size(TYPE.small).text_color(t.muted).child(`${lines.length} lines · ${doc.parts.length - off.size} of ${doc.parts.length} sections${p.code && cs.blocks ? ` · ${codeStats(text).blocks} code blocks` : ""}`))
+        .child(div().flex_1().text_size(TYPE.small).text_color(t.muted).child(`${total} lines · ${doc.parts.length - off.size} of ${doc.parts.length} sections${p.code && cs.blocks ? ` · ${codeStats(text).blocks} code blocks` : ""}`))
         .child(pill("rv-mdprev-cancel", t, "Cancel", (_e, cx) => { this.mdPrev = null; cx.notify(); }).tooltip("Close without copying"))
         .child(pill("rv-mdprev-copy", t, "Copy", (_e, cx) => { this.mdCopy(); cx.notify(); }, true, t.foreground).tooltip("Copy the chosen sections to the clipboard as Markdown"))));
   },

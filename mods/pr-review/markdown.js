@@ -87,10 +87,21 @@ export function mdParts(text) {
     if (tick && (!fence || tick.length >= fence.length)) fence = fence ? null : tick;
     if (!fence && /^## /.test(l)) { cur = { title: l.slice(3).trim(), lines: [l] }; parts.push(cur); } else (cur ? cur.lines : head).push(l);
   }
-  for (const p of parts) p.n = p.lines.filter((l) => l.trim()).length;
+  for (const p of parts) p.n = mdLines(p.lines);
   return { head, parts };
 }
-export const mdJoin = ({ head, parts }, off = new Set()) => `${[...head, ...parts.filter((_p, k) => !off.has(k)).flatMap((p) => p.lines)].join("\n").replace(/\n{3,}/g, "\n\n").trim()}\n`;
+// The preview's one way to count (acceptance, UX 2): the lines with text. A part's size, the head's and the whole
+// text's are counted so, and the sizes of the parts kept add up to the size at the foot.
+export const mdLines = (x) => (Array.isArray(x) ? x : String(x ?? "").split("\n")).filter((l) => l.trim()).length;
+// The head as it is copied. With parts left out, a line under the title names them: the title counts the whole page
+// ("28 unresolved findings: 17 high, 11 medium") and would promise findings the text does not have.
+export function mdHead({ head, parts }, off = new Set()) {
+  const out = parts.filter((_p, k) => off.has(k)).map((p) => p.title);
+  if (!out.length) return head;
+  const k = head.findIndex((l) => /^# /.test(l)), note = `Left out of this text: ${out.join(", ")}.`;
+  return k < 0 ? [...head, "", note] : [...head.slice(0, k + 1), "", note, ...head.slice(k + 1)];
+}
+export const mdJoin = (doc, off = new Set()) => `${[...mdHead(doc, off), ...doc.parts.filter((_p, k) => !off.has(k)).flatMap((p) => p.lines)].join("\n").replace(/\n{3,}/g, "\n\n").trim()}\n`;
 
 // "PR owner/repo#2 "title" at commit abc1234 (url)": the first line of every text, so it stands without context.
 export const prLine = ({ pr = {}, head = "" }) => `PR ${pr.repo ?? ""}#${pr.number ?? ""} "${flat(pr.title)}"${head ? ` at commit ${String(head).slice(0, 7)}` : ""}${pr.url ? ` (${pr.url})` : ""}`;

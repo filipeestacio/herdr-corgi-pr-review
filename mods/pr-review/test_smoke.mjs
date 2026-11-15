@@ -571,6 +571,7 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
 }
 // The acceptance round's corrections, each on the drawn page.
 {
+  const { mdJoin } = await import("./markdown.js"), mdJoinOf = (v) => mdJoin(v.mdShown(), v.mdOff());
   const doc = JSON.parse(fx("findings-s.json")); doc.resilience = JSON.parse(fx("resilience-r2.json"));
   const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify(doc) }), tt = S.theme;
   const texts = (part) => { S.texts = new Set(); S.lists.length = 0; part(); for (let k = 0; k < S.lists.length && k < 200; k++) S.lists[k].render({ start: 0, end: S.lists[k].n }, cx); const got = [...S.texts]; S.texts = null; S.lists.length = 0; return got; };
@@ -584,6 +585,22 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     assert.ok(got.some((x) => /^Path \d+: lit on the map/.test(x)), `Resilience, path ${id} open: the line over the map names its number`);
   }
   assert.ok(!ID.test(v.mdText(true)), "the Resilience Markdown names no id of the run");
+  // UX 2: the Markdown preview. Its sizes add up to the foot's, "n of m sections" counts the boxes of the sections, the
+  // head has no box and no click, and a section left out is named under the title.
+  v.command("findings", cx); v.ffocus = null; v.command("copy-md", cx);
+  const sums = (name) => {
+    S.clicks.clear(); S.ids = new Set(); const got = texts(() => v.mdPopover(tt)), rows = [...S.ids].filter((x) => /^rv-mdprev-p\d+$/.test(x)).length; S.ids = null;
+    const doc = v.mdShown(), off = v.mdOff(), foot = got.find((x) => /^\d+ lines · \d+ of \d+ sections/.test(x)), head = got.find((x) => /^always in the text · \d+ lines$/.test(x));
+    assert.equal(Number(/(\d+) lines$/.exec(head)[1]) + doc.parts.filter((_x, k) => !off.has(k)).reduce((n, x) => n + x.n, 0), Number(/^\d+/.exec(foot)[0]), `${name}: the sizes of what is kept add up to the foot (${foot})`);
+    assert.ok(foot.startsWith(`${/^\d+/.exec(foot)[0]} lines · ${rows - off.size} of ${rows} sections`), `${name}: the foot counts the rows with a box (${foot}, ${rows} rows)`);
+    for (const x of doc.parts) assert.ok(got.includes(`${x.n} ${x.n === 1 ? "line" : "lines"}`), `${name}: the size of ${x.title}`);
+    assert.ok(!S.clicks.has("rv-mdprev-head") && S.clicks.has("rv-mdprev-p0"), `${name}: the head is no choice, a section is`);
+  };
+  sums("Findings, all sections");
+  assert.ok(!/Left out of this text/.test(mdJoinOf(v)), "nothing left out: no line about it");
+  v.command("md-part:0", cx); sums("Findings, a section left out");
+  assert.ok(new RegExp(`^# \\d+ unresolved findings?[^\\n]*\\n\\nLeft out of this text: ${v.mdShown().parts[0].title.replace(/[()]/g, "\\$&")}\\.$`, "m").test(mdJoinOf(v)), "the section left out is named under the title");
+  v.command("md-close", cx);
 }
 await settle();
 assert.deepEqual(late, [], "a spawned task threw");
