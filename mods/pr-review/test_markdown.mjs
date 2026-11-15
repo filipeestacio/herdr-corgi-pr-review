@@ -354,7 +354,7 @@ const all = [f("m1", "medium", { breaks: { node: "c" } }), sec, f("l1", "low"), 
 // ---- a fence's language: a script without an ending is fenced as bash by its first line
 {
   for (const [file, first, lang] of [["scripts/a.sh", "", "bash"], ["bin/release", "#!/usr/bin/env bash", "bash"], [".envrc", "", "bash"], ["hooks/pre-commit", "", "bash"], ["bin/tool", "#!/usr/bin/env python3", "python"],
-    ["Makefile", "", "makefile"], ["LICENSE", "", ""], ["a.py", "", "python"], ["x.toml", "", "toml"], ["bin/release", undefined, ""]]) assert.equal(fenceLang(file, first), lang, file);
+    ["Makefile", "", "makefile"], ["rules.mk", "", "makefile"], [".github/workflows/ci.yml", "", "yaml"], ["application-prod.yml", "", "yaml"], ["app.properties", "", "properties"], ["tox.ini", "", "ini"], ["Cargo.lock", "", "toml"], ["LICENSE", "", ""], ["a.py", "", "python"], ["x.toml", "", "toml"], ["bin/release", undefined, ""]]) assert.equal(fenceLang(file, first), lang, file);
   const cx = codeContext(rowsByPath(new Map([["bin/release", diffRows(["@@ -1,3 +1,3 @@", " #!/bin/sh", " set -eu", " echo hi"])]])));
   assert.equal(cx.block("bin/release", 2)[2], "```bash");
 }

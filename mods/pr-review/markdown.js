@@ -31,10 +31,11 @@ const doc = (...parts) => `${parts.flat(Infinity).filter((x) => x !== null && x 
 // ---- code context: the lines a place names, as the review holds them (no new fetches)
 
 const LANG = { py: "python", js: "javascript", mjs: "javascript", cjs: "javascript", ts: "typescript", tsx: "tsx", jsx: "jsx", json: "json", yaml: "yaml", yml: "yaml", sh: "bash", rs: "rust", go: "go",
-  java: "java", kt: "kotlin", rb: "ruby", tf: "hcl", toml: "toml", sql: "sql", html: "html", css: "css", md: "markdown" };
+  java: "java", kt: "kotlin", rb: "ruby", tf: "hcl", toml: "toml", sql: "sql", html: "html", css: "css", md: "markdown", ini: "ini", cfg: "ini", editorconfig: "ini" };
 // A fence's language: by the ending, else what the highlighter makes of the name or of the file's first line ("#!/bin/sh"
 // in bin/release, .envrc, a Git hook), so a script without an ending is fenced as bash.
-export const fenceLang = (file, first = "") => { const name = String(file).split("/").pop(), l = langOf(String(file), first); return LANG[name.split(".").pop()] ?? (/^(?:gnu)?makefile$|\.mk$/i.test(name) ? "makefile" : { shell: "bash", js: "javascript" }[l] ?? l ?? ""); };
+const FENCE = { shell: "bash", js: "javascript", make: "makefile", workflow: "yaml", spring: "yaml" }; // the highlighter's names that a fence spells otherwise
+export const fenceLang = (file, first = "") => { const name = String(file).split("/").pop(), l = langOf(String(file), first); return LANG[name.split(".").pop()] ?? FENCE[l] ?? l ?? ""; };
 export const CODE_MAX = 12; // lines of one block
 const CODE_PAD = 2; // lines around the place
 // A file's rows by its path, also by the end of it ("mailer.py:14" in a path step): Map(path -> rows) -> rowsOf(file).
