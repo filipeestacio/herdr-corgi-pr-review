@@ -230,6 +230,7 @@ console.log("threads ok");
   assert.equal(TH.blockersDraft([{ severity: "high", title: "Mails twice", file: "a.py", line: 3 }, { severity: "high", security: true, title: "Empty token passes", file: "h.py", line: 8 }, { severity: "medium", title: "m", file: "b", line: 1 }]),
     "2 findings need a change before this can merge.\n\n- `a.py:3`: Mails twice\n- Security: Empty token passes");
   assert.match(TH.blockersDraft([{ severity: "high", title: "T", file: "a.py", line: 3 }]), /^1 finding needs a change before this can merge\./);
+  assert.match(TH.blockersDraft([{ severity: "high", security: true, threats: ["t2"], impact: "degraded_operation", title: "One limit", file: "t.tf", line: 4 }]), /- `t\.tf:4`: One limit$/, "⛨ only through a threat: named with its place like any finding");
   assert.equal(TH.blockersDraft([{ severity: "low", title: "x" }]), "");
   // The reviewers popup: a zero is put in relation, one finding is singular, a failure and "not run" are their own words.
   assert.equal(TH.runLine({ state: "done", count: 0, cost: 0.0886 }, 16, { took: "0:40", ago: "34 min ago" }), "No findings. It reviews on its own; the other sources have 16 · $0.089 · 0:40 · 34 min ago");

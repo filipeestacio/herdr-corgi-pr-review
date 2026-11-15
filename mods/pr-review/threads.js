@@ -2,7 +2,7 @@
 // as threads under their lines (pr-data/threads.json, per PR, bounded), the agent answers each by id in
 // pr-data/replies/<pr hash>.jsonl, GitHub replies come from its review comments. Plus what a GitHub submit posts
 // (exactly the ticked items) and the preview before anything is typed into an agent's session.
-import { hash, ghReview, lineLabel, answerIn } from "./pr.js";
+import { hash, ghReview, lineLabel, answerIn, secByEffect } from "./pr.js";
 
 export const MAX_PRS = 50, MAX_THREADS = 100;
 export const STATUSES = ["fixed", "answered", "wontfix", "question"];
@@ -373,7 +373,7 @@ export function blockersDraft(findings) {
   const high = (findings ?? []).filter((f) => f.severity === "high" || f.severity === "critical"), n = high.length;
   if (!n) return "";
   return `${n} ${n === 1 ? "finding needs" : "findings need"} a change before this can merge.\n\n`
-    + high.map((f) => (f.security ? `- Security: ${f.title}` : `- \`${f.file}:${f.line}\`: ${f.title}`)).join("\n");
+    + high.map((f) => (secByEffect(f) ? `- Security: ${f.title}` : `- \`${f.file}:${f.line}\`: ${f.title}`)).join("\n");
 }
 
 // ---- the "Run review" popup: one line per run
