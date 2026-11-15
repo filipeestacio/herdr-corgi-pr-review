@@ -1111,7 +1111,7 @@ export function funnelLine(x, name = (k) => k) {
 // (the analysis' components: {at: "file:line", owner}), else null.
 export const ownerOf = (f, components = []) => (components ?? []).find((c) => c?.owner && String(c.at ?? "").replace(/:\d+.*$/, "") === f.file)?.owner ?? null;
 
-// "Quick wins first": by effort, the ones without one last; within one effort the order stays (severity, file, line).
+// The order "Quickest fix" of the Findings tab: by effort, the ones without one last; within one effort the order stays (severity, file, line).
 export const hasEffort = (list) => list.some((f) => EFFORTS.includes(f.effort));
 export const quickFirst = (list) => { const r = (f) => (EFFORTS.indexOf(f.effort) + EFFORTS.length + 1) % (EFFORTS.length + 1); return [...list].sort((a, b) => r(a) - r(b)); };
 
