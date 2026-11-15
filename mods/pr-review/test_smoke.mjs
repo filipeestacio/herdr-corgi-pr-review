@@ -11,7 +11,8 @@ const { default: PrReview } = await import("./main.js");
 const { splitPatch, hunksOf, diffRows, hash } = await import("./pr.js");
 const { foldOnOpen, resWatch } = await import("./views.js");
 const R = await import("./review.js");
-const { withThreadState } = await import("./threads.js");
+const { withThreadState, addThreads, addFollowup } = await import("./threads.js");
+const { mapAnswer, threadAdd, pinAdd } = await import("./explore.js");
 const fx = (name) => readFileSync(new URL(`../../demo/fixtures/review/${name}`, import.meta.url), "utf8");
 
 // cx.spawn runs the task (as Herdr does) and keeps it, to wait for; a task that throws is a failure, except for the
@@ -24,13 +25,59 @@ const settle = async () => { for (let i = 0; i < 20; i++) await new Promise((r) 
 let shown = 0;
 // The frame: the view, then each virtual list's every row (lists inside rows join the queue).
 function frame(what, draw) {
-  S.errs.length = 0; S.lists.length = 0;
+  S.errs.length = 0; S.lists.length = 0; S.clicks.clear();
   try { draw(); for (let k = 0; k < S.lists.length && k < 200; k++) S.lists[k].render({ start: 0, end: S.lists[k].n }, cx); }
   catch (e) { S.errs.push(`threw ${e?.stack ?? e}`); }
   assert.deepEqual(S.errs, [], what); shown++;
 }
 const draw = (v, what) => frame(what, () => v.render(cx));
 const act = (v, c, what = c) => { v.command(c, cx); draw(v, `${what}`); };
+// What openOverlay was asked for since the last call, each drawn as Herdr would: the mod's part with its props.
+function overlays(what) {
+  for (const o of S.overlays.splice(0)) {
+    if (o.mod !== "pr-review") continue; // the floating agent window: a terminal block, nothing of the mod's
+    S.props = { ...o.props, overlay: "ov1" }; const p = new PrReview(); p.init({}, cx);
+    frame(`${what}: overlay ${o.props?.part} ${o.props?.key ?? ""}`.trim(), () => p.render(cx)); S.props = null;
+  }
+}
+// A click on an element of the last frame, by its id (the stand-in keeps each id's on_click).
+const click = (id, what) => { const h = S.clicks.get(id); assert.ok(h, `${what}: no element ${id} to click`); h({ modifiers: {}, click_count: 1 }, cx); };
+// A file of the repository for the read-only view (go-to-definition, a file an exploration cites).
+const FILE = Array.from({ length: 80 }, (_x, i) => (i === 8 ? "class Loan:" : i === 9 ? "    def give_back(self, on):" : `    x${i} = ${i}  # line ${i + 1}`)).join("\n");
+// An exploration's saved answer, built from an analysis' own parts (explore.py writes this shape).
+const exploration = (a) => ({ topic: "How does a reminder reach a member?", root: "/h/repo", repo: "saefty/corgi-demo", model: "sonnet", cost: 0.41, ms: 90000, generated: "2026-11-14T10:00:00+01:00",
+  answer: { title: a.title, summary: a.summary, question: [{ text: "Where does a reminder start?", source: "existing" }, { text: "Who mails it?", source: "new" }],
+    how_it_works: [{ text: "The front desk calls send_reminders.", source: "existing", evidence: "library/reminders.py:21" }, { text: "The consumer mails on each event.", source: "new", evidence: "library/consumer.py:20" }],
+    architecture: a.architecture, visuals: [], steps: (a.steps ?? []).map((x, k) => ({ title: x.title, why_it_matters: x.why_it_matters ?? "", explanation: x.explanation ?? "", reading_order: k + 1,
+      evidence: [...(x.evidence ?? []), "library/loans.py:9", "not a place"], flows: x.flows ?? [], visuals: x.visuals ?? [] })) } });
+
+// The Ask drawer with answers (a card lit, evidence, an empty answer), being asked, failed, and the question sent;
+// Look inside a card, failed and with its picture; go-to-definition into a file outside the diff.
+async function deep(v, at) {
+  const a = v.ai?.arch, key = v.deepKey();
+  if (a && key) {
+    const node = a.nodes?.[0]?.id, a1 = mapAnswer({ text: "It **mails** twice:\n\n- once inline\n- once in the consumer", highlights: { nodes: [node, "nope"], edges: ["e0", "e99"] },
+      evidence: [{ at: "library/reminders.py:21", why: "the inline mail" }, { at: "not a place", why: "x" }] }, a);
+    v.deep = { ...v.deep, threads: threadAdd(threadAdd(v.deep.threads, key, { q: "Why two mails?", about: "the map", a: a1, scope: { kind: "node", node: { id: node } }, cost: 0.04 }),
+      key, { q: "And the queue?", about: "Layer 1", a: mapAnswer({ text: "" }, a), scope: { kind: "layer" } }) };
+    for (const page of ["arch", "overview", "blast"]) for (const d of ["open", "fold", "open"]) { v.command(`page:${page}`, cx); act(v, `ask:${d}`, at(`${page}, Ask drawer ${d}`)); }
+    v.command("page:arch", cx); v.showAnswer(a1); draw(v, at("an answer lit on the map"));
+    v.page = null; v.cur = 0; draw(v, at("a layer with the Ask drawer open"));
+    v.askBusy = { q: "What else?", label: "the map", started: Date.now() }; draw(v, at("Ask, being asked")); v.askBusy = null;
+    v.askIn.set_value("What else?"); v.askNow(cx); await settle(); draw(v, at("Ask, the call failed"));
+    v.askErr = null; v.askHl = null; act(v, "ask:close", at("Ask drawer closed"));
+    for (const n of (a.nodes ?? []).slice(0, 3)) {
+      v.command(`inside:${n.id}`, cx); await settle(); draw(v, at(`Look inside ${n.id}, the call failed`));
+      const d = v.drillAt(`arch:${n.id}`);
+      if (d) { v.deep = { ...v.deep, drills: { ...v.deep.drills, [v.drillCacheKey(d.stack)]: JSON.parse(fx("drill.json")) } }; draw(v, at(`Look inside ${n.id}, with its picture`)); }
+    }
+    v.drills = null; v.archFocus = null;
+  }
+  const wt = v.worktree; v.worktree = { url: v.prSel?.url, head: v.head, path: "/h/w" }; S.files.set("/h/w/library/loans.py", FILE);
+  v.tab = "files"; v.goDef({ path: "library/loans.py", line: 9, inRoot: true }, cx); await settle(); draw(v, at("go to a definition outside the diff"));
+  v.goDef({ path: "library/gone.py", line: 3, inRoot: true }, cx); await settle(); draw(v, at("a definition that cannot be opened"));
+  v.defFile = null; v.worktree = wt;
+}
 
 async function open({ diff, analysis = null, findings = null, ctx = null, pr = 2, title = "feat(events): loan events", trusted = true }) {
   const url = `https://github.com/saefty/corgi-demo/pull/${pr}`, target = { url, repo: "saefty/corgi-demo", number: pr, title, base: "main", ...(trusted ? {} : { source: "repo", author: "someone" }) };
@@ -66,12 +113,22 @@ async function tour(v, name) {
     act(v, "comments", at("Comments with GitHub's threads")); v.showResolved = true; v.allBots = true; act(v, "files", at("files with GitHub's threads")); act(v, "comments", at("Comments, resolved and bots shown"));
   }
   if (line) { act(v, `comment:${line}`, at("composer open")); act(v, "draft:Why this?", at("composer with text")); act(v, "add", at("a pending comment")); assert.ok(v.comments.length > 0, at("the comment was added")); act(v, "comments", at("Comments with a pending comment")); act(v, "files", at("files again")); }
+  // Two more comments on that line sent to an agent (one answered and followed up, one reported fixed: folded to a
+  // line), and an Ask answer pinned to it: their cards in the diff and on the Comments tab.
+  if (line && v.comments[0]) {
+    const c = v.comments[0], key = v.threadKey(), how = { route: "agent", agent: "claude · pane 2" };
+    v.threadDoc = addFollowup(addThreads(v.threadDoc, key, [{ ...c, id: "t1", text: "Why **this**?" }, { ...c, id: "t2", text: "Rename it" }], how), key, "t1", "And the caller?", 1);
+    v.replies = { t1: [{ reply: "Because of `x`.", status: "answered", commit: null }, { reply: "The caller is fine.", status: "question", commit: null }], t2: [{ reply: "Renamed.", status: "fixed", commit: "abc1234def" }] };
+    v.deep = { ...v.deep, pins: pinAdd(v.deep.pins, v.deepKey(), { q: "What reads this?", at: 1, a: { text: "The consumer reads it.\n\nIt mails **once** per event.", evidence: [{ at: line, why: "here" }] },
+      scope: { kind: "range", range: { file: c.file, start: c.start, end: c.end, old: Boolean(c.old) } } }) };
+    act(v, "files", at("files with a sent thread, a fixed one and a note")); act(v, "comments", at("Comments with sent threads")); v.command("files", cx);
+  }
   // The pages, with their folds and rows clicked.
   for (const p of ["overview", "blast", "arch", "res"]) act(v, `page:${p}`, at(`page ${p}`));
   // Resilience: every path opened (its picture and probe), all paths, the clean checks, a probe's script, and none open.
   v.command("page:res", cx);
   for (const p of v.resNow()?.paths ?? []) act(v, `res-path:${p.id}`, at(`Resilience, path ${p.id}`));
-  for (const c of ["res-more", "res-clean", "res-add", "res-probe-open:pr1", "res-path:"]) act(v, c, at(`Resilience, ${c}`));
+  for (const c of ["res-more", "res-clean", "res-add", ...v.probeList().map((p) => `res-probe-open:${p.id}`), "res-path:"]) act(v, c, at(`Resilience, ${c}`));
   v.command("page:overview", cx); v.rulesOpen = true; draw(v, at("Overview, rules open"));
   for (const a of [...(v.ai?.asks ?? []).map((x) => x.id), "other"]) act(v, `criterion:${a}`, at(`Overview, criterion ${a}`));
   v.command("page:blast", cx);
@@ -117,6 +174,33 @@ async function tour(v, name) {
     S.props = { part }; const p = new PrReview(); p.init({}, cx); frame(at(`part ${part}`), () => p.render(cx)); S.props = null;
   }
   for (const r of [R.renderReviews, R.renderAgentBar, R.renderKeys, R.renderCardMenu, R.renderMini]) frame(at(r.name), () => r());
+  // The popups the header opens: Run review, the keys, Codex's models, ⋯ and the model menu.
+  S.overlays.length = 0;
+  for (const c of ["reviews", "keys", "codex-menu"]) v.command(c, cx);
+  v.tab = "files"; v.page = null; draw(v, at("the header"));
+  for (const id of ["rv-more", "rv-model"]) click(id, at(id));
+  overlays(at("popups"));
+  // A comment card's ⋯ in the diff (the sent threads, the note, the pending comment): its menu as a popup, then each
+  // of its items picked (pr-review.cmenu:<index>|<card>).
+  for (const [k, obj] of [...v.threads().map((x) => ["th", x]), ...v.pins().map((x) => ["pin", x]), ...v.comments.slice(0, 1).map((x) => ["c", x])]) {
+    const it = { t: "ch", k, obj }, x = v.cardZones(v.cardOf(it)).menu[0];
+    v.tab = "files";
+    if (v.cardOf(it).folded) { v.cardClick(it, x, cx); draw(v, at(`card ${k}:${obj.id}, unfolded by a click`)); } // a fixed thread is one line until clicked
+    const c = v.cardOf(it); v.cardClick(it, x, cx);
+    assert.equal(S.overlays.length, 1, at(`card ${c.key}: ⋯ opens its menu`)); overlays(at(`card ${c.key} ⋯`));
+    for (let i = 0; i < c.menu.length; i++) {
+      v.command(`cmenu:${i}|${c.key}`, cx); await settle(); draw(v, at(`card ${c.key}, ${c.menu[i][0]}`));
+      v.sendP = null; v.replyTo = null; if (v.composing) v.closeComposer(cx);
+    }
+  }
+  // A probe of the resilience run asks before it starts on this machine (no sandbox here): the question, then no.
+  // (A probe shows in its path, open: the path that names it, or the one it is of.)
+  for (const p of v.probeList().slice(0, 2)) {
+    const path = (v.resNow()?.paths ?? []).find((x) => x.probe === p.id || x.id === p.of);
+    v.command(`probe:${p.id}`, cx); await settle(); v.command("page:res", cx); if (path) v.command(`res-path:${path.id}`, cx);
+    draw(v, at(`probe ${p.id} asks first`)); act(v, `probe:${p.id}:no`, at(`probe ${p.id}, not started`)); v.command("res-path:", cx);
+  }
+  await deep(v, at);
   await settle();
 }
 
@@ -148,7 +232,7 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
 }
 // The Resilience run's block: read, on another head (stale), running, failed, and on someone else's PR (a probe asks first).
 {
-  const res = JSON.parse(fx("resilience.json")), doc = JSON.parse(fx("findings-s.json"));
+  const res = JSON.parse(fx("resilience-view.json")), doc = JSON.parse(fx("findings-s.json"));
   await tour(await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify({ ...doc, resilience: res }) }), "PR #2 with its resilience paths");
   await tour(await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify({ ...doc, resilience: { ...res, head: "0000000aaaa" } }) }), "PR #2, resilience of an older head");
   await tour(await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify({ ...doc, resilience: { ...res, paths: res.paths.map((p) => ({ ...p, blocker: null, result: "mitigated", limited_by: "template.yaml:11" })) } }) }), "PR #2, every path limited");
@@ -184,6 +268,59 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   // Its checkout made: the trust question with everything trusting turns on.
   v.worktree = { url: v.prSel.url, head: v.head, path: "/h/w" }; v.repoVis = { [v.prSel.repo]: "PUBLIC" };
   for (const tab of ["files", "steps", "findings"]) act(v, tab, `someone else's PR, the trust question on ${tab}`);
+  click("rv-trust-no", "stay in Restricted Mode"); draw(v, "someone else's PR, Restricted Mode kept");
+  S.store.set("pr-review.trustAsked", []); draw(v, "the trust question again"); click("rv-trust-pr", "trust this PR"); draw(v, "someone else's PR, trusted");
+}
+// Explore: the start (no repo, no topic), then an exploration with its answer, its pages, layers and cards, the
+// Ask drawer and Look inside on it, and a cited file opened; then back to the review.
+{
+  const v = await open({ ...PR2, analysis: fx("analysis-split.json"), findings: fx("findings-split.json") });
+  const saved = exploration(JSON.parse(fx("analysis-split.json")).answer), id = "x1";
+  S.files.set(`/h/pr-data/explore/${id}.json`, JSON.stringify(saved));
+  S.files.set("/h/pr-data/explore/index.json", JSON.stringify([{ id, topic: saved.topic, root: saved.root, repo: saved.repo, model: "sonnet", at: 1 }, { id: "gone", topic: "Gone", root: "/h/x", at: 0 }]));
+  S.store.set("review.explore", { start: true, at: 2, root: "/h/repo" });
+  draw(v, "Explore: the start"); await v.loadExploreIndex(cx); draw(v, "Explore: the start with earlier explorations");
+  act(v, "explore-open:gone", "Explore: an exploration that is gone"); await settle(); draw(v, "Explore: gone, said");
+  v.command(`explore-open:${id}`, cx); await settle();
+  assert.ok(v.ai?.explore, "the exploration is shown");
+  for (const p of ["overview", "arch"]) act(v, `page:${p}`, `Explore: page ${p}`);
+  for (const n of v.ai.arch?.nodes ?? []) act(v, `card:${n.id}`, `Explore: card ${n.id}`);
+  v.steps().forEach((_s, k) => act(v, `step:${k}`, `Explore: layer ${k}`));
+  v.exBusy = { id: "x2", topic: "Next?", model: "sonnet", started: Date.now() }; draw(v, "Explore: one running"); v.exBusy = null;
+  v.exErr = "The model gave no answer"; draw(v, "Explore: one failed"); v.exErr = null;
+  await deep(v, (x) => `Explore: ${x}`);
+  S.files.set("/h/repo/library/loans.py", FILE); v.openExploreFile("library/loans.py", 9, cx); await settle(); draw(v, "Explore: a cited file open");
+  v.defFile = null; S.store.set("review.explore", null); v.leaveExplore(); draw(v, "back to the review");
+}
+// The PR panel (main.js without a part): each source's list with its groups, In progress, a chosen PR, the minimized
+// chip, and a switch of Herdr space (a PR picked in one space is not shown in the next).
+{
+  S.store.clear(); S.files.clear(); S.props = {};
+  const now = Date.now(), iso = (d) => new Date(now - d * 86400000).toISOString();
+  const pr = (n, repo, state, d) => ({ url: `https://github.com/${repo}/pull/${n}`, repo, number: n, title: `PR ${n}`, state, updatedAt: iso(d), at: iso(d),
+    session: "s1234567", sessionTitle: "a session", head: "feat/x", headSha: "abc", base: "main" });
+  const prs = [pr(2, "saefty/corgi-demo", "open", 1), pr(9, "o/else", "open", 1), pr(5, "saefty/corgi-demo", "draft", 40), pr(1, "saefty/corgi-demo", "merged", 2), pr(3, "o/else", "closed", 30)];
+  S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOString(), prs }));
+  const reg = (p, progress, lastTouched = now) => ({ url: p.url, repo: p.repo, number: p.number, title: p.title, status: "in-progress", lastTouched, progress, target: p });
+  S.store.set("review.open", [reg(prs[0], { filesViewed: 2, files: 9 }), reg(prs[1], { files: 3 }), reg(prs[3], { stepsChecked: 1 })]);
+  S.store.set("review.minimized", { target: prs[3], at: now });
+  S.spaces = [{ id: "sA", active: true, folder: "/h/a" }];
+  const v = new PrReview(); v.init({}, cx); await settle();
+  v.spaceSlug = { root: "/h/a", slug: "saefty/corgi-demo" };
+  assert.deepEqual(v.inProgressList().map((r) => r.number), [2], "In progress: work done and not merged; one only opened is not there");
+  assert.equal(S.store.get("review.minimized"), null, "the chip of a merged PR goes");
+  for (const src of ["mine", "repo", "review"]) { S.store.set("pr.source", src); v.picking = true; draw(v, `panel: the ${src} list`); }
+  S.store.set("pr.source", "mine"); v.showOther = v.showDone = true; draw(v, "panel: Mine with the other repos and the merged ones unfolded");
+  v.choose(prs[0], cx); await settle(); draw(v, "panel: PR #2 chosen");
+  assert.equal(S.store.get("pr.selected")["all@sA"], prs[0].url);
+  S.spaces = [{ id: "sB", active: true, folder: "/h/b" }];
+  draw(v, "panel: the frame a space switch starts"); v.onSpace(cx); await settle(); draw(v, "panel: another space");
+  assert.equal(v.prSel, null, "another space shows its own pick (none yet: the list), not the PR from the first one");
+  S.spaces = [{ id: "sA", active: true, folder: "/h/a" }]; v.onSpace(cx);
+  assert.equal(v.prSel?.url, prs[0].url, "back in the first space: its pick again");
+  S.props = { part: "mini" }; S.store.set("review.minimized", { target: prs[0], at: now });
+  const mini = new PrReview(); mini.init({}, cx); draw(mini, "the minimized review's chip");
+  S.spaces = null; S.props = null;
 }
 await settle();
 assert.deepEqual(late, [], "a spawned task threw");
