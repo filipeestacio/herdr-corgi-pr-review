@@ -117,10 +117,17 @@ function dock(view, el, mode, cx, from = 12) {
 const pill = (id, t, label, click, on = false, tip = "", alt = "") => div().id(id).when(Boolean(tip), (e) => e.tooltip(tip)).when(Boolean(alt), (e) => e.accessibility_label(alt)).flex_none().px(8).h(24).flex().items_center().rounded(5).border_1().border_color(on ? t.accent : t.border).text_size(TYPE.panel)
   .text_color(on ? t.foreground : t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground)).on_click(click).child(label);
 
+// What the Worktrees mod gets (its PROVIDERS.md): the PRs as of now, the contexts they were listed for (view: the
+// chip's copy empties a list of another view), and what a click on a mark runs: the wish to pick that PR here.
+const wtList = (prs) => ({ at: Date.now(), view: viewKey(), run: [["pr-review.want:{repo}#{number}", {}]], prs });
+
 export default class PrReview extends View {
   init(_props, cx) {
     this.part = props()?.part ?? null;
     this.uid = Math.random().toString(36).slice(2, 8);
+    // The minimized chip's copy sits in the main layouts also while the panel does not: it keeps a click on a PR mark
+    // of the Worktrees mod ("want:<owner/repo#n>") for the panel (wantPick).
+    if (this.part === "mini") cx.spawn(async () => { for (;;) { const c = String(await nextCommand()); if (c.startsWith("want:")) this.wantPick(c.slice(5)); } });
     if (this.part === "bar" || this.part === "reviews" || this.part === "agentbar" || this.part === "keys" || this.part === "cmenu" || this.part === "mini") return;
     this.announces = true; // Go to's keys: published while this copy runs, cleared in close()
     this.files = []; this.rows = []; this.sel = null; this.selEnd = null; this.question = "";
@@ -195,6 +202,7 @@ export default class PrReview extends View {
     else if (c === "merged") this.showDone = !this.showDone; // the list's "Merged or closed" row (a toggle)
     else if (c === "other") this.showOther = !this.showOther; // Mine's "Other repos or older" row (a toggle)
     else if (name === "drop") { const r = byRef((shared("review.open") ?? []).filter(shownIn), arg); if (r) this.dropReview(r.url, cx); } // In progress row's ✕: drop:<number | owner/repo#number | url>
+    else if (name === "want") this.wantPick(arg); // want:<owner/repo#n | url>: a click on a PR mark in the Worktrees mod (takePick picks it)
     else if (c === "undrop") this.undoDrop(cx); // the "Undo" after it
     else if (c === "progress-all") this.allOpen = !this.allOpen; // In progress: "Show all" / "Show fewer"
     else if (name === "explore") startExplore(arg || null); // pr-review.explore[:<folder>]: a topic in existing code, no PR
@@ -887,9 +895,25 @@ export default class PrReview extends View {
 
   // Optional Go to (mods/goto/PROVIDERS.md) integration: PR links there become "Review PR", and reviews in progress
   // are findable. Go to hands the PR over through shared "pr.goto"; render picks it up. Without goto nothing happens.
+  // A PR someone asked the panel to pick (shared "pr.pick" {ref, at}): written by whichever copy gets the "want"
+  // command, so the wish is kept while no panel is there, and taken once by the panel when it draws (takePick): now,
+  // or when it appears within a minute. Two copies writing the same wish within two seconds count as one.
+  wantPick(ref) {
+    const was = shared("pr.pick");
+    if (ref && !(was?.ref === ref && Date.now() - was.at < 2000)) setShared("pr.pick", { ref, at: Date.now() });
+  }
+  takePick(cx) {
+    const w = shared("pr.pick");
+    if (!w) return;
+    setShared("pr.pick", null);
+    if (w.ref && Date.now() - w.at < 60000) this.panelCommand(`pick:${w.ref}`, cx); // older: the click is forgotten
+    cx.notify();
+  }
+
   // Every PR the panel knows in the contexts the view shows: your session PRs, the lists fetched, the reviews in progress.
   knownPrs() {
-    return [...this.prs, ...Object.values(this.srcLists ?? {}).flatMap((l) => l?.prs ?? []), ...(shared("review.open") ?? []).map((r) => r.target ?? r)].filter(shownIn);
+    // this.prs ?? []: init announces to Go to (and with it to Worktrees) before the lists exist.
+    return [...(this.prs ?? []), ...Object.values(this.srcLists ?? {}).flatMap((l) => l?.prs ?? []), ...(shared("review.open") ?? []).map((r) => r.target ?? r)].filter(shownIn);
   }
   // Optional Worktrees (its PROVIDERS.md) integration: which PR belongs to which branch, from what the panel already
   // has (no fetch, no timer). Only with that mod there (shared "worktrees.api"), and written only when the list
@@ -901,7 +925,7 @@ export default class PrReview extends View {
     this.wtSig = sig;
     const p = shared("worktrees.providers") ?? [];
     if (!p.includes("review")) setShared("worktrees.providers", [...p, "review"]);
-    setShared("worktrees.prs.review", { at: Date.now(), run: [["pr-review.pick:{repo}#{number}", {}]], prs });
+    setShared("worktrees.prs.review", wtList(prs));
   }
   publishGoto() {
     this.publishWorktrees(); // the reviews in progress changed, or the copy starts
@@ -1329,6 +1353,13 @@ export default class PrReview extends View {
     if (this.part === "keys") return renderKeys();
     if (this.part === "cmenu") return renderCardMenu();
     if (this.part === "mini") {
+      // The view shows other contexts than the list for the Worktrees mod was made for, and no panel is there to
+      // write it anew: an empty list as of now, so no PR of the other setup stays up as if it were current.
+      const wl = shared("worktrees.prs.review");
+      if (wl?.prs?.length && wl.view !== viewKey() && !this.wtQueued) {
+        this.wtQueued = true;
+        cx.timer.after(0, () => { this.wtQueued = false; const now = shared("worktrees.prs.review"); if (now?.prs?.length && now.view !== viewKey()) setShared("worktrees.prs.review", wtList([])); });
+      }
       // Go to hands PRs over through "pr.goto"; with the PR panel hidden nothing else takes it, and the mini part is in
       // the main layout: resume a review in progress, else open the PR in the review layout.
       const g = shared("pr.goto");
@@ -1366,7 +1397,9 @@ export default class PrReview extends View {
     // shared() hands out a new object each time: compared by what the items are made of (views.js openSig), not by identity.
     if (openSig(shared("review.open")) !== this.gotoSig) { this.gotoSig = openSig(shared("review.open")); cx.timer.after(0, () => this.publishGoto()); }
     // Worktrees came (or went), or the view shows other contexts: its list again (written only when it differs).
-    { const wk = `${Boolean(shared("worktrees.api"))}|${viewKey()}`; if (wk !== this.wtKey) { this.wtKey = wk; cx.timer.after(0, () => this.publishWorktrees()); } }
+    { const wk = `${Boolean(shared("worktrees.api"))}|${viewKey()}`; if (wk !== this.wtKey) { this.wtKey = wk; this.wtSig = null; cx.timer.after(0, () => this.publishWorktrees()); } }
+    // A PR asked for by a click elsewhere (wantPick), also one from before this panel was there.
+    if (shared("pr.pick") && !this.pickQueued) { this.pickQueued = true; cx.timer.after(0, (cx) => { this.pickQueued = false; this.takePick(cx); }); }
     if (this.spaceSeen !== undefined && location().space !== this.spaceSeen) { this.spaceSeen = location().space; cx.timer.after(0, (cx) => this.onSpace(cx)); }
     if (!this.scanQueued && this.scanDue()) { this.scanQueued = true; cx.timer.after(0, (cx) => { this.scanQueued = false; this.scanIfDue(cx); }); }
     // The selection is never dropped here: a PR the view hides gets a banner instead.

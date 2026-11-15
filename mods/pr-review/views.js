@@ -1509,6 +1509,8 @@ export function fileRisk({ analysis = null, findings = null, status = null } = {
 // frames (operators, then whoever arrives from outside, then the zones public → authenticated → internal → data, one
 // frame each), only the cards at a crossing; whoever arrives from outside is a card of its own. Each line is numbered as its row in the table (num(r)) and says its check and
 // what goes over it; `dashed`: not assessed; `tip`: the same in sentences. Pure.
+// The card of whoever arrives at a crossing without a card of its own (a caller from outside, an operator).
+export const secWho = (r) => `\0who:${r.kind}:${r.identity}`;
 export function secPicture(rows, arch, num = (r) => rows.indexOf(r) + 1) {
   const nodes = new Map(), edges = [], card = (id) => (arch?.nodes ?? []).find((n) => n.id === id);
   // A frame per zone (two zones of one trust level, e.g. in two cloud accounts, stay apart); whoever arrives from
@@ -1516,7 +1518,7 @@ export function secPicture(rows, arch, num = (r) => rows.indexOf(r) + 1) {
   const lane = (r, side) => { const z = side === "from" ? r.from : r.to; return side === "from" && r.kind === "operator" && !z.trust ? "operator" : side === "from" && r.kind === "entry" ? "outside" : z.trust ? `z:${z.name}` : "unknown"; };
   const put = (id, label, type, trust) => { if (!nodes.has(id)) nodes.set(id, { id, label, type, group: `t:${trust}`, status: undefined, description: "" }); return id; };
   for (const r of rows) {
-    const from = r.ends.from ? put(r.ends.from, card(r.ends.from)?.label ?? r.ends.from, card(r.ends.from)?.type, lane(r, "from")) : put(`\0who:${r.kind}:${r.identity}`, r.kind === "operator" ? r.from.name : r.identity ?? "unnamed", r.kind === "entry" ? "external" : "component", lane(r, "from"));
+    const from = r.ends.from ? put(r.ends.from, card(r.ends.from)?.label ?? r.ends.from, card(r.ends.from)?.type, lane(r, "from")) : put(secWho(r), r.kind === "operator" ? r.from.name : r.identity ?? "unnamed", r.kind === "entry" ? "external" : "component", lane(r, "from"));
     const to = r.ends.to ? put(r.ends.to, card(r.ends.to)?.label ?? r.ends.to, card(r.ends.to)?.type, lane(r, "to")) : null;
     // The line says what goes over it (what an attacker controls, else the call or right); a check by its kind; a
     // crossing assessed and still unchecked "no check"; one not assessed only its dashes. The rest is the tooltip.
