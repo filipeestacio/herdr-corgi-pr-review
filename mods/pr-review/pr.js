@@ -1632,3 +1632,9 @@ export function secOldLine(ai, sec = []) {
   return `This security review is older than the current rules for guards, operators and taken-over roles, so a crossing it calls not assessed may only be left open by the old prompt. Re-run it for the current view.${
     !n ? "" : !hit ? ` None of the ${n === 1 ? "one security cause" : `${n} security causes`} hangs on a threat of this run.` : ` ${hit} of the ${n} security ${n === 1 ? "cause" : "causes"} ${hit === 1 ? "carries" : "carry"} ⛨ only through a threat this run named, so the count may change.`}`;
 }
+
+// What the cached files know of a PR, for the panel's marks (views.js riskSignal, fileRisk; acceptance, engineer 4): the
+// analysis mapped, and the findings file's findings with the threats that stand on them (withThreats), as the review
+// loads them. So ⛨ (isSecurity) has one source: a file's mark in the panel is the review's.
+// an: the analysis file ({answer}); fd: the findings file ({findings, status, security}). Either may be null.
+export const knownOf = (an, fd) => ({ analysis: an?.answer ? mapReview(an.answer, []) : null, findings: fd ? withThreats(fd.findings ?? [], fd.security) : null, status: fd?.status ?? null });

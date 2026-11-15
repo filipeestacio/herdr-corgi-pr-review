@@ -17,7 +17,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, Editor, EditorState, TextView } from "gpui-base";
 import { spaces, panes, focused, agents, exec, hc, run, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, home, layout, props, watchFolder, nextCommand } from "herdr";
-import { diffRows, buildPrompt, splitPatch, selection, nextChange, lineLabel, anchorRow, buildReview, hunksOf, hash, uiLine, reviewRequest, mapReview, triageOf, isSecurity, withThreats } from "./pr.js";
+import { diffRows, buildPrompt, splitPatch, selection, nextChange, lineLabel, anchorRow, buildReview, hunksOf, hash, uiLine, reviewRequest, mapReview, triageOf, isSecurity, knownOf } from "./pr.js";
 import { parsePrRef, ghTarget, pruneSources, codeModel, windowActive, pollDue, pollAfter } from "./pr.js";
 import * as C from "./context.js";
 import { tabArgs } from "./threads.js"; // a new Claude tab with the PR's text: no MCP servers
@@ -460,7 +460,7 @@ export default class PrReview extends View {
     const read = (f) => readTextFile(f).then((x) => (x ? JSON.parse(x) : null)).catch(() => null), h = hash(url);
     const [an, fd] = await Promise.all([read(`${cacheDir()}/rv-${h}-${walkModel()}.json`), read(`${appHome()}/pr-data/findings/${h}.json`)]);
     if (this.reviewKey !== url) return;
-    const known = { analysis: an?.answer ? mapReview(an.answer, []) : null, findings: fd?.findings, status: fd?.status };
+    const known = knownOf(an, fd); // with the threats that stand on a finding, as the list's marks and the review have them
     this.fileMarks = fileRisk(known);
     (this.risk ??= new Map()).set(url, riskSignal(known));
   }
@@ -872,15 +872,14 @@ export default class PrReview extends View {
       const out = new Map(), risk = new Map();
       await Promise.all([...open, ...rest].map(async (pr) => {
         const h = hash(pr.url), head = pr.headSha ?? hash(`${pr.updatedAt}|${pr.head}`);
-        const [an, fd0] = await Promise.all([read(`${cacheDir()}/rv-${h}-${m}.json`), read(`${appHome()}/pr-data/findings/${h}.json`)]);
-        const fd = fd0 && { ...fd0, findings: withThreats(fd0.findings ?? [], fd0.security) }; // a finding a threat stands on is ⛨ (pr.js isSecurity)
-        const analysis = an?.answer ? mapReview(an.answer, []) : null;
-        risk.set(pr.url, riskSignal({ analysis, findings: fd?.findings, status: fd?.status }));
+        const [an, fd] = await Promise.all([read(`${cacheDir()}/rv-${h}-${m}.json`), read(`${appHome()}/pr-data/findings/${h}.json`)]);
+        const known = knownOf(an, fd), analysis = known.analysis; // a finding a threat stands on is ⛨ (pr.js isSecurity)
+        risk.set(pr.url, riskSignal(known));
         if (!listed.has(pr.url)) return;
         // The diff's size from its cache (in parts, diffcache.js); a missing one leaves the effort to the analysis.
         const [ctx, diff] = await Promise.all([pr.headSha ? read(`${cacheDir()}/ctx-${h}-${pr.headSha}.json`) : null, loadDiff(`${cacheDir()}/diff-${h}-${head}`, pr.url, head, readTextFile)]);
         const files = diff ? splitPatch(diff) : null;
-        const security = (fd?.findings ?? []).filter((f) => isSecurity(f) && !["fixed", "dismissed"].includes(fd.status?.[f.id]?.s)); // as the review's ⛨
+        const security = (known.findings ?? []).filter((f) => isSecurity(f) && !["fixed", "dismissed"].includes(known.status?.[f.id]?.s)); // as the review's ⛨
         out.set(pr.url, triageOf({ pr, analysis, size: files && { files: files.length, lines: files.reduce((n, f) => n + f.add + f.del, 0) },
           security, related: ctx, llm: llm[pr.url] ?? null }));
       }).map((one) => one.catch(() => null))); // a broken cache file costs that row its chips, not the whole list

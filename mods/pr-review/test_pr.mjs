@@ -1152,3 +1152,23 @@ console.log("ok");
   assert.ok(reviewState({ pr: { number: 2 }, list, counts: c, findings: [], statusOf: () => "open", oldRules: true }).includes("(older rules, re-run)"));
   console.log("ok a security run under older rules");
 }
+
+// Acceptance, engineer 4: the panel's marks and the review's have one source. A finding a threat of the security run
+// stands on is ⛨ in the panel's file list too (knownOf applies withThreats, as the review's load does).
+{
+  const { knownOf, isSecurity, mergeFindings, withThreats } = await import("./pr.js");
+  const { fileRisk, riskSignal, rowMarks } = await import("./views.js");
+  const fd = { findings: [{ id: "c1", reviewer: "claude", file: "library/consumer.py", line: 13, severity: "high", impact: "degraded_operation", category: "availability", title: "One failing record retries the whole batch" },
+    { id: "e1", reviewer: "claude", file: "library/events.py", line: 19, severity: "high", impact: "dead_path", category: "bug", title: "Queue.publish only appends to a list" },
+    { id: "m1", reviewer: "claude", file: "library/mailer.py", line: 13, severity: "high", impact: "degraded_operation", category: "availability", title: "Mailer swallows exhausted retries" }],
+    status: {}, security: { threats: [{ id: "t4", result: "finding", findings: ["c1"] }, { id: "t5", result: "finding", findings: ["e1"] }, { id: "t6", result: "mitigated", findings: ["m1"] }] } };
+  const known = knownOf(null, fd), marks = fileRisk(known), panel = (path) => rowMarks(marks.get(path), null)[0].text;
+  assert.deepEqual([panel("library/consumer.py"), panel("library/events.py"), panel("library/mailer.py")], ["⛨ high", "⛨ high", "high"]);
+  assert.deepEqual(rowMarks(fileRisk({ findings: fd.findings, status: {} }).get("library/consumer.py"), null)[0].text, "high", "without the threats the mark was missing: the error of the acceptance");
+  // The review's own: the merged findings of the same file carry the same sign.
+  const merged = mergeFindings(withThreats(fd.findings, fd.security)).findings;
+  for (const f of merged) assert.equal(Boolean(f.security), Boolean(marks.get(f.file).security), `${f.file}: the panel and the review agree`);
+  assert.ok(riskSignal(known).security && known.findings.filter(isSecurity).length === 2 && known.analysis === null);
+  assert.deepEqual(knownOf(null, null), { analysis: null, findings: null, status: null }); assert.equal(riskSignal(knownOf(null, null)), null);
+  console.log("ok the panel's marks are the review's");
+}

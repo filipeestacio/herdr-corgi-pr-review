@@ -413,6 +413,12 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   S.files.set(`/h/pr-data/findings/${hash(prs[0].url)}.json`, JSON.stringify({ findings: [{ id: "f1", file: v.files[0].path, line: 1, severity: "high", category: "security", title: "t" }, { id: "f2", file: v.files[1].path, line: 2, severity: "low", title: "u" }], status: {} }));
   await v.loadMarks(prs[0].url); draw(v, "panel: findings marked on the files");
   assert.deepEqual([v.fileMarks.get(v.files[0].path)?.top, v.risk.get(prs[0].url)?.open], ["high", 2], "the files and the PR carry the review's findings");
+  // A finding that is ⛨ only because a threat of the security run stands on it carries ⛨ on its file here as in the review.
+  S.files.set(`/h/pr-data/findings/${hash(prs[0].url)}.json`, JSON.stringify({ findings: [{ id: "f1", file: v.files[0].path, line: 1, severity: "high", impact: "degraded_operation", category: "availability", title: "t" }], status: {}, security: { threats: [{ id: "t1", result: "finding", findings: ["f1"] }] } }));
+  await v.loadMarks(prs[0].url); draw(v, "panel: a finding a threat stands on");
+  assert.deepEqual([v.fileMarks.get(v.files[0].path)?.security, v.risk.get(prs[0].url)?.security], [true, true], "the panel's file mark is ⛨ where the review's is");
+  S.files.set(`/h/pr-data/findings/${hash(prs[0].url)}.json`, JSON.stringify({ findings: [{ id: "f1", file: v.files[0].path, line: 1, severity: "high", category: "security", title: "t" }, { id: "f2", file: v.files[1].path, line: 2, severity: "low", title: "u" }], status: {} }));
+  await v.loadMarks(prs[0].url);
   v.askTop = true; draw(v, "panel: a comment on the whole file"); v.askTop = false;
   v.pick(v.files[1].path, cx); await settle(); draw(v, "panel: another file");
   v.openWalk(cx, false); await settle(); draw(v, "panel: Walkthrough without an analysis");
