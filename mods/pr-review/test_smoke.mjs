@@ -361,6 +361,11 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   v.selEnd = v.sel + 2; v.question = "Why this?"; v.addComment(cx); await settle(); draw(v, "panel: a pending comment and the bar");
   assert.equal(v.comments.length, 1, "the comment was added");
   v.editComment(v.comments[0], cx); draw(v, "panel: the comment being edited"); v.cancel(cx);
+  v.panelCommand("discard", cx); draw(v, "panel: Discard asked about"); assert.equal(v.comments.length, 1); v.discardAsk = false;
+  // What the review knows, on the files and next to the diff's size.
+  S.files.set(`/h/pr-data/findings/${hash(prs[0].url)}.json`, JSON.stringify({ findings: [{ id: "f1", file: v.files[0].path, line: 1, severity: "high", category: "security", title: "t" }, { id: "f2", file: v.files[1].path, line: 2, severity: "low", title: "u" }], status: {} }));
+  await v.loadMarks(prs[0].url); draw(v, "panel: findings marked on the files");
+  assert.deepEqual([v.fileMarks.get(v.files[0].path)?.top, v.risk.get(prs[0].url)?.open], ["high", 2], "the files and the PR carry the review's findings");
   v.askTop = true; draw(v, "panel: a comment on the whole file"); v.askTop = false;
   v.pick(v.files[1].path, cx); await settle(); draw(v, "panel: another file");
   v.openWalk(cx, false); await settle(); draw(v, "panel: Walkthrough without an analysis");

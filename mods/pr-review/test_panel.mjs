@@ -173,4 +173,20 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   assert.equal(v.tab, "files", "a later load does not put the old place back");
   S.exec = null; S.props = {};
 }
+
+// ---- Setup's first line says what the list comes to
+{
+  const { setupSummary } = await import("./setup-view.js");
+  const now = 1e12, row = (id, status) => ({ id, status });
+  assert.equal(setupSummary([row("git", "ok"), row("gh", "ok")], now - 120000, now), "All 2 programs were found. Checked 2 min ago.");
+  assert.equal(setupSummary([row("git", "ok"), row("codex", "optional-missing")], now, now), "Everything required was found; 1 optional program is not installed. Checked just now.");
+  assert.match(setupSummary([row("git", "missing"), row("gh", "logged-out"), row("x", "ok")], now + 5000, now), /^2 of 3 programs are missing or not signed in: git, gh\. .* Checked just now\.$/);
+}
+// ---- "Discard" asks once
+{
+  S.props = {}; const v = new PrReview(); v.init({}, cx); await flush();
+  v.reviewKey = "k"; v.comments = [{ id: "1", file: "a.py", text: "x" }, { id: "2", file: "a.py", text: "y" }];
+  v.discardAll(cx); assert.deepEqual([v.discardAsk, v.comments.length], [true, 2], "the first click asks");
+  v.discardAll(cx); assert.deepEqual([v.discardAsk, v.comments.length], [false, 0], "the second deletes them");
+}
 console.log("panel ok");
