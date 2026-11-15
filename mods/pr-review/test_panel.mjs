@@ -550,6 +550,26 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   S.exec = async (cmd, args = []) => { runs.push([cmd, ...args]); return { code: 1, stdout: "", stderr: "no such app" }; };
   timers.length = 0; S.toasts.length = 0; v.panelCommand("editor:docs/b.md:1", cx); await settle();
   assert.match(S.toasts[0]?.body ?? "", /VS Code could not be started/);
+  // Herdr's cx is valid only inside the call that got it: what is read in the background never uses the render's or a
+  // timer's cx afterwards (it asks for the redraw from a task of its own).
+  {
+    EV.forgetEditors(); S.files.set("/fresh/pom.xml", "<project/>");
+    const stale = [], mk = (kind) => { const c = { ...cx, live: true, notify() { if (!c.live) stale.push(kind); }, timer: { after(_ms, fn) { timers.push(() => { const t = mk("timer"); fn(t); t.live = false; }); }, every() {} },
+      spawn(fn) { const t = mk("task"); void Promise.resolve().then(() => fn(t)).catch(() => null); } }; return c; };
+    const rc = mk("render"); EV.editorFor({ root: "/fresh" }, rc); EV.editorLink(v, S.theme, "k", { root: "/fresh" }, rc); rc.live = false;
+    await flush(); await flush();
+    assert.deepEqual([stale, EV.editorFor({ root: "/fresh" }, null)?.id], [[], "idea"], "no cx is used after its call; the redraw came from a task");
+  }
+  // A click on a folder no link has shown yet waits for its files: a Gradle project opens in IntelliJ, not in the
+  // editor of a folder of no special kind.
+  {
+    EV.forgetEditors(); S.files.set("/gradle/build.gradle", "plugins {}"); S.exec = async (cmd, args = []) => { runs.push([cmd, ...args]); return { code: 0, stdout: "", stderr: "" }; };
+    Map.prototype.set.call(S.store, "review.worktree", { url: mine.url, head: "abc", path: "/gradle" }); Map.prototype.set.call(S.store, "editor.choice", null);
+    timers.length = 0; runs.length = 0; v.panelCommand("editor:", cx); await settle(); await settle();
+    assert.deepEqual(opens(), [["open", "-a", IJ, "/gradle"]], "the kind of project is read before the editor is chosen");
+    v.editorTarget = { root: "/wt2" }; S.files.set("/wt2/.git", "gitdir: /clones/z/.git/worktrees/w\n"); v.panelCommand("editor-use:idea", cx); await settle(); await settle();
+    assert.deepEqual(S.store.get("editor.choice")?.repos, { "/clones/z/.git": { worktree: "idea" } }, "and a pick for a folder not shown yet lands under its project, as a worktree's");
+  }
   // No editor installed: no link anywhere.
   EV.forgetEditors(); for (const app of [VS, IJ]) S.files.delete(`${app}/Contents/Info.plist`);
   EV.editorFor({ root: "/co/r" }, cx); await flush(); await flush();

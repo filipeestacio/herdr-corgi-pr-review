@@ -17,7 +17,7 @@ const os = () => shared("pr-review.setup")?.os ?? "darwin";
 
 export const setEditors = (list) => { extra = E.extraEditors(list); }; // pr-review.config.json "editors"
 const stored = () => { if (!known) { try { known = JSON.parse(store()?.getItem(KEY) ?? "null"); } catch { known = null; } } return known; };
-export const forgetEditors = () => { known = null; looking = null; asked = false; roots.clear(); opening.clear(); extra = []; try { store()?.removeItem(KEY); } catch { /* none */ } }; // tests
+export const forgetEditors = () => { known = null; looking = null; asked = false; roots.clear(); reads.clear(); opening.clear(); extra = []; try { store()?.removeItem(KEY); } catch { /* none */ } }; // tests
 
 // Finds the installed editors by reading the files that say so (editor.js candidates): no process. Within a day the
 // remembered answer is taken (force: the menu's "Look again", and after an editor could not be started).
@@ -32,15 +32,26 @@ export function lookForEditors(force = false) {
   })());
 }
 
+// A redraw once something read in the background is there. Herdr's cx is valid only inside the call that got it: the
+// timer's cx starts a task, and the task's own cx is the one used after the wait (never the render's or the timer's).
+const later = (cx, wait) => cx?.timer?.after?.(0, (cx) => cx.spawn(async (cx) => { await wait(); cx.notify(); }));
+
 // What a checkout's root says about its project, read as files: the marks of a JVM project (`.idea` is a folder: a
 // file IntelliJ keeps in it stands for it) and its `.git` (a file in a linked worktree; names the shared git folder).
-function rootInfo(root, cx) {
-  if (!roots.has(root)) {
+// Until the files are read, a main checkout of no special kind is assumed; rootRead waits for them.
+const reads = new Map(); // root → {done: Promise, told: a redraw was asked for}
+function rootRead(root) {
+  if (!reads.has(root)) {
     roots.set(root, { marks: [], ...E.gitLink(null, root) });
     const read = (f) => readTextFile(`${root}/${f}`).catch(() => null);
-    Promise.all([read(".git"), ...E.PROJECT_MARKS.map((m) => read(m === ".idea" ? ".idea/misc.xml" : m))])
-      .then(([git, ...got]) => { roots.set(root, { marks: E.PROJECT_MARKS.filter((_m, k) => got[k] !== null), ...E.gitLink(git, root) }); cx?.notify?.(); });
+    reads.set(root, { told: false, done: Promise.all([read(".git"), ...E.PROJECT_MARKS.map((m) => read(m === ".idea" ? ".idea/misc.xml" : m))])
+      .then(([git, ...got]) => { roots.set(root, { marks: E.PROJECT_MARKS.filter((_m, k) => got[k] !== null), ready: true, ...E.gitLink(git, root) }); }) });
   }
+  return reads.get(root).done;
+}
+function rootInfo(root, cx) {
+  const done = rootRead(root), r = reads.get(root);
+  if (cx && !r.told && !roots.get(root).ready) { r.told = true; later(cx, () => done); }
   return roots.get(root);
 }
 
@@ -50,7 +61,7 @@ export function editorFor(target, cx) {
   const root = target?.root;
   if (!root) return null;
   const s = stored(), r = rootInfo(root, cx);
-  if (!s) { if (!looking && !asked) { asked = true; cx?.timer?.after?.(0, (cx) => lookForEditors().then(() => { asked = false; cx.notify(); })); } return null; }
+  if (!s) { if (!looking && !asked && cx) { asked = true; later(cx, () => lookForEditors().then(() => { asked = false; })); } return null; }
   return E.editorOf({ file: target.file ?? null, marks: r.marks, linked: r.linked, choice: shared(CHOICE), key: r.common, found: s.found, extra });
 }
 
@@ -68,7 +79,9 @@ function refused(target) {
 export async function openIn(target, id = null) {
   const no = refused(target);
   if (no) return no;
-  const found = await lookForEditors(), use = id ?? editorFor(target, null)?.id;
+  const found = await lookForEditors();
+  await rootRead(target.root); // a folder no link has shown yet: its kind of project and its `.git` first, then the editor
+  const use = id ?? editorFor(target, null)?.id;
   const argv = use ? E.openArgv(use, found[use], target.file ? { file: E.safeFile(target.root, target.file), line: target.line ?? null } : { dir: target.root }, extra) : null;
   if (!argv) return "No editor to open this in was found.";
   const r = await exec(argv[0], argv[1], { timeout: 20000 }).catch((e) => ({ code: 1, stderr: String(e) }));
@@ -90,8 +103,9 @@ export function startOpen(target, cx, id = null) {
 
 // The ▾ menu's pick: this editor for this project from now on, for its main checkout or for its worktrees (shared
 // with the other mods; written only when it changed).
-export function chooseEditor(root, id) {
-  const r = roots.get(root) ?? E.gitLink(null, root), { choice, changed } = E.withChoice(shared(CHOICE), r.common, r.linked, id);
+export async function chooseEditor(root, id) {
+  await rootRead(root); // whether it is a worktree decides which of the project's two picks this is
+  const r = roots.get(root), { choice, changed } = E.withChoice(shared(CHOICE), r.common, r.linked, id);
   if (changed) setShared(CHOICE, choice);
 }
 
@@ -104,8 +118,8 @@ export function editorMenu(target) {
 }
 export function openEditorMenu(view, target) {
   view.editorTarget = target;
-  const items = editorMenu(target);
-  openOverlay({ mod: "pr-review", props: { part: "cmenu", key: "editor", items }, kind: "popup", width: 440, height: 12 + 30 * items.length });
+  // Once the root is read: the menu says "this repo" or "worktrees of this repo" by what it is.
+  return Promise.all([rootRead(target.root), lookForEditors()]).then(() => { const items = editorMenu(target); openOverlay({ mod: "pr-review", props: { part: "cmenu", key: "editor", items }, kind: "popup", width: 440, height: 12 + 30 * items.length }); });
 }
 
 // The words of a link for a target.
@@ -151,9 +165,9 @@ export function editorCommand(view, c, cx, copy = null) {
   } else if (name === "editor-use") {
     const target = view.editorTarget;
     if (!target) return true; // another copy's menu
-    view.editorTarget = null; chooseEditor(target.root, arg); view.openEditor(target, cx, arg);
+    view.editorTarget = null; chooseEditor(target.root, arg); view.openEditor(target, cx, arg); // the pick is written once the root is read; the click opens with it at once
   } else if (name === "editor-copy") { const x = view.editorTarget; view.editorTarget = null; if (x?.file && copy) copy(`${x.file}${x.line ? `:${x.line}` : ""}`); }
-  else if (name === "editor-look") lookForEditors(true).then(() => cx.notify());
+  else if (name === "editor-look") cx.spawn(async (cx) => { await lookForEditors(true); cx.notify(); });
   else if (name !== "editor-none") return false;
   return true;
 }

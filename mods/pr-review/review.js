@@ -5637,7 +5637,8 @@ export const ReviewMode = {
     }
     // Where you were is not read yet (applyResume): hold the frame, so the first one drawn stands there.
     if (this.resumed !== this.prSel?.url) {
-      if (!this.resumeQueued) { this.resumeQueued = true; cx.timer.after(0, (cx) => { this.resumeQueued = false; this.applyResume(cx); }); }
+      // The timer's cx is valid only inside its call; applyResume waits for a file, so it runs as a task with its own.
+      if (!this.resumeQueued) { this.resumeQueued = true; cx.timer.after(0, (cx) => { this.resumeQueued = false; cx.spawn((cx) => this.applyResume(cx)); }); }
       return root;
     }
     // A page (Overview, Architecture…) or a definition covers the list: skip building it (a big PR's diff is the bulk
