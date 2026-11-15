@@ -63,6 +63,10 @@ const SEC_MARK = "⛨"; // security's own mark in a PR row (a shield), next to t
 // A PR's head as GitHub last gave it ({at, sha} by url) and the asks under way: one for every copy of the mod (the
 // panel, then the review of the same PR), so opening the review does not ask again what the panel just asked.
 const HEADS = new Map(), HEAD_ASKS = new Map();
+// A folder's repo (git rev-parse: root, git dir, default branch) by folder, for every copy of the mod as well: the
+// review of a PR is a new copy each time it opens, and waited for this one command (0.3 s, 0.7 to 2 s on a busy
+// machine) before it built anything from the diff it had read from the cache in a few ms.
+const REPOS = new Map();
 const age = (iso) => { const m = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000)); return !Number.isFinite(m) ? "" : m < 60 ? `${m}m` : m < 2880 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`; };
 
 function location() {
@@ -127,7 +131,7 @@ export default class PrReview extends View {
     this.view = "diff"; this.walk = null; this.step = 0; this.read = new Set();
     // Speed: every spawn costs 0.3-0.5 s here. Repos and PR info are remembered; memo keeps the last MEMO contexts
     // (diff, open file, selection) so going back to one shows it with no exec; watchFolder marks a repo dirty.
-    this.repos = new Map(); this.prInfo = new Map(); this.memo = new Map(); this.dirty = new Set(); this.watching = new Map(); this.heads = HEADS;
+    this.repos = REPOS; this.prInfo = new Map(); this.memo = new Map(); this.dirty = new Set(); this.watching = new Map(); this.heads = HEADS;
     if (this.part === "review") return this.initReview(cx);
     // The pick from before (shared "pr.selected") is known at once: the list is not drawn (nor fetched) while prs.json
     // is read, and the branch's diff is only made when the branch is what the panel shows.
@@ -250,7 +254,8 @@ export default class PrReview extends View {
       this.repos.set(cwd, exec("git", ["rev-parse", "--show-toplevel", "--absolute-git-dir", "--abbrev-ref", "origin/HEAD"], { cwd }).then((r) => {
         const [root, gitdir, base] = r.stdout.trim().split("\n");
         return gitdir?.startsWith("/") ? { root, gitdir, base: r.code === 0 ? base : "origin/main" } : null;
-      }).catch(() => null));
+      }).catch(() => { this.repos.delete(cwd); return null; })); // the command did not run: asked again next time
+      keepLast(this.repos, 100);
     }
     return this.repos.get(cwd);
   }

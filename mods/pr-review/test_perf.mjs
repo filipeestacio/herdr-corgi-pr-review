@@ -95,6 +95,21 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   globalThis.window.is_window_active = active; S.exec = null;
 }
 
+// ---- the review of a PR does not ask git again what the panel asked
+{
+  const { default: PrReview } = await import("./main.js");
+  let asked = 0, fail = true;
+  S.exec = async (cmd, args) => { if (cmd !== "git" || args[0] !== "rev-parse") return { code: 1, stdout: "", stderr: "stub" }; asked++; if (fail) throw new Error("no git"); return { code: 0, stdout: "/h/x\n/h/x/.git\norigin/main\n", stderr: "" }; };
+  S.store.clear(); S.props = {}; const panel = new PrReview(); panel.init({}, cx);
+  assert.equal(await panel.repoOf("/h/x"), null, "git did not run: no repo");
+  fail = false;
+  assert.deepEqual(await panel.repoOf("/h/x"), { root: "/h/x", gitdir: "/h/x/.git", base: "origin/main" }, "asked again after a command that did not run");
+  S.props = { part: "review" }; const review = new PrReview(); review.init({}, cx);
+  const before = asked;
+  assert.deepEqual([await review.repoOf("/h/x"), asked - before], [{ root: "/h/x", gitdir: "/h/x/.git", base: "origin/main" }, 0], "another copy of the mod gets the folder's repo without a command");
+  S.exec = null; S.props = null; await settle();
+}
+
 // ---- a big map is laid out after the frame, a small one in it
 // (In Herdr the layout of 80 cards takes 208 ms and a render is stopped after about 50: laid out in the frame, the
 // page never came.)
