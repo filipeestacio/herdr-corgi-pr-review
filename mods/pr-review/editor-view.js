@@ -3,7 +3,7 @@
 // "Opening …" for three seconds and a toast only when it failed).
 import { div } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { exec, shared, setShared, readTextFile, openOverlay, home, notify } from "herdr";
+import { exec, shared, setShared, readTextFile, openOverlay, home, appHome, notify } from "herdr";
 import * as E from "./editor.js";
 import { TYPE } from "./views.js";
 import { readConfig } from "./setup-view.js";
@@ -86,12 +86,14 @@ export async function openIn(target, id = null) {
   const found = await lookForEditors();
   await rootRead(target.root); // a folder no link has shown yet: its kind of project and its `.git` first, then the editor
   const use = id ?? editorFor(target, null)?.id;
-  // The settings are read before anything starts (also for a click that comes before the mod's own read of them):
-  // with "dryRun": true nothing leaves the mod, so no editor is started; what would have run is kept (dryOpened).
-  const cfg = await readConfig(), more = cfg.editors ? E.extraEditors(cfg.editors) : extra;
+  // Read before anything starts (also for a click that comes before the mod's own read of its settings): with
+  // "dryRun": true in the mod's settings, or with a file `editor.dry-run` in the Herdr home (one file for every mod
+  // of the set: a test home's whole guard), no editor is started; what would have run is kept (dryOpened). A stand-in
+  // `open` on the PATH is no guard: exec runs with the login shell's PATH, not the window's.
+  const [cfg, mark] = await Promise.all([readConfig(), readTextFile(`${appHome()}/editor.dry-run`).catch(() => null)]), more = cfg.editors ? E.extraEditors(cfg.editors) : extra;
   const argv = use ? E.openArgv(use, found[use], target.file ? { file: E.safeFile(target.root, target.file), line: target.line ?? null } : { dir: target.root }, more) : null;
   if (!argv) return "No editor to open this in was found.";
-  if (cfg.dryRun === true) { dryRuns = [...dryRuns.slice(-19), { at: Date.now(), argv: [argv[0], ...argv[1]] }]; notify({ title: "Dry run: no editor started", body: [argv[0], ...argv[1]].join(" "), level: "info" }); return null; }
+  if (cfg.dryRun === true || mark !== null) { dryRuns = [...dryRuns.slice(-19), { at: Date.now(), argv: [argv[0], ...argv[1]] }]; notify({ title: "Dry run: no editor started", body: [argv[0], ...argv[1]].join(" "), level: "info" }); return null; }
   const r = await exec(argv[0], argv[1], { timeout: 20000 }).catch((e) => ({ code: 1, stderr: String(e) }));
   if (r.code === 0) return null;
   known = null; try { store()?.removeItem(KEY); } catch { /* none */ } // it may be gone: look again the next time

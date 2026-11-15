@@ -577,6 +577,10 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
     timers.length = 0; runs.length = 0; v.panelCommand("editor:build.gradle:4", cx); await settle(); await settle();
     assert.deepEqual([opens(), EV.dryOpened().map((d) => d.argv), S.toasts.map((t) => t.level)], [[], [["open", `idea://open?file=${encodeURIComponent("/gradle/build.gradle")}&line=4`]], ["info"]], "no process; the arguments are kept and said");
     S.files.delete("/h/pr-review.config.json");
+    // The same with a file `editor.dry-run` in the Herdr home, which guards every mod of the set at once.
+    EV.forgetEditors(); S.files.set("/h/editor.dry-run", ""); timers.length = 0; runs.length = 0; v.panelCommand("editor:", cx); await settle(); await settle();
+    assert.deepEqual([opens(), EV.dryOpened().map((d) => d.argv)], [[], [["open", "-a", IJ, "/gradle"]]], "the file alone is enough");
+    S.files.delete("/h/editor.dry-run");
   }
   // "None found" is not kept for a day: it may have been a bad moment. Ten minutes later the files are read again;
   // a lookup that failed does not block the next one.
