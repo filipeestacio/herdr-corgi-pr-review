@@ -3,16 +3,16 @@
 // analysis as review.js holds it (pr.js mapReview), the merged findings (pr.js mergeFindings) and their states, and
 // returns text that starts with the PR and commit it is about. Pictures are Mermaid: an agent reads it as text and
 // GitHub draws it. A security finding is in here in full: this is for the person's own use, nothing is posted.
-import { taskList, taskHead, verdictParts, findingCounts, componentLine, CERTAINTY, SEVERITY_SCALE, levels, isGuard } from "./pr.js";
+import { taskList, taskHead, verdictParts, findingCounts, componentLine, CERTAINTY, SEVERITY_SCALE, levels, isGuard, secOldLine } from "./pr.js";
 import { transitionText } from "./arch.js";
 import { langOf } from "./syntax.js";
 import { resPathView, asideOf, threatCited, skipText, guardLine } from "./views.js";
 import { resWord, resToolText, resVerdict, resWatch } from "./views.js"; // wave R2: the page's words, verdict and watch list
 // The pages' own sources, so a page and its Markdown say the same: the crossings and their picture, the scope table,
 // the map as the Architecture page draws it, the paths' order and verdict, a finding's facts.
-import { crossingsOf, crossingChanged, secSentence, wayOf, wayText, secPicture, secBlast, scopeTable, scopeConflicts, AREA_NAME, mapArch, resOrder, resVerdictParts, resCardOf, factRows } from "./views.js";
+import { crossingsOf, crossingChanged, secSentence, wayOf, wayText, secPicture, secBlast, scopeTable, scopeConflicts, AREA_NAME, mapArch, resVerdictParts, resCardOf, factRows } from "./views.js";
 import { archMarks } from "./arch.js";
-import { transitionMarks, surfaceOf, reachLevel, secOrder, EXPOSURE, inProcess, resNoPicture } from "./views.js";
+import { transitionMarks, surfaceOf, reachLevel, secOrder, EXPOSURE, inProcess, resNoPicture, resShown, probeBaseWord, datedByDiff } from "./views.js";
 import { doesList, surfaceLine, countLine, funnelShort, funnel as funnelOf, findingSteps } from "./pr.js";
 import { resDepRows } from "./views.js"; // Resilience: dependencies that fail or are overloaded
 
@@ -91,10 +91,21 @@ export function mdParts(text) {
     if (tick && (!fence || tick.length >= fence.length)) fence = fence ? null : tick;
     if (!fence && /^## /.test(l)) { cur = { title: l.slice(3).trim(), lines: [l] }; parts.push(cur); } else (cur ? cur.lines : head).push(l);
   }
-  for (const p of parts) p.n = p.lines.filter((l) => l.trim()).length;
+  for (const p of parts) p.n = mdLines(p.lines);
   return { head, parts };
 }
-export const mdJoin = ({ head, parts }, off = new Set()) => `${[...head, ...parts.filter((_p, k) => !off.has(k)).flatMap((p) => p.lines)].join("\n").replace(/\n{3,}/g, "\n\n").trim()}\n`;
+// The preview's one way to count (acceptance, UX 2): the lines with text. A part's size, the head's and the whole
+// text's are counted so, and the sizes of the parts kept add up to the size at the foot.
+export const mdLines = (x) => (Array.isArray(x) ? x : String(x ?? "").split("\n")).filter((l) => l.trim()).length;
+// The head as it is copied. With parts left out, a line under the title names them: the title counts the whole page
+// ("28 unresolved findings: 17 high, 11 medium") and would promise findings the text does not have.
+export function mdHead({ head, parts }, off = new Set()) {
+  const out = parts.filter((_p, k) => off.has(k)).map((p) => p.title);
+  if (!out.length) return head;
+  const k = head.findIndex((l) => /^# /.test(l)), note = `Left out of this text: ${out.join(", ")}.`;
+  return k < 0 ? [...head, "", note] : [...head.slice(0, k + 1), "", note, ...head.slice(k + 1)];
+}
+export const mdJoin = (doc, off = new Set()) => `${[...mdHead(doc, off), ...doc.parts.filter((_p, k) => !off.has(k)).flatMap((p) => p.lines)].join("\n").replace(/\n{3,}/g, "\n\n").trim()}\n`;
 
 // "PR owner/repo#2 "title" at commit abc1234 (url)": the first line of every text, so it stands without context.
 export const prLine = ({ pr = {}, head = "" }) => `PR ${pr.repo ?? ""}#${pr.number ?? ""} "${flat(pr.title)}"${head ? ` at commit ${String(head).slice(0, 7)}` : ""}${pr.url ? ` (${pr.url})` : ""}`;
@@ -273,7 +284,7 @@ const componentsTable = (list) => table(["Component", "Kind", "Status", "Where",
 const ROW_KIND = { security: "Security", criterion: "Criterion", ask: "Criterion", finding: "Finding", conflict: "Merge conflict", ci: "CI check", rule: "Repo rule", verify: "Fix to verify", overlap: "Overlapping PR", resilience: "Resilience" };
 // size: "9 files +178 −10"; funnel: pr.js funnel() of the findings (how many reports became how many findings).
 export function overviewMd({ pr, head, ai = null, findings = [], statusOf = () => "open", checks = [], related = null, verdict: said = null, action = null, rows = null, nc = null, resLine = null, cost = null, flow = null, code = null, size = null, funnel = null }) {
-  const list = taskList(ai?.asks ?? [], findings, ai?.unlinked ?? [], statusOf), verdict = said ?? (ai || findings.length ? verdictParts(list, findingCounts(findings, statusOf), { failed: checks.filter((c) => c.ok === false).length }) : []);
+  const list = taskList(ai?.asks ?? [], findings, ai?.unlinked ?? [], statusOf), verdict = said ?? (ai || findings.length ? verdictParts(list, findingCounts(findings, statusOf), { failed: checks.filter((c) => c.ok === false).length, oldRules: Boolean(ai?.securityFrom?.predates) }) : []);
   const line = (f) => `- ${findingLine(f, statusOf(f))}`, cx = codeContext(code);
   const before = (r) => [`- **${ROW_KIND[r.kind] ?? r.kind}:** ${r.finding ? findingLine(r.finding, statusOf(r.finding)) : `${flat(r.title)}${r.where ? ` (\`${r.where}\`)` : ""}`}${r.ask && !r.finding ? ` (${ASK[r.ask.state] ?? r.ask.state})` : ""}`,
     Boolean(r.why) && `  - ${flat(r.why)}`, (r.asks ?? []).length > 0 && `  - Breaks: ${r.asks.map((x) => flat(x.short || x.text || x)).join("; ")}`, r.finding?.path_certainty && `  - ${{ assumed: "assumed reachable", confirmed: "confirmed reachable", derived: "reachable by the code" }[r.finding.path_certainty] ?? `reach ${r.finding.path_certainty}`}`, (r.also ?? []).length > 0 && `  - Same cause also at ${r.also.join(", ")}`,
@@ -476,7 +487,7 @@ export function securityMd({ pr, head, ai = null, findings = [], statusOf = () =
     // As the page counts: ⛨ findings once per cause, the findings behind a threat, the guards this PR loosens.
     rows.length > 0 && [secSentence(rows, secN, cited.length, guards.filter((g) => g.loosened).length), ""],
     // pr.js secNote: a run from before the current rules of the security view.
-    Boolean(ai?.securityFrom?.predates) && ["This security review is older than the current rules for guards, operators and taken-over roles, so a crossing it calls not assessed may only be left open by the old prompt. Re-run it for the current view.", ""],
+    Boolean(ai?.securityFrom?.predates) && [secOldLine(ai, taskList(ai?.asks ?? [], findings, ai?.unlinked ?? [], statusOf).security), ""],
     [`## Trust boundary crossings (${changed.length}${rest.length ? `, and ${rest.length} unchanged` : ""})`, "",
       "The ways in, the rights and the calls this PR opens or changes across a trust boundary, each in full.", "",
       !rows.length && "The data names no crossing: no zones, no way in and no right into another zone. The security review names them.",
@@ -666,7 +677,7 @@ export function resilienceMd({ pr, head, res = null, names = new Map(), arch = n
   if (!res) return doc(prLine({ pr, head }), "", "# Resilience", "", "The resilience review has not run on this PR.");
   const cx = codeContext(code), nm = (id) => flat(names.get(id) ?? arch?.nodes?.find((n) => n.id === id)?.label ?? id);
   const byId = (id) => findings.find((f) => (f.ids ?? [f.id]).includes(id)), titles = (ids) => [...new Set((ids ?? []).map(byId).filter(Boolean))];
-  const order = resOrder((res.paths ?? []).map((p) => resPathView(p, res))), num = (id) => order.findIndex((p) => p.id === id) + 1;
+  const listed = resShown(res), order = listed.paths, num = (id) => listed.nums.get(id) ?? 0, say = listed.say; // the run's ids as the numbers shown
   const probeOf = (p) => (probes ?? res.probes ?? []).find((x) => x.id === p.probe || x.of === p.id);
   // The cards a path passes, in the order of its steps: a card, a call (both ends), a place (the card of its file).
   const edgeAt = (s) => { const e = /^e(\d+)$/.exec(String(s)); return e ? arch?.edges?.[Number(e[1])] ?? null : null; };
@@ -684,8 +695,9 @@ export function resilienceMd({ pr, head, res = null, names = new Map(), arch = n
     : p.same_cause ? `same cause as path ${num(p.same_cause)}`
     : p.result === "mitigated" ? (p.limited_by ? `limited at \`${p.limited_by}\`` : "limited, no guard named")
     : p.result === "finding" ? (p.pre_existing === true ? "finding, already on the base" : "finding") : String(p.result ?? "").replace(/_/g, " "));
-  const probeMd = (x) => { if (!x) return ["- **Probe:** none proposed for this path."];
-    const done = x.status === "done", base = x.base && typeof x.base === "object" ? `${BASE[x.base.verdict] ?? String(x.base.status ?? "").replace(/_/g, " ")}${x.base.line ? ` (${flat(x.base.line)})` : ""}` : x.base ? flat(x.base) : null;
+  // Old or new is said once: by the path where the diff dates it, else by the probe's run on the base (views.js probeBaseWord).
+  const probeMd = (x, byDiff = false) => { if (!x) return ["- **Probe:** none proposed for this path."];
+    const done = x.status === "done", bw = probeBaseWord(x, byDiff, BASE), base = bw ? `${bw.word}${x.base.line ? ` (${flat(x.base.line)})` : ""}` : x.base ? flat(x.base) : null;
     return [`- **Probe:** ${flat(x.claim ?? x.kind ?? "a script")} (${[x.kind && resWord(x.kind), STRENGTH[x.strength] ?? x.strength].filter(Boolean).join(", ")})`,
       `  - State: ${done ? `${String(x.result ?? "").replace(/_/g, " ")}${x.number ? `, ${flat(x.number)}` : ""}${x.head ? ` at ${String(x.head).slice(0, 7)}` : ""}${x.ms ? `, ${(x.ms / 1000).toFixed(1)} s` : ""}` : x.status === "running" ? "running" : "proposed, not run yet"}`,
       done && base && `  - On the base: ${base}`, done && Boolean(x.reason) && `  - ${flat(x.reason)}`,
@@ -718,14 +730,14 @@ export function resilienceMd({ pr, head, res = null, names = new Map(), arch = n
         ...table(["", "Who", "Where", "Guard", ""], p.writers.map((w) => [w.kind === "R" ? "reads" : "writes", nm(w.node), w.at ? `\`${w.at}\`` : "", w.guard ?? "", w.breaks ? "breaks the rule" : ""]))],
       !p.ladder?.length && !p.budget && !p.race?.steps?.length && !p.writers?.length && [`(${resNoPicture(p)}.)`, ""],
       "",
-      ...probeMd(probeOf(p)), "",
+      ...probeMd(probeOf(p), datedByDiff(p)), "",
       ...places.flatMap((s) => cx.at(s)), ""];
   };
   const parts = resVerdictParts(order), paths = res.paths ?? [], checks = res.checks ?? [], clean = checks.filter((c) => c.result === "clean"), ncheck = checks.filter((c) => c.result === "not_checkable");
   const other = checks.filter((c) => c.result !== "clean" && c.result !== "not_checkable");
-  const check = (c) => `- ${flat(resWord(c.check))}${c.result !== "clean" && c.result !== "not_checkable" ? ` (${resWord(c.result)})` : ""}: ${flat(c.why ?? "")}${c.at ? ` (\`${c.at}\`)` : ""}${titles(c.findings).length ? `. Findings: ${titles(c.findings).map((f) => flat(f.title)).join("; ")}` : ""}`;
+  const check = (c) => `- ${flat(resWord(c.check))}${c.result !== "clean" && c.result !== "not_checkable" ? ` (${resWord(c.result)})` : ""}: ${flat(say(c.why) ?? "")}${c.at ? ` (\`${c.at}\`)` : ""}${titles(c.findings).length ? `. Findings: ${titles(c.findings).map((f) => flat(f.title)).join("; ")}` : ""}`;
   const w = resWatch(res, arch), watch = w.watch.length || w.before.length || (res.blind_spots ?? []).length ? w.watch.map((x) => `${flat(x.text)}${x.at ? ` (\`${x.at}\`)` : ""}`) : (res.watch ?? []).map(flat);
-  const nc = [...ncheck.map((c) => `${flat(resWord(c.check))}: ${flat(c.why ?? "")}`), ...(res.not_checked ?? []).filter((x) => !resToolText(x)).map(flat)];
+  const nc = [...ncheck.map((c) => `${flat(resWord(c.check))}: ${flat(say(c.why) ?? "")}`), ...(res.not_checked ?? []).filter((x) => !resToolText(x)).map((x) => flat(say(x)))];
   const adds = res.additions ?? [];
   const add = (x) => [`- **${flat(x.what)}**${x.kind ? ` (${flat(x.kind)})` : ""}${x.at ? ` at \`${x.at}\`` : ""}: ${ADD_RESULT[x.result] ?? flat(x.result)}`,
     Boolean(x.purpose) && `  - For: ${flat(x.purpose)}`, Boolean(x.solves) && `  - Solves: ${dot(x.solves)}${x.likelihood ? ` (${resWord(x.likelihood)})` : ""}.`,

@@ -1131,3 +1131,77 @@ console.log("ok");
   assert.deepEqual(v.arch.zones.map((z) => z.trust), ["public", "operator"], "an admin workstation is the operator's zone, not authenticated or public");
   console.log("ok one count of security findings");
 }
+
+// Acceptance, engineer 1: a security run under older rules. The ⛨ count says so in the verdict line and in the bar, and
+// the re-run sentence names how many security causes hang only on a threat that run named.
+{
+  const { verdictParts, taskList, secOldLine, reviewState } = await import("./pr.js");
+  const f = (id, extra = {}) => ({ id, ids: [id], file: "a.py", line: 1, severity: "high", title: id, ...extra });
+  const token = f("token", { security: true, impact: "unauthorized_access" }), flood = f("flood", { security: true, impact: "degraded_operation", threats: ["t2"] }), dlq = f("dlq", { security: true, impact: "data_loss", category: "availability", threats: ["t4"], severity: "medium" });
+  const list = taskList([], [token, flood, dlq], [], () => "open"), c = { unresolved: 3, security: 3 };
+  assert.deepEqual(verdictParts(list, c, { oldRules: true }).map((p) => [p.text, p.short]), [["3 security causes, 2 high (older rules, re-run)", "⛨ 2 high (older rules, re-run)"]]);
+  assert.deepEqual(verdictParts(list, c).map((p) => [p.text, p.short]), [["3 security causes, 2 high", "⛨ 2 high"]], "a current run: no note");
+  const one = taskList([], [{ ...flood, path_certainty: "assumed" }], [], () => "open");
+  assert.deepEqual(verdictParts(one, c, { oldRules: true }).map((p) => [p.text, p.short]), [["1 security cause, high (assumed reachable; older rules, re-run)", "⛨ 1 high (older rules, re-run)"]]);
+  assert.equal(verdictParts(taskList([], [f("x")], [], () => "open"), { unresolved: 1 }, { oldRules: true })[0].text, "1 unresolved finding", "no ⛨ count, no note");
+  const old = { securityFrom: { predates: true } };
+  assert.ok(secOldLine(old, list.security).endsWith("Re-run it for the current view. 2 of the 3 security causes carry ⛨ only through a threat this run named, so the count may change."), secOldLine(old, list.security));
+  assert.ok(secOldLine(old, [flood]).endsWith(" 1 of the 1 security cause carries ⛨ only through a threat this run named, so the count may change."));
+  assert.ok(secOldLine(old, [token]).endsWith(" None of the one security cause hangs on a threat of this run.") && secOldLine(old, []).endsWith("current view."));
+  assert.equal(secOldLine({ securityFrom: { predates: false } }, list.security), null); assert.equal(secOldLine(null, list.security), null);
+  assert.ok(reviewState({ pr: { number: 2 }, list, counts: c, findings: [], statusOf: () => "open", oldRules: true }).includes("(older rules, re-run)"));
+  console.log("ok a security run under older rules");
+}
+
+// Acceptance, engineer 4: the panel's marks and the review's have one source. A finding a threat of the security run
+// stands on is ⛨ in the panel's file list too (knownOf applies withThreats, as the review's load does).
+{
+  const { knownOf, isSecurity, mergeFindings, withThreats } = await import("./pr.js");
+  const { fileRisk, riskSignal, rowMarks } = await import("./views.js");
+  const fd = { findings: [{ id: "c1", reviewer: "claude", file: "library/consumer.py", line: 13, severity: "high", impact: "degraded_operation", category: "availability", title: "One failing record retries the whole batch" },
+    { id: "e1", reviewer: "claude", file: "library/events.py", line: 19, severity: "high", impact: "dead_path", category: "bug", title: "Queue.publish only appends to a list" },
+    { id: "m1", reviewer: "claude", file: "library/mailer.py", line: 13, severity: "high", impact: "degraded_operation", category: "availability", title: "Mailer swallows exhausted retries" }],
+    status: {}, security: { threats: [{ id: "t4", result: "finding", findings: ["c1"] }, { id: "t5", result: "finding", findings: ["e1"] }, { id: "t6", result: "mitigated", findings: ["m1"] }] } };
+  const known = knownOf(null, fd), marks = fileRisk(known), panel = (path) => rowMarks(marks.get(path), null)[0].text;
+  assert.deepEqual([panel("library/consumer.py"), panel("library/events.py"), panel("library/mailer.py")], ["⛨ high", "⛨ high", "high"]);
+  assert.deepEqual(rowMarks(fileRisk({ findings: fd.findings, status: {} }).get("library/consumer.py"), null)[0].text, "high", "without the threats the mark was missing: the error of the acceptance");
+  // The review's own: the merged findings of the same file carry the same sign.
+  const merged = mergeFindings(withThreats(fd.findings, fd.security)).findings;
+  for (const f of merged) assert.equal(Boolean(f.security), Boolean(marks.get(f.file).security), `${f.file}: the panel and the review agree`);
+  assert.ok(riskSignal(known).security && known.findings.filter(isSecurity).length === 2 && known.analysis === null);
+  assert.deepEqual(knownOf(null, null), { analysis: null, findings: null, status: null }); assert.equal(riskSignal(knownOf(null, null)), null);
+  console.log("ok the panel's marks are the review's");
+}
+
+// Acceptance, engineer (merging): one effect said in each source's own sentence, at ranges at most 3 lines apart, is one
+// finding, also when the titles are worded apart and the impact classes differ (PR #2, reminders.py:21-23, the double
+// mail in three wordings). What says another effect stays apart, as does the same effect further away or in another
+// file, and two findings about different named resources.
+{
+  const { mergeFindings, sameDefect, sameCause } = await import("./pr.js");
+  const F = (id, reviewer, line, end, severity, impact, title, effect, extra = {}) => ({ id, reviewer, file: "library/reminders.py", line, end, severity, category: "bug", impact, title, effect, detail: "", suggestion: "", ...extra });
+  const sec = F("s", "security", 21, 23, "medium", "edge_case", "send_reminders mails directly and also publishes an event the consumer mails again", "Members get two identical reminder mails per loan.");
+  const ana = F("a", "analysis", 21, 21, "high", "breaks_requirement", "Reminder is mailed here and again by the consumer", "Members get two reminder mails per loan, not one.");
+  const cl23 = F("c23", "claude", 23, 23, "high", "breaks_requirement", "Reminder mailed twice: directly and again by the consumer", "Each member gets two reminder emails per due loan.");
+  const atom = F("c22", "claude", 22, 22, "medium", "degraded_operation", "Mail is sent before the state change and event, with no atomicity", "Duplicate mails, or a loan marked reminded without an event or mail.");
+  const at = (f) => `${f.line}-${f.end} ${f.severity} ${f.ids.join("+")}`;
+  assert.deepEqual(mergeFindings([sec, ana, atom, cl23]).findings.map(at), ["21-23 high s+a+c23", "22-22 medium c22"], "the double mail once, with its three sources; the other statement apart");
+  assert.deepEqual(mergeFindings([sec, ana, cl23]).findings[0].sources.map((x) => `${x.reviewer} ${x.severity}`), ["security medium", "analysis high", "claude high"]);
+  assert.equal(mergeFindings([{ ...sec, effect: "" }, { ...ana, effect: "" }]).findings.length, 2, "without the effect sentences the titles decide, as before");
+  assert.equal(sameDefect(sec, atom), false, "another effect, another impact: two findings");
+  assert.equal(mergeFindings([{ ...sec, end: 21 }, { ...ana, line: 25, end: 25 }]).findings.length, 2, "the same effect four lines away is another place");
+  assert.equal(mergeFindings([sec, { ...ana, file: "library/consumer.py" }]).findings.length, 2, "another file never joins");
+  assert.equal(sameDefect({ ...sec, title: "MAIL_FROM is not set" }, { ...ana, title: "SMTP_HOST is not set" }), false, "two titles about different named resources are never one, whatever the effect");
+  // The impact rule of wave C2 is as it was: the statement about atomicity, when its impact class is the security
+  // finding's, joins through that source (on PR #2 it was a source of the security review's entry before, too).
+  assert.deepEqual(mergeFindings([sec, ana, { ...atom, impact: "edge_case" }, cl23]).findings.map(at), ["21-23 high s+a+c22+c23"]);
+  // Across files there is no such rule: the same effect has different causes (acceptance: api.py:15 and status.py:39
+  // stay two findings without a "same cause"; their titles score 0.27, under the 0.35 that tells one claim, their
+  // effects 0.14, and neither text names the other's file).
+  const api = { id: "api", file: "library/api.py", line: 15, impact: "breaks_requirement", title: "give_back still changes status outside transition", effect: "Returned loans publish no event, and status changes happen in several places.", detail: "`api.give_back` calls `LoanStore.give_back`, which writes `returned_on` directly." };
+  const st = { id: "st", file: "library/status.py", line: 39, impact: "breaks_requirement", title: "transition is not the only place status changes; loan.returned is never published", effect: "Returns publish no event and are not checked against the state machine.", detail: "LoanStore.give_back (loans.py:41) and api.give_back set returned_on directly." };
+  assert.equal(sameCause(api, st), false);
+  const same = { ...st, effect: api.effect };
+  assert.equal(sameCause(api, same), false, "the same effect sentence in two files is not one cause by itself");
+  console.log("ok one effect near by is one finding");
+}

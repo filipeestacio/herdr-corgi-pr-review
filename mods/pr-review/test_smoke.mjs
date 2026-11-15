@@ -439,6 +439,12 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   S.files.set(`/h/pr-data/findings/${hash(prs[0].url)}.json`, JSON.stringify({ findings: [{ id: "f1", file: v.files[0].path, line: 1, severity: "high", category: "security", title: "t" }, { id: "f2", file: v.files[1].path, line: 2, severity: "low", title: "u" }], status: {} }));
   await v.loadMarks(prs[0].url); draw(v, "panel: findings marked on the files");
   assert.deepEqual([v.fileMarks.get(v.files[0].path)?.top, v.risk.get(prs[0].url)?.open], ["high", 2], "the files and the PR carry the review's findings");
+  // A finding that is ⛨ only because a threat of the security run stands on it carries ⛨ on its file here as in the review.
+  S.files.set(`/h/pr-data/findings/${hash(prs[0].url)}.json`, JSON.stringify({ findings: [{ id: "f1", file: v.files[0].path, line: 1, severity: "high", impact: "degraded_operation", category: "availability", title: "t" }], status: {}, security: { threats: [{ id: "t1", result: "finding", findings: ["f1"] }] } }));
+  await v.loadMarks(prs[0].url); draw(v, "panel: a finding a threat stands on");
+  assert.deepEqual([v.fileMarks.get(v.files[0].path)?.security, v.risk.get(prs[0].url)?.security], [true, true], "the panel's file mark is ⛨ where the review's is");
+  S.files.set(`/h/pr-data/findings/${hash(prs[0].url)}.json`, JSON.stringify({ findings: [{ id: "f1", file: v.files[0].path, line: 1, severity: "high", category: "security", title: "t" }, { id: "f2", file: v.files[1].path, line: 2, severity: "low", title: "u" }], status: {} }));
+  await v.loadMarks(prs[0].url);
   v.askTop = true; draw(v, "panel: a comment on the whole file"); v.askTop = false;
   v.pick(v.files[1].path, cx); await settle(); draw(v, "panel: another file");
   v.openWalk(cx, false); await settle(); draw(v, "panel: Walkthrough without an analysis");
@@ -530,7 +536,7 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   // second wording (the text has it as Certainty and Preconditions).
   const NOT_COPIED = [/recommended because/, /^Re-run \(/, /^Run probe/, /^last run .* ago/, /^A click shows the way\.$/, /^Verify (all \d+ )?with an agent/, /^Derived from the code that was read;$/, /^It needs nothing else:$/, /^it holds as the code stands\.$/, /lit on the map, the rest dimmed/, /^Open a path to light it on the map\.$/,
     /^in a sandbox, without network, at most 30 s$/, /^\d+ more: /, /^\d+ [^.]*(criteria|high|medium|low|observable|blockers?|paths?) ▸$/, /^GitHub read .* ago/, /^call over a trust boundary$/, /^Look inside/, /Ask names it/, /^This analysis has no further details for this card\.$/, /^“Look inside” reads/, /^“↻ Refresh diagrams”/,
-    /^and \d+ more in the Findings tab$/, /^Ask about this layer$/, /^A finding sent to Fix stays unresolved and shows here/, /^not counted as findings$/];
+    /^and \d+ more in the Findings tab$/, /^\d+ (more|findings?) at this place ▸$/, /^shown at crossing \d+:$/, /^Ask about this layer$/, /^A finding sent to Fix stays unresolved and shows here/, /^not counted as findings$/];
   const norm = (x) => String(x).toLowerCase().replace(/,? \d+ (s|min|h|d|days?) ago/g, "").replace(/#\d+;|#quot;|#lt;|#gt;/g, " ").replace(/[^a-z0-9äöüß]+/g, " ").trim();
   const drawn = (states, part) => { const all = new Set(); for (const st of states) { st(); S.texts = null; S.lists.length = 0; v.render(cx); S.lists.length = 0; S.texts = all; part(); } S.texts = null; return [...all]; };
   const missing = (texts, md) => { const text = norm(md), segs = [...new Set(texts.flatMap((x) => x.split(/(?<=[.;:])\s+|\s·\s|\n+/)).map((x) => x.replace(/^\*\*Suggested:\*\*\s*/, "").replace(/ and \d+ more$/, "")))].filter((x) => x.trim().length >= 20 && x.trim().split(/\s+/).length >= 4);
@@ -594,6 +600,102 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   const f = v.findings().find((x) => x.sources.length > 1); v.ffocus = f.id;
   const one = drawn(["reported", "evidence", "sent", "verified", "in_pr"].map((k) => () => { v.fstep = { id: f.id, key: k }; }), () => v.findingsPane(tt)).filter((x) => !all.includes(x));
   check("an open finding", one, {}); v.fstep = null;
+}
+// The acceptance round's corrections, each on the drawn page.
+{
+  const { mdJoin } = await import("./markdown.js"), mdJoinOf = (v) => mdJoin(v.mdShown(), v.mdOff());
+  const doc = JSON.parse(fx("findings-s.json")); doc.resilience = JSON.parse(fx("resilience-r2.json"));
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify(doc) }), tt = S.theme;
+  const texts = (part) => { S.texts = new Set(); S.lists.length = 0; part(); for (let k = 0; k < S.lists.length && k < 200; k++) S.lists[k].render({ start: 0, end: S.lists[k].n }, cx); const got = [...S.texts]; S.texts = null; S.lists.length = 0; return got; };
+  // UX 1: the Resilience page and its Markdown say the number the list shows, never the run's id of a path or finding.
+  v.command("page:res", cx); v.command("res-more", cx); v.command("res-clean", cx);
+  const listed = v.resNow().paths.map((p) => p.id), ID = /\b(?:Path p\d+:|r_f\d+\b)|\(p\d+\)/;
+  for (const id of listed) {
+    v.command(`res-path:${id}`, cx);
+    const got = texts(() => v.pageView(tt));
+    assert.deepEqual(got.filter((x) => ID.test(x)), [], `Resilience, path ${id} open: an id of the run is shown`);
+    assert.ok(got.some((x) => /^Path \d+: lit on the map/.test(x)), `Resilience, path ${id} open: the line over the map names its number`);
+  }
+  assert.ok(!ID.test(v.mdText(true)), "the Resilience Markdown names no id of the run");
+  // UX 2: the Markdown preview. Its sizes add up to the foot's, "n of m sections" counts the boxes of the sections, the
+  // head has no box and no click, and a section left out is named under the title.
+  v.command("findings", cx); v.ffocus = null; v.command("copy-md", cx);
+  const sums = (name) => {
+    S.clicks.clear(); S.ids = new Set(); const got = texts(() => v.mdPopover(tt)), rows = [...S.ids].filter((x) => /^rv-mdprev-p\d+$/.test(x)).length; S.ids = null;
+    const doc = v.mdShown(), off = v.mdOff(), foot = got.find((x) => /^\d+ lines · \d+ of \d+ sections/.test(x)), head = got.find((x) => /^always in the text · \d+ lines$/.test(x));
+    assert.equal(Number(/(\d+) lines$/.exec(head)[1]) + doc.parts.filter((_x, k) => !off.has(k)).reduce((n, x) => n + x.n, 0), Number(/^\d+/.exec(foot)[0]), `${name}: the sizes of what is kept add up to the foot (${foot})`);
+    assert.ok(foot.startsWith(`${/^\d+/.exec(foot)[0]} lines · ${rows - off.size} of ${rows} sections`), `${name}: the foot counts the rows with a box (${foot}, ${rows} rows)`);
+    for (const x of doc.parts) assert.ok(got.includes(`${x.n} ${x.n === 1 ? "line" : "lines"}`), `${name}: the size of ${x.title}`);
+    assert.ok(!S.clicks.has("rv-mdprev-head") && S.clicks.has("rv-mdprev-p0"), `${name}: the head is no choice, a section is`);
+  };
+  sums("Findings, all sections");
+  assert.ok(!/Left out of this text/.test(mdJoinOf(v)), "nothing left out: no line about it");
+  v.command("md-part:0", cx); sums("Findings, a section left out");
+  assert.ok(new RegExp(`^# \\d+ unresolved findings?[^\\n]*\\n\\nLeft out of this text: ${v.mdShown().parts[0].title.replace(/[()]/g, "\\$&")}\\.$`, "m").test(mdJoinOf(v)), "the section left out is named under the title");
+  v.command("md-close", cx);
+  // UX 3: the Security page. The other findings at a crossing's place are folded to a line (the picture comes up), a
+  // click unfolds them; a finding named by two crossings stands in full at the first and is a reference at the second.
+  v.command("page:blast", cx); v.crossAll = true;
+  const sec = () => { S.ids = new Set(); S.clicks.clear(); const got = texts(() => v.pageView(tt)), ids = [...S.ids]; S.ids = null; return { got, ids }; };
+  const folded = sec(), alsoRows = folded.ids.filter((x) => /^rv-sec-cr-also-\d+$/.test(x));
+  assert.ok(alsoRows.length > 0 && !folded.ids.some((x) => /^rv-sec-cr-h-/.test(x)) && !folded.got.includes("Also at this place"), "the other findings at a place are folded");
+  assert.ok(folded.got.some((x) => /^\d+ (more|findings?) at this place ▸$/.test(x)), "the fold says how many");
+  click(alsoRows[0], "the other findings of a crossing"); const unfolded = sec();
+  assert.ok(unfolded.ids.some((x) => /^rv-sec-cr-h-/.test(x)) && unfolded.got.includes("Also at this place ▾"), "a click unfolds them");
+  click(alsoRows[0], "fold them again");
+  const full = folded.ids.filter((x) => /^rv-sec-cr-f-/.test(x)).map((x) => x.replace(/^rv-sec-cr-f-\d+-/, "")), refs = folded.ids.filter((x) => /^rv-sec-cr-r-/.test(x)).map((x) => x.replace(/^rv-sec-cr-r-\d+-/, ""));
+  assert.equal(new Set(full).size, full.length, "a finding stands in full at one crossing only");
+  assert.ok(refs.length > 0 && refs.every((id) => full.includes(id)) && folded.got.some((x) => /^shown at crossing \d+:$/.test(x)), "the second crossing that names it refers to the first");
+  // UX 4: a path the diff dates as new, with a probe that reproduced on the base too: the path keeps its word, and
+  // neither the probe nor the Markdown says "already on the base" next to it.
+  {
+    const p = v.resNow().paths.find((x) => x.pre_existing === false && x.probe === null && v.probeList().some((q) => q.of === x.id)) ?? v.resNow().paths.find((x) => x.pre_existing === false && v.probeList().some((q) => q.of === x.id || q.id === x.probe));
+    const q = v.probeList().find((x) => x.of === p.id || x.id === p.probe), keep = v.deep;
+    v.deep = { ...v.deep, probes: { ...v.deep.probes, [v.probeKey(q.id)]: { state: "done", status: "reproduced", line: "two mails", ms: 900, head: "ccddf95", base: { status: "reproduced", verdict: "already_on_base", line: "two mails" }, pre_existing: true, network_barrier: true, script: "print('reproduced two mails')\n", output: "reproduced two mails\n" } } };
+    v.command("page:res", cx); v.command(`res-path:${p.id}`, cx); if (v.resOpen !== p.id) v.command(`res-path:${p.id}`, cx);
+    const got = texts(() => v.pageView(tt)).filter((x) => /on the base|on base:/.test(x));
+    assert.ok(got.some((x) => /on base: breaks the same way/.test(x)) && !got.some((x) => /already on the base|breaks the same way on the base/.test(x)), `old or new is said once: ${JSON.stringify(got)}`);
+    assert.ok(/On the base: breaks the same way/.test(v.mdText(true)) && !/On the base: already on the base/.test(v.mdText(true)), "and in the Markdown");
+    v.deep = keep;
+  }
+}
+// Acceptance, engineer 2 and 3: the Overview. A later finding of a cause that has a row in "Before merge" is not under
+// "Other findings" again, and the numbers of "n more: …" (there and in the box over the layers) add up to n.
+{
+  const doc = JSON.parse(fx("findings-s.json")); doc.resilience = JSON.parse(fx("resilience-r2.json"));
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify(doc) });
+  const frameOf = () => { S.texts = new Set(); S.ids = new Set(); draw(v, "the Overview"); const got = { texts: [...S.texts], ids: [...S.ids] }; S.texts = null; S.ids = null; return got; };
+  const adds = (line) => { const [, n, rest] = /^(\d+) more: (.*) [▸→]$/.exec(line); return [Number(n), rest.split(/, | and /).reduce((sum, x) => sum + Number(/^(?:⛨ )?(\d+) /.exec(x)[1]), 0)]; };
+  v.command("page:overview", cx); (v.askOpen ??= new Set()).delete("bm-all"); v.askOpen.add("other");
+  const ov = frameOf(), more = ov.texts.filter((x) => /^\d+ more: /.test(x));
+  assert.ok(more.length > 0, "the Overview folds rows of Before merge");
+  for (const line of more) assert.equal(adds(line)[1], adds(line)[0], `the numbers add up: ${line}`);
+  const rows = v.mergeRows(), open2 = v.openFindings(), firstOf = (f) => open2.find((g) => g !== f && (g.id === f.same_cause || (g.ids ?? []).includes(f.same_cause)));
+  const partners = open2.filter((f) => f.same_cause && rows.some((r) => r.finding && r.finding === firstOf(f)));
+  assert.ok(partners.length > 0, "the fixture has a cause with two findings, the first before the merge");
+  const other = open2.filter((f) => ov.ids.includes(`rv-of-${f.id}`) || ov.ids.includes(`rv-ob-${f.id}`)).map((f) => f.id);
+  assert.ok(other.length > 0 && partners.every((f) => !other.includes(f.id)), "a cause's later finding is not among the other findings");
+  assert.equal(new Set([...rows.flatMap((r) => (r.finding ? [r.finding.id] : [])), ...partners.map((f) => f.id), ...other]).size, open2.length, "every unresolved finding is at one place: a row, a row's cause, or the other findings");
+  v.command("order:reading", cx); v.command("step:0", cx); v.attFold = false;
+  for (const line of frameOf().texts.filter((x) => /^\d+ more: /.test(x))) assert.equal(adds(line)[1], adds(line)[0], `the box over the layers adds up: ${line}`);
+}
+// Acceptance, engineer 1: a security run under older rules says so at the ⛨ count, in the verdict and in the bar, and
+// its re-run sentence counts the causes that hang on its threats. A run under the current rules says neither.
+{
+  const { SEC_RULES } = await import("./pr.js");
+  const texts = (v) => { S.texts = new Set(); draw(v, "texts"); const got = [...S.texts]; S.texts = null; return got; };
+  for (const rules of [1, SEC_RULES]) {
+    const doc = JSON.parse(fx("findings-s.json")); doc.security = { ...doc.security, rules };
+    const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify(doc) }), old = rules < SEC_RULES;
+    const sec = v.verdictNow().find((p) => p.key === "security");
+    assert.ok(sec && /older rules, re-run/.test(sec.text) === old && /older rules, re-run/.test(sec.short) === old, `rules ${rules}: the verdict's ⛨ part: ${sec?.text} / ${sec?.short}`);
+    v.command("page:overview", cx); assert.equal(texts(v).some((x) => /security causes?, .*older rules, re-run/.test(x)), old, `rules ${rules}: the Overview's verdict line`);
+    v.command("page:blast", cx); const page = texts(v);
+    assert.equal(page.some((x) => /^(⛨ )?\d+( high)? \(older rules, re-run\)$/.test(x)), old, `rules ${rules}: the bar's excerpt`); // the ⛨ is the sign beside it (verdictSign)
+    assert.equal(page.some((x) => /Re-run it for the current view\. (\d+ of the \d+ security causes? carr(y|ies) ⛨ only through a threat this run named|None of the)/.test(x)), old, `rules ${rules}: the re-run sentence counts`);
+    assert.equal(/older rules, re-run/.test(v.mdText(false)), false, "the Security page's Markdown has the sentence, not the bar's note");
+    assert.equal(/Re-run it for the current view\. (\d+ of the|None of the)/.test(v.mdText(false)), old, `rules ${rules}: the Markdown's sentence counts`);
+  }
 }
 await settle();
 assert.deepEqual(late, [], "a spawned task threw");
