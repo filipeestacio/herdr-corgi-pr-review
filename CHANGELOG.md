@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.11.1 (2026-11-15)
+
+### Fixes
+
+- pr-review: IntelliJ from the Snap store is found by its launcher's own name
+
+### Other
+
+- chore: merge feat/herdr-0116 (snap names for IntelliJ)
+
 ## 0.11.0 (2026-11-15)
 
 ### Features
