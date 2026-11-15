@@ -1266,9 +1266,12 @@ export default class PrReview extends View {
         cx.timer.after(0, (cx) => { this.finishQueued = false; setShared("pr.finish", null); if (this.reviewKey === fin.url && !this.finishOpen) { this.command("finish", cx); cx.notify(); } });
       }
       // drawing: archL leaves a big map's layout for after the frame (firstLayouts), a frame has about 50 ms.
+      // Still set from the frame before: Herdr stopped that one before its end (not even a finally runs then).
+      this.frameCut(Boolean(this.drawing));
       this.drawing = true;
-      const el = this.renderReview(cx);
-      this.drawing = false; this.firstLayouts(cx); this.layoutSoon(cx);
+      let el;
+      try { el = this.renderReview(cx); } finally { this.drawing = false; } // an exception is not a stopped frame
+      this.firstLayouts(cx); this.layoutSoon(cx);
       return el;
     }
     if (this.view === "walk" && this.walkModel && walkModel() !== this.walkModel && !this.walkBusy) this.openWalk(cx, false); // picker changed: that model's cache

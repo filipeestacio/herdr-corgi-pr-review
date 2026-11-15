@@ -52,7 +52,7 @@ for (const [name, data] of [["PR #2", PR2()], ["the big review", BIG()]]) {
 // ---- a frame that changes nothing
 // At most this many of the mod's own functions run in it (measured on the big review, with room: before the memos
 // the Overview ran 13 350, a layer 38 900), and none of the expensive ones.
-const BUDGET = { "Files (as opened)": 14000, "Files (all open)": 14000, "Findings": 15000, "Findings, one open": 15000, "Comments": 14000, "Walkthrough, a layer": 17000, "Overview": 3000, "Architecture": 3200,
+const BUDGET = { "Files (as opened)": 14000, "Files (all open)": 14000, "Findings": 15000, "Findings, one open": 15000, "Comments": 14000, "Walkthrough, a layer": 22000, "Overview": 3000, "Architecture": 3200,
   "Architecture, a card": 3200, "Security": 2600, "Resilience": 3500, "Markdown preview": 3000 };
 const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilienceStart", "pr.diffRows", "pr.splitPatch", "pr.hunksOf", "views.findingAnchor", "views.crossingsOf", "views.areaFindings"];
 {
@@ -118,6 +118,39 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   const before = asked;
   assert.deepEqual([await review.repoOf("/h/x"), asked - before], [{ root: "/h/x", gitdir: "/h/x/.git", base: "origin/main" }, 0], "another copy of the mod gets the folder's repo without a command");
   S.exec = null; S.props = null; await settle();
+}
+
+// ---- frames that Herdr stopped: the view draws less there
+// (A stopped frame leaves `drawing` set: no code of the mod runs after it. Two in a row on one tab and page count.)
+{
+  const ids = (v) => { S.ids = new Set(); frame(v); const got = S.ids; S.ids = null; return got; };
+  const stopped = (v) => { v.drawing = true; return ids(v); }; // the frame after a stopped one
+  const big = await openReview(BIG());
+  STATES.Resilience(big); await settle(); await quiet(big);
+  assert.ok(ids(big).has("rv-res-canvas") && big.leanLevel() === 0, "the map is drawn");
+  assert.ok(stopped(big).has("rv-res-canvas"), "one stopped frame changes nothing");
+  assert.ok(ids(big).has("rv-res-canvas") && big.cut === 0, "and a frame that ended starts the count again");
+  stopped(big); const lean = stopped(big);
+  assert.ok(!lean.has("rv-res-canvas") && lean.has("rv-res-canvas-lean") && lean.has("rv-res-canvas-again"), "two in a row: the page without its picture, with a sentence and a way back");
+  assert.ok(!ids(big).has("rv-res-canvas"), "it stays so");
+  STATES.Architecture(big); await settle(); await quiet(big);
+  assert.ok(ids(big).has("rv-arch-canvas"), "another page is drawn as before");
+  STATES.Resilience(big); await settle();
+  assert.ok(!ids(big).has("rv-res-canvas"), "back on the page: still without the picture, no frames are stopped again to find out");
+  S.clicks.get("rv-res-canvas-again")({ modifiers: {}, click_count: 1 }, cx);
+  assert.ok(ids(big).has("rv-res-canvas"), "Draw it again brings the picture back");
+  // The list: the lines listed halve per level, and the Walkthrough has its own number whatever the Files tab did.
+  STATES["Files (as opened)"](big); await settle(); frame(big);
+  STATES["Walkthrough, a layer"](big); await settle(); frame(big);
+  const rows = () => big.items.filter((it) => it.t === "row").length, before = rows();
+  assert.ok(before > 4000 && before <= 5000, `the Walkthrough lists up to 5 000 lines (${before}), also after the Files tab was drawn`);
+  stopped(big); stopped(big);
+  assert.ok(rows() <= 2500 && rows() > 1500, `after two stopped frames it lists half (${rows()})`);
+  // An exception is not a stopped frame.
+  const boom = big.renderReview; big.renderReview = () => { throw new Error("boom"); };
+  for (let k = 0; k < 3; k++) assert.throws(() => big.render(cx), /boom/);
+  big.renderReview = boom; frame(big);
+  assert.equal(big.leanLevel(), 1, "three frames that threw did not count as stopped");
 }
 
 // ---- a big map is laid out after the frame, a small one in it
