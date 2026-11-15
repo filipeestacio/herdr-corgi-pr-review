@@ -50,7 +50,8 @@ not in this PR, and a caller that still calls a changed signature the old way st
 When the PR changes Terraform, CloudFormation or SAM files, **Infrastructure changes** shows the resources it adds,
 changes, removes or may replace as cards with their changed arguments and the references between them, and lists
 the changed variables and outputs. It is read from the diff and the files at the PR head, without a model and
-without `terraform plan` or a change set, so a replacement is an estimate and is marked as one.
+without `terraform plan` or a change set, so a replacement is an estimate and is marked as one. An infrastructure
+file larger than 2 MB is named as not read.
 
 When the PR changes a database schema, **Schema changes** shows the tables before and after as cards with their
 changed columns, keys and relations, and lists what may be risky for data that is in use, such as a dropped column,
@@ -208,9 +209,14 @@ at `bin/idea.sh` or at `/snap/bin/intellij-idea-community`. Cursor: its Linux pa
 when yours is in none of the five folders (the AppImage has none), put a link named `cursor` in `~/.local/bin`. Zed:
 the install script from zed.dev puts `zed` in `~/.local/bin`.
 
+**Copy as Markdown.** A page can be copied as Markdown, with each diagram as a Mermaid block. Names, values and
+paths from the PR are code spans in it, so a mention, an image or a fence written into the PR does nothing when you
+paste the text.
+
 **Open in your editor.** A file's head in the diff, the file and definition view, the panel and the cards that
 name a place in the code carry a link "VS Code ↗" or "IntelliJ ↗", and a card's row or a line of a list its short
-form "VS ↗" or "IJ ↗", dimmed until the pointer is on it. It opens that file at its line in the checkout the
+form "VS ↗" or "IJ ↗". In lists, the short link appears when you point at its place at the end of the row; a
+right-click on it opens the menu. In the panel, the link stands at the open file's name. It opens that file at its line in the checkout the
 review made for the PR. A click starts one process and changes nothing in the checkout. On macOS the app is enough
 (the link goes through `open` and the editor's own URL, `vscode://file/…` or `idea://open?file=…&line=…`); on Linux
 the `code` or `idea` command is used. Whether IntelliJ's link counts lines from 0 or from 1 was not tried by hand
