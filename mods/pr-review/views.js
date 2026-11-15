@@ -1225,7 +1225,41 @@ export function resByProbe(paths, probes) {
 // A path's mark line in a card of the Resilience map: 18 px high and 3 px under it, so a finding's chip (about 18 px
 // in its 15 px row) below does not touch it. In arch.js extra rows of 18 px each, with the card's 3 px gap.
 export const RES_MARK_ROW = { h: 18, below: 3 };
-export const resMarkRows = () => (RES_MARK_ROW.h + RES_MARK_ROW.below + 3) / 18;
+export const resMarkRows = (lines = 1) => (lines * RES_MARK_ROW.h + RES_MARK_ROW.below + 3) / 18;
+// A card's marks of the Resilience map ("×3 · ✕ when slow, down · ~ when overloaded") as lines that fit the card:
+// wrapped at words into `width` px (13 px, semibold). [[{text, bad}, …], …]: a line's pieces, one per mark on it (a
+// mark may go on in the next line); bad: the mark says what breaks (✕, no DLQ, no limit) and is the red one. [] without
+// a mark. Pure: the card's height is known before it draws.
+export function resMarkLines(text, width) {
+  const lines = [], w = (s) => textW(s, 13) * 1.06;
+  let x = 0;
+  String(text ?? "").split(" · ").filter(Boolean).forEach((mark, k) => {
+    const bad = /✕|∞|no /.test(mark);
+    mark.split(" ").forEach((word, j) => {
+      const lead = j ? " " : " · ", last = lines.at(-1)?.at(-1);
+      if (!last || x + w(lead + word) > width) { lines.push([{ mark: k, text: word, bad }]); x = w(word); return; }
+      if (last.mark === k) last.text += ` ${word}`; else lines.at(-1).push({ mark: k, text: word, bad });
+      x += w(lead + word);
+    });
+  });
+  return lines.map((l) => l.map(({ text: t, bad }) => ({ text: t, bad })));
+}
+// ---- Resilience: a path's second line, short enough to read: the way, at most three of the things it breaks (the
+// rest counted, all of them in `tip`), and its findings. today: why it cannot happen today, a line of its own. Pure.
+export function resMeta(p, way, findings = 0, max = 3) {
+  const failing = (p.failing ?? []).filter((x) => x !== "silent").map(resWord), today = p.wired?.today && !p.blocker ? String(p.wired.today).replace(/^./, (c) => c.toUpperCase()) : null;
+  const breaks = failing.length > max ? `${failing.slice(0, max).join(", ")} and ${failing.length - max} more` : failing.join(", ");
+  return { today, text: [way, breaks, findings > 0 && `${findings} ${findings === 1 ? "finding" : "findings"}`].filter(Boolean).join(" · "), tip: failing.length > max ? `It breaks: ${failing.join(", ")}.` : null };
+}
+// The opacity of a dimmed part of the Resilience page (an analysis of another head, a probe of an older one): as dim
+// as 0.55 where the second colour of the text still reads at 4.5:1 on each background given, else less dim.
+export const resFade = (t, bgs = [t.background, t.surface]) => Math.max(...bgs.map((bg) => readableFade(t.muted, bg, 0.55)));
+
+// ---- A cache has a limit: after a set, the oldest entries of a Map go until at most `max` are left. Returns the map.
+export function keepLast(map, max) {
+  while (map.size > max) map.delete(map.keys().next().value);
+  return map;
+}
 // The page's verdict in two parts (wave C2 V2): a short sentence ("5 of 11 paths block the merge.") and the count by
 // reason, most first ("a visible effect is lost: 2 · load grows without a limit: 1"); null without a blocker.
 export function resVerdictParts(paths) {

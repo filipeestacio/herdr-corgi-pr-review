@@ -843,6 +843,37 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.deepEqual([resDepRows(null), resDepRows({ paths: [] }), resWord("no_backoff")], [[], [], "retries at once, without backoff"]);
 }
 
+// ---- a cache keeps its newest entries only
+{
+  const { keepLast } = await import("./views.js");
+  const m = new Map([["a", 1], ["b", 2], ["c", 3]]);
+  assert.deepEqual([[...keepLast(m, 2).keys()], [...keepLast(m.set("d", 4), 2).keys()], [...keepLast(new Map(), 2)]], [["b", "c"], ["c", "d"], []]);
+}
+
+// ---- Resilience: a path's second line names at most three things it breaks; a dimmed part stays readable
+{
+  const { resMeta, resFade, mdTarget } = await import("./views.js");
+  const p = { failing: ["unbounded_retry", "no_dlq", "silent", "poison_message", "duplicate_effect", "over_timeout"], wired: { today: "not possible today: nothing publishes" }, blocker: null };
+  assert.deepEqual(resMeta(p, "Queue → consumer", 5), { today: "Not possible today: nothing publishes", text: "Queue → consumer · retries without a limit, no dead-letter queue, a message that always fails and 2 more · 5 findings",
+    tip: "It breaks: retries without a limit, no dead-letter queue, a message that always fails, an effect happens twice, runs over its timeout." });
+  assert.deepEqual(resMeta({ failing: ["no_dlq"], blocker: {}, wired: { today: "x" } }, "", 1), { today: null, text: "no dead-letter queue · 1 finding", tip: null });
+  const dark = { foreground: "#e6e6e6", muted: "#8b8d91", background: "#0f1012", surface: "#17181b" }, lum = (c) => [1, 3, 5].map((k) => parseInt(c.slice(k, k + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)).reduce((s, v, k) => s + v * [0.2126, 0.7152, 0.0722][k], 0);
+  const f = resFade(dark), mix = (fg, bg) => `#${[1, 3, 5].map((k) => Math.round(parseInt(bg.slice(k, k + 2), 16) * (1 - f) + parseInt(fg.slice(k, k + 2), 16) * f).toString(16).padStart(2, "0")).join("")}`;
+  for (const bg of [dark.background, dark.surface]) { const a = lum(mix(dark.muted, bg)), b = lum(bg); assert.ok((Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05) >= 4.4, `dimmed second colour on ${bg}: ${f}`); }
+  assert.ok(f >= 0.55 && f <= 1);
+  assert.match(mdTarget({ tab: "steps", page: "res" }).tip, /when a dependency is slow, overloaded or down/);
+}
+
+// ---- Resilience: a card's marks wrap at words into the card; only the mark that says what breaks is red
+{
+  const { resMarkLines, resMarkRows, RES_MARK_ROW } = await import("./views.js");
+  const text = (ls) => ls.map((l) => l.map((x) => `${x.bad ? "!" : ""}${x.text}`).join(" · "));
+  assert.deepEqual(text(resMarkLines("×3 · ✕ when slow, down, wrong answer · ~ when overloaded", 206)), ["×3 · !✕ when slow, down, wrong", "!answer · ~ when overloaded"]);
+  assert.deepEqual(text(resMarkLines("×3 · ✕ when down", 206)), ["×3 · !✕ when down"]);
+  assert.deepEqual([text(resMarkLines("no DLQ", 30)), resMarkLines("", 206), resMarkLines(null, 206)], [["!no", "!DLQ"], [], []]);
+  assert.equal(resMarkRows(2) * 18, 2 * RES_MARK_ROW.h + RES_MARK_ROW.below + 3, "two lines of marks: two rows and the gap");
+}
+
 // ---- wave R2: the run's own unseen and watch lists, and a probe that dates an unclear blocker
 {
   const { resWatch, resByProbe, resCardOf } = await import("./views.js");

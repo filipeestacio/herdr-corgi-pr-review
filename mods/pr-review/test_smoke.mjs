@@ -285,10 +285,23 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     const v4 = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify({ ...doc, resilience: { ...r3, head, downstream: dn } }) });
     act(v4, "page:res", "Resilience with dependencies"); click("rv-res-dep-0-slow", "a dependency's case"); draw(v4, "the path of a dependency's case, open");
     assert.equal(v4.resOpen, ps.at(-1), "the case opens its path");
+    assert.ok(v4.pageParts.includes(`p:${ps.at(-1)}`), "its path is a part of the page, also one under \"n more\", so the click can scroll to it");
     assert.ok(v4.resNow().paths.find((p) => p.id === ps.at(-1)).marks.some((m) => m.at === "mailer" && m.mark === "✕ when slow"), "and the map marks the dependency");
     for (const id of ["rv-res-dep-0-down", "rv-res-dep-at-0"]) { click(id, "a dependency's line"); draw(v4, `after ${id}`); }
     assert.match((await import("./markdown.js")).resilienceMd({ pr: {}, head: v4.head, res: v4.resNow(), arch: v4.ai?.arch }), /## When a dependency fails \(\d+\)\n\n- Mailer/, "the export has the dependencies");
   }
+}
+// The analysis read again after the findings file (a reload of the mod reads them in either order; Refresh diagrams
+// reads the analysis again): the resilience block is derived on the new analysis too, never the raw block.
+{
+  const doc = JSON.parse(fx("findings-s.json")), v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify(doc) });
+  assert.ok(v.ai.resilience?.summary && v.resNow().downstreamLine, "derived on open");
+  const { reviewRequest } = await import("./pr.js");
+  const job = reviewRequest({ url: v.prSel.url, pr: v.prSel.url, worktree: null, files: v.patch, hunks: v.hunks, model: v.aiModel ?? "sonnet", context: v.ctxReq(), dir: "/h/pr-data/cache" });
+  S.files.set(job.latest, fx("analysis-s.json"));
+  v.loadAi(cx, "cache"); await settle();
+  assert.ok(v.ai?.arch && v.ai.resilience?.summary && v.resNow().downstreamLine, "still derived after the analysis was read again");
+  draw(v, "after the analysis was read again");
 }
 // The Security page with what a webhook PR adds to it: a deny rule (a guard), a right on something off the map, an
 // operator's script whose row and call are one way, two derived operator ways that say the same, a finding that only

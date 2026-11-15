@@ -1427,17 +1427,23 @@ const visibleOn = (path, effects) => !effects.length || RES_VISIBLE.test(path.en
 // else on every queue consumer of the run); a run outlasting its timeout blocks only when it comes back (a consumer
 // with redelivery), not in a request that just fails.
 const RES_UNBOUNDED = new Set(["unbounded_retry", "no_dlq", "poison_message"]);
+// What blocks by the path itself, not by the state it reads: the stronger reason wins over reads_foreign_state.
+const RES_OWN = new Set(["dishonest_response", "no_timeout_public", "shared_resource", "removed_signal"]);
 export function blockerOf(path, ladder, budget, effects = [], deps = []) {
   // Reading state another process holds is a finding, not a blocker: what it breaks (a poison message, a lost mail)
-  // blocks in its own path. (A race and such a read exclude each other; neither is double counted.)
-  if (path.result !== "finding" || path.failing.includes("reads_foreign_state")) return null;
+  // blocks in its own path. (A race and such a read exclude each other; neither is double counted.) A reason of the
+  // path's own still blocks, whatever else the run names on it (RES_OWN): the route of POST /remind answers success
+  // while the mail is lost, also when its consumer reads the other Lambda's store.
+  if (path.result !== "finding") return null;
+  const foreign = path.failing.includes("reads_foreign_state");
   // where: the path's first line, else what limits it, else the ladder's place (a path named only by cards and calls)
   const at = path.steps.find((s) => /:\d+$/.test(s)) ?? path.limited_by ?? (ladder?.factors.find((f) => f.n === null) ?? ladder?.factors[0])?.at ?? null, seen = visibleOn(path, effects);
   const mine = depsOf(path, deps), consumers = (mine.length ? mine : deps).filter((d) => d.trigger);
   const bounded = consumers.length > 0 && consumers.every((d) => d.trigger.dlq === true || d.trigger.max_receive > 0) && !(ladder?.factors.some((f) => f.n === null));
   const redelivered = Boolean(budget) || mine.some((d) => d.trigger && d.mode === "async");
-  const hit = RES_BLOCKING.find(([k]) => path.failing.includes(k) && (!RES_EFFECT.has(k) || seen) && (!RES_UNBOUNDED.has(k) || !bounded) && (k !== "over_timeout" || redelivered));
+  const hit = RES_BLOCKING.find(([k]) => path.failing.includes(k) && (!foreign || RES_OWN.has(k)) && (!RES_EFFECT.has(k) || seen) && (!RES_UNBOUNDED.has(k) || !bounded) && (k !== "over_timeout" || redelivered));
   if (hit) return { why: hit[1], at: hit[0] === "over_timeout" && budget ? budget.at : at };
+  if (foreign) return null;
   if (ladder?.factors.some((f) => f.n === null)) return { why: "load grows without a limit", at: ladder.factors.find((f) => f.n === null).at };
   if (budget?.over_s > 0) return { why: "the worst run outlasts its timeout and is delivered again", at: budget.at };
   if (silentOf(path) && (path.kind === "effect" || path.kind === "silent") && seen) return { why: "the path repeats or loses effects and nothing signals it", at };
@@ -1457,11 +1463,11 @@ export function downstreamOf(block, arch) {
   return (block?.downstream ?? []).map((d) => ({ ...d, card: d.node ?? edges[Number(/^e(\d+)$/.exec(d.edge ?? "")?.[1] ?? -1)]?.to ?? null,
     cases: (d.cases ?? []).map((c) => ({ ...c, path: ids.has(c.path) ? c.path : null })) }));
 }
-// What the map marks at a dependency on the chosen path: the cases that break on it ("✕ when slow, down"); a card's
-// mark line is short, so the cases only partly handled stay in the dependency's row.
+// What the map marks at a dependency on the chosen path: the cases that break on it ("✕ when slow, down") and the
+// ones only partly handled ("~ when overloaded"); the card wraps them (views.js resMarkLines).
 const downMarks = (id, downstream) => downstream.flatMap((d) => {
-  const on = d.cases.filter((c) => c.path === id && c.handled === "no").map((c) => WHEN_MARK[c.when] ?? c.when).join(", ");
-  return d.card && on ? [{ at: d.card, mark: `✕ when ${on}` }] : [];
+  const on = (h) => d.cases.filter((c) => c.path === id && c.handled === h).map((c) => WHEN_MARK[c.when] ?? c.when).join(", ");
+  return d.card ? [on("no") && { at: d.card, mark: `✕ when ${on("no")}` }, on("partly") && { at: d.card, mark: `~ when ${on("partly")}` }].filter(Boolean) : [];
 });
 // The block of a run with its derived parts, at this.ai.resilience; null without one. head: today's head (older:
 // the run looked at another one). findings: the findings file's (or merged) findings. A path whose findings were all
@@ -1581,7 +1587,8 @@ export function resilienceStart(files = []) {
 }
 // What a resilience run typically costs and takes, for runOffer before a first run: Sonnet measured on the demo PR #2
 // (3 runs with effort high: $0.21-0.31, 89-94 s); Opus scaled by its output price and not measured (measured: false).
-export const RUN_TYPICAL = { resilience: { sonnet: { usd: 0.25, s: 92, measured: true }, opus: { usd: 0.33, s: 140, measured: false } } };
+// Measured again with the dependencies' cases in the prompt (3 runs: $0.28, $0.28, $0.34; 92, 101, 127 s).
+export const RUN_TYPICAL = { resilience: { sonnet: { usd: 0.30, s: 107, measured: true }, opus: { usd: 0.40, s: 160, measured: false } } };
 
 // A rule that takes a right away or narrows it (an access row with effect "deny"; a security run from before that
 // field wrote "deny …" as its actions): a guard at its resource, not a grant, a way in or a crossing.
