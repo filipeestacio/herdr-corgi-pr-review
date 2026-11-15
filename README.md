@@ -1,6 +1,6 @@
 # Corgi · PR review for Herdr
 
-<h3 align="center">AI-guided pull request review for Herdr: the change as a story, risk first, with an architecture map, a blast radius and debugger-style sample values in the diff.</h3>
+<h3 align="center">AI-guided pull request review for Herdr: the change as a story, risk first, with an architecture map, a security map and debugger-style sample values in the diff.</h3>
 
 <p align="center"><img src="preview.png" width="88%" alt="The review layout's overview of a demo PR" /></p>
 
@@ -12,7 +12,7 @@ A Herdr mod for reviewing pull requests next to your agents. A side panel shows 
 PR), lets you comment on lines and send the comments to the agent that wrote the code. A full-window review
 layout adds an AI analysis that walks you through the PR by risk and layer, reviewers (Claude code review,
 security review, optionally Codex) whose findings you can send to the agent to fix and then verify, an
-architecture picture, a security blast radius, CI checks, related PRs, and go-to-definition in the diff. You comment
+architecture picture, a Security and a Resilience page, CI checks, related PRs, and go-to-definition in the diff. You comment
 as on GitHub: a comment box under the line, pending comments as threads, and "Finish your review" posts one GitHub
 review (Comment, Approve or Request changes) or sends it to the agent session.
 
@@ -21,7 +21,7 @@ review (Comment, Approve or Request changes) or sends it to the agent session.
 | | |
 |---|---|
 | ![Layers: the AI's walkthrough by layer, with a picture per layer](docs/screenshots/layers.png) | ![Architecture impact: every connection on its own lane, numbered, with a legend](docs/screenshots/architecture-impact.png) |
-| ![Security blast radius: related context and how it links to the changes](docs/screenshots/security-blast-radius.png) | ![Findings from the reviewers, with Fix and Discuss](docs/screenshots/findings.png) |
+| ![Security: related context and how it links to the changes](docs/screenshots/security-blast-radius.png) | ![Findings from the reviewers, with Fix and Discuss](docs/screenshots/findings.png) |
 | ![The diff with example values inline, an AI suggestion and a finding](docs/screenshots/diff-inline-values.png) | ![Go to definition in the diff through a language server](docs/screenshots/go-to-definition.png) |
 | ![The panel's PR sources with triage](docs/screenshots/panel-pr-sources.png) | ![Setup: which programs are there and how to install the rest](docs/screenshots/panel-setup.png) |
 | ![Commenting: the comment box under a line, a pending comment and Finish your review](docs/screenshots/commenting.png) | |
@@ -47,12 +47,20 @@ Below the map, **Impact** shows the functions and classes the PR changes and who
 servers and without a model: each caller is marked as changed in this PR, in the diff with its call untouched, or
 not in this PR, and a caller that still calls a changed signature the old way stands out. Tests are counted apart.
 
+When the PR changes Terraform, CloudFormation or SAM files, **Infrastructure changes** shows the resources it adds,
+changes, removes or may replace as cards with their changed arguments and the references between them, and lists
+the changed variables and outputs. It is read from the diff and the files at the PR head, without a model and
+without `terraform plan` or a change set, so a replacement is an estimate and is marked as one.
+
 When the PR changes a database schema, **Schema changes** shows the tables before and after as cards with their
 changed columns, keys and relations, and lists what may be risky for data that is in use, such as a dropped column,
 `NOT NULL` without a default or an index built without `CONCURRENTLY`. It is read from the SQL migrations, Alembic
 revisions and Prisma schema in the diff, without a model and without asking a database. Django and Rails
 migrations, Liquibase changelogs in XML or YAML and JPA entities are not read yet; the section names them when it
 shows.
+
+A card of these three pictures leads to its place in the diff, and with a local checkout and an editor it also
+carries the short link "VS ↗" or "IJ ↗" (see Open in your editor).
 
 ![Architecture impact: components as cards with New, Changed and Unchanged, numbered connections and a legend](docs/screenshots/architecture-impact.png)
 
@@ -76,10 +84,37 @@ in place, GitHub replies show up there too, and Fix hands one comment, or all se
 in its own worktree. When done it hands its commit to the PR's agent, which cherry-picks it, runs the tests and
 pushes; Apply to PR brings it over yourself when there is no live PR agent.
 
-**Security blast radius.** The changed parts in the middle, the existing code that calls into them on the left and
-what they call on the right, each with the reason it matters.
+**Security.** A map of the trust boundaries the PR touches: the zones from public to data, the calls that cross
+from one zone into another, numbered as in the table of crossings, and the findings at the crossing they belong to.
 
-![Security blast radius: callers, changed parts and callees, with numbered relations](docs/screenshots/security-blast-radius.png)
+Under the map, **Where sensitive data goes** names each kind of sensitive data the security review found (a
+credential, a secret, personal data, what users wrote) with the crossings it takes and where it ends, such as a log,
+an error message, a queue or a third party. Picking one lights its way on the map, and a step is marked when the
+data reaches a log or an error message, crosses a public boundary with no protection stated, or is kept with no
+retention rule stated.
+
+**Who may do what** is a table of principals (a role, a function, a pipeline, an operator, anyone on the internet)
+and resources: each cell has the actions that principal may do there and what the PR does to them (added, widened,
+narrowed, removed or unchanged). A rule that denies stands as a guard in the cell it protects, a wildcard is marked,
+and a line over the table names the signs.
+
+Both sections are folded to one line until you open them, and both read what the security review already wrote: no
+model is asked again.
+
+![Security: callers, changed parts and callees, with numbered relations](docs/screenshots/security-blast-radius.png)
+
+**Resilience.** The paths on which the change can fail under load or when something it depends on fails, blockers
+first; an opened path is lit on the map.
+
+**Timing** shows per call whether the timeouts, retries and pauses of the layers fit together: the limit a call
+runs inside (its own timeout, a function's timeout, a queue message's visibility) is a frame, and the attempts and
+pauses that run inside it are bars under it. Where their sum passes the frame the place is marked; a length the
+review did not state in seconds is an open dashed bar, and the sum then says "at least".
+
+**When a dependency fails** has a row per dependency with its cases (slow, overloaded, down, a wrong answer, back
+again) and whether the code handles each. A case with a path has a fault tree: what follows step by step, from
+the line in the code over the repeats to where the path ends, down to what the caller gets, what on-call sees and
+whether it can happen today.
 
 ## Use cases
 
@@ -102,7 +137,7 @@ what they call on the right, each with the reason it matters.
 
 - Panel: PRs from your sessions, the repo you're in, or review requests, with a one-line triage per PR.
 - Review layout: overview (intent, behaviour, risk, effort, blockers, pre-merge checks), layers in risk or reading
-  order with check questions, an architecture impact diagram, a security blast radius, and related PRs.
+  order with check questions, an architecture impact diagram, a Security and a Resilience page, and related PRs.
 - Diff: syntax highlighting, go-to-definition through real language servers, inline example values, collapsed
   context you can open.
 - Comments as on GitHub: click a line number (shift-click for a range) or press `c` for a comment box under the
@@ -162,13 +197,25 @@ in but not run.
 | `codex` (optional, with permission profiles; checked with 0.164) | the Codex reviewer, offered only when installed | `npm install -g @openai/codex` | same |
 | `bwrap` (optional, Linux only) | the sandbox a probe's script runs in | built in (`sandbox-exec`) | `sudo apt install bubblewrap` |
 | `acli` (optional) | the Jira ticket a PR names, in the task check | `brew tap atlassian/homebrew-acli && brew install acli` | see Atlassian's docs |
-| an editor (optional): VS Code, IntelliJ IDEA, Cursor or Zed | "Open in VS Code" on a file's head, a definition, a card's place in the code and a PR's checkout | `brew install --cask visual-studio-code`, or `brew install --cask intellij-idea-ce` | `sudo snap install code --classic`, or `sudo snap install intellij-idea-community --classic` |
+| an editor (optional): VS Code, IntelliJ IDEA, Cursor or Zed | "Open in VS Code" on a file's head, a definition, a card's place in the code and a PR's checkout; without one there are no such links | the app in `/Applications` or `~/Applications` (`brew install --cask visual-studio-code`, `brew install --cask intellij-idea`, `brew install --cask cursor`, `brew install --cask zed`); the `code` and `idea` command line tools are not needed | the editor's command line tool in `/usr/bin`, `/usr/local/bin`, `/snap/bin`, `~/.local/bin` or `~/bin`: `code` (`sudo snap install code --classic`), `idea` or `idea.sh`, `cursor`, `zed`; see below for IntelliJ IDEA, Cursor and Zed |
+| `wl-copy` or `xclip` (Linux only) | copying to the clipboard: Copy as Markdown, Copy path, a PR's link, an install command in Setup | built in (`pbcopy`) | `sudo apt install wl-clipboard` (Wayland) or `sudo apt install xclip` (X11) |
+| `xdg-open` (Linux only) | opening a link in the browser: the PR, a posted review, a commit, a related PR | built in (`open`) | `sudo apt install xdg-utils` |
+
+**Editors on Linux.** The links look for the editor's command in the five folders of the table, not in your shell's
+`PATH`. IntelliJ IDEA: JetBrains Toolbox writes an `idea` script when its shell scripts are turned on (set their
+folder to `~/.local/bin`); for the unpacked archive or the snap, put a link named `idea` in `~/.local/bin` that points
+at `bin/idea.sh` or at `/snap/bin/intellij-idea-community`. Cursor: its Linux packages bring a `cursor` command;
+when yours is in none of the five folders (the AppImage has none), put a link named `cursor` in `~/.local/bin`. Zed:
+the install script from zed.dev puts `zed` in `~/.local/bin`.
 
 **Open in your editor.** A file's head in the diff, the file and definition view, the panel and the cards that
-name a place in the code carry a link "VS Code ↗" or "IntelliJ ↗": it opens that file at its line in the checkout the
+name a place in the code carry a link "VS Code ↗" or "IntelliJ ↗", and a card's row or a line of a list its short
+form "VS ↗" or "IJ ↗", dimmed until the pointer is on it. It opens that file at its line in the checkout the
 review made for the PR. A click starts one process and changes nothing in the checkout. On macOS the app is enough
-(the link goes through `open` and the editor's own URL, `vscode://file/…` or `idea://open?file=…`); on Linux the
-`code` or `idea` command is used. Java, Kotlin and Gradle files open in IntelliJ IDEA and the rest in VS Code; a
+(the link goes through `open` and the editor's own URL, `vscode://file/…` or `idea://open?file=…&line=…`); on Linux
+the `code` or `idea` command is used. Whether IntelliJ's link counts lines from 0 or from 1 was not tried by hand
+yet, so a file may open one line off there (one number, `LINE_BASE` in `editor.js`). Java, Kotlin and Gradle files
+open in IntelliJ IDEA and the rest in VS Code; a
 folder goes by the kind of project. The ▾ next to the link picks another editor for that project, and the pick is
 shared with the other Corgi mods. For a PR from someone else that you have not trusted, only single files are
 opened, never the folder and never a build or workspace file, because an editor can run a project's code when it
