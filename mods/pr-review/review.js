@@ -74,6 +74,14 @@ const ONE_LINE = [0]; // a code line that fits: one visual line from its start (
 // TextView's between paragraphs, MD.GAP).
 const CODE_SIZE = 12.5, CODE_LH = 19, CODE_PAD_X = 10, CODE_PAD_Y = 7, GH_GAP = 10;
 const NO_WRAP = 1e9; // the columns of a line that does not wrap (rowLayout)
+const NO_HUNKS = []; // a file outside the diff has no hunks: always this array, so memoRows sees the same input (rowsFor)
+// A patch's file by its path (the first with it, as find gives): a Map per patch array, since rowsFor asks per finding.
+const byPath = new WeakMap();
+const fileOf = (patch, path) => {
+  let m = byPath.get(patch);
+  if (!m) { m = new Map(); for (const f of patch) if (!m.has(f.path)) m.set(f.path, f); byPath.set(patch, m); }
+  return m.get(path);
+};
 // The items that start a card under a line: side by side they carry the mark of their half (item).
 const SIDE_HEAD = new Set(["find", "ch", "gh", "compose", "sug", "def", "hidden"]);
 const KEYS_POP = { width: 340, height: 330 }; // the "?" popup: sized to its rows and the last line
@@ -1012,6 +1020,14 @@ export const ReviewMode = {
   // function (views.js findingAnchor), so it meets the analysis' finding there; its code then no longer belongs to it.
   merged() {
     const ai = this.ai, list = this.find.list, st = this.find.status, handled = this.prog.handled, n = Object.keys(handled).length, m = this.findMemo;
+    const probes = this.deep?.probes; // a probe that ends confirms its path's findings (withProbes below)
+    // What it reads of the analysis, part by part: securityNow puts a new object around the same layers every time the
+    // findings file or the context is read, and merging again for that took 50 ms and more on a big review.
+    const steps = ai?.steps, suspects = ai?.suspects, access = ai?.access, nodes = ai?.arch?.nodes, res = ai?.resilience ?? this.find?.resilience;
+    const same = m && m.steps === steps && m.suspects === suspects && m.list === list && m.st === st && m.handled === handled && m.n === n;
+    // Nothing changed, the rows the anchors were found in included (rowsSig): the answer from before. A view asks
+    // this dozens of times per frame, so not one row is looked at here.
+    if (same && m.access === access && m.nodes === nodes && m.res === res && m.probes === probes && m.rows === this.rowsSig()) return m;
     // A reviewer's line moved to the next line of code (views.js findingAnchor), remembered per row array: this runs
     // for every lookup of a finding while a view draws, and scanning every file's rows each time timed the render out.
     const anchor = (f) => {
@@ -1021,19 +1037,29 @@ export const ReviewMode = {
       if (!memo.has(key)) memo.set(key, findingAnchor(rows, f.line, f.end));
       return memo.get(key);
     };
-    const lines = list.map((f) => (f.line > 0 ? anchor(f) : f.line)), at = lines.join();
-    const probes = this.deep?.probes; // a probe that ends confirms its path's findings (withProbes below)
-    if (m?.ai === ai && m.list === list && m.st === st && m.handled === handled && m.n === n && m.at === at && m.probes === probes) return m;
-    const moved = list.map((f, i) => (lines[i] === f.line ? f : { ...f, line: lines[i], end: Math.max(lines[i], f.end ?? 0), head: undefined, code: undefined }));
-    const m2 = mergeFindings([...moved, ...(ai?.steps ?? []).flatMap((s) => s.findings ?? [])], (ai?.suspects ?? []).filter((s) => !handled[s.key]), st, publicFiles(ai?.access, ai?.arch?.nodes));
+    const lines = list.map((f) => (f.line > 0 ? anchor(f) : f.line)), at = lines.join(), pub = publicFiles(access, nodes), pubKey = [...pub].join("\n");
+    const rows = this.rowsSig(); // after the anchors: reading a file's rows for the first time counts as a change of them
+    const merge = () => {
+      const moved = list.map((f, i) => (lines[i] === f.line ? f : { ...f, line: lines[i], end: Math.max(lines[i], f.end ?? 0), head: undefined, code: undefined }));
+      return mergeFindings([...moved, ...(steps ?? []).flatMap((s) => s.findings ?? [])], (suspects ?? []).filter((s) => !handled[s.key]), st, pub);
+    };
+    const m2 = same && m.at === at && m.pubKey === pubKey ? m.m2 : merge();
+    if (m2 === m?.m2 && m.res === res && m.probes === probes) return Object.assign(m, { access, nodes, rows });
     // An agent's check on each (Verify with an agent); a reproduced probe of the Resilience page confirms its path's findings.
-    const res = ai?.resilience ?? this.find?.resilience, proved = res?.paths && typeof this.probesNow === "function" ? withProbes(withProof(m2.findings, st), res.paths, this.probesNow()) : withProof(m2.findings, st);
-    return (this.findMemo = { ai, list, st, handled, n, at, probes, ...m2, findings: proved });
+    const proved = res?.paths && typeof this.probesNow === "function" ? withProbes(withProof(m2.findings, st), res.paths, this.probesNow()) : withProof(m2.findings, st);
+    return (this.findMemo = { steps, suspects, access, nodes, res, list, st, handled, n, at, pubKey, probes, rows, m2, notes: m2.notes, findings: proved });
   },
   findings() { return this.merged().findings; },
   findingById(id) { return this.findings().find((f) => f.ids.includes(id)) ?? null; },
   // The one count every view shows (pr.js findingCounts): unresolved, of them with a fix sent, by severity, security.
-  counts() { return findingCounts(this.findings(), (f) => this.fstatus(f)); },
+  counts() { return this.perFindings("counts", (fs) => findingCounts(fs, (f) => this.fstatus(f))); },
+  // A value made from the findings and their statuses, kept until one of them changes (the list from merged(), and
+  // what fstatus reads): the tab, the bar and every page ask for the same counts and lists in one frame.
+  perFindings(name, make) {
+    const fs = this.findings(), st = this.find.status, rep = this.find.reports, head = this.head, rows = this.rowsSig(), k = this.perMemo;
+    const memo = k && k.fs === fs && k.st === st && k.rep === rep && k.head === head && k.rows === rows ? k : (this.perMemo = { fs, st, rep, head, rows, got: {} });
+    return name in memo.got ? memo.got[name] : (memo.got[name] = make(fs));
+  },
   // "Security review: high · Analysis: medium": a finding's sources with their own severities (one source: its name).
   sourcesOf(f) {
     const name = (x) => REVIEWERS[x.reviewer]?.[0] ?? x.reviewer;
@@ -1154,9 +1180,14 @@ export const ReviewMode = {
 
   // A finding's line in the diff's rows (hunks plus opened context), or -1: then it is "outside the diff".
   findRow(f) { return this.rowsFor(f.file, true).findIndex((r) => atLine(r, f.line, false)); },
+  // Remembered per finding until a status, a report, the head or a file's rows change (rowsSig): a frame asks this
+  // for every finding in every count and list, and each answer looked for the finding's line in its file's rows.
   fstatus(f) {
-    const rows = this.rowsFor(f.file, true), r = rows.find((x) => atLine(x, f.line, false));
-    return findingStatus(f, this.find.status, this.find.reports, this.head, r?.text);
+    const st = this.find.status, rep = this.find.reports, head = this.head, rows = this.rowsSig(), k = this.fstMemo;
+    const memo = k && k.st === st && k.rep === rep && k.head === head && k.rows === rows ? k : (this.fstMemo = { st, rep, head, rows, of: new WeakMap() });
+    let s = memo.of.get(f);
+    if (s === undefined) { s = findingStatus(f, st, rep, head, this.rowsFor(f.file, true).find((x) => atLine(x, f.line, false))?.text); memo.of.set(f, s); }
+    return s;
   },
   // A status set by hand drops an earlier verification; extra: {fixHead} when it goes to Fix.
   setFinding(f, st, cx, extra = {}) {
@@ -1772,6 +1803,7 @@ export const ReviewMode = {
   },
 
   toggleWhole(path, cx) {
+    this.rowsTouched();
     if (this.whole.has(path)) this.whole.delete(path);
     else { this.whole.add(path); this.unfold(path); this.loadFull(path, cx); }
   },
@@ -1779,13 +1811,13 @@ export const ReviewMode = {
   expand(path, k, how, cx) {
     const g = (this.gaps[path] ??= {}), cur = g[k] ?? { down: 0, up: 0 };
     g[k] = how === "all" ? { down: 1e9, up: 0 } : { ...cur, [how]: cur[how] + MORE };
-    this.loadFull(path, cx);
+    this.rowsTouched(); this.loadFull(path, cx);
   },
 
   // The file at the PR head: from the local clone when it has that commit, else from GitHub.
   loadFull(path, cx) {
     if (this.full[path] !== undefined && !String(this.full[path]).startsWith("Could not load")) return;
-    this.full[path] = "Loading file…";
+    this.full[path] = "Loading file…"; this.rowsTouched();
     const url = this.prSel.url, repo = /github\.com\/([^/]+\/[^/]+)\/pull/.exec(url)?.[1];
     cx.spawn(async (cx) => {
       let text = null;
@@ -1805,9 +1837,9 @@ export const ReviewMode = {
           if (r.code !== 0) throw new Error(r.stderr.trim().slice(0, 160));
           text = r.stdout;
         }
-      } catch (e) { if (this.prSel?.url === url) this.full[path] = `Could not load the file: ${String(e).replace(/^Error: /, "")}`; }
+      } catch (e) { if (this.prSel?.url === url) { this.full[path] = `Could not load the file: ${String(e).replace(/^Error: /, "")}`; this.rowsTouched(); } }
       if (this.prSel?.url !== url) return;
-      if (text !== null) this.full[path] = text.replace(/\n$/, "").split("\n");
+      if (text !== null) { this.full[path] = text.replace(/\n$/, "").split("\n"); this.rowsTouched(); }
       cx.notify();
     });
   },
@@ -1832,15 +1864,27 @@ export const ReviewMode = {
   // whole: of the whole PR even while only the changes since your last review are shown (findings are on the PR).
   rowsFor(path, whole = false) {
     const sh = whole ? { patch: this.patch ?? [], fileHunks: this.fileHunks } : this.shown();
-    const hs = sh.fileHunks?.get(path) ?? [], f = sh.patch.find((x) => x.path === path), full = Array.isArray(this.full[path]) ? this.full[path] : null;
+    // NO_HUNKS: one array for every file outside the diff (a finding on unchanged code), so its rows stay memoized.
+    const hs = sh.fileHunks?.get(path) ?? NO_HUNKS, f = fileOf(sh.patch, path), full = Array.isArray(this.full[path]) ? this.full[path] : null;
     return this.memoRows(`${whole ? 1 : 0}\0${path}`, path, hs, full, f);
+  },
+  // What rowsFor reads (the patch, its hunks, whole files, opened context) as one value to compare by identity: the
+  // same object as long as none of them changed. this.full, this.gaps and this.whole change in place: whoever writes
+  // one calls rowsTouched(). A new row array from memoRows counts as well, so a write that forgot to say so is
+  // noticed the next time that file's rows are asked for.
+  rowsTouched() { this.rowsGen = (this.rowsGen ?? 0) + 1; },
+  rowsSig() {
+    const k = this.rowsKey, gen = this.rowsGen ?? 0;
+    if (k && k.patch === this.patch && k.fh === this.fileHunks && k.full === this.full && k.gaps === this.gaps && k.whole === this.whole && k.gen === gen) return k;
+    return (this.rowsKey = { patch: this.patch, fh: this.fileHunks, full: this.full, gaps: this.gaps, whole: this.whole, gen });
   },
   // Memoized on their inputs: findings call rowsFor per finding on every render, and the Files view keeps the same row
   // arrays across renders, which the highlight cache (spanMap) is keyed on (a big PR timed the render out).
   memoRows(key, path, hs, full, f) {
-    const deps = [hs, full, JSON.stringify(this.gaps[path] ?? null), this.whole.has(path), f?.status];
+    const g = this.gaps[path], deps = [hs, full, g ? JSON.stringify(g) : "null", this.whole.has(path), f?.status];
     const memo = (this.rowsMemo ??= new Map()), hit = memo.get(key);
     if (hit && hit.deps.every((d, i) => d === deps[i])) return hit.rows;
+    this.rowsTouched();
     const rows = fileRows(hs.map((h) => h.rows), full, this.gaps[path], this.whole.has(path), f?.status === "modified" || f?.status === "renamed");
     if (memo.size > 8000) memo.clear(); // ponytail: two entries per file (whole/shown); 3000-file PRs fit
     memo.set(key, { deps, rows });
@@ -2908,7 +2952,7 @@ export const ReviewMode = {
   // ---- the left column: the Analysis tab (its pages, what needs attention, the layers), the pages
 
   checksNow() { return preMergeChecks({ title: this.pr?.title ?? this.prSel?.title, rules: realRules(this.ai?.rules ?? []), ctx: this.ctx }); }, // the criteria count once, as criteria
-  openFindings() { return this.findings().filter((f) => OPEN_ST.includes(this.fstatus(f))); },
+  openFindings() { return this.perFindings("open", (fs) => fs.filter((f) => OPEN_ST.includes(this.fstatus(f)))); },
   blockersNow(checks = this.checksNow()) { return mergeBlockers({ checks, findings: this.openFindings(), unverified: this.verifyList().length, related: this.ctx, sent: (f) => this.fstatus(f) === "progress" }); },
   // The triage for this PR (pr.js triageOf, no LLM), for the registry and its consumers.
   triageNow() {
