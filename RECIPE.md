@@ -15,29 +15,36 @@ blast radius, the architecture impact and fix verification.
 **The panel** (`mods/pr-review`, no props; docks right, 380 px), theme colors throughout, a card with 10 px
 corners and a 1 px `border`:
 
-- Header, 42 px: the PR title (`#42 feat(invites): …`, semibold, truncated) or `vs origin/main`; small pills
-  (10 px text, 4 px corners, `border`, `muted` text, `foreground` on hover): `↻`, `PRs ▾`, `Walkthrough`,
-  `Review`, `GitHub ↗`; then `+N` in `ansi2` and `−N` in `ansi1`.
+- Header, at least 42 px: the PR title (`#42 feat(invites): …`, semibold, up to two lines) or `vs origin/main`;
+  small pills (10 px text, 4 px corners, `border`, `muted` text, `foreground` on hover): `↻`, `GitHub ↗`; then the
+  one filled button (`solid`, 26 px, 12 px semibold): `Review`, or `Resume` once this PR's review was started.
 - A red-tinted banner (`ansi1` at ~11 % alpha) "Needs gh, claude to work. [Open Setup]" when a required program is
   missing or logged out.
-- **IN PROGRESS** (11 px semibold `muted` caps): up to 6 started reviews, each `#n title` (12.5 px), a line like
-  `1/10 steps · 1/17 files · 1 comment · 3 h ago` (11 px `muted`), a context tag when a plug-in supplies several
-  contexts, and `Resume`.
+- **In progress** (11 px semibold `muted`): up to 3 started reviews, then "Show all"; each `#n title` (12.5 px),
+  its risk chips (see the list below), a wrapping line like `1/10 layers · 1/17 files · 1 comment · 3 open
+  findings` (11 px `muted`), a context tag when a plug-in supplies several contexts, and `Resume`. A click on the
+  row shows the PR's diff. A PR shown here is not repeated in the list below.
 - A yellow banner (`ansi3` ~11 %) "This PR belongs to …" with `Switch to …` and `Clear` when the picked PR's
   context is hidden by the current view.
 - `PRs ▾` opens a 360 px list: source tabs `Mine` (PRs your Claude sessions created) / `This repo` / `Review
-  requested`, an "Open PR… URL or owner/repo#123" field, a `Triage PRs` and a `Setup` pill, then rows: title,
-  state (`open` `ansi2`, `draft` `dim`, `merged` `ansi5`, `closed` `ansi1`), a `Review` pill, a second line
-  (repo · session title, or @author · review decision · +/− · age) and triage chips (`● P1` in `ansi1`, `P2`
-  `ansi3`, `P3` `muted`; "Security", "Deep review", …) with the "why" in an accent quote bar on the picked one.
+  requested`, an "Open PR… URL or owner/repo#123" field, a `Triage PRs` and a `Setup` pill, then one row per PR:
+  title, state (`open` `ansi2`, `draft` `muted`, `merged` `ansi5`, `closed` `ansi1`), one pill into the review
+  (`Review`, or `Resume` once started; open and draft PRs only), a second line in `muted` (repo · session title, or
+  @author · review decision · +/− · age), then chips: the risk signal from cached data (`Highest finding: high` in
+  the severity's color, and a tinted `⛨ Security` chip in `ansi1` when an open finding is about security; nothing
+  without a cached analysis or findings) and the triage chips (`● P1` in `ansi1`, `P2` `ansi3`, `P3` `muted`;
+  "Deep review", …) with the "why" in an accent quote bar on the picked one. Merged and closed PRs are folded under
+  a `▸ Merged or closed (n)` row. An empty list is one `muted` sentence that says what to do ("Open a space on a
+  GitHub repo to list its PRs.").
 - The file list (28 px rows, up to 200 px): folder dimmed, file name, `● n` comments in `accent`, `+/−`.
 - A Diff / File toggle and `VS Code ↗` for the open file; File shows the file in a read-only editor (markdown
   rendered).
 - The diff: 20 px rows in the terminal font at 11 px, line number in `dim`, added rows on `#2ea0431a`, removed on
   `#f851491a`, syntax colors from the theme's ANSI colors; comments as small cards under their last line.
-- A "Review: 2 comments in 1 file" bar with `Discard` and a solid `Send review` button.
+- A "2 pending comments in 1 file" bar with `Discard` and a `Finish your review` pill, which opens the review
+  layout with its popover of that name (a branch without a PR has `Send to agent` there instead).
 - The ask box: "On: file line 12", presets `Explain` and `Look up docs`, an input, `Comment` and a solid `Ask`.
-- **Walkthrough** replaces the diff with the AI analysis in reading order, one step at a time.
+- **Walkthrough** replaces the diff with the AI analysis in reading order, one layer at a time.
 - **Setup** replaces the diff with three groups (Required, Optional, Go to definition): each program with ✓ in
   `ansi2`, `missing` in `ansi1`, `not installed` in `muted` or `logged out` in `ansi3`, what it enables
   ("Go to definition in Java needs jdtls"), the install command in mono, `Copy` and `Install in terminal`.
@@ -48,18 +55,27 @@ title bar (traffic lights at 12, 16):
 - The bar (52 px, `chrome`, draggable; the mod with `{part: "bar"}`, left padding 84 px): `← Back`, `#n title`
   (14 px semibold), `owner/repo#n`, a state badge, a context tag (only with several contexts), merge risk and
   review effort badges, `Pre-merge checks ✓ n ✗ n`, `Mark done`, a round `?` (the keys popup), `Reviews ▾`,
-  `Values: On`, the model picker (Haiku / Sonnet / Opus) and the shown analysis' model and cost (it truncates first
-  when the window is narrow), and at the right GitHub's green (`#238636`) `Review changes ▾`, which reads
-  `Finish your review (n) ▾` while n comments are pending.
-- The body (`{part: "review"}`): a 420 px left column with tabs `Files · n`, `Layers · n`, `Findings · n`.
-  Layers: model, cost and age; merge risk and effort; `Layers / By risk`, `‹ Prev`, `Next ›`, `Re-analyze`;
-  pages Overview, Security blast radius, Architecture impact, Verify; a yellow "Needs your attention" box; the
-  layers (✓ when checked, title, risk badge `high` `ansi1` / `medium` `ansi3` / `low` `ansi4` / `skim` `muted`,
-  "n files touched", why it matters; the current one expanded with explanation, check questions and flow cards
-  with example inputs and outputs).
+  `Values: On`, the model picker (Sonnet / Opus, never Haiku: it reads and judges code) and the shown analysis' model and cost (it truncates first
+  when the window is narrow), and at the right GitHub's green (`#238636`) `Finish your review ▾`, with the
+  count n while n comments are pending.
+- The body (`{part: "review"}`): a 420 px left column with the tabs `Files · n`, `Analysis · n`, `Comments · n`,
+  `Findings · n`; a tab's help text opens under the tab row after a short rest.
+  Analysis: on top the PR's pages as a small group (Overview, Architecture impact with a plain `Changed`, Security
+  blast radius with a plain `⛨ n` in its worst severity's color), then `‹ Prev`, `Next ›`, `Re-analyze` (its tooltip has the run's model, cost, time and age), and
+  `Layers / By focus` only when the two orders differ; a yellow "Needs your attention" box with the merge blockers
+  by severity, security first, one line each (five, then "n more"), folded to its heading while a layer is open
+  and, under the pages, when it would leave a short column too little room for the layers;
+  the layers (number, title, the highest unresolved severity with its count such as `2 high`, `⛨` when one of them
+  is a security finding, "n of m files viewed", why it matters; the current one expanded with its files, each with a
+  "Viewed" tick, the explanation, check questions and flow cards). A layer shows ✓ once every file in it is ticked
+  as viewed; nothing else ticks it.
+  Files: "n of m files viewed", then the tree; a file row has its status letter, name, `⛨`, the highest unresolved
+  severity with its count in that severity's colour, "n comments", `+n −n` and a 16 px tick whose click target is
+  the row's right end.
 - On the right one virtual list of 22 px rows: the step header, then each hunk with old/new line numbers,
-  `+` rows tinted `#2ea043`, `−` rows `#f85149`, and cards inline: AI suggestions (`Accept (a)`, `Dismiss (x)`)
-  and findings (severity badge, reviewer in its color, `Comment`, `Discuss in chat`, `Fix`, `Dismiss`).
+  `+` rows tinted `#2ea043`, `−` rows `#f85149`, and inline: AI notes (one muted line, a click opens the text;
+  `a` adds it as a comment, `x` hides it) and findings, one per file and line (severity badge, its sources with
+  their severities, its state, `Add to review`, `Ask an agent…`, `Fix with agent…`, `Dismiss finding`).
 - Commenting as on GitHub's "Files changed": hovering the line numbers shows a `+`. The composer is two list rows
   under the selection's last line (168 px and 48 px, `accent` border): "Comment on lines 13–15", a fixed-height
   textarea, then `Suggestion` (inserts a GitHub suggestion block with the selected lines), `Cancel`,
@@ -70,7 +86,9 @@ title bar (traffic lights at 12, 16):
 - `Finish your review` opens a 460 px popover at the top right of the body: a summary textarea, radios
   `Comment` / `Approve` / `Request changes` with GitHub's descriptions, `Send to: GitHub | Agent session` (only
   when the PR has a session), a preview of what goes out ("Posts one review to owner/repo#n: Comment, 2 line
-  comments, 1 in the body." and the lines), `Discard pending` and a green `Submit review`.
+  comments, 1 in the body." and the lines), `Discard 1 pending comment…` (asks first) and a green `Submit review`.
+  The findings suggest a verdict next to the choice and never pick it; `Approve` over an unresolved finding of high
+  severity asks once; `Insert blockers` drafts the body from those findings; a `Dry run` chip shows `"dryRun": true`.
 - **Architecture impact** and **Security blast radius**: groups as dashed frames of cards (title up to 2 lines,
   description up to 3, type, "Open ↗" to the code, a status chip: ADDED `ansi2`, CHANGED `accent`, UNCHANGED
   `muted`, REMOVED `ansi1`). Every call points left to right. Inside a group a node sits right of its caller, so a
@@ -104,7 +122,7 @@ Explore shows Overview, Layers, Architecture and Files for a topic, without a di
 
 ## How it behaves
 
-- Agent status isn't shown; agents are only targets: the panel's "Send review" and "Ask", the review layout's
+- Agent status isn't shown; agents are only targets: the panel's "Send to agent" (a branch without a PR) and "Ask", the review layout's
   "Submit review" sent to the agent session, and "Fix" go to the PR's session
   agent if it is live, else `claude --resume <session>` in a new tab, else this space's agent, else a new
   `claude` tab, with the prompt as its task.
@@ -124,14 +142,19 @@ Explore shows Overview, Layers, Architecture and Files for a topic, without a di
 - `Review` switches to the review layout (and remembers the layout to come back to); `← Back` / Esc returns.
   The first time, the mod writes `review-layout.json` to `layouts/review.json`; when a `review` layout that isn't
   this mod's is already there, it uses `layouts/pr-review.json` instead. It never overwrites a file.
-- The AI analysis never runs by itself: "Analyze with Sonnet" (or Haiku/Opus) starts it detached; a spinner shows
+- The AI analysis never runs by itself: "Analyze with Sonnet" (or Opus) starts it detached; a spinner shows
   the time and the cost cap; it can take minutes. After a push, "Only new changes" analyses just the new commits.
 - `Reviews ▾` lists Claude code review, Security review and (when installed) Codex review with their last run;
   Run starts one in the background on a checkout of the PR head; findings appear inline and under Findings.
-- `Fix` sends findings to the agent, which reports back per finding; after the next push "Verify fixes"
-  checks them (fixed ✓, not fixed → open again, unclear).
-- "Discuss in chat" pastes the finding into the agent's terminal in a floating window without sending it (or
-  into a chat mod's bubble, PROVIDERS.md).
+- `Fix with agent…` sends findings to an agent, which reports back per finding. The preview names the account's
+  config folder, what the agent gets and may do, and that it cannot push (`git push` and `gh pr create` are denied).
+  `Fix several…` lets you tick which findings one agent fixes together; security findings go one at a time. The finding reads "Fix sent" and stays
+  unresolved (in the diff, counted, a blocker when high) with the agent, branch, commit and report. "Verify fixes"
+  in the Findings tab checks a reported commit on its fix branch ("Verified on the fix branch, not in the PR yet")
+  and, after the next push, the PR head (fixed → Fixed, not fixed → Unresolved again, unclear).
+- "Ask an agent…" pastes the finding into the live agent's terminal in a floating window without sending it (or
+  into a chat mod's bubble, PROVIDERS.md); without a live agent it starts one in a new tab, in manual mode, on the
+  review's checkout of the PR head. Its preview says which of these happens.
 - The analysis writes in the `language` setting; prompts are English.
 - Progress (checked layers, seen files, where you were) is kept per PR and restored on Resume.
 
@@ -140,8 +163,8 @@ about and file:line evidence; a short thread per PR is kept in pr-data/deep.json
 note on its card, edge or lines; notes never go out. Show details (one call, "Review: drill down") draws a card or a
 layer from the inside, cached per card path and diff head. Explore (one call, "Explore: walkthrough", read-only tools
 in the repo) keeps the newest 20 explorations. Every send to an agent opens a preview first. Fix starts a sub-agent
-(`hc run --parent <PR agent>`) in a worktree on fix/<pr>-<id> and tells the PR agent (`hc send`); the sub-agent's last
-step is one `hc send` to the PR agent, which cherry-picks, tests and pushes; Apply to PR cherry-picks onto a clean checkout. The
+(`hc run --parent <PR agent>`) in a worktree on fix/<pr>-<id>, started at the PR head. The sub-agent commits there and stops: it cannot
+push and hands its fix to nobody. Apply to PR cherry-picks onto a clean checkout of the PR's branch (Hand over… asks the PR agent instead). The
 GitHub submit posts only the ticked items. The analysis writes every hunk to its run folder with an index and splits
 big PRs into cohort passes and a merge pass under one cap.
 
@@ -201,7 +224,7 @@ references are written `@<path>` and `demo/seed.mjs` turns them into aliases), `
 - `herdr-app check mods/pr-review` passes and every `test_*.mjs` / `test_*.py` passes without network.
 - In the demo (`"dryRun": true`), a click on a line number opens the composer under it, the seeded pending comment
   shows as a thread, and `Submit review` writes the payload to `pr-data/review-dry-run.json` instead of posting.
-- The panel shows the focused branch's diff; a comment and "Send review" reach the space's agent.
+- The panel shows the focused branch's diff; a comment and "Send to agent" reach the space's agent.
 - `PRs ▾ → This repo` lists the repo's open PRs; `Review` opens the layout on one; `← Back` returns.
 - "Analyze" produces layers, an Architecture impact page where no line runs through a card and every connection
   has its badge and legend row, and a blast radius that says "No security review yet" before one ran.
