@@ -44,7 +44,7 @@ import { markRoom, FIT as ARCH_FIT, ARCH as ARCH_SIZE } from "./arch.js"; // a c
 import { resStartOf, resOrder, resPicture, budgetBar, resPathView, resCardOf, resSentence, resMarksOn } from "./views.js";
 import { resWord, resToolText, resVerdict, resWatch, resTwice, PROBE_TYPICAL, resEdgeMarks, resByProbe, RES_MARK_ROW, resMarkRows, resVerdictParts, resStartCard } from "./views.js";
 import { withProbes, certaintyText, probedText } from "./views.js"; // wave C2 V3: a reproduced probe confirms its findings // wave R2: words, verdict, watch, doubled ways
-import { withThreats, secNote } from "./pr.js"; // the Security page: one count, and a run from before its current rules
+import { withThreats, secNote, secByEffect, secWhy } from "./pr.js"; // the Security page: one count, and a run from before its current rules
 import { withResilience, resilienceStart, RUN_TYPICAL } from "./pr.js"; // the Resilience run's data // the Resilience page
 import { resDepRows } from "./views.js"; // Resilience: dependencies that fail or are overloaded
 import { wayOf, wayText, passZones, runsIn } from "./views.js"; // panel round 3: ways through every gate, zones passed on
@@ -262,7 +262,9 @@ export async function startExplore(root = null) {
   setShared("review.explore", { start: true, root, space: focused()?.space ?? null, at: Date.now() });
   run("layout.switch", { name: plan.name });
 }
-const leave = () => run("layout.switch", { name: shared("review.back") || "main" });
+// Leaving hands the review's PR to the panel (shared "pr.fromReview"): back there it shows this PR, whichever way the
+// review was opened (a Resume in a list, the minimized chip, Go to, a related PR), not the one picked before.
+const leave = () => { const pr = shared("review.target"); if (pr?.url) setShared("pr.fromReview", pr); run("layout.switch", { name: shared("review.back") || "main" }); };
 // Minimize: back to the previous layout with the review kept as one entry (part "mini", a float in the main layout):
 // Open brings it back where it was, ✕ drops it. One at a time: minimizing another review replaces it.
 const minimize = () => { const pr = shared("review.target"); if (pr) setShared("review.minimized", { target: pr, at: Date.now() }); leave(); };
@@ -274,10 +276,11 @@ export function renderMini() {
     .text_size(12).text_color(t.foreground).tooltip(`${pr.repo ?? ""}#${pr.number ?? ""} ${pr.title ?? ""}`)
     .on_mouse_down("left", (_e, cx) => cx.stop_propagation()) // a press the mod doesn't stop would drag the float
     .child(div().flex_none().font_semibold().child(`Review #${pr.number ?? ""}`))
+    .when(Boolean(pr.title), (e) => e.child(div().flex_none().max_w(220).truncate().text_color(t.muted).child(pr.title)))
     .child(div().id("rv-mini-open").px(8).h(22).flex().items_center().rounded_full().cursor_pointer().text_color(t.accent).hover((x) => x.bg(t.hover))
       .tooltip("Back to the review, where you left it").on_click(() => startReview(pr)).child("Resume"))
     .child(div().id("rv-mini-x").w(22).h(22).flex().items_center().justify_center().rounded_full().cursor_pointer().text_color(t.muted).hover((x) => x.bg(t.hover))
-      .tooltip("Close the minimized review").accessibility_label("Close minimized review").on_click(() => setShared("review.minimized", null)).child("✕"));
+      .tooltip("Remove this chip. The review stays in progress with its comments; the panel's In progress resumes it.").accessibility_label("Remove the minimized review's chip").on_click(() => setShared("review.minimized", null)).child("✕"));
 }
 
 const pill = (id, t, label, click, on = false, color) => div().id(id).flex_none().whitespace_nowrap().px(9).h(26).flex().items_center().rounded(6).border_1()
@@ -553,6 +556,7 @@ export const ReviewMode = {
     this.composing = false; this.editing = null; this.finishOpen = false; this.posted = null; this.gh = []; this.route = null; this.event = null;
     this.full = {}; this.gaps = {}; this.whole = new Set(); this.collapsed = new Set(); this.hunks = null;
     this.ctx = null; this.since = null; this.sinceOn = false; this.lastReviewed = null; this.page = "overview"; this.aiFile = null; this.needClone = null;
+    this.resumed = null; this.resumeIn = null; this.pendingScroll = null;
   },
 
   // A new diff: its hunks, progress and the cached analysis, if any.
@@ -570,21 +574,19 @@ export const ReviewMode = {
       if (hs.length) fileHunks.set(f.path, hs);
       if (Date.now() - t > 12) { await new Promise((r) => cx.timer.after(0, r)); t = Date.now(); if (this.patch !== patch) return; }
     }
+    // Progress, folds and where you were before the list exists: the first frame with the diff has the viewed files
+    // folded and stands where you left (it used to come after the threads were read, half a second of the top of Files).
+    const p = await this.resumeOf(url);
+    this.resumeIn = null; // a later load (a new head) reads what was saved since
+    if (this.patch !== patch) return;
+    this.prog = { visited: new Set(p.visited ?? []), checked: p.checked ?? {}, handled: p.handled ?? {}, seen: new Set(p.seen ?? []) };
+    this.collapsed = new Set([...this.prog.seen, ...foldOnOpen(this.patch)]);
+    this.takeResume(url, p);
     this.hunks = hunks; this.fileHunks = fileHunks;
     this.byId = new Map(this.hunks.map((h) => [h.id, h]));
     this.diffLines = diffLines(this.hunks);
     this.loadGhComments(cx);
     await this.loadThreads(cx);
-    const p = JSON.parse(await readTextFile(progressFile()).catch(() => null) ?? "{}")[url] ?? {};
-    this.prog = { visited: new Set(p.visited ?? []), checked: p.checked ?? {}, handled: p.handled ?? {}, seen: new Set(p.seen ?? []) };
-    this.collapsed = new Set([...this.prog.seen, ...foldOnOpen(this.patch)]);
-    const back = resumeFields(p.ui);
-    if (back) { // resume: where you were
-      Object.assign(this, back.fields);
-      if (back.model && codeModel(back.model) !== shared("review.model")) setShared("review.model", codeModel(back.model));
-      if (back.values !== undefined && back.values !== valuesOn()) setShared("review.values", back.values);
-      this.pendingScroll = back.scroll;
-    }
     this.uiSaved = JSON.stringify(this.uiState());
     this.head = this.prSel.headSha ?? null; // from prs.json (prs.py) or the branch's gh pr view; else asked when a file is opened
     // Since your last review: the mark before this visit (registerReview moves it to this head as "seen" afterwards).
@@ -719,6 +721,30 @@ export const ReviewMode = {
       exec("python3", [`${appHome()}/mods/pr-review/prs.py`, "--prune"]).catch(() => null); // bounds the cache folder
       this.publish(); cx.notify();
     });
+  },
+
+  // Where you were in this PR's review (review-progress.json), read once as soon as the PR is known: render holds its
+  // frame for that read (a few ms), so the first frame drawn is on the tab and page you left, and the list scrolls to
+  // your place in the frame it first appears (pendingScroll). Taken once per PR: a later load keeps what you did since.
+  resumeOf(url) {
+    if (this.resumeIn?.url !== url) this.resumeIn = { url, p: readTextFile(progressFile()).then((x) => JSON.parse(x ?? "{}")[url] ?? {}).catch(() => ({})) };
+    return this.resumeIn.p;
+  },
+  takeResume(url, p) {
+    if (this.prSel?.url !== url || this.resumed === url) return;
+    this.resumed = url;
+    const back = resumeFields(p.ui);
+    if (!back) return;
+    Object.assign(this, back.fields);
+    if (back.model && codeModel(back.model) !== shared("review.model")) setShared("review.model", codeModel(back.model));
+    if (back.values !== undefined && back.values !== valuesOn()) setShared("review.values", back.values);
+    this.pendingScroll = back.scroll;
+  },
+  async applyResume(cx) {
+    const url = this.prSel?.url;
+    if (!url || this.resumed === url) return;
+    this.takeResume(url, await this.resumeOf(url));
+    cx.notify();
   },
 
   // Progress and where you were (tab, file, hunk, step, order, selection, model, values) for resuming; the oldest
@@ -1197,8 +1223,8 @@ export const ReviewMode = {
   findingComment(f, cx) {
     const rows = this.rowsFor(f.file), i = rows.findIndex((r) => atLine(r, f.line, false));
     const anchor = i >= 0 ? selection(rows, i) : { start: f.line, end: f.line, old: false, hunk: f.code };
-    this.comments = [...this.comments, { id: Date.now().toString(36), file: f.file, ...anchor, head: this.head, text: TH.findingCommentText(f), from: f.reviewer, ...(f.security ? { security: true } : {}) }];
-    this.persist(cx); this.note = `Added to the pending review.${f.security ? ` ${PUBLIC_TIP}` : ""}`; cx.notify();
+    this.comments = [...this.comments, { id: Date.now().toString(36), file: f.file, ...anchor, head: this.head, text: TH.findingCommentText(f), from: f.reviewer, ...(secByEffect(f) ? { security: true } : {}) }]; // the note about public comments: only for access or data
+    this.persist(cx); this.note = `Added to the pending review.${secByEffect(f) ? ` ${PUBLIC_TIP}` : ""}`; cx.notify();
   },
 
   // "Ask an agent…": what a click would start, decided before the preview so that it can say so. live: the PR's agent
@@ -1258,11 +1284,12 @@ export const ReviewMode = {
       prompt: (sub) => [fixPrompt(list, this.pr, report, this.lang()), sub ? TH.worktreeNote(sub.branch, sub.path) : null].filter(Boolean).join("\n\n"),
       sent: (cx) => { for (const f of list) this.setFinding(f, "progress", cx, { fixHead: this.headNow() }); } });
   },
-  // "Fix several…": the reviewer picks which unresolved findings one agent fixes together. Security findings are not
-  // offered: each goes alone, so that its change stays one commit to check.
+  // "Fix several…": the reviewer picks which unresolved findings one agent fixes together. Security findings about
+  // access or data (pr.js secByEffect) are not offered: each goes alone, so that its change stays one commit to check.
+  // A finding that is ⛨ only because a threat stands on it (a flood, a script that stops halfway) is offered.
   fixSeveral(cx) {
     const open = this.findings().filter((f) => ["open", "recheck"].includes(this.fstatus(f)));
-    this.fix([], cx, open.filter((f) => !f.security), open.filter((f) => f.security).length);
+    this.fix([], cx, open.filter((f) => !secByEffect(f)), open.filter((f) => secByEffect(f)).length);
   },
   // A tick in that list: the preview is built again for what is ticked now (branch name and text follow).
   fixPick(id, cx) {
@@ -3241,7 +3268,7 @@ export const ReviewMode = {
         .children(found.slice(0, 6).map(({ f, edge }) => h_flex().id(`rv-arch-cf-${f.id}`).gap(8).items_start().px(6).py(3).rounded(6).text_size(13).cursor_pointer().hover((x) => x.bg(t.hover))
           .tooltip("Open this finding and show its line in the diff").on_click((_e, cx) => { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); cx.notify(); })
           .child(badge(t, f.severity, t[SEV[f.severity]] ?? t.accent))
-          .when(Boolean(f.security), (x) => x.child(chip(t, "⛨ Security", t.ansi1, true)))
+          .when(Boolean(f.security), (x) => x.child(chip(t, "⛨ Security", t.ansi1, true, `rv-secwhy-${f.id}`, secWhy(f))))
           .child(div().flex_1().min_w(0).whitespace_normal().line_height(1.4).child(plain(f.title)))
           .when(Boolean(edge) || f.breaks?.node === n.id, (x) => x.child(div().flex_none().text_size(12).text_color(t.muted).child(edge ? `breaks the call ${edge.from === n.id ? `to ${name(edge.to)}` : `from ${name(edge.from)}`}` : "breaks the flow here")))
           .child(div().flex_none().text_size(12).text_color(t.muted).child(`${f.file.split("/").pop()}:${f.line}`))))
@@ -4585,7 +4612,7 @@ export const ReviewMode = {
     const sure = (f) => (f.security ? [f.certainty ? certaintyText(f) : "not rated", f.path_certainty && (REACH[f.path_certainty] ?? `reach ${f.path_certainty}`)].filter(Boolean).join(" · ") : f.certainty === "assumed" ? "assumed" : "");
     const finding = (f, id) => {
       const st = this.fstatus(f), settled = st === "fixed" || st === "dismissed", note = [sure(f), st !== "open" && FSTATUS[st]?.[0]].filter(Boolean).join(" · ");
-      return h_flex().id(id).tooltip([f.title, `${f.severity[0].toUpperCase()}${f.severity.slice(1)}${f.security ? ", security" : ""}`, certaintyLine(f), "Click to open this finding."].filter(Boolean).join("\n")).gap(8).items_center()
+      return h_flex().id(id).tooltip([f.title, `${f.severity[0].toUpperCase()}${f.severity.slice(1)}`, secWhy(f), certaintyLine(f), "Click to open this finding."].filter(Boolean).join("\n")).gap(8).items_center()
         .pl(10).pr(6).py(3).rounded(4).border_l(3).border_color(settled ? t.border : t[SEV[f.severity]] ?? t.muted).cursor_pointer().hover((s) => s.bg(t.hover))
         .on_click((_e, cx) => { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); cx.stop_propagation(); })
         .child(div().w(16).flex_none().text_color(f.security ? t.ansi1 : t.muted).child(f.security ? "⛨" : ""))
@@ -4725,7 +4752,7 @@ export const ReviewMode = {
           // The effort word stands in a row only while the list is sorted by it (it explains the order); else it is
           // one of the open finding's facts ("Fix effort").
           .when(Boolean(x.effort) && Boolean(this.fsort), (e) => e.child(div().id(`rv-fef-${x.id}`).tooltip("How much work the fix is, as the analysis sees it: quick, moderate or heavy").flex_none().pt(1).text_size(12).text_color(t.muted).child(x.effort)))
-          .when(Boolean(x.security), (e) => e.child(badge(t, "⛨ Security", t.ansi1).bg(t.ansi1 + "26")))
+          .when(Boolean(x.security), (e) => e.child(badge(t, "⛨ Security", t.ansi1).bg(t.ansi1 + "26").id(`rv-fsec-${x.id}`).tooltip(secWhy(x))))
           .children([certaintyWord(t, x, `rv-fcert-${x.id}`)].filter(Boolean))
           .child(div().flex_1().min_w(120).font_semibold().text_color(settled ? t.muted : t.foreground).when(!wide, (e) => e.truncate()).when(wide, (e) => e.whitespace_normal()).child(x.title))
           .child(div().flex_none().text_size(12).text_color(t.muted).child(`${x.file.split("/").pop()}:${x.line}${this.findRow(x) < 0 ? " · outside the diff" : ""}`))
@@ -4787,7 +4814,7 @@ export const ReviewMode = {
         .child(v_flex().id("rv-find-left").absolute().inset_0().overflow_y_scroll().px(8).pb(12).gap(2)
           // The two kinds of unresolved findings add up to the number in the tab and in the line above.
           .child(section("FIX SENT", sent, verify, sentHint))
-          .child(section("NO FIX SENT", unresolved, unresolved.filter((x) => !x.security).length > 1 && pill("rv-fixall", t, "Fix several…", (_e, cx) => this.fixSeveral(cx)).tooltip("Pick which of these findings one agent fixes together; a preview first. Security findings are fixed one at a time.")))
+          .child(section("NO FIX SENT", unresolved, unresolved.filter((x) => !secByEffect(x)).length > 1 && pill("rv-fixall", t, "Fix several…", (_e, cx) => this.fixSeveral(cx)).tooltip("Pick which of these findings one agent fixes together; a preview first. Security findings are fixed one at a time.")))
           .when(c.fixed > 0, (e) => e.child(section("FIXED", by("fixed"))))
           .when(c.dismissed > 0, (e) => e.child(section("DISMISSED", by("dismissed"))))
           // Suggestions alone on their lines: notes, not findings, not counted above.
@@ -4937,7 +4964,7 @@ export const ReviewMode = {
       const open = this.findOpen(f), state = stateWord(st) ? div().id(`rv-lfst-${f.id}`).tooltip("Where this finding stands: fix sent, fixed (verified), dismissed, or unresolved with its line changed since").flex_none().text_size(12).font_semibold().text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(stateWord(st)) : null;
       const head = (e) => e.child(div().w(10).flex_none().text_size(12).text_color(t.muted).child(open ? "▾" : "▸"))
         .child(badge(t, f.severity, c).id(`rv-lfs-${f.id}`).tooltip(`${f.severity} is the highest severity among this finding's sources. The scale:\n${SEVERITY_SCALE}`))
-        .when(Boolean(f.security), (x) => x.child(badge(t, "⛨ Security", t.ansi1).bg(t.ansi1 + "26").id(`rv-lfsec-${f.id}`).tooltip("A security finding: the security review found it, or its content is about security")));
+        .when(Boolean(f.security), (x) => x.child(badge(t, "⛨ Security", t.ansi1).bg(t.ansi1 + "26").id(`rv-lfsec-${f.id}`).tooltip(secWhy(f) || "A security finding")));
       const sources = div().id(`rv-lfr-${f.id}`).tooltip("Where this finding comes from, each source with its own severity").min_w(0).truncate().text_size(12).font_semibold().text_color(t.muted).child(this.sourcesOf(f));
       if (!open) return div().id(`rv-lf-${f.id}`).tooltip("Open this finding: what it claims, its text, its suggestion and its actions").w_full().h(FIND_FOLDED).pl(GUTTER).pr(16).pt(6).pb(2).cursor_pointer()
         .child(head(card(h_flex())).size_full().px(12).gap(8).items_center().border_t(1).border_b(1).text_size(13.5)
@@ -5191,6 +5218,11 @@ export const ReviewMode = {
           : 'No PR selected: click "Review" on a PR in the PR panel.'))
         .child(pill("rv-empty-back", t, "← Back (Esc)", () => leave()).tooltip("Leave the review (Esc)"));
     }
+    // Where you were is not read yet (applyResume): hold the frame, so the first one drawn stands there.
+    if (this.resumed !== this.prSel?.url) {
+      if (!this.resumeQueued) { this.resumeQueued = true; cx.timer.after(0, (cx) => { this.resumeQueued = false; this.applyResume(cx); }); }
+      return root;
+    }
     // A page (Overview, Architecture…) or a definition covers the list: skip building it (a big PR's diff is the bulk
     // of a render, and a picture's sideways scroll renders per wheel event); this.items/at/byKey keep the last list.
     const listShown = !this.defFile && !(this.tab === "steps" && this.page);
@@ -5414,7 +5446,7 @@ export const ReviewMode = {
     const text = reviewState({ pr: this.prSel, head: this.worktree?.head ?? this.prSel.headSha ?? "", list: this.taskNow(), counts: this.counts(), findings: this.findings(), statusOf: (f) => this.fstatus(f),
       progress: `Reviewer's progress: ${p.filesViewed} of ${p.files} files viewed, ${p.comments} pending ${p.comments === 1 ? "comment" : "comments"}.`, behavior, fixOf, cost: this.costNow() });
     copyText(text);
-    this.note = `Review state copied as text (${text.trim().split("\n").length} lines), nothing was posted.${this.findings().some((f) => f.security) ? " Security findings are in it with their title only." : ""}`;
+    this.note = `Review state copied as text (${text.trim().split("\n").length} lines), nothing was posted.${this.findings().some((f) => secByEffect(f)) ? " Security findings about access or data are in it with their title only." : ""}`;
   },
 
   // "Copy as Markdown" (the button in a page's head, and "Copy this page as Markdown" in the ⋯ menu): what the right side shows, as text to hand to an agent (markdown.js):

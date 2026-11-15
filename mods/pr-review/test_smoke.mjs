@@ -4,8 +4,16 @@
 // analysis, without findings, while runs are going, after they failed, and for someone else's PR. Any exception,
 // sync or in a spawned task, and any null or non-finite value handed to an element fails it.)
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { S, cx as base } from "./render_stub.mjs";
+
+// The fixtures live in the repository, not in the mod folder: a copy of mods/pr-review alone (an installed mod, a
+// bundle) cannot run this test, and says so instead of failing on a missing file or passing on nothing.
+const FIXTURES = new URL("../../demo/fixtures/review/", import.meta.url);
+if (!existsSync(FIXTURES)) {
+  console.error(`test_smoke: no fixtures at ${FIXTURES.pathname}. This test needs demo/fixtures/review of the mod's repository; run it in a checkout of the repository, not in a copy of the mod folder.`);
+  process.exit(1);
+}
 
 const { default: PrReview } = await import("./main.js");
 const { splitPatch, hunksOf, diffRows, hash, mapReview } = await import("./pr.js");
@@ -13,7 +21,7 @@ const { foldOnOpen, resWatch } = await import("./views.js");
 const R = await import("./review.js");
 const { withThreadState, addThreads, addFollowup } = await import("./threads.js");
 const { mapAnswer, threadAdd, pinAdd } = await import("./explore.js");
-const fx = (name) => readFileSync(new URL(`../../demo/fixtures/review/${name}`, import.meta.url), "utf8");
+const fx = (name) => readFileSync(new URL(name, FIXTURES), "utf8");
 
 // cx.spawn runs the task (as Herdr does) and keeps it, to wait for; a task that throws is a failure, except for the
 // stand-ins' own "stub" (no exec, no files) that the real code meets as a failed command.
@@ -86,6 +94,7 @@ async function open({ diff, analysis = null, findings = null, ctx = null, pr = 2
   if (findings) S.files.set(`/h/pr-data/findings/${hash(url)}.json`, findings);
   const v = new PrReview(); v.init({}, cx);
   v.prSel = target; v.patch = splitPatch(diff);
+  await v.applyResume(cx); assert.equal(v.resumed, url, "where you were is read: frames are no longer held");
   v.hunks = hunksOf(v.patch).map((h) => ({ ...h, rows: diffRows(h.lines) }));
   v.byId = new Map(v.hunks.map((h) => [h.id, h])); v.fileHunks = new Map();
   for (const h of v.hunks) v.fileHunks.set(h.path, [...(v.fileHunks.get(h.path) ?? []), h]);
@@ -382,6 +391,11 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   v.selEnd = v.sel + 2; v.question = "Why this?"; v.addComment(cx); await settle(); draw(v, "panel: a pending comment and the bar");
   assert.equal(v.comments.length, 1, "the comment was added");
   v.editComment(v.comments[0], cx); draw(v, "panel: the comment being edited"); v.cancel(cx);
+  v.panelCommand("discard", cx); draw(v, "panel: Discard asked about"); assert.equal(v.comments.length, 1); v.discardAsk = false;
+  // What the review knows, on the files and next to the diff's size.
+  S.files.set(`/h/pr-data/findings/${hash(prs[0].url)}.json`, JSON.stringify({ findings: [{ id: "f1", file: v.files[0].path, line: 1, severity: "high", category: "security", title: "t" }, { id: "f2", file: v.files[1].path, line: 2, severity: "low", title: "u" }], status: {} }));
+  await v.loadMarks(prs[0].url); draw(v, "panel: findings marked on the files");
+  assert.deepEqual([v.fileMarks.get(v.files[0].path)?.top, v.risk.get(prs[0].url)?.open], ["high", 2], "the files and the PR carry the review's findings");
   v.askTop = true; draw(v, "panel: a comment on the whole file"); v.askTop = false;
   v.pick(v.files[1].path, cx); await settle(); draw(v, "panel: another file");
   v.openWalk(cx, false); await settle(); draw(v, "panel: Walkthrough without an analysis");
@@ -391,11 +405,17 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     for (let k = 0; k <= v.walk.steps.length + 1; k++) { v.step = k; draw(v, `panel: Walkthrough, layer ${k}`); }
     v.walkMore = true; v.walkError = "The model gave no answer"; draw(v, "panel: Walkthrough, its options and an error"); v.walkMore = false; v.walkError = null;
   }
-  v.view = "setup"; draw(v, "panel: Setup"); v.view = "diff";
+  v.panelCommand("setup", cx); draw(v, "panel: Setup"); v.panelCommand("setup:close", cx); assert.equal(v.view, "diff", "setup:close leaves Setup like its Close button"); draw(v, "panel: Setup closed");
+  // The other scripted clicks: the folds, a pick and a removal by owner/repo#number (two repos can share a number).
+  for (const c of ["picker", "merged", "other", "progress-all", "progress-all", "merged", "other"]) { v.panelCommand(c, cx); draw(v, `panel: command ${c}`); }
+  v.panelCommand(`drop:${prs[0].repo}#${prs[0].number}`, cx); await settle(); assert.equal(v.undo?.url, prs[0].url); v.panelCommand("undrop", cx); await settle(); assert.equal(v.undo, null);
   v.note = "Could not open: gh pr view: not found"; v.error = "Error: gh pr diff: could not resolve"; v.files = []; draw(v, "panel: a diff that did not come, and a note"); v.note = null;
   S.exec = null;
   // A remount with that pick: the frame before prs.json is read shows no list.
   { const w = new PrReview(); w.init({}, cx); draw(w, "panel: the pick from before coming back"); assert.ok(w.restoring && !w.srcAsked); await settle(); assert.ok(!w.restoring); }
+  // Back from the review of another PR (minimized, or Back): the panel shows that PR, not the pick from before.
+  { S.store.set("pr.fromReview", prs[1]); const w = new PrReview(); w.init({}, cx); await settle(); draw(w, "panel: back from a review, its PR shown");
+    assert.deepEqual([w.prSel?.url, S.store.get("pr.fromReview")], [prs[1].url, null], "the review's PR, handed over once"); }
   S.props = { part: "mini" }; S.store.set("review.minimized", { target: prs[0], at: now });
   const mini = new PrReview(); mini.init({}, cx); draw(mini, "the minimized review's chip");
   S.spaces = null; S.props = null;

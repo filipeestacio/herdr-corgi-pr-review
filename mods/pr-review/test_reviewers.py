@@ -254,6 +254,7 @@ hop = [r for r in hv["access"] if r.get("derived")]
 assert [(r["resource"], r["actions"], r["from_gate"], r["from_gates"], r["node"]) for r in hop] == \
     [("first hook secret; second hook secret", ["set first hook secret", "set second hook secret"], 0, [0, 1], "gw")], "one operator way per card, named by the conditions' subjects"
 assert "effect (deny" in reviewers.findings_schema("security")["description"] and "replayed genuine request" in reviewers.findings_schema("security")["description"]
+assert "make this threat possible or worse" in reviewers.findings_schema("security")["description"], "a threat cites what enables it, not a defect at the same place"
 assert "never a tool" in reviewers.findings_schema("claude")["description"], "a run's skipped list is about the PR, not about its tools"
 # Second round: a zone of operator scripts only is the operator's zone, whatever the answer calls it; a finding a
 # threat stands on carries that threat (isSecurity in pr.js reads it), a defect named as a threat does not count; a
@@ -274,6 +275,14 @@ assert not [x for x in reviewers.security_view(at_call, [], hook, None)["threats
 as_principal = {**hook_ans, "access": [*hook_ans["access"][:5], {k: v for k, v in {**hook_ans["access"][5], "principal_node": "tool"}.items() if k != "node"}],
                 "threats": [{"where": {"access": "acc6"}, "threat": "The operator leaves the policies detached.", "result": "not_assessed", "note": "no time", "path": []}]}
 assert not [x for x in reviewers.security_view(as_principal, [], hook, None)["threats"] if x.get("derived") and x["where"].get("edge") == "e5"], "the script named as the principal: its one call is that row"
+# A guard without a card gets the card its resource names, else the one card the grants of its kind sit at.
+pic_nodes = [{"id": "queue", "label": "LoanEvents (SQS)"}, {"id": "vault", "label": "Secrets"}, {"id": "fn", "label": "hook fn"}]
+assert reviewers.guard_node({"resource": "LoanEventsPolicy OnlyTwo", "actions": ["deny x"]}, pic_nodes, []) == "queue"
+assert reviewers.guard_node({"resource": "tls", "kind": "secret", "effect": "deny"}, pic_nodes, [{"resource": "p", "kind": "secret", "node": "vault", "actions": ["get"]}]) == "vault"
+assert reviewers.guard_node({"resource": "tls", "kind": "bucket", "effect": "deny"}, pic_nodes, []) is None
+no_card = {**hook_ans, "access": [*hook_ans["access"][:4], {k: v for k, v in hook_ans["access"][4].items() if k != "node"} | {"resource": "sink-policy", "kind": "store"},
+                                  {**hook_ans["access"][1], "kind": "store", "node": "sink"}]}
+assert reviewers.security_view(no_card, [], hook, None)["access"][4]["node"] == "sink", "the guard stands at the card of its kind"
 assert lv["access"][3]["holds_against"] == "another role publishes" and "holds_against what the rule stops" in reviewers.findings_schema("security")["description"]
 
 # The view lands in the findings file next to the runs; a run without one leaves it.
