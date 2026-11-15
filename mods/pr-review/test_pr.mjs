@@ -1043,15 +1043,17 @@ console.log("ok");
       { when: "slow", at: "library/mailer.py:16", handled: "no", how: "waits up to 7 s", path: "p1", findings: [] }, { when: "overloaded", at: "library/mailer.py:17", handled: "partly", how: "retries at once", path: "p1", findings: [] },
       { when: "down", at: "library/mailer.py:19", handled: "no", how: "drops the mail", path: "p2", findings: [] }, { when: "slow", at: null, handled: "not_checkable", how: "", path: null, findings: [] }, { when: "bad_answer", at: null, handled: "not_checkable", how: "The provider's answer is not in the code.", path: null, findings: [] },
       { when: "recovers", at: null, handled: "not_checkable", how: "", path: "p7", findings: [] }] },
-    { dep: "LoanEvents", kind: "queue", node: "queue", edge: "e1", at: "library/events.py:20", mode: "async", entry: "the publisher", cases: [{ when: "down", at: "library/events.py:20", handled: "yes", how: "raises", path: null, findings: [] }] }];
+    { dep: "LoanEvents", kind: "queue", node: "queue", edge: "e1", at: "library/events.py:20", mode: "async", entry: "the publisher", cases: [{ when: "down", at: "library/events.py:20", handled: "yes", how: "raises", path: null, findings: [] },
+      { when: "slow", at: null, handled: "not_checkable", how: "no SQS call exists", path: null, findings: [] }, { when: "overloaded", at: null, handled: "not_checkable", how: "no SQS call exists", path: null, findings: [] }] }];
     const dr = withResilience(pic, { edge_ids: true, downstream, paths: [P("p1", "request", ["handler", "e0"], "finding", ["no_backoff", "backpressure"], { findings: ["x"] }), P("p2", "request", ["handler"], "mitigated", [], { limited_by: "a.py:1" })] }).resilience;
     assert.deepEqual(dr.downstream.map((d) => d.card), ["mailer", "queue"]);
     assert.deepEqual(dr.downstream[0].cases.map((c) => c.path), ["p1", "p1", "p2", null, null, null], "a path the run does not have is no link");
     assert.deepEqual(dr.paths.find((p) => p.id === "p1").marks.filter((m) => m.at === "mailer").map((m) => m.mark), ["✕ when slow"]);
     assert.deepEqual(dr.paths.find((p) => p.id === "p2").marks.filter((m) => m.at === "mailer").map((m) => m.mark), ["✕ when down"]);
     assert.equal(dr.paths.find((p) => p.id === "p1").blocker, null, "retrying at once and a wait that backs up are findings, alone no blockers");
-    assert.equal(dr.downstreamLine, "2 dependencies, 7 cases: 2 not handled, 1 partly, 1 handled and 3 not checkable.");
+    assert.equal(dr.downstreamLine, "2 dependencies, 9 cases: 2 not handled, 1 partly, 1 handled and 5 not checkable.");
     assert.ok(dr.watch.includes("Mailer is slow, answers wrong or comes back (library/mailer.py:14): The provider's answer is not in the code"), JSON.stringify(dr.watch));
+    assert.ok(dr.watch.includes("LoanEvents, from the publisher, is slow or overloaded (library/events.py:20): no SQS call exists"), "per way in, the same reason once");
     const none = withResilience(pic, { paths: [] }).resilience;
     assert.deepEqual([none.downstream, none.downstreamLine, downstreamOf(null, null)], [[], "", []], "an older run has no dependencies: nothing is shown");
   }

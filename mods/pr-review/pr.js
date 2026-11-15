@@ -1522,7 +1522,7 @@ export function withResilience(ai, block, head = null, findings = []) {
   // What the code cannot tell about a dependency (a case not_checkable) is a question for after the merge, one line each.
   for (const d of downstream) {
     const open = d.cases.filter((c) => c.handled === "not_checkable"), why = [...new Set(open.map((c) => c.how.replace(/\.$/, "")).filter(Boolean))].join("; ");
-    const whens = open.map((c) => WHEN_IS[c.when] ?? c.when);
+    const whens = open.map((c) => WHEN_IS[c.when] ?? c.when).map((w, k, all) => (k && w.startsWith("is ") && all[0].startsWith("is ") ? w.slice(3) : w)); // "is slow or overloaded"
     if (open.length) byPlace.set(`dep:${d.dep}:${d.entry ?? ""}`, `${d.dep}${d.entry ? `, from ${d.entry},` : ""} ${whens.length > 1 ? `${whens.slice(0, -1).join(", ")} or ${whens.at(-1)}` : whens[0]} (${d.at || open[0].at || "no place"}): ${why || "the code cannot tell what happens"}`);
   }
   const watch = [...new Set(byPlace.values())];
