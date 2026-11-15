@@ -512,7 +512,7 @@ console.log("ok");
   assert.equal(taskHead(taskList([], [], [], statusOf)), "");
   const counts = { unresolved: 4, high: 2, medium: 2, low: 0, security: 1 };
   // Counted by what decides: security, criteria, blockers; not the high findings. Only security has a colour of its own.
-  assert.deepEqual(verdictParts(list, counts).map((p) => [p.text, p.short, p.tone]), [["1 security cause, high (reach assumed)", "⛨ 1 high", "security"], ["0 of 2 acceptance criteria met", "0/2 criteria", "plain"]]);
+  assert.deepEqual(verdictParts(list, counts).map((p) => [p.text, p.short, p.tone]), [["1 security cause, high (assumed reachable)", "⛨ 1 high", "security"], ["0 of 2 acceptance criteria met", "0/2 criteria", "plain"]]);
   assert.deepEqual(verdictParts(taskList(asks, [f("a", "high", { security: true }), f("b", "low", { security: true })], [], statusOf), { unresolved: 2, high: 1, low: 1, security: 2 })[0].text, "2 security causes, 1 high");
   assert.deepEqual(verdictParts(taskList([asks[2]], [], [], statusOf), { unresolved: 0, security: 0 }).map((p) => [p.text, p.tone]), [["1 of 1 criteria met", "ok"]]);
   assert.deepEqual(verdictParts(taskList([asks[3]], [f("a", "medium")], [], statusOf), { unresolved: 1, medium: 1, security: 0 }).map((p) => [p.text, p.tone]), [["1 unresolved finding", "plain"]], "no task, no security: the findings");
@@ -571,7 +571,7 @@ console.log("ok");
   // The copied state: a security finding with its title only (no file, no line, no facts), the others with their place.
   const text = reviewState({ pr: { repo: "o/r", number: 2, title: "feat: x", url: "https://example.test/pull/2" }, head: "abcdef1234", list, counts, findings: all, statusOf, progress: "1 of 9 files viewed" });
   assert.match(text, /^Review state of o\/r#2: feat: x\nhttps:\/\/example\.test\/pull\/2 at abcdef1\n/);
-  assert.match(text, /\n1 security cause, high \(reach assumed\) · 0 of 2 acceptance criteria met\n/);
+  assert.match(text, /\n1 security cause, high \(assumed reachable\) · 0 of 2 acceptance criteria met\n/);
   assert.match(text, /\n- broken: one \(acceptance criterion\). w1\n- partly: two \(acceptance criterion\). w2\n- met: three\n- extra: more\n/);
   assert.match(text, /\nUnresolved \(3\):\n- high, security: T s1\n- high: T f1 \(a\.py:3\)\n- medium: T f2 \(a\.py:3\)\n/);
   assert.match(text, /\nFix sent \(1\):\n- medium: T f3 \(a\.py:3\)\n/);

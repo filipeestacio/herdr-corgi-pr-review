@@ -18,13 +18,13 @@ import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, Editor, EditorState, TextView } from "gpui-base";
 import { spaces, panes, focused, agents, exec, hc, run, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, home, layout, props, watchFolder, nextCommand } from "herdr";
 import { diffRows, buildPrompt, splitPatch, selection, nextChange, lineLabel, anchorRow, buildReview, hunksOf, hash, uiLine, reviewRequest, mapReview, triageOf, isSecurity, withThreats } from "./pr.js";
-import { parsePrRef, ghTarget, pruneSources, codeModel, windowActive } from "./pr.js";
+import { parsePrRef, ghTarget, pruneSources, codeModel, windowActive, pollDue, pollAfter } from "./pr.js";
 import * as C from "./context.js";
 import { tabArgs } from "./threads.js"; // a new Claude tab with the PR's text: no MCP servers
 import { loadDiff, saveDiff } from "./diffcache.js";
 import { setupBanner, renderSetup, loadSetup, runSetup, openUrl, readConfig } from "./setup-view.js";
 import { chip, PRIORITY_TIP } from "./stack.js";
-import { panelState, bodyTab, capped, IN_PROGRESS_MAX, diffTooLarge, filesToDiff, isOpenPr, byState, listRows, riskSignal, progressText, pendingText, rowMarks, mineGroups, inProgressNow, withPick } from "./views.js";
+import { panelState, bodyTab, DONE_DAYS, diffTooLarge, filesToDiff, isOpenPr, byState, listRows, riskSignal, progressText, pendingText, rowMarks, mineGroups, progressRows, removedText, withPick, openSig, panelShown } from "./views.js";
 import { ReviewMode, startReview, startExplore, saveKey, flowCard, modelPills, modelLabel, renderReviews, renderAgentBar, renderKeys, renderCardMenu, renderMini } from "./review.js";
 import { highlightJob, highlightStep, langOf, colors, renderLine, editorSyntax } from "./syntax.js";
 
@@ -58,6 +58,9 @@ const GH_FIELDS = "number,title,author,headRefName,headRefOid,baseRefName,update
 const REVIEW = { APPROVED: ["approved", "ansi2"], CHANGES_REQUESTED: ["changes requested", "ansi1"], REVIEW_REQUIRED: ["review required", "ansi3"] };
 const BRANCH = "branch"; // shared "pr.selected": the current branch was picked (not a PR)
 const SEC_MARK = "⛨"; // security's own mark in a PR row (a shield), next to the word
+// A PR's head as GitHub last gave it ({at, sha} by url) and the asks under way: one for every copy of the mod (the
+// panel, then the review of the same PR), so opening the review does not ask again what the panel just asked.
+const HEADS = new Map(), HEAD_ASKS = new Map();
 const age = (iso) => { const m = Math.round((Date.now() - Date.parse(iso)) / 60000); return !Number.isFinite(m) ? "" : m < 60 ? `${m}m` : m < 2880 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`; };
 
 function location() {
@@ -78,11 +81,10 @@ const selKey = () => `${viewKey()}@${location().space ?? ""}`;
 // A context tag (only with two or more contexts): label in its colour.
 export const ctxTag = (t, id, key = null) => div().flex_none().px(5).rounded(4).border_1().border_color(C.colorOf(ctxDoc(), id, t)).text_size(10).text_color(C.colorOf(ctxDoc(), id, t)).when(Boolean(key), (e) => e.id(`ctx-${key}`).tooltip("Context this PR belongs to")).child(C.labelOf(ctxDoc(), id));
 
-const find = (node, id) => node?.id === id ? node : (node?.children ?? []).map((c) => find(c, id)).find(Boolean) ?? null;
-// Shown: the right panel is open and its stack has this tab up.
-const inView = () => { const p = find(layout(), "panel"); return Boolean(p && !p.hidden && find(p, "panel-body")?.active === "pr"); };
-// Worth loading for: shown, or in a layout without that panel (placed elsewhere).
-const visible = () => inView() || !find(layout(), "panel-body");
+// Shown: the layout has this panel's block, not hidden and up in its stack (views.js panelShown), in any layout.
+const inView = () => panelShown(layout()) === true;
+// Worth loading for: shown, or placed some other way than as a block of the layout (a pane, a window).
+const visible = () => panelShown(layout()) !== false;
 const Spin = (t, label) => h_flex().gap(6).text_color(t.dim).child(div().child(SPIN[0]).frames(SPIN, 90)).child(label);
 // ponytail: a one-shot flip (a transition), not an animation timer.
 function dock(view, el, mode, cx, from = 12) {
@@ -123,9 +125,13 @@ export default class PrReview extends View {
     this.view = "diff"; this.walk = null; this.step = 0; this.read = new Set();
     // Speed: every spawn costs 0.3-0.5 s here. Repos and PR info are remembered; memo keeps the last MEMO contexts
     // (diff, open file, selection) so going back to one shows it with no exec; watchFolder marks a repo dirty.
-    this.repos = new Map(); this.prInfo = new Map(); this.memo = new Map(); this.dirty = new Set(); this.watching = new Map(); this.heads = new Map();
+    this.repos = new Map(); this.prInfo = new Map(); this.memo = new Map(); this.dirty = new Set(); this.watching = new Map(); this.heads = HEADS;
     if (this.part === "review") return this.initReview(cx);
-    if (visible()) this.refresh(cx);
+    // The pick from before (shared "pr.selected") is known at once: the list is not drawn (nor fetched) while prs.json
+    // is read, and the branch's diff is only made when the branch is what the panel shows.
+    const sel = shared("pr.selected") ?? {}, before = sel[selKey()] ?? sel[viewKey()];
+    if (before === BRANCH) this.branchPicked = true; else if (before) this.restoring = true;
+    if (visible() && this.branchPicked) this.refresh(cx);
     // Key commands (keys.json "pr-review.<name>"): picker (the PR list), source:mine|repo|review, merged, setup, walkthrough, review, finish.
     cx.spawn(async (cx) => {
       for (;;) {
@@ -138,7 +144,9 @@ export default class PrReview extends View {
         else if (c === "finish") this.finishReview(); // the pending comments' "Finish your review"
         else if (c === "merged") this.showDone = !this.showDone; // the list's "Merged or closed" row (a toggle)
         else if (c === "other") this.showOther = !this.showOther; // Mine's "Other repos or older" row (a toggle)
-        else if (name === "drop") { const r = this.inProgressList().find((x) => String(x.number) === arg); if (r) this.dropReview(r.url, cx); } // In progress row's ✕
+        else if (name === "drop") { const r = (shared("review.open") ?? []).find((x) => String(x.number) === arg); if (r) this.dropReview(r.url, cx); } // In progress row's ✕
+        else if (c === "undrop") this.undoDrop(cx); // the "Undo" after it
+        else if (c === "progress-all") this.allOpen = !this.allOpen; // In progress: "Show all" / "Show fewer"
         else if (name === "explore") startExplore(arg || null); // pr-review.explore[:<folder>]: a topic in existing code, no PR
         // For keys and scripted demos: a listed PR's row click (pick:<number>, the shown source's list).
         else if (c === "pick:branch") this.choose(null, cx); // the list's "Current branch" row
@@ -147,19 +155,21 @@ export default class PrReview extends View {
       }
     });
     cx.spawn(async (cx) => {
+      try {
+        await this.loadPrs(cx);
+        // The PR picked last in this view survives remounts (layout switch, a recreated block); one you didn't
+        // open comes back from shared "pr.picked".
+        const sel = shared("pr.selected") ?? {}, url = sel[selKey()] ?? sel[viewKey()]; // the view's pick from before picks per space
+        this.spaceSeen = location().space;
+        if (url === BRANCH && !this.prSel) this.branchPicked = true;
+        const pr = url && url !== BRANCH && !this.prSel ? this.prs.find((p) => p.url === url) ?? (shared("pr.picked") ?? {})[url] : null;
+        if (pr) this.choose(pr, cx);
+      } finally { this.restoring = false; cx.notify(); } // a pick that is gone: the list after all
       this.cfg = await readConfig();
       await loadSetup(this, cx);
       // The open reviews as the registry file has them (it outlives shared state edits and format changes).
       const reg = JSON.parse(await readTextFile(`${appHome()}/pr-data/open-reviews.json`).catch(() => null) ?? "null");
       if (Array.isArray(reg) && JSON.stringify(reg.filter((r) => r.status !== "done")) !== JSON.stringify(shared("review.open"))) setShared("review.open", reg.filter((r) => r.status !== "done"));
-      await this.loadPrs(cx);
-      // The PR picked last in this view survives remounts (layout switch, a recreated block); one you didn't
-      // open comes back from shared "pr.picked".
-      const sel = shared("pr.selected") ?? {}, url = sel[selKey()] ?? sel[viewKey()]; // the view's pick from before picks per space
-      this.spaceSeen = location().space;
-      if (url === BRANCH && !this.prSel) this.branchPicked = true;
-      const pr = url && url !== BRANCH && !this.prSel ? this.prs.find((p) => p.url === url) ?? (shared("pr.picked") ?? {})[url] : null;
-      if (pr) this.choose(pr, cx);
       this.scanIfDue(cx);
     });
     cx.timer.every(60000, (cx) => this.scanIfDue(cx)); // a time check; prs.py itself at most every PRS_MS
@@ -178,7 +188,9 @@ export default class PrReview extends View {
 
   async loadPrs(cx) {
     const text = await readTextFile(`${appHome()}/pr-data/prs.json`).catch(() => null);
-    const doc = text ? JSON.parse(text) : null;
+    const doc = text ? JSON.parse(text) : null, sig = JSON.stringify(doc?.prs ?? null);
+    if (sig === this.prsSig) return doc; // the same list as before (a scan found nothing new): nothing to draw
+    this.prsSig = sig;
     if (doc) this.prs = doc.prs ?? [];
     this.dropMinimized();
     if (this.prSel) this.prSel = this.prs.find((p) => p.url === this.prSel.url) ?? this.prSel; // fresh updatedAt: the diff cache stamp
@@ -187,28 +199,35 @@ export default class PrReview extends View {
   }
 
   // prs.py (about 20 s) only when prs.json is older than PRS_MS, and in one copy at a time: prs.lock holds the start
-  // time, taken and given back by compare-and-swap (writeTextFile with the text read). True when it ran.
+  // time, taken and given back by compare-and-swap (writeTextFile with the text read). True when it ran, "failed" when
+  // it could not run or reached GitHub for none of the PRs it asked about (prs.py exit 3).
   async scanPrs(cx) {
     const doc = await this.loadPrs(cx), lock = `${appHome()}/pr-data/prs.lock`;
     if (this.scanning || Date.now() - Date.parse(doc?.generated ?? 0) < PRS_MS) return false;
     const held = await readTextFile(lock).catch(() => null), mine = String(Date.now());
     if (held && Date.now() - Number(held) < 600000) return false;
     try { await writeTextFile(lock, mine, held); } catch { return false; }
-    this.scanning = true;
+    this.scanning = true; if (!this.prs.length) cx.notify(); // the empty list says it is searching
     const req = { dirs: C.claudeDirs(ctxDoc(), home()), rules: ctxDoc()?.rules ?? [], titles: this.cfg?.sessionTitles ?? null };
-    try { await exec("python3", [`${appHome()}/mods/pr-review/prs.py`, JSON.stringify(req)], { timeout: 600000 }); } catch {}
-    this.scanning = false;
+    const r = await exec("python3", [`${appHome()}/mods/pr-review/prs.py`, JSON.stringify(req)], { timeout: 600000 }).catch(() => null);
+    this.scanning = false; if (!this.prs.length) cx.notify();
     await writeTextFile(lock, "0", mine).catch(() => null);
     await this.loadPrs(cx);
-    return true;
+    return r && r.code !== 3 && (r.code === 0 || r.code === 2) ? true : "failed";
   }
 
   // prs.py only while someone can see the list: the panel shown (or placed in a layout without it) and the window in
-  // front. Hidden or behind other windows it asks nothing; shown again, it asks once the last try is PRS_MS old.
+  // front. Hidden or behind other windows it asks nothing; shown again, it asks once the last try is PRS_MS old. After
+  // a scan that failed the wait doubles each time, up to half an hour (pr.js pollDue), until one works again.
+  scanDue() { return visible() && windowActive() && pollDue(this.scanPoll, Date.now(), PRS_MS); }
   scanIfDue(cx) {
-    if (!visible() || !windowActive() || Date.now() - (this.scanAt ?? 0) < PRS_MS) return;
-    this.scanAt = Date.now();
-    cx.spawn(async (cx) => { if (await this.scanPrs(cx) && this.prSel && inView()) this.refresh(cx); });
+    if (!this.scanDue()) return;
+    this.scanPoll = { at: Date.now(), fails: this.scanPoll?.fails ?? 0 };
+    cx.spawn(async (cx) => {
+      const ran = await this.scanPrs(cx);
+      this.scanPoll = pollAfter(this.scanPoll, ran !== "failed", this.scanPoll.at);
+      if (ran === true && this.prSel && inView()) this.refresh(cx);
+    });
   }
 
   // A folder's repo: {root, gitdir, base: origin's default branch}, one spawn per folder; null outside a repo.
@@ -234,10 +253,12 @@ export default class PrReview extends View {
         if (!this.watching.has(root) || !paths.some((p) => !IGNORED.test(p))) continue;
         const was = this.dirty.has(root);
         this.dirty.add(root);
-        if (!was) cx.timer.after(1000, (cx) => { if (this.root === root && !this.prSel && this.dirty.has(root) && visible()) this.refresh(cx, true); });
+        if (!was) this.recheck(root, cx);
       }
     });
   }
+  // A second after a change in a shown repo: its diff again, quietly (refresh).
+  recheck(root, cx) { cx.timer.after(1000, (cx) => { if (this.root === root && this.showsBranch() && this.dirty.has(root) && visible()) this.refresh(cx, true, true); }); }
 
   // A picked PR's whole diff, immutable per head: pr-data/cache/diff-<url hash>-<head>.json (+ .<i>.txt parts, see diffcache.js), else gh pr diff.
   async prDiff(pr) {
@@ -277,14 +298,14 @@ export default class PrReview extends View {
 
   // A PR's head from GitHub (gh pr view), null when gh can't say; asked once at a time per PR (a second ask shares it).
   headOf(url) {
-    const busy = (this.headIn ??= new Map());
+    const busy = HEAD_ASKS;
     if (!busy.has(url)) busy.set(url, exec("gh", ["pr", "view", url, "--json", "headRefOid"], { timeout: 30000 })
       .then((v) => (v.code === 0 ? JSON.parse(v.stdout).headRefOid ?? null : null)).catch(() => null).finally(() => busy.delete(url)));
     return busy.get(url);
   }
 
   choose(pr, cx) {
-    this.prSel = pr; this.branchPicked = !pr; this.picking = false; this.mode = "diff"; this.askTop = false;
+    this.prSel = pr; this.branchPicked = !pr; this.picking = false; this.mode = "diff"; this.askTop = false; this.undo = null;
     setShared("pr.selected", withPick(shared("pr.selected"), selKey(), pr?.url ?? BRANCH));
     if (pr && !this.prs.some((p) => p.url === pr.url)) { // not in prs.json: keep the whole target, the newest PICKED_KEEP
       const kept = Object.entries(shared("pr.picked") ?? {}).filter(([u]) => u !== pr.url).slice(0, PICKED_KEEP - 1);
@@ -293,8 +314,11 @@ export default class PrReview extends View {
     this.refresh(cx); cx.notify();
   }
 
-  // The last load, for measuring (shared "pr.perf", kept in shared.json): what happened and how long it took.
-  perf(what, ms) { setShared("pr.perf", { what, ms, context: this.context, at: new Date().toISOString() }); }
+  // The last load, for measuring: what happened and how long it took. Kept on the view, not in shared state: a shared
+  // write redraws every mod of the window, which a diff reloading once a second must not do.
+  perf(what, ms) { this.lastLoad = { what, ms, context: this.context, at: Date.now() }; }
+  // The branch's diff is what the panel shows now (not a PR, not the list): only then it is made and kept fresh.
+  showsBranch() { return Boolean(this.branchPicked && !this.prSel && !this.picking); }
 
   // The shown context's diff and view (file, selection, scroll), kept in memo for going back to it.
   snapshot() {
@@ -308,13 +332,16 @@ export default class PrReview extends View {
     if (this.memo.size > MEMO) this.memo.delete(this.memo.keys().next().value);
   }
 
-  // force: diff again even when the remembered state is fresh (dirty repo, new head, ↻).
-  refresh(cx, force = false) {
+  // force: diff again even when the remembered state is fresh (dirty repo, new head, ↻). quiet: a check after a
+  // change in the repo: no "…" while it runs, and nothing is drawn or replaced when the diff comes out the same.
+  refresh(cx, force = false, quiet = false) {
     if (this.loading) return;
     const { cwd } = location(), context = this.key(), picked = this.prSel;
+    quiet = quiet && context === this.context && !picked;
+    let unchanged = false;
     if (context !== this.context) {
       if (this.context && this.memo.has(this.context)) this.remember(this.context);
-      this.context = context; this.root = null; this.files = []; this.open = null; this.rows = []; this.sel = null; this.selEnd = null; this.pr = null; this.error = null; this.patch = null; this.branchFiles = null; this.from = 0;
+      this.context = context; this.branchSig = null; this.root = null; this.files = []; this.open = null; this.rows = []; this.sel = null; this.selEnd = null; this.pr = null; this.error = null; this.patch = null; this.branchFiles = null; this.from = 0;
       const hit = this.memo.get(context);
       if (hit) {
         Object.assign(this, hit.state);
@@ -326,7 +353,7 @@ export default class PrReview extends View {
     }
     if ((!cwd && !picked) || (this.part === "review" && !picked)) return;
     if (this.root) this.dirty.delete(this.root); // changes from here on mark it again
-    this.loading = true;
+    this.loading = true; this.quietLoad = quiet;
     const started = Date.now();
     cx.spawn(async (cx) => {
       try {
@@ -350,8 +377,10 @@ export default class PrReview extends View {
           const r = await exec("git", [...READ, "diff", "--merge-base", base, "--no-ext-diff", "--no-textconv", "--no-color", "--no-renames"], { cwd: root, timeout: 60000 });
           if (r.code !== 0) throw new Error(`git diff gegen ${base}: ${r.stderr.trim()}`);
           if (this.key() !== context) return;
-          this.branchFiles = splitPatch(r.stdout);
-          this.root = root; this.pr = info?.pr ?? null; this.base = base; this.files = this.branchFiles; this.error = null;
+          const sig = `${base}:${r.stdout.length}:${hash(r.stdout)}`;
+          unchanged = quiet && sig === this.branchSig && this.root === root && !this.error;
+          this.branchSig = sig;
+          if (!unchanged) { this.branchFiles = splitPatch(r.stdout); this.root = root; this.pr = info?.pr ?? null; this.base = base; this.files = this.branchFiles; this.error = null; }
           this.watch(root, cx);
           // The branch's PR in the background; its base may differ from origin's default: then diff again.
           if (!info || Date.now() - info.at > PR_INFO_MS) {
@@ -362,10 +391,11 @@ export default class PrReview extends View {
               this.prInfo.set(`${root}#${head}`, { pr, at: Date.now() });
               if (this.key() !== context) return;
               if ((pr ? `origin/${pr.baseRefName}` : repo.base) !== base) this.refresh(cx);
-              else { this.pr = pr; this.remember(context); await this.syncSource(cx); cx.notify(); }
+              else if (JSON.stringify(pr) !== JSON.stringify(this.pr)) { this.pr = pr; this.remember(context); await this.syncSource(cx); cx.notify(); } // the same PR as shown: nothing to draw
             });
           }
         }
+        if (unchanged) { this.remember(context, Date.now()); return; }
         if (this.open && !this.files.some((f) => f.path === this.open)) { this.open = null; this.rows = []; this.sel = null; }
         if (this.files.length) await this.load(this.open ?? this.files[0].path, context);
         this.remember(context, Date.now());
@@ -373,12 +403,17 @@ export default class PrReview extends View {
       } catch (e) { if (this.key() === context) this.error = String(e); }
       finally {
         this.loading = false;
-        cx.notify();
-        if (this.key() === context) await this.syncSource(cx).catch((e) => { this.note = `Could not load the review: ${e}`; });
-        cx.notify();
+        if (!unchanged) {
+          cx.notify();
+          const key = this.reviewKey;
+          if (this.key() === context) await this.syncSource(cx).catch((e) => { this.note = `Could not load the review: ${e}`; });
+          if (this.part === "review" || this.reviewKey !== key || this.note) cx.notify(); // the source's comments came: once more
+        }
+        // Written again while this ran: once more in a second, also when no render comes to ask (a covered window draws nothing).
+        if (this.root && this.dirty.has(this.root) && this.key() === context) this.recheck(this.root, cx);
       }
     });
-    cx.notify();
+    if (!quiet) cx.notify();
   }
 
   // A new source: its pending comments, and its walkthrough when that view is open.
@@ -406,14 +441,19 @@ export default class PrReview extends View {
     if (this.open !== path) { this.sel = null; this.selEnd = null; this.from = 0; }
     this.open = path; this.mode = this.mode ?? "diff";
     if (this.mode === "file") await this.showFile(path, context);
-    this.rows = diffRows(lines.map((l) => (l.length > 2000 ? l.slice(0, 2000) + "…" : l)));
+    const shown = lines.map((l) => (l.length > 2000 ? l.slice(0, 2000) + "…" : l)), sig = shown.join("\n");
+    if (this.rows.sig === sig) return; // the same text as shown: the rows and their syntax colours stay
+    this.rows = Object.assign(diffRows(shown), { sig });
   }
 
   // The whole file as it is now: markdown rendered, code highlighted read-only.
   async showFile(path, context) {
-    this.code?.release(); this.code = null; this.md = null; this.fileError = null;
-    const text = await readTextFile(`${this.root}/${path}`).catch(() => null);
+    const file = `${this.root}/${path}`;
+    if (this.fileOf !== file) { this.code?.release(); this.code = null; this.md = null; this.fileError = null; this.fileOf = file; this.fileText = undefined; }
+    const text = await readTextFile(file).catch(() => null);
     if (this.key() !== context || this.open !== path) return;
+    if (text === this.fileText) return; // as shown: the editor stays, and with it where it was scrolled to
+    this.code?.release(); this.code = null; this.md = null; this.fileError = null; this.fileText = text;
     if (text === null) { this.fileError = "File not in the working tree (deleted?)"; return; }
     if (text.includes("\0")) { this.fileError = "Binary file"; return; }
     const body = text.length > 400000 ? text.slice(0, 400000) + "\n… (truncated)" : text;
@@ -733,8 +773,10 @@ export default class PrReview extends View {
     const p = shared("goto.providers") ?? [];
     if (!p.includes("review")) setShared("goto.providers", [...p, "review"]);
     const open = { key: "pr.goto", value: { url: "{url}", repo: "{owner}/{repo}", number: "{number}" } };
-    setShared("goto.handlers.review", [{ pattern: "github\\.com/([\\w.-]+)/([\\w.-]+)/pull/(\\d+)", title: "Review PR #{number} · {title}",
-      subtitle: "{owner}/{repo}", run: [["goto.set", open]] }]);
+    const handlers = [{ pattern: "github\\.com/([\\w.-]+)/([\\w.-]+)/pull/(\\d+)", title: "Review PR #{number} · {title}", subtitle: "{owner}/{repo}", run: [["goto.set", open]] }];
+    // Written when they differ from what is there (a call per render wrote both keys each time).
+    if (JSON.stringify(shared("goto.handlers.review")) !== JSON.stringify(handlers)) setShared("goto.handlers.review", handlers);
+    this.gotoSig = openSig(shared("review.open"));
     setShared("goto.items.review", (shared("review.open") ?? []).map((r) => ({ id: `review:${r.url}`, title: `Resume review #${r.number} ${r.title ?? ""}`,
       subtitle: [r.repo, progressText(r.progress)].filter(Boolean).join(" · "), tag: "Review", url: r.url, keywords: [String(r.number), r.repo ?? ""],
       run: [["goto.set", { key: "pr.goto", value: { url: r.url } }]] })));
@@ -828,7 +870,7 @@ export default class PrReview extends View {
   // with one way into the review each (Resume once started), merged and closed ones are folded under their own row.
   picker(t) {
     const src = this.sourceNow(), sl = this.srcLists[src], inProgress = (shared("review.open") ?? []).filter(shownIn);
-    const { list, above, started } = listRows(this.listNow(), inProgress, capped(this.inProgressList(), this.allOpen).shown);
+    const { list, above, started } = listRows(this.listNow(), inProgress, this.panelProgress().shown);
     // Mine: this space's repo and recent first, the rest folded (views.js mineGroups); the other lists by state.
     const b = byState(list), g = src === "mine" ? mineGroups(list, this.spaceSlug?.slug ?? null) : { here: b.open, other: [], done: b.done };
     const open = g.here, done = g.done, rest = g.other;
@@ -860,7 +902,7 @@ export default class PrReview extends View {
       : item(`pick-${src}-${p.url}`, this.prSel?.url === p.url, `#${p.number} ${p.title ?? ""}`, other(p), p.state, null, (_e, cx) => this.pickTarget(p, cx), p));
     const inView = C.tagged(ctxDoc()) ? " (in this view)" : "", n = open.filter((p) => this.triage?.has(p.url)).length; // triaged rows of this list
     // One sentence for an empty list: what is going on, or what to do.
-    const empty = src === "mine" ? (this.scanning ? "Searching transcripts for PRs…" : this.prs.length ? "No recent PRs from Claude sessions in this repository." : "No PRs from Claude sessions") : sl?.loading ? "Asking GitHub…"
+    const empty = src === "mine" ? (this.scanning ? "Searching transcripts for PRs…" : this.prs.length ? "No recent PRs from Claude sessions in this repository." : "No PRs from Claude sessions") : !sl || sl.loading ? "Asking GitHub…"
       : src === "repo" && sl?.key === null ? "Open a space on a GitHub repo to list its PRs."
       : above ? "Every open PR here is in progress above." : src === "repo" ? `No open PRs in this repo${inView}` : `No open review requests${inView}`;
     return v_flex().flex_none().p(6)
@@ -889,7 +931,7 @@ export default class PrReview extends View {
           .on_click((_e, cx) => { this.showOther = !this.showOther; cx.notify(); }).child(div().w(10).flex_none().child(this.showOther ? "▾" : "▸")).child(`Other repos or older (${rest.length})`)))
         .when(rest.length > 0 && Boolean(this.showOther), (e) => e.children(rest.map(row)))
         .when(done.length > 0, (e) => e.child(h_flex().id(`pr-done-${this.uid}`).flex_none().mt(4).px(8).h(24).gap(6).items_center().rounded(6).cursor_pointer().text_size(11.5).text_color(t.muted)
-          .tooltip(this.showDone ? "Hide the merged and closed PRs" : "Show the merged and closed PRs").hover((s) => s.bg(t.hover).text_color(t.foreground))
+          .tooltip(src === "mine" ? `${this.showDone ? "Hide" : "Show"} this repository's PRs that were merged or closed in the last 14 days. Older ones are not listed: open them by URL above.` : this.showDone ? "Hide the merged and closed PRs" : "Show the merged and closed PRs").hover((s) => s.bg(t.hover).text_color(t.foreground))
           .on_click((_e, cx) => { this.showDone = !this.showDone; cx.notify(); }).child(div().w(10).flex_none().child(this.showDone ? "▾" : "▸")).child(`Merged or closed (${done.length})`)))
         .when(done.length > 0 && Boolean(this.showDone), (e) => e.children(done.map(row)))
         .when(!open.length && !rest.length && !done.length, (e) => e.child(div().p(8).whitespace_normal().text_color(t.muted).child(empty)));
@@ -930,41 +972,65 @@ export default class PrReview extends View {
   // each tagged when there are several.
   openReviews(t) {
     const ago = (ms) => { const m = Math.round((Date.now() - ms) / 60000); return m < 60 ? `${m} min ago` : m < 2880 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`; };
-    const list = this.inProgressList(), { shown, more } = capped(list, this.allOpen);
+    const { shown, more, total, left } = this.panelProgress(), old = (r) => Date.now() - (r.lastTouched ?? 0) > DONE_DAYS * 86400000;
+    const drop = (r) => pill(`pr-drop-${r.url}`, t, "✕", (_e, cx) => { cx.stop_propagation(); this.dropReview(r.url, cx); }, false, "Remove from In progress. Your comments and progress are kept; opening the review again brings it back.", "Remove from In progress");
     return v_flex().flex_none().px(10).pt(8).pb(4).gap(2).border_b(1).border_color(t.border)
       .child(h_flex().px(4).gap(8).items_center().child(div().flex_1().text_size(11).font_semibold().text_color(t.muted).child("In progress"))
-        .when(Boolean(this.allOpen) && list.length > IN_PROGRESS_MAX, (e) => e.child(pill(`pr-open-less-${this.uid}`, t, "Show fewer", (_e, cx) => { this.allOpen = false; cx.notify(); }, false, "Show only the most recent reviews"))))
+        .when(Boolean(this.allOpen) && more > 0, (e) => e.child(pill(`pr-open-less-${this.uid}`, t, "Show fewer", (_e, cx) => { this.allOpen = false; cx.notify(); }, false, "Show only the most recent reviews"))))
       .children(shown.map((r) => [r, this.riskChips(t, r.url, `pr-open-${r.url}`)]).map(([r, risk]) => h_flex().id(`pr-open-${r.url}`).gap(8).px(4).py(3).rounded(6).items_start().cursor_pointer().tooltip(`Select this PR to see its diff. Last touched ${ago(r.lastTouched)}.`)
         .when(this.prSel?.url === r.url, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.pickTarget(r.target ?? r, cx))
         .child(v_flex().flex_1().min_w(0).gap(2)
-          .child(div().truncate().text_size(12.5).child(`#${r.number} ${r.title ?? ""}`))
+          .child(div().truncate().text_size(12.5).when(old(r), (e) => e.text_color(t.muted)).child(`#${r.number} ${r.title ?? ""}`))
           .when(risk.length > 0, (e) => e.child(h_flex().flex_wrap().gap(4).children(risk)))
-          .child(div().whitespace_normal().text_size(11).text_color(t.muted).child([r.status === "sent" ? "sent" : null, progressText(r.progress)].filter(Boolean).join(" · "))))
+          .child(div().whitespace_normal().text_size(11).text_color(t.muted).child([r.status === "sent" ? "sent" : null, progressText(r.progress), old(r) ? `last touched ${ago(r.lastTouched)}` : null].filter(Boolean).join(" · "))))
         .when(C.tagged(ctxDoc()), (e) => e.child(ctxTag(t, prCtx(r), r.url)))
         .child(pill(`pr-resume-${r.url}`, t, "Resume", (_e, cx) => { cx.stop_propagation(); startReview(r.target ?? r); }, false, "Continue this review where you left it"))
-        .child(pill(`pr-drop-${r.url}`, t, "✕", (_e, cx) => { cx.stop_propagation(); this.dropReview(r.url, cx); }, false, "Remove from In progress; opening the review again resumes where it was", "Remove from In progress"))))
-      .when(more > 0, (e) => e.child(div().id(`pr-open-all-${this.uid}`).px(4).py(3).text_size(11.5).text_color(t.accent).cursor_pointer().tooltip("List every review in progress")
-        .hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => { this.allOpen = true; cx.notify(); }).child(`Show all (${list.length})`)));
+        .child(drop(r))))
+      // Merged or closed since: dimmed, with the word; nothing leaves this list without saying why.
+      .children(left.map((r) => h_flex().id(`pr-left-${r.url}`).gap(8).px(4).py(3).rounded(6).items_center().cursor_pointer().tooltip(`This PR was ${r.state}. Select it to see its diff, or remove it from In progress.`)
+        .hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.pickTarget(r.target ?? r, cx))
+        .child(div().flex_1().min_w(0).truncate().text_size(12.5).text_color(t.dim).child(`#${r.number} ${r.title ?? ""}`))
+        .child(div().flex_none().text_size(10.5).text_color(t[STATE[r.state]] ?? t.muted).child(r.state))
+        .child(drop(r))))
+      .when(more > 0 && !this.allOpen, (e) => e.child(div().id(`pr-open-all-${this.uid}`).px(4).py(3).text_size(11.5).text_color(t.accent).cursor_pointer().tooltip("List every review in progress, also the ones not touched for more than 14 days")
+        .hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => { this.allOpen = true; cx.notify(); }).child(`Show all (${total})`)))
+      .when(Boolean(this.undo), (e) => e.child(h_flex().px(4).py(3).gap(8).items_center().text_size(11.5).text_color(t.muted)
+        .child(div().flex_1().min_w(0).whitespace_normal().child(removedText(this.undo)))
+        .child(pill(`pr-undrop-${this.uid}`, t, "Undo", (_e, cx) => this.undoDrop(cx), false, "Put this review back into In progress"))));
   }
 
-  // The reviews in progress this view shows (views.js inProgressNow: work done, not merged or closed, recent).
-  inProgressList() { return inProgressNow((shared("review.open") ?? []).filter(shownIn), { states: this.statesNow(), slug: this.spaceSlug?.slug ?? null }); }
+  // What "In progress" shows in this view (views.js progressRows): reviews with work in them, the recent ones first;
+  // the older ones behind "Show all"; the merged and closed ones dimmed.
+  panelProgress() { return progressRows((shared("review.open") ?? []).filter(shownIn), { states: this.statesNow(), slug: this.spaceSlug?.slug ?? null, all: Boolean(this.allOpen) }); }
   // What is known of PR states: prs.json and the lists fetched from GitHub (url -> open, draft, merged, closed).
   statesNow() {
     return new Map([...Object.values(this.srcLists ?? {}).flatMap((l) => l?.prs ?? []), ...this.prs].map((p) => [p.url, p.state]));
   }
+  // The registry file with `change` applied to its list, compare-and-swap (the review layout writes it too).
+  async writeRegistry(change) {
+    const file = `${appHome()}/pr-data/open-reviews.json`;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const before = await readTextFile(file).catch(() => null);
+      try { await writeTextFile(file, JSON.stringify(change(JSON.parse(before ?? "[]")), null, 1), before); return; } catch { /* written meanwhile: again */ }
+    }
+  }
   // ✕ on a row of In progress: the review counts as done (pr-data/open-reviews.json, shared "review.open"). Its
-  // progress stays in review-progress.json: opening it again resumes where it was and puts it back (pr.js touchReview).
+  // comments stay in reviews.json and its progress in review-progress.json: opening it again resumes where it was and
+  // puts it back (pr.js touchReview). The entry is kept for "Undo" until the next pick.
   dropReview(url, cx) {
+    this.undo = (shared("review.open") ?? []).find((r) => r.url === url) ?? null;
+    if (shared("review.minimized")?.target?.url === url) setShared("review.minimized", null); // its chip over the terminal goes with it
     setShared("review.open", (shared("review.open") ?? []).filter((r) => r.url !== url));
-    cx.spawn(async () => {
-      const file = `${appHome()}/pr-data/open-reviews.json`;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const before = await readTextFile(file).catch(() => null);
-        const list = JSON.parse(before ?? "[]").map((r) => (r.url === url ? { ...r, status: "done", doneAt: Date.now() } : r));
-        try { await writeTextFile(file, JSON.stringify(list, null, 1), before); return; } catch { /* written meanwhile: again */ }
-      }
-    });
+    cx.spawn(() => this.writeRegistry((list) => list.map((r) => (r.url === url ? { ...r, status: "done", doneAt: Date.now() } : r))));
+  }
+  // "Undo": the entry as it was, back where the file has it (or in front when it is gone from there).
+  undoDrop(cx) {
+    const entry = this.undo;
+    if (!entry) return;
+    this.undo = null;
+    setShared("review.open", [entry, ...(shared("review.open") ?? []).filter((r) => r.url !== entry.url)].sort((a, b) => (b.lastTouched ?? 0) - (a.lastTouched ?? 0)));
+    cx.spawn(() => this.writeRegistry((list) => (list.some((r) => r.url === entry.url) ? list.map((r) => (r.url === entry.url ? entry : r)) : [entry, ...list])));
+    cx.notify();
   }
   // The minimized review's chip goes once its PR is merged or closed (it was kept in shared.json for good).
   dropMinimized() {
@@ -1036,14 +1102,16 @@ export default class PrReview extends View {
     if (this.view === "walk" && this.walkModel && walkModel() !== this.walkModel && !this.walkBusy) this.openWalk(cx, false); // picker changed: that model's cache
     // Go to: a handed-over PR (outside render), and the reviews-in-progress items when that list changes.
     if (shared("pr.goto")?.url && !this.gotoQueued) { this.gotoQueued = true; cx.timer.after(0, (cx) => { this.gotoQueued = false; this.takeGoto(cx); }); }
-    if (shared("review.open") !== this.gotoOpen) { this.gotoOpen = shared("review.open"); cx.timer.after(0, () => this.publishGoto()); }
+    // shared() hands out a new object each time: compared by what the items are made of (views.js openSig), not by identity.
+    if (openSig(shared("review.open")) !== this.gotoSig) { this.gotoSig = openSig(shared("review.open")); cx.timer.after(0, () => this.publishGoto()); }
     if (this.spaceSeen !== undefined && location().space !== this.spaceSeen) { this.spaceSeen = location().space; cx.timer.after(0, (cx) => this.onSpace(cx)); }
-    if (!this.scanQueued && visible() && windowActive() && Date.now() - (this.scanAt ?? 0) >= PRS_MS) { this.scanQueued = true; cx.timer.after(0, (cx) => { this.scanQueued = false; this.scanIfDue(cx); }); }
+    if (!this.scanQueued && this.scanDue()) { this.scanQueued = true; cx.timer.after(0, (cx) => { this.scanQueued = false; this.scanIfDue(cx); }); }
     // The selection is never dropped here: a PR the view hides gets a banner instead.
     // refresh() notifies, which render may not: queue it once, right after this render.
-    if (!this.refreshQueued && visible() && (this.key() !== this.context || (!this.prSel && this.root && this.dirty.has(this.root)))) {
+    // Only for what is shown: behind the list nothing is diffed (a focus change or a file written there costs nothing).
+    if (!this.refreshQueued && visible() && (this.prSel ? !this.picking : this.showsBranch()) && (this.key() !== this.context || (!this.prSel && this.root && this.dirty.has(this.root)))) {
       this.refreshQueued = true;
-      cx.timer.after(0, (cx) => { this.refreshQueued = false; this.refresh(cx, this.key() === this.context); });
+      cx.timer.after(0, (cx) => { this.refreshQueued = false; const same = this.key() === this.context; this.refresh(cx, same, same); });
     }
     const t = theme();
     const add = this.files.reduce((n, f) => n + f.add, 0), del = this.files.reduce((n, f) => n + f.del, 0);
@@ -1057,10 +1125,15 @@ export default class PrReview extends View {
     const shown = this.rows.slice(this.from, this.from + 1500);
     // Syntax colours outside render, a slice at a time (a big file takes longer than Herdr's ~50 ms per slice); the
     // rows show plain until their file is done.
-    if (this.hl?.rows !== this.rows) { this.hl = { rows: this.rows, job: highlightJob(this.rows, langOf(this.open ?? "")), spans: null }; this.highlightMore(cx, this.hl); }
-    this.spans = this.hl.spans;
+    // New rows (the file changed on disk): until they are coloured, a row whose text stayed keeps its colours.
+    if (this.hl?.rows !== this.rows) {
+      const old = this.hl?.spans && this.hl.file === this.open ? this.hl : null;
+      this.hl = { rows: this.rows, file: this.open, job: highlightJob(this.rows, langOf(this.open ?? "")), spans: null, kept: old && this.rows.map((r, i) => (old.rows[i]?.text === r.text ? old.spans[i] : null)) };
+      this.highlightMore(cx, this.hl);
+    }
+    this.spans = this.hl.spans ?? this.hl.kept;
     const diffId = `pr-diff-${this.uid}-${this.from}`; // a new id starts scrolled to the top: how j/k bring a change into view
-    const state = this.view === "setup" ? "setup" : panelState({ chosen: this.prSel ?? this.branchPicked, picking: this.picking });
+    const state = this.view === "setup" ? "setup" : panelState({ chosen: this.prSel ?? (this.branchPicked || this.restoring), picking: this.picking });
     const tab = bodyTab(this.view), chosen = this.prSel ? "PR" : "branch";
     if (state === "picking" && !this.srcAsked) { this.srcAsked = true; cx.timer.after(0, (cx) => this.loadSource(cx)); } // the list, once, after this render
     const back = (_e, cx) => { this.picking = true; this.loadSource(cx); cx.notify(); };
@@ -1071,7 +1144,7 @@ export default class PrReview extends View {
         .child(div().id(`pr-back-${this.uid}`).flex_none().w(26).h(26).flex().items_center().justify_center().rounded(6).cursor_pointer().text_color(t.muted)
           .hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("All PRs").on_click(back).child("←"))
         .child(div().id(`pr-title-${this.uid}`).tooltip(title).flex_1().min_w(0).max_h(36).overflow_hidden().whitespace_normal().line_height(1.35).font_semibold().child(title)) // two lines, then cut
-        .child(pill(`pr-reload-${this.uid}`, t, this.loading ? "…" : "↻", (_e, cx) => { if (this.prSel) this.heads.delete(this.prSel.url); this.refresh(cx, true); }, false, "Reload this PR's diff and details", "Reload PR"))
+        .child(pill(`pr-reload-${this.uid}`, t, this.loading && !this.quietLoad ? "…" : "↻", (_e, cx) => { if (this.prSel) this.heads.delete(this.prSel.url); this.refresh(cx, true); }, false, "Reload this PR's diff and details", "Reload PR"))
         .when(Boolean(this.pr), (e) => e.child(pill("pr-web", t, "GitHub ↗", () => openUrl(this.pr.url), false, "Open this PR on GitHub in the browser")))
         // The way into the review is the header's one filled button; Resume once this PR's review was started.
         .when(Boolean(this.pr?.url), (e) => e.child(div().id(`pr-rv-${this.uid}`).tooltip(resume ? "Continue this review where you left it" : "Open this PR in the review layout").flex_none().px(12).h(26).flex().items_center().rounded(6)
@@ -1087,7 +1160,7 @@ export default class PrReview extends View {
       .child(h_flex().flex_none().p(2).gap(2).rounded(7).border_1().border_color(t.border)
         .child(seg("diff", "Diff", (_e, cx) => { this.view = "diff"; cx.notify(); }))
         .child(seg("walk", "Walkthrough", (_e, cx) => this.openWalk(cx, false))))
-      .child(h_flex().flex_1().gap(6).items_center().text_size(11).child(div().id(`pr-add-${this.uid}`).tooltip("Lines added in this diff").text_color(t.ansi2).child(`+${add}`)).child(div().id(`pr-del-${this.uid}`).tooltip("Lines removed in this diff").text_color(t.ansi1).child(`−${del}`)))
+      .child(h_flex().flex_1().gap(6).items_center().text_size(11).when(!this.files.length, (e) => e.invisible()).child(div().id(`pr-add-${this.uid}`).tooltip("Lines added in this diff").text_color(t.ansi2).child(`+${add}`)).child(div().id(`pr-del-${this.uid}`).tooltip("Lines removed in this diff").text_color(t.ansi1).child(`−${del}`)))
       .when(tab === "diff" && Boolean(this.open && !this.patch), (e) => e
         .child(pill(`mode-${this.uid}`, t, this.mode === "file" ? "Diff view" : "File view", (_e, cx) => this.setMode(this.mode === "file" ? "diff" : "file", cx), false, "Switch between the diff and the whole file"))
         .child(pill(`vscode-${this.uid}`, t, "VS Code ↗", () => exec("code", ["-g", `${this.root}/${this.open}:${(this.sel !== null && this.rows[this.sel]?.number) || 1}`]), false, "Open this file at the selected line in VS Code")));
@@ -1095,7 +1168,7 @@ export default class PrReview extends View {
     const pickId = `pr-pick-${this.uid}`;
     const pickBody = div().flex_1().min_h(0).relative()
       .child(v_flex().id(pickId).absolute().inset_0().overflow_y_scroll()
-        .when(this.inProgressList().length > 0, (e) => e.child(this.openReviews(t)))
+        .when((({ shown, left }) => shown.length + left.length > 0 || Boolean(this.undo))(this.panelProgress()), (e) => e.child(this.openReviews(t)))
         .child(this.picker(t)))
       .child(Scrollbar.vertical(pickId).absolute().inset_0());
     // The composer: under the selected lines, at the top for the whole file, or in place of the comment being edited.
@@ -1111,7 +1184,7 @@ export default class PrReview extends View {
           .when(n > 0, (e) => e.child(div().id(`f-c-${f.path}`).tooltip(`${n} pending ${n === 1 ? "comment" : "comments"} on this file`).text_size(10.5).text_color(t.accent).child(`● ${n}`)))
           .when(f.add > 0, (e) => e.child(div().id(`f-a-${f.path}`).tooltip("Lines added in this file").text_size(11).text_color(t.ansi2).child(`+${f.add}`)))
           .when(f.del > 0, (e) => e.child(div().id(`f-d-${f.path}`).tooltip("Lines removed in this file").text_size(11).text_color(t.ansi1).child(`−${f.del}`)));
-      })).when(!this.files.length, (e) => e.child(div().p(8).whitespace_normal().text_color(this.error ? t.ansi1 : t.dim).child(this.error || (this.loading ? Spin(t, "Loading…") : "No changes against the base")))))
+      })).when(!this.files.length, (e) => e.child(div().p(8).whitespace_normal().text_color(this.error ? t.ansi1 : t.dim).child(this.error || ((this.loading && !this.quietLoad) || this.restoring ? Spin(t, "Loading…") : "No changes against the base")))))
       .child(Scrollbar.vertical(`pr-files-${this.uid}`).absolute().inset_0());
     const diffBody = this.mode === "file"
       ? div().flex_1().min_h(0).relative()

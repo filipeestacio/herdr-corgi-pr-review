@@ -295,7 +295,20 @@ export function seqLayout(v, width) {
 export const MD = { GAP: 10, CODE_LH: 24, CODE_PAD: 48, CODE_CH: 8.8, CODE_IN: 32, ITEM_IN: 24, ITEM_GAP: 4, HEAD: 1.5, HEADS: [1.5, 1.35, 1.2, 1.1, 1.1, 1.1], ROW_PAD: 13, CELL_PAD: 24, QUOTE_IN: 20 };
 const codeWide = (line) => line.replace(/`([^`]*)`/g, (_m, code) => `aa${code.replace(/\S/g, "a")}`);
 const codeRows = (line, width) => { const n = (line.length * MD.CODE_CH) / Math.max(40, width - MD.CODE_IN); return n <= 1 ? 1 : Math.ceil(n * 1.15); }; // it wraps at words
+// Remembered per text and place: a list asks for every visible card's height on each render (the count is in
+// mdHeight.counted, for the test). ponytail: one map emptied at MD_KEPT entries, no LRU.
+const MD_KEPT = 2000, mdSeen = new Map();
 export function mdHeight(text, width, lh = 21, size = 13.5) {
+  const key = `${width}|${lh}|${size}|${text ?? ""}`, hit = mdSeen.get(key);
+  if (hit !== undefined) return hit;
+  if (mdSeen.size >= MD_KEPT) mdSeen.clear();
+  const h = mdCount(text, width, lh, size);
+  mdSeen.set(key, h);
+  return h;
+}
+mdHeight.counted = 0;
+function mdCount(text, width, lh, size) {
+  mdHeight.counted++;
   const lines = String(text ?? "").replace(/\r/g, "").split("\n"), blocks = [];
   // A paragraph's lines join (soft breaks), except after a hard break (two spaces or a backslash at the end); a link
   // counts its text, not its address; emphasis marks take no room.
@@ -1247,13 +1260,13 @@ export const certaintyText = (f) => `${f?.certainty ?? ""}${f?.certainty === "co
 export const probedText = (f) => (f?.certainty === "confirmed" && f?.probed ? ` Probe ${f.probed.id} reproduced it${f.probed.strength === "models_env" ? ", with the platform modeled" : ""}.` : "");
 
 // "Before merge" counted by what decides it, one number per group, in the rows' order: "⛨ 2 security", "5 criteria"
-// (the criteria not met that its rows break or stand for, each once), "5 resilience paths", "14 high" (the other
+// (the criteria not met that its rows break or stand for, each once), "5 resilience blockers", "14 high" (the other
 // findings by severity), "2 checks", "1 fix to verify", "1 overlapping PR". rows: review.js mergeRows (pr.js
 // beforeMerge and the Resilience run's rows); seen: rows already shown, whose criteria are not counted again. -> [{key, n, text}]
 const mergeKey = (r) => (r.kind === "security" ? "security" : r.kind === "criterion" || r.kind === "ask" ? "criteria" : r.kind === "resilience" ? (r.path ? "resilience" : "blind")
   : r.kind === "finding" ? `sev-${r.finding?.severity ?? "high"}` : r.kind === "verify" || r.kind === "overlap" ? r.kind : "checks");
 export function mergeGroups(rows, seen = []) {
-  const say = { security: (n) => `⛨ ${n} security`, criteria: (n) => `${n} ${n === 1 ? "criterion" : "criteria"}`, resilience: (n) => `${n} resilience ${n === 1 ? "path" : "paths"}`,
+  const say = { security: (n) => `⛨ ${n} security`, criteria: (n) => `${n} ${n === 1 ? "criterion" : "criteria"}`, resilience: (n) => `${n} resilience ${n === 1 ? "blocker" : "blockers"}`, // the verdict line's word for the same paths
     blind: (n) => `${n} not observable`, verify: (n) => `${n} ${n === 1 ? "fix" : "fixes"} to verify`, overlap: (n) => `${n} overlapping ${n === 1 ? "PR" : "PRs"}`, checks: (n) => `${n} ${n === 1 ? "check" : "checks"}` };
   const groups = new Map(), asks = new Set(seen.flatMap((r) => (r.asks?.length ? r.asks : [r.ask]).filter(Boolean).map((a) => a.id)));
   for (const r of rows) {
@@ -1295,12 +1308,29 @@ export function mineGroups(list, slug, now = Date.now()) {
 }
 // "In progress": reviews with something done in them (a file viewed, a layer checked, a comment, a reply, a fixed
 // thread, or sent), not merged or closed as far as known (states: url → state), touched within DONE_DAYS; the space's
-// repo first, then the most recently touched. A review only opened and left is not in progress.
+// repo (slug; outside a GitHub repo every repo). A review only opened and left is not in progress. all ("Show all"):
+// the ones not touched for longer and the ones of other repos too, the space's repo first, then by last touch.
 const WORK = ["stepsChecked", "filesViewed", "comments", "replies", "fixedThreads"];
-export function inProgressNow(list, { states = new Map(), slug = null, now = Date.now() } = {}) {
-  const worked = (r) => r.status === "sent" || WORK.some((k) => (r.progress?.[k] ?? 0) > 0);
-  return (list ?? []).filter((r) => r.status !== "done" && worked(r) && !["merged", "closed"].includes(states.get(r.url)) && !(now - (r.lastTouched ?? 0) > DONE_DAYS * 86400000))
+const worked = (r) => r.status !== "done" && (r.status === "sent" || WORK.some((k) => (r.progress?.[k] ?? 0) > 0));
+const closedNow = (r, states) => ["merged", "closed"].includes(states.get(r.url));
+export function inProgressNow(list, { states = new Map(), slug = null, now = Date.now(), all = false } = {}) {
+  const here = (r) => (!slug || r.repo === slug) && !(now - (r.lastTouched ?? 0) > DONE_DAYS * 86400000);
+  return (list ?? []).filter((r) => worked(r) && !closedNow(r, states) && (all || here(r)))
     .sort((a, b) => Number(b.repo === slug) - Number(a.repo === slug) || (b.lastTouched ?? 0) - (a.lastTouched ?? 0));
+}
+// Reviews with work in them whose PR was merged or closed since, each with that `state`: the panel lists them dimmed
+// with the word and a way to remove them, so that none leaves "In progress" without saying why.
+export const inProgressLeft = (list, states = new Map()) => (list ?? []).filter((r) => worked(r) && closedNow(r, states)).map((r) => ({ ...r, state: states.get(r.url) }));
+// What "In progress" shows: the recent ones up to the cap, or all of them (the older ones too); `more`: how many
+// "Show all" adds (and "Show fewer" takes away again); `left`: the merged and closed ones.
+export function progressRows(list, { states = new Map(), slug = null, now = Date.now(), all = false } = {}) {
+  const every = inProgressNow(list, { states, slug, now, all: true }), recent = capped(inProgressNow(list, { states, slug, now })).shown;
+  return { shown: all ? every : recent, more: every.length - recent.length, total: every.length, left: inProgressLeft(list, states) };
+}
+// "#2 removed from In progress. Its 2 pending comments and your progress are kept." (the line with Undo after ✕).
+export function removedText(r) {
+  const n = r?.progress?.comments ?? 0;
+  return `#${r.number} removed from In progress. ${n ? `Its ${n} pending ${n === 1 ? "comment" : "comments"} and your progress` : "Your progress"} ${n ? "are" : "is"} kept.`;
 }
 // The panel's pick per view and space (shared "pr.selected"): this one set, the newest `max` kept.
 export const withPick = (sel, key, url, max = 30) => Object.fromEntries([...Object.entries(sel ?? {}).filter(([k]) => k !== key), [key, url]].slice(-max));
@@ -1362,6 +1392,24 @@ export function fixEstimate(tier) {
 export function fixCostLine(usd, tier, n = 1) {
   const over = usd > 2 * fixTypical(tier).usd * Math.max(1, n);
   return { over, text: `$${usd.toFixed(2)} so far${over ? " · above the usual cost; stop it in its tab" : ""}` };
+}
+
+// What Go to's "Resume review" items are made of, as one string: the open reviews, each with when it was last touched
+// (its progress moves with that) and its status. shared() hands out a new object per call, so the panel compares this.
+export const openSig = (list) => (list ?? []).map((r) => `${r.url}|${r.lastTouched ?? ""}|${r.status ?? ""}`).join("\n");
+
+// Whether the layout shows the PR panel (the block of this mod without a part): false when it or a column around it is
+// hidden, or a stack around it has another tab up; null when the layout has no such block (the panel is placed some
+// other way, as a pane or a window), which counts as shown.
+export function panelShown(node, mod = "pr-review") {
+  const walk = (n, shown) => {
+    if (!n || typeof n !== "object") return null;
+    const here = shown && !n.hidden;
+    if (n.content?.mod === mod && !n.content.props?.part) return here;
+    for (const c of n.children ?? []) { const r = walk(c, here && (n.type !== "stack" || !n.active || n.active === c.id)); if (r !== null) return r; }
+    return null;
+  };
+  return walk(node, true);
 }
 
 // "Copy as Markdown": what it copies where the person is. kind picks the text (markdown.js), name completes the
