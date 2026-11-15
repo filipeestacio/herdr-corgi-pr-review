@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.12.1 (2026-11-15)
+
+### Fixes
+
+- pr-review: Impact with many callers is a row per changed symbol, not a picture with lines
+
+### Other
+
+- chore: merge fix/impact-dense
+
 ## 0.12.0 (2026-11-15)
 
 ### Features
