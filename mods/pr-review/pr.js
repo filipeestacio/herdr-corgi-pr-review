@@ -1023,7 +1023,7 @@ export function componentLine(cc) {
 export function reviewState({ pr, head = "", list, counts, findings, statusOf, progress = "", behavior = "", fixOf = () => "", cost = "" }) {
   const word = (s) => s.replace("_", " ");
   const ask = (r) => `- ${word(r.ask.state)}: ${r.ask.text}${r.ask.acceptance ? " (acceptance criterion)" : ""}${r.ask.why ? `. ${r.ask.why}` : ""}${r.unlinked ? " No finding backs this." : ""}`;
-  const one = (f) => `${f.security ? `- ${f.severity}, security: ${f.title}` : `- ${f.severity}: ${f.title} (${f.file}:${f.line})`}${statusOf(f) === "progress" && fixOf(f) ? `. Fix: ${fixOf(f)}` : ""}`;
+  const one = (f) => `${secByEffect(f) ? `- ${f.severity}, security: ${f.title}` : `- ${f.severity}: ${f.title} (${f.file}:${f.line})`}${statusOf(f) === "progress" && fixOf(f) ? `. Fix: ${fixOf(f)}` : ""}`;
   const groups = [["Unresolved", ["open", "recheck"]], ["Fix sent", ["progress"]], ["Fixed", ["fixed"]], ["Dismissed", ["dismissed"]]]
     .map(([label, st]) => [label, findings.filter((f) => st.includes(statusOf(f)))]).filter(([, fs]) => fs.length);
   return [`Review state of ${pr.repo ?? ""}#${pr.number}: ${pr.title ?? ""}`, `${pr.url ?? ""}${head ? ` at ${String(head).slice(0, 7)}` : ""}`, "",
@@ -1031,7 +1031,7 @@ export function reviewState({ pr, head = "", list, counts, findings, statusOf, p
     verdictParts(list, counts).map((p) => p.text).join(" · "), "",
     ...(taskHead(list) ? [`Task check: ${taskHead(list)}`, ...[...list.rows, ...list.extra].map(ask), ""] : []),
     ...groups.flatMap(([label, fs]) => [`${label} (${fs.length}):`, ...fs.map(one), ""]),
-    ...(progress ? [progress, ""] : []), ...(cost ? [`AI runs on this PR: ${cost}.`, ""] : []), ...(findings.some((f) => f.security) ? ["Security findings are listed by title only."] : [])].join("\n").trim() + "\n";
+    ...(progress ? [progress, ""] : []), ...(cost ? [`AI runs on this PR: ${cost}.`, ""] : []), ...(findings.some((f) => secByEffect(f)) ? ["Security findings about access or data are listed by title only."] : [])].join("\n").trim() + "\n";
 }
 
 // ---- Markdown texts (findings, suggestions, comments) where one plain line is shown
@@ -1605,3 +1605,10 @@ export function withThreats(findings, security) {
 // Security by its own effect (access or data, or the older rule), apart from a threat that stands on it: a finding
 // that is ⛨ only through a threat belongs to that threat's crossing, not to every way in that reaches its line.
 export const secByEffect = (f) => (f?.threats?.length ? isSecurity({ ...f, threats: null }) : Boolean(f?.security ?? isSecurity(f ?? {})));
+// Why a finding carries ⛨, for its tooltip: by its own effect ("Security: access or data."), because a threat stands
+// on it ("Security: named by a threat (t3)."), or both. "" for a finding without ⛨.
+// What follows from ⛨ (no "Fix several", the note about public comments, title only in the copied state, no place in
+// the blockers draft) follows from the effect alone (secByEffect): a flood a threat stands on is fixed and discussed
+// like any other finding.
+export const secWhy = (f) => { const ts = f?.threats ?? [], named = ts.length ? `named by a threat (${ts.join(", ")})` : "";
+  return secByEffect(f) ? `Security: access or data${named ? `; also ${named}` : ""}.` : named ? `Security: ${named}.` : ""; };

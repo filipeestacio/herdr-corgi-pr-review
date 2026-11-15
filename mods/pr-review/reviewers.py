@@ -129,7 +129,7 @@ ASK_SECURITY = (
     "rule, holds_against what the rule stops in one sentence (who is kept from doing what, e.g. \"another role of the "
     "account sends forged events to the queue\"), change what this PR does to the rule (added; widened: it now denies "
     "more; narrowed: it now denies less, e.g. a longer exception list or fewer actions; removed; unchanged), and the "
-    "row is a guard at its resource, never a grant or a way in; a guard the PR narrows or removes is a finding at "
+    "row is a guard at its resource, never a grant or a way in, and node is required: the picture node of the resource it protects; a guard the PR narrows or removes is a finding at "
     "its line unless the diff puts another check in its place; else allow or left out), holds_against (only for a guard). Ways of operators and CI that "
     "the PR adds or changes (admin scripts, workflows, deploy jobs, guardrails they switch) are rows of their own; empty "
     "when the PR touches no such place. A crossing is an access row, or a call between two picture nodes in zones of "
@@ -159,7 +159,10 @@ ASK_SECURITY = (
     "one entry per concrete threat, no two alike: where (as for gates), boundary (the boundary crossed, e.g. \"Internet → "
     "Front desk function\"), threat (one sentence about this code: who does what, through which line), stride (one letter: "
     "S spoofing, T tampering, R repudiation, I information disclosure, D denial of service, E elevation of privilege), "
-    "findings (the refs of your findings that show it), result (finding: a finding shows it; mitigated: the code holds "
+    "findings (the refs of only those findings that make this threat possible or worse: the check that is missing or fails, "
+    "the grant that is wider than needed, the limit every caller shares; never a plain defect that merely sits at the "
+    "same place, such as a call that is never made, a wrong value or lost work, which gives the attacker nothing: "
+    "leave it out, and without such a finding the threat is mitigated or not_assessed), result (finding: a finding shows it; mitigated: the code holds "
     "against it, and evidence names the file:line that shows it; not_assessed: you did not check it), goal (what an "
     "attacker reaches in the end, one sentence), path (the ids of the nodes or groups from the principal to what the "
     "attacker reaches, also the steps that cross no boundary, e.g. [\"internet\", \"handler\", \"consumer\", \"mailer\"]), "
@@ -400,6 +403,10 @@ def security_view(answer, findings, pic, changed, root=None):
         row.pop("effect", None)
         if is_guard(r):  # a rule that takes a right away: a guard at its resource, no grant and no crossing
             row["effect"] = "deny"
+            if not row.get("node"):  # the answer left its card out: the card its resource names, else the one card of its kind
+                row["node"] = guard_node(r, nodes, answer.get("access") or [])
+                if not row["node"]:
+                    del row["node"]
         named.setdefault(str(r.get("id") or row["id"]), row["id"])
         if changed is not None:
             path, line = spot(row)
@@ -533,6 +540,20 @@ ACCOUNT = re.compile(r"account|subscription|tenant|organi[sz]ation", re.I)  # a 
 DENIES = re.compile(r"^\s*(deny|denies|block|blocks)\b", re.I)
 LOOSENED = ("narrowed", "removed")  # what a PR does to a guard that makes it a finding candidate
 DEFECT = re.compile(r"not an attacker('s)? goal|no attacker|not exploitable|no abuse path|no abuse", re.I)  # as pr.js isDefect: a defect named as a threat
+
+
+def guard_node(row, nodes, access):
+    """The picture node a guard without one protects: the node whose name (its label before a bracket, or its id) the
+    guard's resource contains ("LoanEventsPolicy" protects "LoanEvents (SQS)"), else the one node the grants of the
+    same kind sit at (the queue every "queue" row names). None when neither says."""
+    key = lambda s: re.sub(r"[^a-z0-9]+", "", str(s or "").split("(")[0].lower())  # noqa: E731
+    res = key(row.get("resource"))
+    named = [n.get("id") for n in nodes if len(key(n.get("label") or n.get("id"))) >= 4 and key(n.get("label") or n.get("id")) in res]
+    if len(named) == 1:
+        return named[0]
+    ids = {n.get("id") for n in nodes}
+    same = {r.get("node") for r in access if isinstance(r, dict) and r is not row and not is_guard(r) and r.get("kind") and r.get("kind") == row.get("kind") and r.get("node") in ids}
+    return same.pop() if len(same) == 1 else None
 
 
 def is_guard(row):
