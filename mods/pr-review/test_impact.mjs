@@ -167,6 +167,22 @@ assert.equal(wide[0].mark, "changed");
   assert.equal(impactLines(n.model).lead, "No language server covers the files of this PR.");
   assert.deepEqual(impactLines(n.model).source, ["Not covered: 2 files without a language server (.md, .yaml)."]);
 }
+// Infrastructure code is "Infrastructure changes"' part (infra.js isInfraFile, one source for both): its files are
+// not asked about though a server exists for them, are no callers, and the line under the title points there.
+{
+  const { isInfraFile } = await import("./infra.js");
+  const hunks = [...HUNKS, hunk("stacks/orders/queue.tf", 1, ["+resource \"aws_sqs_queue\" \"orders\" {}"]), hunk("template.yaml", 1, ["+Resources:", "+  Fn:", "+    Type: AWS::Serverless::Function"])];
+  const patch = [{ path: "stacks/orders/queue.tf", lines: [] }, { path: "template.yaml", lines: ["+Resources:"] }, { path: "deploy/app.yaml", lines: ["+replicas: 2"] }, { path: "shop/price.py", lines: [] }];
+  const paths = new Set(patch.filter(isInfraFile).map((f) => f.path)), infra = (p) => paths.has(p) || isInfraFile({ path: p });
+  assert.deepEqual([...paths], ["stacks/orders/queue.tf", "template.yaml"], "a YAML file that is no template is not infrastructure");
+  const b = bridge({ "/references": (q) => (q.line === 12 ? { status: "ok", references: [{ path: "stacks/orders/main.tf", line: 3, end: 3, text: "discount = 1" }, { path: "shop/price.py", line: 22, end: 22, text: "self.sum -= discount(x)" }] } : null) });
+  const m = (await computeImpact({ call: b.call, root: "/r", hunks, supported: (p) => /\.(py|tf)$/.test(p), infra })).model;
+  assert.ok(!b.asked.some((x) => /\.tf|template\.yaml/.test(x)), "no server is asked about an infrastructure file");
+  assert.deepEqual([m.infra, m.uncovered, m.functions.find((f) => f.name === "discount").callers.map((c) => c.path)], [2, [{ ext: "yaml", files: 1 }], ["shop/price.py"]], "a use in a .tf file is no caller");
+  assert.ok(impactLines(m).source.includes("Not covered: 1 file without a language server (.yaml); 2 infrastructure files: see Infrastructure changes."));
+  assert.ok(impactDoc(m).lines.includes("Not covered: 1 file without a language server (.yaml); 2 infrastructure files: see Infrastructure changes."));
+  assert.equal(impactLines({ ...m, uncovered: [], infra: 1 }).source[2], "Not covered: 1 infrastructure file: see Infrastructure changes.");
+}
 // Limits: only so many changed symbols are asked, and a slow run stops asking; both are counted.
 {
   const many = Array.from({ length: 8 }, (_x, i) => sym(`f${i}`, "function", 1 + i * 3, 2 + i * 3)), rows = many.map((s) => hunk("a.py", s.line + 1, ["+    x = 1"]));
@@ -228,5 +244,6 @@ if (existsSync(FIXTURES)) {
   for (const f of model.functions) assert.ok([...changes.get(f.path).added].some((l) => l >= f.line && l <= f.end), `${f.name} has a changed line in pr2.diff`);
   assert.equal(impactLines(model).lead, "The language server found no caller of the changed functions outside the tests.");
   assert.equal(impactDoc(model).title, "Impact (2 changed functions, 0 callers, 1 test)");
+  assert.ok(impactLines(model).source.includes("Not covered: 1 infrastructure file: see Infrastructure changes."), "PR #2's template.yaml is the other section's");
 }
 console.log("impact ok");

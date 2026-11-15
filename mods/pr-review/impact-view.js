@@ -13,7 +13,8 @@ import { hash } from "./pr.js";
 import { call, supported } from "./defs.js";
 import { installHint } from "./setup.js";
 import { SETUP_KEY } from "./setup-view.js";
-import { computeImpact, impactArch, impactLines, impactMarks, impactRows, fullName, MARKS, MARK_ORDER, SIG } from "./impact.js";
+import { computeImpact, impactArch, impactLines, impactMarks, impactRows, fullName, MARKS, MARK_ORDER, SIG, MODEL_V } from "./impact.js";
+import { isInfraFile } from "./infra.js"; // what "Infrastructure changes" reads is not Impact's
 
 const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const ROW = 18; // a line under a card's text; the layout keeps the lines and the gap before them
@@ -46,7 +47,7 @@ export function impactSection(t, st, o) {
     .when(Boolean(counts), (e) => e.child(div().text_size(TYPE.body).text_color(t.muted).child(counts ?? "")));
   const line = (text, c = t.muted) => div().w_full().whitespace_normal().text_size(TYPE.body).text_color(c).child(text);
   const box = (...kids) => [["impact", v_flex().id("rv-impact").w_full().gap(8).pt(6).children(kids.filter(Boolean))]];
-  if (!st || st.state === "loading") return [];
+  if (!st || st.state === "loading" || st.state === "none") return [];
   if (st.state === "busy") return box(title(), h_flex().gap(8).items_center().text_size(TYPE.body).text_color(t.muted).child(div().child(SPIN[0]).frames(SPIN, 90))
     .child(st.message ?? (st.of ? `Asking the language server for callers: ${st.done + 1} of ${st.of}.` : "Asking the language server for callers.")));
   if (st.state === "error") return box(title(), line(`The callers could not be read: ${st.message}`, t.ansi1),
@@ -85,7 +86,14 @@ export const ImpactMode = {
   // The result belongs to one PR head: pr-data/cache/impact-<url hash>-<head>.json.
   impactKey() { const url = this.prSel?.url, head = this.worktree?.head ?? this.head; return url && head && !this.exMode ? `${hash(url)}-${head}` : null; },
   impactFile(key) { return `${appHome()}/pr-data/cache/impact-${key}.json`; },
-  /** The model for the head shown, or null (not asked yet, running, failed). */
+  // The infrastructure files of the patch (infra.js decides which), once per patch: {paths: Set, only: the patch has
+  // nothing else}. A file outside the patch (a caller) is one by its name alone.
+  impactInfra() {
+    if (this.impactInfraMemo?.patch !== this.patch) { const paths = new Set((this.patch ?? []).filter(isInfraFile).map((f) => f.path));
+      this.impactInfraMemo = { patch: this.patch, paths, only: paths.size > 0 && paths.size === this.patch.length, is: (p) => paths.has(p) || isInfraFile({ path: p }) }; }
+    return this.impactInfraMemo;
+  },
+  /** The model for the head shown, or null (not asked yet, running, failed, or a diff of infrastructure code only). */
   impactNow() { const st = this.impactSt; return st && st.key === this.impactKey() && st.state === "ok" ? st.model : null; },
 
   // From render, on the Architecture page: read the cached result once per head; none: ask the language servers,
@@ -95,11 +103,13 @@ export const ImpactMode = {
     if (!key || this.tab !== "steps" || this.page !== "arch" || !this.hunks) return;
     const st = this.impactSt;
     if (st?.key === key) { if (st.state === "idle" && !st.asked && this.lspRoot() && this.trustedPr()) { st.asked = true; cx.timer.after(0, (cx) => this.impactRun(cx)); } return; }
+    // Only infrastructure code: no section and no language server ("Infrastructure changes" has it).
+    if (this.impactInfra().only) { this.impactSt = { key, state: "none" }; return; }
     const mine = (this.impactSt = { key, state: "loading" });
     cx.spawn(async (cx) => {
       const saved = JSON.parse(await readTextFile(this.impactFile(key)).catch(() => null) ?? "null");
       if (this.impactSt !== mine) return;
-      if (saved?.v === 1) { mine.state = "ok"; mine.model = saved; } else mine.state = "idle";
+      if (saved?.v === MODEL_V) { mine.state = "ok"; mine.model = saved; } else mine.state = "idle";
       cx.notify();
     });
   },
@@ -108,10 +118,10 @@ export const ImpactMode = {
   // A language server that is still loading its index answers "starting": asked again every 2 s, for 2 minutes.
   impactRun(cx, tries = 0) {
     const key = this.impactKey(), root = this.lspRoot();
-    if (!key || !root || !this.hunks || (this.impactSt?.key === key && this.impactSt.state === "busy" && !tries)) return;
+    if (!key || !root || !this.hunks || this.impactInfra().only || (this.impactSt?.key === key && this.impactSt.state === "busy" && !tries)) return;
     const st = (this.impactSt = { key, state: "busy", done: 0, of: 0, message: tries ? this.impactSt?.message : null });
     cx.spawn(async (cx) => {
-      const r = await computeImpact({ call, root, hunks: this.hunks, supported, onStep: (done, of) => { st.done = done; st.of = of; st.message = null; cx.notify(); } })
+      const r = await computeImpact({ call, root, hunks: this.hunks, supported, infra: this.impactInfra().is, onStep: (done, of) => { st.done = done; st.of = of; st.message = null; cx.notify(); } })
         .catch((e) => ({ status: "error", message: String(e?.message ?? e) }));
       if (this.impactSt !== st) return;
       if (r.status === "starting" && tries < 60) { st.message = r.message; cx.notify(); return cx.timer.after(2000, (cx) => { if (this.impactSt === st) this.impactRun(cx, tries + 1); }); }

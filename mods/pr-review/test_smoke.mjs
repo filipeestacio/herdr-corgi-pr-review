@@ -712,6 +712,19 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     assert.equal(w.impactSt.state, "idle"); assert.deepEqual(asked, [], "no language server is asked for someone else's PR before the click");
     click("rv-impact-run", "Impact, untrusted: Find callers"); await settle(); await settle(); draw(w, "Impact, untrusted: the result");
     assert.equal(w.impactSt.state, "ok");
+    // A Terraform PR (demo/fixtures/infra): its files are "Infrastructure changes"' part. No Impact section, nothing in
+    // the Markdown, and no bridge or language server asked, though the checkout is there and the PR is trusted.
+    const tfDiff = readFileSync(new URL("../../demo/fixtures/infra/pr.diff", import.meta.url), "utf8"), starts = [];
+    const exec0 = S.exec; S.exec = async (cmd, args) => { starts.push(args.at(-1)); return exec0(cmd, args); };
+    const tf = await open({ diff: tfDiff, pr: 7, title: "feat(orders): drop the dead-letter queue" }); tf.head = "0123abc"; tf.worktree = { url: tf.prSel.url, head: tf.head, path: "/h/w" }; asked.length = 0; starts.length = 0;
+    act(tf, "steps", "Impact, Terraform only: the Analysis tab"); act(tf, "page:arch", "Impact, Terraform only: the page"); await settle(); draw(tf, "Impact, Terraform only: still none"); tf.command("impact", cx); await settle();
+    assert.deepEqual([tf.impactSt.state, tf.pageParts.includes("impact"), tf.pageParts.includes("infra"), asked, starts.filter((x) => x === "start"), /## Impact/.test(tf.mdText(false))], ["none", false, true, [], [], false], "a diff of infrastructure code has no Impact section and starts nothing");
+    // The same files next to code: Impact covers the code and says where the rest is.
+    const mixed = await open({ diff: `${tfDiff}\n${fx("pr2.diff")}`, ctx: fx("ctx.json"), pr: 8, title: "feat: both" }); mixed.worktree = { url: mixed.prSel.url, head: mixed.head, path: "/h/w" }; asked.length = 0;
+    act(mixed, "steps", "Impact, mixed: the Analysis tab"); act(mixed, "page:arch", "Impact, mixed: the page"); await settle(); draw(mixed, "Impact, mixed: about to start"); mixed.impactRun(cx); await settle(); await settle(); S.texts = new Set(); draw(mixed, "Impact, mixed: the result"); const seen = [...S.texts]; S.texts = null;
+    assert.deepEqual([mixed.impactNow()?.infra, asked.filter((x) => /\.tf|\.ya?ml/.test(x))], [6, []], "five Terraform files and the SAM template are left out");
+    assert.ok(seen.includes("Not covered: 6 infrastructure files: see Infrastructure changes.") && mixed.pageParts.includes("impact") && mixed.pageParts.includes("infra") && mixed.mdText(false).includes("Not covered: 6 infrastructure files: see Infrastructure changes."), "the hint is on the page and in its Markdown");
+    S.exec = exec0;
   } finally { globalThis.fetch = realFetch; S.exec = null; }
 }
 // The Markdown of a page says what the page shows: every text the page draws (each crossing and path opened in turn,
