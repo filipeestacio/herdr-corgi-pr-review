@@ -130,7 +130,9 @@ STEPS = (
     "caught up). A case that breaks is "
     "a path like any other, with its finding; a case the code handles names the line that handles it; what only a "
     "measurement can tell (real latency, the provider's limits) is not_checkable. A circuit breaker is no default "
-    "answer: name one only where a failing path of this PR needs it;\n"
+    "answer: name one only where a failing path of this PR needs it. State the same process holds (an in-memory "
+    "store, a module-level list, a local dict) is no dependency: it cannot be slow, overloaded or down by itself, "
+    "it belongs to state;\n"
     "- every public route's request, always: each synchronous call it makes, the time the request can spend in them "
     "against its timeout, its throttle, and whether its answer is honest (a 2xx only when the work really happened or "
     "is safely queued); one path of kind request for each synchronous dependency in such a request, e.g. a route that "
@@ -309,6 +311,10 @@ def view(answer, findings, pic, known, changed=None):
             if handled in ("no", "partly") and not found and path not in shown:
                 handled = "not_checkable"
             cases[c["when"]] = {"when": c["when"], "at": where, "handled": handled, "how": str(c.get("how") or ""), "effect": str(c.get("effect") or ""), "findings": found, "path": path}
+        # State in the same process (an in-memory store) is no dependency: nothing between the caller and it can be
+        # slow, overloaded or down. Dropped, whatever the run says (an external service called in_process stays).
+        if enum(d.get("mode"), MODES) == "in_process" and d.get("kind") != "external":
+            continue
         if d.get("dep") and cases:
             downstream.append({"dep": str(d["dep"]), "kind": enum(d.get("kind"), DEP_KINDS) or "other", "node": d.get("node") if d.get("node") in nodes else None,
                                "edge": d.get("edge") if d.get("edge") in edges else None, "at": at(d.get("at")), "mode": enum(d.get("mode"), MODES), "entry": str(d.get("entry") or ""),

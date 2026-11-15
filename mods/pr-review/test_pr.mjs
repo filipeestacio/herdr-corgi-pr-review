@@ -983,6 +983,9 @@ console.log("ok");
   assert.deepEqual(dq.paths.map((p) => [p.id, p.blocker ? "block" : p.same_cause ?? "-"]), [["p1", "block"], ["p3", "block"], ["p2", "p1"]], "blockers first, the repeated cause after them");
   assert.equal(dq.counts.blockers, 2);
   assert.equal(blockerOf(P("p", "state", ["e5"], "finding", ["reads_foreign_state", "poison_message"]), null, null), null, "reading another process' state is a finding, its poison message blocks in its own path");
+  assert.deepEqual([blockerOf(P("p", "request", ["library/handler.py:21"], "finding", ["dishonest_response", "no_timeout_public", "no_throttle", "reads_foreign_state"]), null, null)?.why,
+    blockerOf(P("p", "request", ["library/handler.py:21"], "finding", ["reads_foreign_state", "lost_effect", "no_timeout_public"]), null, null)?.why, blockerOf(P("p", "state", ["a.py:1"], "finding", ["reads_foreign_state", "lost_effect"], { visible: false, kind: "effect" }), null, null)],
+  ["the route answers success while the work is lost", "a call without a timeout waits inside a public route's request", null], "the path's own reason wins over the foreign read; what the read breaks still blocks in its own path");
   assert.equal(blockerOf(P("p", "retry", ["e5"], "mitigated", ["no_dlq"], { limited_by: "a.py:1" }), ladderOf(p1, deps), null), null, "only a path with a finding blocks");
   assert.equal(blockerOf(P("p", "retry", ["queue", "e5", "consumer"], "finding", ["unbounded_retry"]), ladderOf(p1, deps), null).at, "library/consumer.py:14", "a path without a line blocks at its ladder's place");
   assert.deepEqual(blockerOf(P("p4", "request", ["e0", "library/mailer.py:14"], "finding", ["no_throttle", "swallowed_retry", "dishonest_response"]), null, null),
@@ -1048,7 +1051,7 @@ console.log("ok");
     const dr = withResilience(pic, { edge_ids: true, downstream, paths: [P("p1", "request", ["handler", "e0"], "finding", ["no_backoff", "backpressure"], { findings: ["x"] }), P("p2", "request", ["handler"], "mitigated", [], { limited_by: "a.py:1" })] }).resilience;
     assert.deepEqual(dr.downstream.map((d) => d.card), ["mailer", "queue"]);
     assert.deepEqual(dr.downstream[0].cases.map((c) => c.path), ["p1", "p1", "p2", null, null, null], "a path the run does not have is no link");
-    assert.deepEqual(dr.paths.find((p) => p.id === "p1").marks.filter((m) => m.at === "mailer").map((m) => m.mark), ["✕ when slow"]);
+    assert.deepEqual(dr.paths.find((p) => p.id === "p1").marks.filter((m) => m.at === "mailer").map((m) => m.mark), ["✕ when slow", "~ when overloaded"]);
     assert.deepEqual(dr.paths.find((p) => p.id === "p2").marks.filter((m) => m.at === "mailer").map((m) => m.mark), ["✕ when down"]);
     assert.equal(dr.paths.find((p) => p.id === "p1").blocker, null, "retrying at once and a wait that backs up are findings, alone no blockers");
     assert.equal(dr.downstreamLine, "2 dependencies, 9 cases: 2 not handled, 1 partly, 1 handled and 5 not checkable.");

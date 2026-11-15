@@ -1668,69 +1668,6 @@
       "path": "p5"
      }
     ]
-   },
-   {
-    "dep": "LoanStore (in-memory)",
-    "kind": "internal",
-    "node": "store",
-    "edge": "e7",
-    "at": "library/consumer.py:19",
-    "mode": "in_process",
-    "entry": "the queue consumer and POST /remind",
-    "cases": [
-     {
-      "when": "slow",
-      "at": "library/consumer.py:19",
-      "handled": "yes",
-      "how": "an in-process dict lookup",
-      "effect": "No wait.",
-      "findings": [],
-      "path": null
-     },
-     {
-      "when": "overloaded",
-      "at": "library/consumer.py:19",
-      "handled": "yes",
-      "how": "in-process, no shared load",
-      "effect": "None.",
-      "findings": [],
-      "path": null
-     },
-     {
-      "when": "down",
-      "at": "library/consumer.py:19",
-      "handled": "no",
-      "how": "a cold Lambda starts with an empty dict",
-      "effect": "Every lookup raises KeyError and the batch fails or the route answers 500.",
-      "findings": [
-       "741d3e364325"
-      ],
-      "path": "p1"
-     },
-     {
-      "when": "bad_answer",
-      "at": "library/consumer.py:19",
-      "handled": "no",
-      "how": "KeyError for an unknown id; no check of the loan's state",
-      "effect": "A poison record repeats its batch; a returned loan still gets mailed.",
-      "findings": [
-       "ded9bfd83acb",
-       "479f51c19859"
-      ],
-      "path": "p2"
-     },
-     {
-      "when": "recovers",
-      "at": "library/consumer.py:19",
-      "handled": "no",
-      "how": "a restart loses all loans",
-      "effect": "State does not come back after a Lambda recycle.",
-      "findings": [
-       "741d3e364325"
-      ],
-      "path": "p1"
-     }
-    ]
    }
   ],
   "db_calls": [

@@ -167,7 +167,8 @@ dn = resilience.view({"paths": [{"id": "px", "kind": "request", "steps": ["handl
         {"when": "recovers", "at": "library/mailer.py:14", "handled": "maybe", "how": ""},
         {"when": "on fire", "handled": "no"}, "junk"]},
     {"dep": "Token store", "kind": "vault", "node": "ghost", "edge": "e9", "at": "h.py:9", "mode": "telepathy", "cases": [{"when": "bad_answer", "at": "h.py:9", "handled": "yes", "how": "checks None"}]},
-    {"dep": "No cases", "kind": "cache", "at": "c.py:1", "mode": "sync", "cases": []}, {"kind": "queue", "cases": [{"when": "down", "handled": "no", "at": "q.py:1"}]}]}, [], pic, ["a1"])["downstream"]
+    {"dep": "No cases", "kind": "cache", "at": "c.py:1", "mode": "sync", "cases": []},
+    {"dep": "LoanStore (in-memory)", "kind": "internal", "node": "handler", "at": "library/consumer.py:19", "mode": "in_process", "cases": [{"when": "down", "at": "library/consumer.py:19", "handled": "yes", "how": "a dict"}]}, {"kind": "queue", "cases": [{"when": "down", "handled": "no", "at": "q.py:1"}]}]}, [], pic, ["a1"])["downstream"]
 assert [(d["dep"], d["kind"], d["node"], d["edge"], d["at"], d["mode"]) for d in dn] == [("Mailer", "external", "mailer", "e1", "library/mailer.py:14", "sync"), ("Token store", "other", None, None, "h.py:9", None)]
 assert [(c["when"], c["handled"], c["at"], c["path"]) for c in dn[0]["cases"]] == [("slow", "not_checkable", "library/mailer.py:16", None), ("overloaded", "not_checkable", None, None),
                                                                                   ("down", "no", "library/mailer.py:19", "p2"), ("bad_answer", "partly", "library/mailer.py:16", "p1"),
@@ -176,7 +177,7 @@ assert [(c["when"], c["handled"], c["at"], c["path"]) for c in dn[0]["cases"]] =
 assert (dn[0]["entry"], dn[1]["entry"]) == ("POST /remind", "") and dn[0]["cases"][2]["findings"] == [] and dn[0]["cases"][2]["effect"] == "The mail is lost." and dn[1]["cases"][0]["handled"] == "yes"
 assert "downstream" in sch["required"] and "node" in sch["properties"]["downstream"]["items"]["required"] and sch["properties"]["downstream"]["items"]["properties"]["cases"]["items"]["properties"]["when"]["enum"] == resilience.WHENS
 assert "downstream" in resilience.PROBE_KINDS and "dependencies" in resilience.AREAS and {"no_backoff", "thundering_herd", "unchecked_answer", "backpressure"} <= set(resilience.FAILING)
-for part in ("dependencies that fail or are overloaded", "who waits how long at which line", "retries at once, retries on several layers", "A circuit breaker is no default answer",
+for part in ("State the same process holds", "dependencies that fail or are overloaded", "who waits how long at which line", "retries at once, retries on several layers", "A circuit breaker is no default answer",
              "whether the system gets back by itself", "what only a measurement can tell", "separately for each way in that reaches it"):
     assert part in pr2, part
 for part in ("downstream (one per dependency the PR starts to use or uses differently", "cases (one for each of slow, overloaded, down, bad_answer, recovers", "kind downstream: a stub plays the dependency"):
