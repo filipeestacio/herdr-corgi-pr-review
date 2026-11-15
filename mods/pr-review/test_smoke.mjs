@@ -141,10 +141,12 @@ async function tour(v, name) {
       // The queue with a job that throws, one left running by a stopped slice, and a good one behind them.
       const good = { shown: [{ kind: "+", text: "import os" }], spans: [] }, bad = (extra) => ({ shown: null, lang: "python", inf: { spans: [] }, ...extra });
       v.hlQueue = new Map([["throws", bad({})], ["stopped", bad({ running: true, shown: [] })], [good, { shown: good.shown, lang: "python", inf: good }]]);
-      v.hlBusy = true; v.hlAt = Date.now() - 5000; // a slice that never came back
-      draw(v, at("colors after a stopped slice")); assert.ok(Date.now() - v.hlAt < 1000, at("the render starts the queue again"));
+      v.hlBusy = Date.now() - 1000; draw(v, at("colors while a slice runs")); assert.ok(Date.now() - v.hlBusy >= 1000, at("a slice that may still run is left alone"));
+      v.hlBusy = Date.now() - 5000; // a slice that never came back: Herdr stopped it, nothing was thrown
+      draw(v, at("colors after a stopped slice")); assert.ok(Date.now() - v.hlBusy < 1000, at("the render starts the queue again"));
       drain();
       assert.ok(!v.hlQueue.size && !v.hlBusy && good.spans[0]?.length > 0, at("a job that throws or hangs does not keep the others plain"));
+      draw(v, at("colors after the queue went on")); assert.ok(!v.hlQueue.size && !v.hlBusy, at("the dropped files are not queued again"));
     }
   }
   // A comment written at a line: the composer, then a pending comment in the diff, the Comments tab and Finish.
@@ -398,6 +400,24 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     "one guard and one right off the map under the crossings, and the two same operator rows as one (next to the fixture's own)");
   act(v, "page:blast", "Security with a guard");
   await tour(v, "PR #2 with a guard, a right off the map and an operator's script");
+}
+// The Security page's map shows archLayout's picture at once; its better layout (arch.js archSearch: a full layout per
+// try, too much for a render) comes after the render, in slices (layoutMore): the memo's layout is replaced once, the
+// view is told, and the page draws with it.
+{
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json") });
+  act(v, "page:blast", "Security, the map at once");
+  const { lineStats, archLayout } = await import("./arch.js"), quick = v.secMemo.L, jobs = v.layoutJobs.length;
+  let told = 0;
+  const later = { ...cx, notify() { told++; }, timer: { ...cx.timer, after: (_ms, f) => setImmediate(() => f(later)) }, spawn: (fn) => cx.spawn(() => fn(later)) };
+  v.layoutMore(later); await settle();
+  const s = lineStats(v.secMemo.L), q = lineStats(quick);
+  assert.ok(jobs > 0 && v.secMemo.L !== quick && told >= 1 && !v.layoutBusy && v.layoutJobs.length === 0, "searched after the render");
+  assert.ok(s.crossings <= q.crossings && s.bends < q.bends && s.around < q.around, `${JSON.stringify(s)} was ${JSON.stringify(q)}`);
+  draw(v, "Security, the map after its search");
+  // A memo replaced meanwhile is not searched on: its job ends without a layout.
+  const gone = { key: "x", L: quick }; v.layoutLater(gone, [null], () => null); v.layoutMore(later); await settle();
+  assert.ok(gone.L === quick && !v.layoutBusy && archLayout(null).nodes.length === 0);
 }
 // Someone else's PR with reasons for a security review: the offers instead of a start.
 {

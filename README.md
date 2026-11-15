@@ -138,6 +138,7 @@ PR review, [Go to](https://github.com/saefty/herdr-corgi-goto) and the [chat bar
 
 - With **Go to** (⌘⇧P), paste a PR link or type `repo#123` and pick "Review PR"; reviews you started are searchable as "Resume review".
 - With the **chat bar**, Discuss opens the agent's chat bubble so you can follow its answer without leaving the review.
+- With **[Worktrees](https://github.com/saefty/herdr-corgi-worktrees)**, each checkout and branch there shows the mark of its PR from the lists this panel already has, and a click on the mark picks that PR here.
 - **Separate setups**, like work and personal: a small mod of your own can give each its accounts, clone folder and environment, and the panel shows each setup's PRs with its own tag.
 
 ## What's in here

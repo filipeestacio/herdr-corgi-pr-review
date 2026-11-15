@@ -1,7 +1,7 @@
 // Run: node test_arch.mjs  (the architecture / blast radius layout: columns, lanes, ports, fans, stubs, hops, badges,
 // card sizes, focus, orchestrator states)
 import assert from "node:assert/strict";
-import { archLayout, archBands, archFocus, archMarks, pathMark, labelLines, zoneArch, stateLayout, sourceStyle, hasSources, crossings, lineStats, clampText, wrapLines, bundleChips, markRoom, MARK_CARD_H, ARCH, LABEL } from "./arch.js";
+import { archLayout, archBands, archFocus, archMarks, pathMark, labelLines, zoneArch, stateLayout, sourceStyle, hasSources, crossings, lineStats, archSearch, archBest, clampText, wrapLines, bundleChips, markRoom, MARK_CARD_H, ARCH, LABEL } from "./arch.js";
 import { overlapsOf, transitionLabel, SM } from "./arch.js";
 import { blastArch } from "./pr.js";
 
@@ -653,8 +653,8 @@ console.log("ok");
     const L = archLayout(full, "diff", () => 0, fit, { labels: true }), y = (id) => L.nodes.find((n) => n.id === id).y;
     assert.deepEqual([L.paths.filter((p) => p.kind === "long").length, L.hops.length, lineStats(L).around], [2, 0, 2]);
     assert.ok(y("a") > y("b"), "the line that ends further right starts lower");
-    // With room over and under the middle frame neither goes round the picture, and still nothing crosses.
-    const free = archLayout(arch, "diff", () => 0, fit, { labels: true });
+    // With room over and under the middle frame neither goes round the picture after the search, and still nothing crosses.
+    const free = archBest(arch, "diff", () => 0, fit, { labels: true });
     assert.deepEqual([free.paths.filter((p) => p.kind === "long").length, free.hops.length, lineStats(free).around], [2, 0, 0]);
   }
   console.log("ok long lines nest");
@@ -746,7 +746,7 @@ console.log("ok");
     edges: [E("caller", "api", "1. ‖ token · body, Authorization header"), E("caller", "api", "2. ‖ signature · body, signature header"), E("report", "bucket", "3. ‖ iam · scripts/report.sh", true), E("toggle", "admin", "4. ‖ iam · scripts/toggle.sh"),
       E("deployA", "api", "5. ‖ deploy access · API secret; hook secret", true), E("deployB", "admin", "6. ‖ deploy access · ADMIN_PROFILE", true), E("api", "worker", "7. ‖ iam · function:Invoke"), E("worker", "secret", "8. ‖ iam · secrets:GetValue"),
       E("bus", "archive", "9. ‖ iam · detail (body), detail-type", true), E("stream", "bucket", "10. ‖ iam · storage:PutObject")] };
-  const lay = (a) => archLayout(a, "diff", () => 0, true, { labels: true, lines: () => true }); // as the Security page lays it out
+  const args = (a) => [a, "diff", () => 0, true, { labels: true, lines: () => true }], lay = (a) => archBest(...args(a)); // as the Security page lays it out, after its search
   const L = lay(arch), s = lineStats(L), g = (id) => L.groups.find((x) => x.id === id), path = (n) => L.paths.find((p) => p.label.startsWith(`${n}. `)), bendsOf = (p) => lineStats({ ...L, paths: [p], trunks: [] }).bends;
   // Before: 2 crossings, 18 bends, 4698 px of lines, the long line round the picture.
   assert.deepEqual([s.crossings, s.overlaps, s.around, s.covered], [0, 0, 0, 0], "nothing crosses, no line round the picture");
@@ -768,6 +768,16 @@ console.log("ok");
   assert.deepEqual(less.nodes.map((n) => [n.id, n.col, n.y]), L.nodes.map((n) => [n.id, n.col, n.y]), "a call less: every card in its column at its height");
   // Wrapped into bands, the line through the picture goes on at its height in the next band.
   assert.ok(archBands(L, Math.round(L.width / 2)).length > 1);
+  // What a render gets at once (archLayout) has the straight lines already and crosses no more than before; the long
+  // line's way through the picture comes with the search, a try per step, at most 400 / 10 lines of them.
+  const quick = archLayout(...args(arch)), q = lineStats(quick);
+  assert.ok(q.crossings <= 2 && q.bends < 18 && q.around === 1, JSON.stringify(q));
+  let steps = 0, r;
+  for (const g = archSearch(...args(arch)); !(r = g.next()).done;) steps++;
+  assert.deepEqual(r.value, L); assert.ok(steps > 0 && steps <= 40, `${steps} steps`);
+  // A picture without a long line has nothing to search: no step, the render's layout.
+  const plain = { ...arch, edges: arch.edges.filter((e) => !e.label.startsWith("3.")) }, g2 = archSearch(...args(plain)), first = g2.next();
+  assert.ok(first.done); assert.deepEqual(first.value, archLayout(...args(plain)));
   console.log("ok frames and long lines run straight");
 }
 
@@ -798,10 +808,12 @@ console.log("ok");
     const fx = (f) => JSON.parse(readFileSync(new URL(f, FX), "utf8")), saved = fx("analysis-s.json"), doc = fx("findings-s.json");
     const ai = withSecurity({ ...mapReview(saved.answer, saved.hunks), head: doc.security.head }, doc.security, null, doc.security.head), a = ai.arch;
     const rows = crossingsOf({ arch: a, access: ai.access, threats: ai.threats, gates: ai.gates, bypasses: ai.bypasses, findings: doc.findings });
-    const sec = archLayout(secPicture(rows.filter(crossingChanged), a, (r) => rows.indexOf(r) + 1), "diff", () => 0, true, { labels: true, lines: () => true });
+    const secArgs = [secPicture(rows.filter(crossingChanged), a, (r) => rows.indexOf(r) + 1), "diff", () => 0, true, { labels: true, lines: () => true }], sec = archBest(...secArgs);
     const was = { sec: [0, 16, 3029, 2], wide: [0, 18, 5417, 2], fit: [0, 22, 4986, 2] }; // crossings + overlaps, bends, length, round the picture
-    const maps = { sec, wide: archLayout(mapArch(a, ai.access, ai.bypasses), "diff", () => 0, false, { labels: true }), fit: archLayout(mapArch(a, ai.access, ai.bypasses), "diff", () => 0, true, { labels: true }) };
-    for (const [k, L] of Object.entries(maps)) {
+    // Each map as a render gets it at once, and after its search.
+    const m = mapArch(a, ai.access, ai.bypasses), maps = { sec: [archLayout(...secArgs), sec], wide: [false].flatMap((fit) => [archLayout(m, "diff", () => 0, fit, { labels: true }), archBest(m, "diff", () => 0, fit, { labels: true })]),
+      fit: [true].flatMap((fit) => [archLayout(m, "diff", () => 0, fit, { labels: true }), archBest(m, "diff", () => 0, fit, { labels: true })]) };
+    for (const [k, Ls] of Object.entries(maps)) for (const L of Ls) {
       const s = lineStats(L), now = [s.crossings + s.overlaps, s.bends, s.length, s.around];
       now.forEach((v, i) => assert.ok(v <= was[k][i], `${k}: ${now} was ${was[k]}`));
       assert.equal(s.covered, 0);
@@ -821,9 +833,11 @@ console.log("ok");
   for (let j = 0; j < 10; j++) edges.push({ from: `n${j % 3}_${j % 6}`, to: `n${(j % 3) + 2 + (j % 2)}_${(j * 2) % 6}`, label: `far ${j}` });
   const tangle = (L) => lineStats(L).crossings + 2 * lineStats(L).overlaps;
   for (const opts of [{ labels: true }, { labels: true, lines: () => true }]) {
-    const L = archLayout({ groups, nodes, edges }, "diff", () => 0, true, opts), still = archLayout({ groups, nodes, edges }, "diff", () => 0, true, { ...opts, over: new Set(), still: true });
-    assert.ok(tangle(L) <= tangle(still), `${tangle(L)} was ${tangle(still)}`);
-    assert.equal(L.hops.length, lineStats(L).crossings, "every crossing that stays has its hop");
+    const still = archLayout({ groups, nodes, edges }, "diff", () => 0, true, { ...opts, over: new Set(), still: true });
+    for (const L of [archLayout({ groups, nodes, edges }, "diff", () => 0, true, opts), archBest({ groups, nodes, edges }, "diff", () => 0, true, opts)]) { // at once, and after the search
+      assert.ok(tangle(L) <= tangle(still), `${tangle(L)} was ${tangle(still)}`);
+      assert.equal(L.hops.length, lineStats(L).crossings, "every crossing that stays has its hop");
+    }
   }
   console.log("ok straight lines cost no crossing");
 }
