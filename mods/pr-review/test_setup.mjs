@@ -23,6 +23,14 @@ assert.equal(report(min, "linux").find((x) => x.id === "jdtls").install, null); 
 assert.equal(r["typescript-language-server"].what, "Go to definition in TypeScript and JavaScript needs typescript-language-server + tsc");
 assert.deepEqual(blockers(report(min)), []);
 
+// A program for one system only shows there: bwrap is the probes' sandbox on Linux (macOS has sandbox-exec built in).
+assert.equal(byId(report(min, "darwin")).bwrap, undefined);
+assert.deepEqual([byId(report(min, "linux")).bwrap.status, byId(report(min, "linux")).bwrap.install], ["optional-missing", "sudo apt install bubblewrap"]);
+assert.match(byId(report(min, "linux")).bwrap.what, /Without it every probe asks first and its script runs with no sandbox/);
+// What a feature needs beyond the program being there, and what happens without it, stands in the row.
+assert.match(r.git.what, /From 2\.46 on.*with an older git they do not start in such a clone/);
+assert.match(r.codex.what, /permission profile that reads only the PR checkout.*fails the run instead of reading more/);
+
 // A server without its companion (tsc) counts as missing.
 const half = parseCheck(out(["git", "gh", "claude", "python3", "typescript-language-server"], "auth:gh=1\nauth:claude=1"));
 assert.equal(byId(report(half))["typescript-language-server"].status, "optional-missing");

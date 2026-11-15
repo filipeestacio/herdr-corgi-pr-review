@@ -115,8 +115,11 @@ Feature names in the ledger: `Review analysis`, `Review analysis (since last rev
 Setup (PRs ▾ → Setup) checks each one and offers the install command; nothing is installed without you pressing
 Enter in the terminal it opens.
 
-- Required: `git`, `gh` (logged in), `claude` (logged in), `python3`.
-- Optional: `codex` (the Codex reviewer is offered only when it is on PATH), `acli` (the Jira ticket a PR names).
+- Required: `git` (2.46 or later for the push lock where a remote has a push URL of its own), `gh` (logged in),
+  `claude` (logged in), `python3`.
+- Optional: `codex` (the Codex reviewer is offered only when it is on PATH; it needs a Codex with permission
+  profiles), `bwrap` on Linux (the sandbox for probes; macOS has `sandbox-exec` built in), `acli` (the Jira ticket
+  a PR names).
 - The reviewers use Claude Code's `/security-review` and a `/code-review` command; when a command is missing in
   your Claude setup, the same review runs as a plain prompt.
 - Language servers, for go-to-definition and hover in the diff (each one only turns that language on):

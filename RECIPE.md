@@ -185,7 +185,8 @@ big PRs into cohort passes and a merge pass under one cap.
 - `herdr`: `exec`, `hc send`, `run` (`tab.new`, `tab.select`, `layout.switch`, `pane.focus`,
   `terminal.paste`), `openOverlay` (popup and window), `readTextFile` / `writeTextFile` (compare-and-swap),
   `watchFolder`, `shared` / `setShared`, `nextCommand` (`pr-review.page:arch`, `pr-review.step:n`, …).
-- Programs: `git`, `gh`, `claude`, `python3`, optionally `codex`, `acli`, language servers, `code`.
+- Programs: `git` (2.46 or later for the full push lock), `gh`, `claude`, `python3`, optionally `codex` (with
+  permission profiles), `bwrap` on Linux (the probes' sandbox), `acli`, language servers, `code`.
 - Data in `pr-data/` (cache bounded to 200 files / 50 MB); settings in `pr-review.config.json`.
 
 ## Watch out
