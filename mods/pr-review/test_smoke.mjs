@@ -134,6 +134,23 @@ async function tour(v, name) {
   }
   // The pages, with their folds and rows clicked.
   for (const p of ["overview", "blast", "arch", "res"]) act(v, `page:${p}`, at(`page ${p}`));
+  // The pages' signs: every nav row of Analysis carries one (the map's is its word "Changed" while no finding stands on
+  // it), each with a glyph, a form, and a tip that names its page in words; a page with unresolved findings is colored,
+  // one without is quiet. The bar's excerpt and the registry entry (the minimized chip, the panel's row) say the same.
+  {
+    v.command("page:blast", cx); S.ids = new Set(); draw(v, at("the pages' signs")); const ids = S.ids; S.ids = null;
+    for (const id of ["rv-nav-ov", "rv-nav-sec", "rv-nav-arch", "rv-nav-res"]) assert.ok(ids.has(id), at(`the sign ${id}`));
+    const b = v.pageBadges(), open = v.openFindings(), name = { overview: "Overview", arch: "Architecture impact", blast: "Security", res: "Resilience" };
+    for (const k of Object.keys(name)) {
+      assert.ok(b[k].glyph && ["filled", "plain", "open", "quiet"].includes(b[k].form) && b[k].tip.startsWith(`${name[k]}: `), at(`the ${k} sign: ${JSON.stringify(b[k])}`));
+      assert.equal(b[k].state === "open", b[k].form !== "quiet", at(`${k}: colored exactly while something is unresolved`));
+    }
+    assert.equal(b.overview.state === "open", open.length > 0, at("the Overview's sign follows the unresolved findings"));
+    assert.equal(b.blast.n, v.counts().security, at("the Security sign keeps the number of the verdict"));
+    assert.equal(b.res.n, (v.resNow()?.paths ?? []).filter((p) => p.blocker).length, at("the Resilience sign keeps the number of blockers"));
+    if (open.length) assert.ok(/\d (critical|high|medium|low)/.test(b.overview.tip), at(`the tip counts by severity: ${b.overview.tip}`));
+    for (const r of v.mergeRows()) assert.ok(Array.isArray(v.rowFindings(r)), at("a row's findings"));
+  }
   // Resilience: every path opened (its picture and probe), all paths, the clean checks, a probe's script, and none open.
   v.command("page:res", cx);
   for (const p of v.resNow()?.paths ?? []) act(v, `res-path:${p.id}`, at(`Resilience, path ${p.id}`));
@@ -373,7 +390,16 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   assert.deepEqual(v.panelProgress().shown.map((r) => r.number), [2], "In progress: work done and not merged; one only opened is not there");
   assert.deepEqual(v.panelProgress().left.map((r) => [r.number, r.state]), [[1, "merged"]], "the merged one is listed apart, dimmed");
   assert.equal(S.store.get("review.minimized"), null, "the chip of a merged PR goes");
-  for (const src of ["mine", "repo", "review"]) { S.store.set("pr.source", src); v.picking = true; draw(v, `panel: the ${src} list`); }
+  for (const src of ["mine", "repo", "space", "review"]) { S.store.set("pr.source", src); v.picking = true; draw(v, `panel: the ${src} list`); }
+  // This space: rows with their branch, the focused pane's PR marked and first, a merged one with its word; and empty.
+  { S.store.set("pr.source", "space");
+    const row = (n, head, state) => ({ ...pr(n, "saefty/corgi-demo", state, 1), head, author: "me", add: 3, del: 1, review: null, source: "space", session: null, cwd: "/h/a" });
+    v.srcLists.space = { key: "space:x", at: now, prs: [row(21, "feat/x", "open"), row(22, "fix/1", "open"), row(20, "fix/1", "merged")] };
+    v.spaceHeads = new Map([["/h/a", { cwd: "/h/a", slug: "saefty/corgi-demo", branch: "fix/1" }]]);
+    draw(v, "panel: This space with the focused agent's PR"); assert.deepEqual(v.listNow().map((p) => p.number), [21, 22, 20]);
+    v.srcLists.space = { key: null, prs: [], why: "Every checkout in this space is on its default branch, so there is no branch to look up a PR for." }; draw(v, "panel: This space, nothing to list");
+    v.srcLists.space = { key: "space:x", prs: [], loading: true }; draw(v, "panel: This space, asking GitHub"); v.srcLists.space = { key: "space:x", prs: [], error: "gh: no network" }; draw(v, "panel: This space, gh failed");
+    v.panelCommand("source:space", cx); assert.equal(S.store.get("pr.sourceBy")?.sA, "space", "source:space picks it for this space"); S.store.set("pr.sourceBy", null); }
   S.store.set("pr.source", "mine"); v.showOther = v.showDone = true; draw(v, "panel: Mine with the other repos and the merged ones unfolded");
   v.choose(prs[0], cx); await settle(); draw(v, "panel: PR #2 chosen");
   assert.equal(S.store.get("pr.selected")["all@sA"], prs[0].url);

@@ -20,7 +20,7 @@ import { findingSteps, funnel, funnelLine, ownerOf, quickFirst, hasEffort, publi
 import { withProof, PROOF_WORDS } from "./pr.js"; // Verify with an agent
 import { overviewMd, findingMd, findingsMd, layerMd, architectureMd, securityMd, verifyContextMd, resilienceMd } from "./markdown.js"; // Copy this page as Markdown
 import { mdParts, mdJoin, codeStats } from "./markdown.js"; // its preview: the text in sections, the code context counted
-import { highlightJob, highlightStep, highlightLines, langOf, colors, renderLine, refAt } from "./syntax.js";
+import { highlightJob, highlightStep, highlightLines, langOf, firstLineOf, colors, renderLine, refAt } from "./syntax.js";
 import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js";
 import { recommendModel, tierSteps } from "./pr.js";
 import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf, codeModel, priceOf, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch, withSecurity, securityStart } from "./pr.js";
@@ -34,6 +34,7 @@ import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCAL
 import { ghMd, mdBlocks } from "./views.js"; // GitHub comments as GitHub shows them
 import { wrapCode, codeCols, sliceSpans } from "./views.js"; // long lines wrap
 import { rowMarks, riskOfCounts } from "./views.js"; // the minimized chip's mark, from the registry entry
+import { pageBadge, signOf, signEl, markLabel } from "./views.js"; // one sign for severity and certainty: nav rows, the bar, rows, chips
 import { pairRows, pairSide, HALF_GUTTER, diffModeOf, oneSided, stackOf, chipAt, textW } from "./views.js"; // side by side; the bar's stack
 import { mdTarget, secPicture, secBlast, resNoPicture } from "./views.js"; // Copy as Markdown: what it copies on each page; the Security page's picture and lines
 const MD_W = textW("⧉ Copy as Markdown…", TYPE.small) + 22; // the button's width on a layer's head, where clicks are placed by x
@@ -282,7 +283,9 @@ export function renderMini() {
     .child(div().flex_none().font_semibold().child(`Review #${pr.number ?? ""}`))
     .when(Boolean(pr.title), (e) => e.child(div().flex_none().max_w(220).truncate().text_color(t.muted).child(pr.title)))
     // The review's own mark, as its rows carry it: "⛨ high" in red when an unresolved finding is about security.
-    .children(rowMarks(open?.risk, null).map((m) => div().flex_none().px(5).rounded(4).text_size(TYPE.small).text_color(m.security ? t.ansi1 : t.muted).bg((m.security ? t.ansi1 : t.muted) + "26").child(m.text)))
+    // Its color is the severity's, its form how sure that is (views.js signOf), as on the review's own rows.
+    .children(rowMarks(open?.risk, null).map((m) => div().id("rv-mini-risk").tooltip(`The highest severity among this review's unresolved findings${m.words ? `: ${m.words}` : ""}`).flex_none().px(5).rounded(4).text_size(TYPE.small)
+      .text_color(t[m.color] ?? t.muted).bg((t[m.color] ?? t.muted) + "26").child(markLabel(div, t, m))))
     .when(Boolean(open?.progress?.findingsOpen), (e) => e.child(div().flex_none().text_color(t.muted).child(`${open.progress.findingsOpen} unresolved`)))
     .child(div().id("rv-mini-open").px(8).h(22).flex().items_center().rounded_full().cursor_pointer().text_color(t.accent).hover((x) => x.bg(t.hover))
       .tooltip("Back to the review, where you left it").on_click(() => startReview(pr)).child("Resume"))
@@ -807,7 +810,7 @@ export const ReviewMode = {
     cx.timer.after(1500, (cx) => cx.spawn(async (cx) => {
       if (this.regGen !== gen || this.prSel?.url !== pr.url) return;
       const entry = { url: pr.url, number: pr.number, repo: pr.repo, title: pr.title ?? this.pr?.title, context: this.ctxId(), headSha: this.head,
-        progress: this.progressNow(), target: pr, triage: this.triageNow(), risk: riskOfCounts(this.counts()), ...this.regExtra };
+        progress: this.progressNow(), target: pr, triage: this.triageNow(), risk: riskOfCounts(this.counts(), this.openFindings()), ...this.regExtra };
       const how = this.regExtra.status === "sent" || this.regExtra.status === "done" ? this.regExtra.status : "seen";
       this.regExtra = {};
       const prs = JSON.parse(await readTextFile(`${appHome()}/pr-data/prs.json`).catch(() => null) ?? "{}").prs ?? [];
@@ -1367,7 +1370,7 @@ export const ReviewMode = {
       if (text === null || text === undefined) { this.note = this.jumpNote = `Could not open ${where(def)}`; return cx.notify(); }
       const all = text.replace(/\n$/, "").split("\n"), from = Math.max(0, def.line - 3000);
       const lines = all.slice(from, from + 6000).map(expandTabs);
-      this.defFile = { path: def.path, line: def.line, from, lines, spans: highlightLines(lines, langOf(def.path), `def:${def.uri ?? def.path}:${from}`) };
+      this.defFile = { path: def.path, line: def.line, from, lines, spans: highlightLines(lines, langOf(def.path, all[0]), `def:${def.uri ?? def.path}:${from}`) };
       this.lists.def.scroll_to_item(Math.max(0, def.line - from - 1), "center"); // "top" only reveals at the near edge: the line would sit under the view's bottom
       cx.notify();
     });
@@ -1385,7 +1388,7 @@ export const ReviewMode = {
     const head = !res ? `Looking up ${d.name}…` : def ? `${d.name} → ${where(def)}${res.definitions.length > 1 ? ` (+${res.definitions.length - 1})` : ""}` : `${d.name}: ${this.defMessage(res)}`;
     // The bridge sends the preview as lines (an array): splitting it as text threw and took the whole review down.
     const raw = Array.isArray(def?.preview) ? def.preview : String(def?.preview ?? "").split("\n");
-    const pre = raw.slice(0, 5).map(expandTabs), spans = def ? highlightLines(pre, langOf(def.path)) : [], first = def?.previewStart ?? def?.line ?? 1;
+    const pre = raw.slice(0, 5).map(expandTabs), first = def?.previewStart ?? def?.line ?? 1, spans = def ? highlightLines(pre, langOf(def.path, first === 1 ? pre[0] : "")) : [];
     return div().w_full().h(this.sizeOf(it)).pl(GUTTER).pr(16).py(6).child(v_flex().size_full().px(12).py(8).gap(6).rounded(8).border_1().border_l(4)
       .border_color(t.accent).bg(t.surface).text_size(TYPE.body)
       .child(h_flex().h(18).gap(8).items_center().child(div().font_semibold().child(head)).when(!res, (e) => e.child(div().child(SPIN[0]).frames(SPIN, 90))))
@@ -2796,8 +2799,8 @@ export const ReviewMode = {
     const onPage = !this.defFile && this.tab === "steps" && Boolean(this.page), onOverview = onPage && this.page === "overview";
     const vd = this.prSel && !onOverview ? this.verdictNow() : [];
     const facts = [
-      vd.length > 0 && link("rv-mr", h_flex().gap(6).children(vd.flatMap((p, k) => [k > 0 && div().text_color(t.dim).child("·"), div().when(p.tone === "security", (e) => e.text_color(t.ansi1)).child(p.short)].filter(Boolean))),
-        (_e, cx) => { this.tab = "steps"; this.page = "overview"; cx.notify(); }).tooltip(`${vd.map((p) => p.text).join(" · ")}. Click for the Overview.`),
+      vd.length > 0 && link("rv-mr", h_flex().gap(6).children(vd.flatMap((p, k) => [k > 0 && div().text_color(t.dim).child("·"), this.verdictSign(t, p, p.short)].filter(Boolean))),
+        (_e, cx) => { this.tab = "steps"; this.page = "overview"; cx.notify(); }).tooltip([`${vd.map((p) => p.text).join(" · ")}. Click for the Overview.`, ...vd.map((p) => this.pageBadges()[SIGN_PAGE[p.key]]?.tip).filter(Boolean)].join("\n")),
       ck && !onOverview && link("rv-ck", h_flex().gap(4).children(ck.parts.map(([text, bad]) => div().child(`${bad ? "✗ " : ""}${text}`))), // a symbol, not red: red is the security part's
         (_e, cx) => { this.tab = "steps"; this.page = "overview"; this.pagePart("checks", cx); cx.notify(); }).tooltip(ck.tip),
     ].filter(Boolean);
@@ -2837,7 +2840,7 @@ export const ReviewMode = {
         .when(Boolean(s.isNew), (e) => e.child(badge(t, "new", t.accent).id(`rv-new-${i}`).tooltip("New since the previous analysis")))
         .when(Boolean(s.stale), (e) => e.child(badge(t, "outdated", t.ansi3).id(`rv-old-${i}`).tooltip("These hunks are no longer in the diff: the code changed since the analysis")))
         // Its unresolved findings, whoever found them: the highest severity with its count, security with its own mark.
-        .when(Boolean(w?.security), (e) => e.child(div().id(`rv-sec-${i}`).tooltip(`${w.security} of them ${w.security === 1 ? "is a security finding" : "are security findings"}${acc ? `. ${acc.text}` : ""}`).flex_none().text_size(TYPE.body).text_color(t.ansi1).child("⛨")))
+        .when(Boolean(w?.security), (e) => e.child(div().id(`rv-sec-${i}`).tooltip(`${w.security} of them ${w.security === 1 ? "is a security finding" : "are security findings"}${w.signWords ? `: ${w.signWords}` : ""}${acc ? `. ${acc.text}` : ""}`).flex_none().text_size(TYPE.body).child(signEl(div, t, w.sign, "⛨"))))
         // Without a security finding the mark still says what the layer opens: not red (red is for findings).
         .when(Boolean(acc) && !w?.security, (e) => e.child(div().id(`rv-acc-${i}`).tooltip(acc.text).flex_none().text_size(TYPE.small).text_color(t.ansi3).child(acc.entries ? "⛨ Way in" : "⛨ Rights")))
         .when(Boolean(w), (e) => e.child(badge(t, w.label, t[SEV[w.severity]] ?? t.ansi1).id(`rv-risk-${i}`).tooltip(`${n(w.total)} in this layer: ${w.words}`))))
@@ -2927,7 +2930,7 @@ export const ReviewMode = {
     return this.mergeRows().map((r) => {
       const f = r.finding ?? null;
       return { row: r, severity: f?.severity ?? null, label: r.kind === "ask" ? `${r.title}: ${r.ask.state === "not_done" ? "not done" : r.ask.state}` : r.title, why: r.why || r.title, security: r.kind === "security",
-        certainty: f?.certainty ?? null, finding: Boolean(f), sent: Boolean(f) && this.fstatus(f) === "progress", at: r.where ? r.where.split("/").pop() : "", go: (cx) => this.goMergeRow(r, cx) };
+        certainty: f?.certainty ?? null, path_certainty: f?.path_certainty ?? null, probed: f?.probed ?? null, finding: Boolean(f), sent: Boolean(f) && this.fstatus(f) === "progress", at: r.where ? r.where.split("/").pop() : "", go: (cx) => this.goMergeRow(r, cx) };
     });
   },
   // A click on a row of "Before merge" (or the box over the layers): the finding, the criterion, the check or the path.
@@ -2956,7 +2959,8 @@ export const ReviewMode = {
       .when(!folded, (e) => e.children(shown.map((a, k) => h_flex().id(`rv-att-${k}`).tooltip(a.why || "Go to this item").h(26).pl(6).pr(4).gap(8).items_center().rounded(4).border_l(3)
         .border_color(a.severity ? t[SEV[a.severity]] ?? t.muted : t.border).cursor_pointer().hover((s) => s.bg(t.hover))
         .on_click((_e, cx) => { a.go(cx); cx.notify(); })
-        .child(div().w(14).flex_none().text_size(TYPE.body).text_color(a.security ? t.ansi1 : t.muted).child(a.security ? "⛨" : SYM[a.row.kind] ?? (a.finding ? "!" : "✗")))
+        .child(a.security || a.row.kind === "resilience" ? rowSign(t, a.security ? "⛨" : "↯", this.rowFindings(a.row)).text_size(TYPE.body)
+          : div().w(SIGN_W).flex_none().text_size(TYPE.body).text_color(t.muted).child(SYM[a.row.kind] ?? (a.finding ? "!" : "✗")))
         .children([certaintyWord(t, a, `rv-att-c-${k}`)].filter(Boolean))
         .child(div().flex_1().min_w(0).truncate().text_size(TYPE.body).child(a.label))
         .when(a.sent, (x) => x.child(div().flex_none().text_size(TYPE.small).text_color(t[FSTATUS.progress[1]]).child(FSTATUS.progress[0])))
@@ -2970,13 +2974,15 @@ export const ReviewMode = {
   // The PR's pages (Overview, Architecture, Security) at the top of the Analysis tab, above its layers: they are part
   // of the analysis. A count stands plain at the row's right, the security one in its worst severity's color.
   pagesGroup(t) {
-    const sec = this.prSel ? this.openFindings().filter((f) => f.security) : [], changed = (this.ai?.arch?.nodes ?? []).some((n) => n.status && n.status !== "unchanged");
-    const worstSec = ["high", "medium", "low"].find((s) => sec.some((f) => f.severity === s));
+    const changed = (this.ai?.arch?.nodes ?? []).some((n) => n.status && n.status !== "unchanged"), b = this.pageBadges();
     const plain = (id, tip, color, text) => div().id(id).tooltip(tip).flex_none().text_size(TYPE.small).font_semibold().text_color(color).child(text);
-    const secN = this.prSel ? this.counts().security : 0; // once per cause, as the verdict, the chip and the sentence of the Security page count
-    const mark = { blast: secN > 0 && plain("rv-nav-sec", `${secN} unresolved security ${secN === 1 ? "cause" : "causes"}`, t[SEV[worstSec]] ?? t.ansi1, `⛨ ${secN}`),
-      arch: changed && plain("rv-nav-arch", "The architecture picture differs before and after this PR", t.accent, "Changed"),
-      res: (this.resNow()?.paths ?? []).some((p) => p.blocker) && plain("rv-nav-res", "Paths that stand before the merge", t.foreground, String(this.resNow().paths.filter((p) => p.blocker).length)) };
+    // A page's sign (views.js pageBadge): the color is the highest severity among its unresolved findings, the form how
+    // sure that is, the number the page's own (security: causes, resilience: paths that block); the tip says it in words.
+    const sign = (id, x) => h_flex().id(id).tooltip(x.tip).flex_none().gap(4).items_center().text_size(TYPE.small).font_semibold().child(signEl(div, t, x))
+      .when(x.state === "open" && x.n > 0, (e) => e.child(div().text_color(t[x.color] ?? t.muted).child(String(x.n))));
+    const mark = { overview: sign("rv-nav-ov", b.overview), blast: sign("rv-nav-sec", b.blast), res: sign("rv-nav-res", b.res),
+      // The map's own word stays while no finding stands on it: "Changed" says what the page shows, not what is wrong.
+      arch: b.arch.state !== "open" && changed ? plain("rv-nav-arch", "The architecture picture differs before and after this PR", t.accent, "Changed") : sign("rv-nav-arch", b.arch) };
     return v_flex().flex_none().px(8).pt(8).gap(2)
       .children(["overview", "arch", "blast", "res"].map((k) => {
         const label = PAGES.find(([p]) => p === k)[1], on = this.page === k;
@@ -2987,12 +2993,38 @@ export const ReviewMode = {
       }));
   },
 
+  // The four pages' signs (views.js pageBadge), also for the tab's label, the bar's excerpt and the Security page's
+  // chip: the unresolved findings behind each page, its run's state and the page's own number.
+  pageBadges() {
+    const open = this.prSel ? this.openFindings() : [], runs = this.find?.runs ?? {}, stateOf = (k) => (runs[k]?.busy ? "running" : runs[k]?.state ?? null);
+    const res = this.resNow(), paths = res?.paths ?? [], ids = new Set(paths.flatMap((p) => p.findings ?? [])), n = (k, one, many) => `${k} ${k === 1 ? one : many}`;
+    const blockers = paths.filter((p) => p.blocker).length, wired = paths.filter((p) => p.wired && !p.blocker).length, na = paths.filter((p) => p.result === "not_assessed").length;
+    const secN = this.prSel ? this.counts().security : 0;
+    return { overview: pageBadge("overview", open, { state: this.ai ? "done" : this.aiBusy ? "running" : null }),
+      arch: pageBadge("arch", open.filter((f) => f.breaks), { state: this.ai?.arch ? "done" : this.aiBusy ? "running" : null }),
+      blast: pageBadge("security", open.filter((f) => f.security), { state: stateOf("security"), n: secN, unit: secN === 1 ? "unresolved cause" : "unresolved causes" }),
+      res: pageBadge("resilience", open.filter((f) => (f.ids ?? [f.id]).some((id) => ids.has(id))), { state: res ? "done" : stateOf("resilience"), n: blockers, unit: blockers === 1 ? "path blocks the merge" : "paths block the merge",
+        more: wired ? `${n(wired, "path blocks", "paths block")} once wired.` : "", unsure: na ? `${n(na, "path", "paths")} not assessed` : "" }) };
+  },
+  // The unresolved findings behind a row of "Before merge": its own, or the ones of its Resilience path.
+  rowFindings(r) {
+    if (r.finding) return [r.finding];
+    const ids = r.kind === "resilience" && r.path ? new Set(this.resNow()?.paths?.find((p) => p.id === r.path)?.findings ?? []) : null;
+    return ids ? this.openFindings().filter((f) => (f.ids ?? [f.id]).some((id) => ids.has(id))) : [];
+  },
+  // A part of the verdict (the Overview's line, the bar's excerpt): the security and the resilience part carry their
+  // page's sign in place of the bare ⛨ or ↯, and the security part its severity's color.
+  verdictSign(t, p, text) {
+    const b = SIGN_PAGE[p.key] ? this.pageBadges()[SIGN_PAGE[p.key]] : null;
+    return b ? h_flex().gap(4).items_center().child(signEl(div, t, b, PAGE_GLYPH[p.key])).child(div().when(p.key === "security", (e) => e.text_color(t[b.color] ?? t.ansi1)).child(String(text).replace(/^[⛨↯] /, ""))) : div().child(text);
+  },
+
   // The Analysis tab's label: its layers, and "⛨ n" while security findings are unresolved (the one security signal
   // that shows from every tab, since the pages are inside this tab).
   analysisLabel(t) {
-    const sec = this.prSel ? this.counts().security : 0; // once per cause, the number of the verdict
+    const sec = this.prSel ? this.counts().security : 0, b = sec > 0 ? this.pageBadges().blast : null; // once per cause, the number of the verdict
     return h_flex().gap(6).items_center().child(`Analysis${this.ai ? ` · ${this.ai.steps.filter((s) => !s.pseudo).length}` : ""}`)
-      .when(sec > 0, (e) => e.child(div().text_color(t.ansi1).child(`⛨ ${sec}`)));
+      .when(sec > 0, (e) => e.child(h_flex().gap(3).items_center().child(signEl(div, t, b, "⛨")).child(div().text_color(t[b.color] ?? t.ansi1).child(String(sec)))));
   },
 
   // The attention box starts folded while a layer is open, and on a page when, open under the pages, the block would
@@ -3121,7 +3153,7 @@ export const ReviewMode = {
       verify: [(_e, cx) => { this.tab = "findings"; cx.notify(); }, "Fixes sent before the last push, not verified on the new head: click for the Findings tab"],
       resilience: [(_e, cx) => { this.tab = "steps"; this.page = "res"; cx.notify(); }, `Ways a failure spreads that block the merge: ${[...new Set((this.resNow()?.paths ?? []).filter((p) => p.blocker).map((p) => p.blocker.reason ?? p.blocker.why))].join("; ")}. Click for the Resilience page`] };
     const part = (p) => div().id(`rv-vd-${p.key}`).tooltip(go[p.key][1]).text_color(p.tone === "security" ? t.ansi1 : t.foreground)
-      .when(Boolean(go[p.key][0]), (e) => e.cursor_pointer().hover((s) => s.underline()).on_click(go[p.key][0])).child(p.key === "security" ? `⛨ ${p.text}` : p.text);
+      .when(Boolean(go[p.key][0]), (e) => e.cursor_pointer().hover((s) => s.underline()).on_click(go[p.key][0])).child(this.verdictSign(t, p, p.text));
     // The stack: the base this PR builds on, and the PRs that build on this one (related.py stacked_above).
     const action = verdictAction(rows), above = ctx?.stacked_above ?? [];
     // The window's top bar says the PR's state and, once it knows the stack, "Stack: #1 → #2": this line only says
@@ -3278,7 +3310,7 @@ export const ReviewMode = {
         .children(found.slice(0, 6).map(({ f, edge }) => h_flex().id(`rv-arch-cf-${f.id}`).gap(8).items_start().px(6).py(3).rounded(6).text_size(TYPE.body).cursor_pointer().hover((x) => x.bg(t.hover))
           .tooltip("Open this finding and show its line in the diff").on_click((_e, cx) => { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); cx.notify(); })
           .child(badge(t, f.severity, t[SEV[f.severity]] ?? t.accent))
-          .when(Boolean(f.security), (x) => x.child(chip(t, "⛨ Security", t.ansi1, true, `rv-secwhy-${f.id}`, secWhy(f))))
+          .when(Boolean(f.security), (x) => x.child(secBadge(t, f).id(`rv-secwhy-${f.id}`).tooltip(secWhy(f) || "A security finding")))
           .child(div().flex_1().min_w(0).whitespace_normal().line_height(1.4).child(plain(f.title)))
           .when(Boolean(edge) || f.breaks?.node === n.id, (x) => x.child(div().flex_none().text_size(TYPE.small).text_color(t.muted).child(edge ? `breaks the call ${edge.from === n.id ? `to ${name(edge.to)}` : `from ${name(edge.from)}`}` : "breaks the flow here")))
           .child(div().flex_none().text_size(TYPE.small).text_color(t.muted).child(`${f.file.split("/").pop()}:${f.line}`))))
@@ -3635,7 +3667,7 @@ export const ReviewMode = {
       const text = await readTextFile(`${root}/${path}`).catch(() => null);
       if (text === null) { this.note = `Could not open ${path}`; return cx.notify(); }
       const all = text.replace(/\n$/, "").split("\n"), from = Math.max(0, line - 3000), lines = all.slice(from, from + 6000).map(expandTabs);
-      this.defFile = { path, line, from, lines, spans: highlightLines(lines, langOf(path), `explore:${root}:${path}:${from}`) };
+      this.defFile = { path, line, from, lines, spans: highlightLines(lines, langOf(path, all[0]), `explore:${root}:${path}:${from}`) };
       this.lists.def.scroll_to_item(Math.max(0, line - from - 1), "center"); // as in goDef
       cx.notify();
     });
@@ -3912,6 +3944,7 @@ export const ReviewMode = {
     const sec = this.findings().filter((f) => f.security || f.category === "security"), open = sec.filter((f) => OPEN_ST.includes(this.fstatus(f)));
     const runs = this.find.runs, sr = runs.security, title = (text) => div().text_size(TYPE.title).font_semibold().child(text);
     const secN = this.counts().security; // the one number: ⛨ findings once per cause (the verdict, the navigation and "Before merge" name the same)
+    const secSign = this.pageBadges().blast; // its color and form, as in the navigation
     // The unresolved findings a named threat stands on that are no ⛨ finding (a flood, a script that leaves a guardrail
     // off): listed and marked here too, counted apart ("⛨" stays what pr.js isSecurity says).
     const threats = this.ai?.threats ?? [], cited = threatCited(threats, this.openFindings()).filter((f) => !open.includes(f)), shown = [...open, ...cited];
@@ -3946,7 +3979,8 @@ export const ReviewMode = {
     const head = v_flex().gap(6)
       .on_size_change((_s, cx) => this.loadVisibility(cx)) // once the page is laid out: is the repo public
       .child(h_flex().gap(10).items_center().flex_wrap().child(div().flex_1().text_size(TYPE.page).font_semibold().child("Security"))
-        .child(chip(t, `⛨ Security · ${secN}`, secN ? t.ansi1 : t.muted, true, "rv-bl-secn", "Unresolved security findings from every source, counted once per cause: access or data, or what a named threat stands on"))
+        .child(chip(t, h_flex().gap(3).items_center().child(signEl(div, t, secN ? secSign : { color: "muted", form: "quiet" }, "⛨")).child(`Security · ${secN}`), secN ? t[secSign.color] ?? t.ansi1 : t.muted, true, "rv-bl-secn",
+          `Unresolved security findings from every source, counted once per cause: access or data, or what a named threat stands on.\n${secSign.tip}`))
         .when(data && sr?.state === "running", (e) => e.child(pill("rv-bl-run", t, "Security review running…", () => {}).tooltip("The security reviewer is reading the PR head"))))
       .when(data && sr?.state !== "running", (e) => e.child(this.runOffer("security", t)))
       // pr.js secNote: a run from before the current rules of the security view; what it left open may be the old prompt's.
@@ -4642,7 +4676,7 @@ export const ReviewMode = {
       return h_flex().id(id).tooltip([f.title, `${f.severity[0].toUpperCase()}${f.severity.slice(1)}`, secWhy(f), certaintyLine(f), "Click to open this finding."].filter(Boolean).join("\n")).gap(8).items_center()
         .pl(10).pr(6).py(3).rounded(4).border_l(3).border_color(settled ? t.border : t[SEV[f.severity]] ?? t.muted).cursor_pointer().hover((s) => s.bg(t.hover))
         .on_click((_e, cx) => { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); cx.stop_propagation(); })
-        .child(div().w(16).flex_none().text_color(f.security ? t.ansi1 : t.muted).child(f.security ? "⛨" : ""))
+        .child(f.security ? rowSign(t, "⛨", [f]) : div().w(SIGN_W).flex_none())
         .child(div().flex_1().min_w(0).truncate().text_color(settled ? t.muted : t.foreground).child(f.title))
         .when(Boolean(note), (e) => e.child(div().flex_none().text_size(TYPE.small).text_color(t.muted).child(note)))
         .child(place(`${id}-at`, `${f.file}:${f.line}`));
@@ -4679,7 +4713,7 @@ export const ReviewMode = {
       const click = (_e, cx) => { this.goMergeRow(r, cx); cx.notify(); };
       return h_flex().id(id).tooltip([kindWord && `${sym} ${kindWord}`, r.title, r.why, breaks.length && `Breaks: ${breaks.join("; ")}`, f && certaintyLine(f), r.also && `Same cause also at ${r.also.join(", ")}`].filter(Boolean).join("\n")).gap(8).items_center().pl(10).pr(6).py(3).rounded(4).border_l(3)
         .border_color(f ? t[SEV[f.severity]] ?? t.muted : t.border).cursor_pointer().hover((s) => s.bg(t.hover)).on_click(click)
-        .child(div().w(16).flex_none().font_semibold().text_color(col).child(sym))
+        .child(r.kind === "security" || r.kind === "resilience" ? rowSign(t, sym, this.rowFindings(r)).font_semibold() : div().w(SIGN_W).flex_none().font_semibold().text_color(col).child(sym))
         .child(div().flex_1().min_w(0).truncate().child(r.kind === "ask" ? `${r.title}: ${r.ask.state === "not_done" ? "not done" : r.ask.state}` : r.title))
         .when(breaks.length > 0 && r.kind !== "ask", (e) => e.child(div().flex_none().max_w(200).truncate().text_size(TYPE.small).text_color(t.muted).child(`breaks ${breaks[0]}${breaks.length > 1 ? ` +${breaks.length - 1}` : ""}`)))
         .when(Boolean(f && sure(f)), (e) => e.child(div().flex_none().text_size(TYPE.small).text_color(t.muted).child(sure(f))))
@@ -4779,7 +4813,7 @@ export const ReviewMode = {
           // The effort word stands in a row only while the list is sorted by it (it explains the order); else it is
           // one of the open finding's facts ("Fix effort").
           .when(Boolean(x.effort) && Boolean(this.fsort), (e) => e.child(div().id(`rv-fef-${x.id}`).tooltip("How much work the fix is, as the analysis sees it: quick, moderate or heavy").flex_none().pt(1).text_size(TYPE.small).text_color(t.muted).child(x.effort)))
-          .when(Boolean(x.security), (e) => e.child(badge(t, "⛨ Security", t.ansi1).bg(t.ansi1 + "26").id(`rv-fsec-${x.id}`).tooltip(secWhy(x))))
+          .when(Boolean(x.security), (e) => e.child(secBadge(t, x).id(`rv-fsec-${x.id}`).tooltip(secWhy(x) || "A security finding")))
           .children([certaintyWord(t, x, `rv-fcert-${x.id}`)].filter(Boolean))
           .child(div().flex_1().min_w(120).font_semibold().text_color(settled ? t.muted : t.foreground).when(!wide, (e) => e.truncate()).when(wide, (e) => e.whitespace_normal()).child(x.title))
           .child(div().flex_none().text_size(TYPE.small).text_color(t.muted).child(`${x.file.split("/").pop()}:${x.line}${this.findRow(x) < 0 ? " · outside the diff" : ""}`))
@@ -4876,7 +4910,7 @@ export const ReviewMode = {
               .child(div().w(12).flex_none().text_color(t.muted).child(n.dir ? (this.closedDirs.has(n.path) ? "▸" : "▾") : ""))
               .when(!n.dir, (e) => e.child(div().id(`rv-tst-${n.path}`).tooltip(`File ${f.status}`).w(14).flex_none().text_size(TYPE.small).font_semibold().text_color(t[STATUS[f.status][1]]).child(STATUS[f.status][0])))
               .child(div().flex_1().min_w(0).truncate().text_color(n.dir ? t.muted : this.prog.seen.has(n.path) ? t.muted : t.foreground).child(n.dir ? `${n.name}/` : n.name))
-              .when(Boolean(w?.security), (e) => e.child(div().id(`rv-tsec-${n.path}`).tooltip(`${w.security} of them ${w.security === 1 ? "is a security finding" : "are security findings"}`).flex_none().text_color(t.ansi1).child("⛨")))
+              .when(Boolean(w?.security), (e) => e.child(div().id(`rv-tsec-${n.path}`).tooltip(`${w.security} of them ${w.security === 1 ? "is a security finding" : "are security findings"}${w.signWords ? `: ${w.signWords}` : ""}`).flex_none().child(signEl(div, t, w.sign, "⛨"))))
               .when(Boolean(w), (e) => e.child(div().id(`rv-tsg-${n.path}`).tooltip(`${w.total} unresolved ${w.total === 1 ? "finding" : "findings"} in this file: ${w.words}`).flex_none().text_size(TYPE.small).font_semibold().text_color(t[SEV[w.severity]] ?? t.ansi1).child(w.label)))
               .when(cm > 0, (e) => e.child(div().id(`rv-tcm-${n.path}`).tooltip(`${cm} pending ${cm === 1 ? "comment" : "comments"} of yours in this file`).flex_none().text_size(TYPE.small).text_color(t.accent).child(`${cm} ${cm === 1 ? "comment" : "comments"}`)))
               .when(!n.dir && f.add > 0, (e) => e.child(div().id(`rv-tad-${n.path}`).tooltip(`${f.add} lines added`).text_size(TYPE.small).text_color(t.ansi2).child(`+${f.add}`)))
@@ -4991,7 +5025,7 @@ export const ReviewMode = {
       const open = this.findOpen(f), state = stateWord(st) ? div().id(`rv-lfst-${f.id}`).tooltip("Where this finding stands: fix sent, fixed (verified), dismissed, or unresolved with its line changed since").flex_none().text_size(TYPE.small).font_semibold().text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(stateWord(st)) : null;
       const head = (e) => e.child(div().w(10).flex_none().text_size(TYPE.small).text_color(t.muted).child(open ? "▾" : "▸"))
         .child(badge(t, f.severity, c).id(`rv-lfs-${f.id}`).tooltip(`${f.severity} is the highest severity among this finding's sources. The scale:\n${SEVERITY_SCALE}`))
-        .when(Boolean(f.security), (x) => x.child(badge(t, "⛨ Security", t.ansi1).bg(t.ansi1 + "26").id(`rv-lfsec-${f.id}`).tooltip(secWhy(f) || "A security finding")));
+        .when(Boolean(f.security), (x) => x.child(secBadge(t, f).id(`rv-lfsec-${f.id}`).tooltip(secWhy(f) || "A security finding")));
       const sources = div().id(`rv-lfr-${f.id}`).tooltip("Where this finding comes from, each source with its own severity").min_w(0).truncate().text_size(TYPE.small).font_semibold().text_color(t.muted).child(this.sourcesOf(f));
       if (!open) return div().id(`rv-lf-${f.id}`).tooltip("Open this finding: what it claims, its text, its suggestion and its actions").w_full().h(FIND_FOLDED).pl(GUTTER).pr(16).pt(6).pb(2).cursor_pointer()
         .child(head(card(h_flex())).size_full().px(12).gap(8).items_center().border_t(1).border_b(1).text_size(TYPE.body)
@@ -5268,7 +5302,9 @@ export const ReviewMode = {
     for (const it of items) {
       if (it.t !== "row" || this.spanMap.has(it.src)) continue;
       const shown = it.src.map((r) => (r.text?.includes("\t") ? { ...r, text: expandTabs(r.text) } : r)); // tabs drawn as spaces: clicks map back
-      const inf = { shown, spans: [] }, lang = langOf(it.path);
+      // A script without an ending is known by its first line: from the whole file where it is loaded, else from the diff.
+      const whole = this.full[it.path], lang = langOf(it.path, Array.isArray(whole) ? whole[0] : firstLineOf((this.patch ?? []).find((f) => f.path === it.path)?.lines ?? []));
+      const inf = { shown, spans: [] };
       this.spanMap.set(it.src, inf);
       if (lang) (this.hlQueue ??= new Map()).set(inf, { shown, lang, hkey: `${head}:${it.path}`, inf });
     }
@@ -5888,8 +5924,17 @@ async function worktreeAt(path, sha) {
 // that is folded (derived, assumed, confirmed; the open card says it in full).
 const CERT_TIP = { confirmed: "Confirmed: something that ran shows it", derived: "Derived: it follows from the code that was read; check it yourself", assumed: "Assumed: it rests on something the reviewer could not check" };
 function certaintyWord(t, f, id) {
-  return f?.security && CERT_TIP[f.certainty] ? div().id(id).tooltip(CERT_TIP[f.certainty]).flex_none().text_size(TYPE.small).text_color(t.muted).child(certaintyText(f)) : null;
+  // A derived finding whose way in is only assumed says so: its sign beside this word is the dashed one with "?".
+  const reach = f?.certainty === "derived" && f.path_certainty === "assumed";
+  return f?.security && CERT_TIP[f.certainty] ? div().id(id).tooltip(`${CERT_TIP[f.certainty]}${reach ? ". That an attacker gets there is assumed" : ""}`).flex_none().text_size(TYPE.small).text_color(t.muted).child(reach ? "assumed reachable" : certaintyText(f)) : null;
 }
+// A row's sign (views.js signOf, signEl): the kind's glyph in the color of the highest severity behind the row, on
+// a filled ground when that is confirmed, in a dashed frame with "?" when it is only assumed. The column has one
+// width, so the titles of a list line up whatever the sign's form.
+const SIGN_W = 26, SIGN_PAGE = { security: "blast", resilience: "res" }, PAGE_GLYPH = { security: "⛨", resilience: "↯" };
+const rowSign = (t, glyph, fs) => div().w(SIGN_W).flex_none().flex().items_center().child(signEl(div, t, signOf(fs), glyph));
+// A finding's "⛨ Security" chip: the sign in the finding's severity color and certainty form, then the word.
+const secBadge = (t, f) => { const s = signOf([f]), c = t[s.color] ?? t.ansi1; return h_flex().flex_none().pl(3).pr(6).py(1).gap(3).items_center().rounded(5).bg(c + "26").text_size(TYPE.small).font_semibold().text_color(c).child(signEl(div, t, s, "⛨")).child("Security"); };
 // A finding's state as a word only when it is not the usual one: unresolved goes without saying.
 const stateWord = (st) => (st === "open" ? null : st === "recheck" ? "line changed" : FSTATUS[st]?.[0] ?? st);
 

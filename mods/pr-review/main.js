@@ -16,7 +16,7 @@
 // follows its rules; a picked one is kept in shared "pr.picked" so the selection survives remounts.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, Editor, EditorState, TextView } from "gpui-base";
-import { spaces, panes, focused, agents, exec, hc, run, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, home, layout, props, watchFolder, nextCommand } from "herdr";
+import { spaces, panes, terminals, focused, agents, exec, hc, run, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, home, layout, props, watchFolder, nextCommand } from "herdr";
 import { diffRows, buildPrompt, splitPatch, selection, nextChange, lineLabel, anchorRow, buildReview, hunksOf, hash, uiLine, reviewRequest, mapReview, triageOf, isSecurity, withThreats } from "./pr.js";
 import { parsePrRef, ghTarget, pruneSources, codeModel, windowActive, pollDue, pollAfter } from "./pr.js";
 import * as C from "./context.js";
@@ -24,10 +24,10 @@ import { tabArgs } from "./threads.js"; // a new Claude tab with the PR's text: 
 import { loadDiff, saveDiff } from "./diffcache.js";
 import { setupBanner, renderSetup, loadSetup, runSetup, openUrl, readConfig } from "./setup-view.js";
 import { chip, PRIORITY_TIP } from "./stack.js";
-import { panelState, bodyTab, DONE_DAYS, diffTooLarge, filesToDiff, isOpenPr, byState, listRows, riskSignal, progressText, pendingText, rowMarks, mineGroups, progressRows, removedText, withPick, openSig, panelShown, byRef, fileRisk, leftNow, wrapCode, codeCols, sliceSpans } from "./views.js";
+import { panelState, bodyTab, DONE_DAYS, diffTooLarge, filesToDiff, isOpenPr, byState, listRows, riskSignal, progressText, pendingText, rowMarks, mineGroups, progressRows, removedText, withPick, openSig, panelShown, byRef, fileRisk, leftNow, wrapCode, codeCols, sliceSpans, markLabel, spaceFolders, headBranch, spaceBranches, branchPrQuery, branchPrs, spaceOrder, focusedPr, spaceEmpty } from "./views.js";
 import { keepLast } from "./views.js"; // every cache has a limit
 import { ReviewMode, startReview, startExplore, saveKey, flowCard, modelPills, modelLabel, renderReviews, renderAgentBar, renderKeys, renderCardMenu, renderMini } from "./review.js";
-import { highlightJob, highlightStep, langOf, colors, renderLine, editorSyntax } from "./syntax.js";
+import { highlightJob, highlightStep, langOf, firstLineOf, colors, renderLine, editorSyntax } from "./syntax.js";
 import { TYPE } from "./views.js"; // the text sizes (U34)
 
 // Same mapping as the shipped files panel.
@@ -52,8 +52,8 @@ const triageFile = () => `${appHome()}/pr-data/triage.json`; // triage.py's why/
 const TRIAGE_MAX = 40; // open PRs triaged in the list
 // PR sources (the picking list): your session PRs, the active space's repo, review requests. gh lists are cached per source and
 // repo in pr-data/sources.json for SOURCE_MS (↻ asks again), the newest SOURCE_KEEP kept.
-const SOURCES = [["mine", "Mine"], ["repo", "This repo"], ["review", "Review requested"]];
-const SRC_TIP = { mine: "PRs found in your Claude sessions", repo: "Open PRs in this space's repository", review: "Open PRs waiting for your review" };
+const SOURCES = [["mine", "Mine"], ["repo", "This repo"], ["space", "This space"], ["review", "Review requested"]];
+const SRC_TIP = { mine: "PRs found in your Claude sessions", repo: "Open PRs in this space's repository", space: "PRs of the branches checked out in this space, in its panes and its agents' worktrees", review: "Open PRs waiting for your review" };
 const sourcesFile = () => `${appHome()}/pr-data/sources.json`;
 const SOURCE_MS = 3 * 60 * 1000, SOURCE_KEEP = 20, PICKED_KEEP = 20;
 const GH_FIELDS = "number,title,author,headRefName,headRefOid,baseRefName,updatedAt,isDraft,reviewDecision,additions,deletions,url";
@@ -167,7 +167,7 @@ export default class PrReview extends View {
   // A key command or scripted click for the panel (pr-review.<c>).
   panelCommand(c, cx) {
     const [name, arg] = [c.split(":")[0], c.split(":").slice(1).join(":")];
-    if (name === "source" && SOURCES.some(([k]) => k === arg)) { setShared("pr.source", arg); this.picking = true; this.loadSource(cx); }
+    if (name === "source" && SOURCES.some(([k]) => k === arg)) { this.pickSource(arg); this.picking = true; this.loadSource(cx); }
     else if (c === "picker") { this.picking = !this.picking; if (this.picking) this.loadSource(cx); }
     else if (c === "setup") { this.view = "setup"; runSetup(this, cx, false); }
     else if (c === "setup:close") this.view = "diff"; // Setup's "Close"
@@ -186,6 +186,7 @@ export default class PrReview extends View {
     else if (name === "explore") startExplore(arg || null); // pr-review.explore[:<folder>]: a topic in existing code, no PR
     // For keys and scripted demos: a listed PR's row click (pick:<number>, the shown source's list).
     else if (c === "pick:branch") this.choose(null, cx); // the list's "Current branch" row
+    else if (name === "file" && arg && this.files.some((f) => f.path === arg)) this.pick(arg, cx); // file:<path>, a file row's click in the shown diff
     else if (name === "pick") { const pr = byRef(this.listNow(), arg); if (pr) this.pickTarget(pr, cx); } // pick:<number | owner/repo#number | url>
   }
 
@@ -475,7 +476,7 @@ export default class PrReview extends View {
     if (this.mode === "file") await this.showFile(path, context);
     const shown = lines.map((l) => (l.length > 2000 ? l.slice(0, 2000) + "…" : l)), sig = shown.join("\n");
     if (this.rows.sig === sig) return; // the same text as shown: the rows and their syntax colours stay
-    this.rows = Object.assign(diffRows(shown), { sig });
+    this.rows = Object.assign(diffRows(shown), { sig, first: firstLineOf(all) }); // first: line 1 where the diff has it, for a script without an ending
   }
 
   // The whole file as it is now: markdown rendered, code highlighted read-only.
@@ -489,7 +490,8 @@ export default class PrReview extends View {
     if (text === null) { this.fileError = "File not in the working tree (deleted?)"; return; }
     if (text.includes("\0")) { this.fileError = "Binary file"; return; }
     const body = text.length > 400000 ? text.slice(0, 400000) + "\n… (truncated)" : text;
-    const ext = path.includes(".") ? path.split(".").pop().toLowerCase() : "txt";
+    // No ending: the "#!" line says what it is (the Editor knows a language by its usual ending).
+    const ext = path.split("/").pop().includes(".") ? path.split(".").pop().toLowerCase() : { shell: "sh", python: "py", js: "js" }[langOf(path, body.slice(0, 200).split("\n")[0])] ?? "txt";
     if (ext === "md" || ext === "markdown") { this.md = body; return; }
     const t = theme();
     this.code = EditorState.new({ language: LANG[ext] ?? ext, readonly: true, value: body, font_family: settings().font_family, font_size: 12,
@@ -722,23 +724,41 @@ export default class PrReview extends View {
   // PRs created from Claude sessions (prs.json), newest first, filtered by the contexts the view shows.
   // ---- PR sources: Mine (prs.json), This repo and Review requested (gh, no LLM), Open PR… (any PR by reference)
 
+  // The source shown: the one picked in this space (shared "pr.sourceBy", per space), else "This space" when a branch
+  // checked out here has an open PR (spaceAuto, set by loadSource), else the last pick anywhere, else the space's repo
+  // when none of your session PRs is from it.
+  sourcePick() { const k = (shared("pr.sourceBy") ?? {})[location().space ?? ""]; return SOURCES.some(([x]) => x === k) ? k : null; }
   sourceNow() {
+    const here = this.sourcePick();
+    if (here) return here;
+    if (this.spaceAuto) return "space";
     const picked = shared("pr.source");
     if (SOURCES.some(([k]) => k === picked)) return picked;
-    const slug = this.spaceSlug?.slug; // default: the space's repo when none of your session PRs is from it
+    const slug = this.spaceSlug?.slug;
     return slug && !this.prs.some((p) => p.repo === slug && shownIn(p)) ? "repo" : "mine";
   }
+  // A click on a source: for this space (the newest 30 spaces kept), and as the last pick for spaces without one.
+  pickSource(k) { setShared("pr.source", k); setShared("pr.sourceBy", withPick(shared("pr.sourceBy"), location().space ?? "", k)); }
 
   // The active space's repo: {root, slug: owner/name from origin}, or null outside a GitHub repo.
   async spaceRepo() {
-    const cwd = location().cwd, repo = cwd ? await this.repoOf(cwd) : null;
-    if (!repo) return null;
-    if (!this.slugs.has(repo.root)) {
-      const r = await exec("git", ["remote", "get-url", "origin"], { cwd: repo.root }).catch(() => null);
-      this.slugs.set(repo.root, /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(r?.stdout.trim() ?? "")?.[1] ?? null);
-    }
-    const slug = this.slugs.get(repo.root);
+    const cwd = location().cwd, repo = cwd ? await this.repoOf(cwd) : null, slug = repo ? await this.slugOf(repo.root) : null;
     return slug ? { root: repo.root, slug } : null;
+  }
+  // A repo's owner/name on GitHub from its origin (one git call per repo, remembered), null for another host or none.
+  async slugOf(root) {
+    if (!this.slugs.has(root)) {
+      const r = await exec("git", ["remote", "get-url", "origin"], { cwd: root }).catch(() => null);
+      this.slugs.set(root, /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(r?.stdout.trim() ?? "")?.[1] ?? null);
+    }
+    return this.slugs.get(root);
+  }
+  // A folder's checkout: its repo, GitHub name and branch. The branch is read from the HEAD file, so looking again
+  // costs no git call (a worktree has its own); null outside a repo.
+  async checkout(cwd) {
+    const repo = await this.repoOf(cwd);
+    if (!repo) return null;
+    return { cwd, root: repo.root, base: repo.base, slug: await this.slugOf(repo.root), branch: headBranch(await readTextFile(`${repo.gitdir}/HEAD`).catch(() => null)) };
   }
 
   // A PR's context for one you didn't open: the contexts' rules on its folder and remote, else the context your
@@ -747,7 +767,7 @@ export default class PrReview extends View {
     return C.ruleContext(folder, `https://github.com/${repo}`, ctxDoc()?.rules, home()) ?? (this.prs ?? []).find((p) => p.repo === repo)?.context ?? fallback ?? C.defaultOf(ctxDoc());
   }
 
-  // The list of a source, from sources.json when fresh (force: ↻), else gh; the triage line follows.
+  // The list of the shown source, from sources.json when fresh (force: ↻), else gh; the triage line follows.
   loadSource(cx, force = false) {
     this.srcAsked = true;
     cx.spawn(async (cx) => {
@@ -755,35 +775,62 @@ export default class PrReview extends View {
       const space = location().space, stale = () => location().space !== space, slug = await this.spaceRepo();
       if (stale()) return;
       this.spaceSlug = slug;
-      const now = this.sourceNow();
-      if (now === "mine") { this.loadTriage(cx); return cx.notify(); }
-      const sr = this.spaceSlug, key = now === "repo" ? (sr ? `repo:${sr.slug}` : null) : "review";
-      if (!key) { this.srcLists.repo = { key: null, prs: [] }; this.loadTriage(cx); return cx.notify(); } // no GitHub repo here: the list says what to do
-      const before = await readTextFile(sourcesFile()).catch(() => null), doc = JSON.parse(before ?? "{}");
-      if (stale()) return;
-      if (!force && doc[key] && Date.now() - doc[key].at < SOURCE_MS) { this.srcLists[now] = { key, ...doc[key] }; this.loadTriage(cx); return cx.notify(); }
-      const busy = (this.srcBusy ??= new Set()); // by list: Mine's neighbours can be fetched at the same time
-      if (busy.has(key)) return; // this list is being fetched: that answer serves this ask too
-      busy.add(key);
-      const spaceC = spaceCtx(space);
-      this.srcLists[now] = { key, prs: doc[key]?.prs ?? [], at: doc[key]?.at, loading: true }; cx.notify();
-      const args = now === "repo" ? ["pr", "list", "-R", sr.slug, "--state", "open", "--limit", "50", "--json", GH_FIELDS]
-        : ["search", "prs", "--review-requested=@me", "--state", "open", "--limit", "50", "--json", "repository,number,title,author,updatedAt,url,isDraft"];
-      const r = await exec("gh", args, { timeout: 60000 }).catch((e) => ({ code: 1, stderr: String(e) }));
-      busy.delete(key);
-      const here = now !== "repo" || !stale(); // another space's repo list: kept in sources.json for it, not shown in this one
-      if (r.code !== 0) { if (here) { this.srcLists[now] = { ...this.srcLists[now], loading: false, error: `gh: ${r.stderr.trim().slice(0, 160)}` }; cx.notify(); } return; }
-      const prs = JSON.parse(r.stdout).map((p) => {
-        const repo = now === "repo" ? sr.slug : p.repository?.nameWithOwner, cwd = sr && sr.slug === repo ? sr.root : null;
-        return ghTarget(p, { repo, cwd, source: now, context: this.contextOfPr(repo, cwd, now === "repo" ? spaceC : null) });
-      });
-      if (here) { this.srcLists[now] = { key, prs, at: Date.now() }; this.dropMinimized(); }
-      for (let attempt = 0; attempt < 3; attempt++) { // compare-and-swap: another copy may write it too
-        const old = await readTextFile(sourcesFile()).catch(() => null);
-        try { await writeTextFile(sourcesFile(), JSON.stringify(pruneSources({ ...JSON.parse(old ?? "{}"), [key]: { at: Date.now(), prs } }, SOURCE_KEEP)), old); break; } catch { /* again */ }
+      // No source picked in this space yet: "This space" is shown when a branch checked out here has an open PR. Asked
+      // once per space visit; a space on default branches only costs no gh call for it.
+      let looked = false;
+      if (!this.sourcePick() && this.spaceAuto == null) {
+        await this.loadList("space", cx, { space, stale, force: false, quiet: true });
+        if (stale()) return;
+        this.spaceAuto = (this.srcLists.space?.prs ?? []).some((p) => isOpenPr(p) && shownIn(p)); looked = true;
       }
-      if (here) { this.loadTriage(cx); cx.notify(); }
+      const now = this.sourceNow();
+      if (now === "mine" || (now === "space" && looked && !force)) { this.loadTriage(cx); return cx.notify(); } // Mine is in memory; This space was just loaded
+      await this.loadList(now, cx, { space, stale, force });
     });
+  }
+
+  // One source's list into this.srcLists[now]: its key in sources.json and how to fetch it; fresh from the file, else
+  // gh (repo: one gh pr list; review: one search; space: one GraphQL call per repo with all its branches).
+  async loadList(now, cx, { space, stale, force, quiet = false }) {
+    const shown = () => { if (!quiet) { this.loadTriage(cx); cx.notify(); } }; // quiet: the look for a default source draws nothing of its own
+    const sr = this.spaceSlug, spaceC = spaceCtx(space), gh = async (args) => { const r = await exec("gh", args, { timeout: 60000 }); if (r.code !== 0) throw new Error(r.stderr.trim()); return JSON.parse(r.stdout); };
+    let key, fetch, why = null;
+    if (now === "space") {
+      // Local only: the folders of the space's panes and agents, their repos (remembered) and HEAD files.
+      const found = (await Promise.all(spaceFolders(space, spaces(), panes(), terminals()).map((cwd) => this.checkout(cwd)))).filter(Boolean), repos = spaceBranches(found);
+      if (stale()) return;
+      this.spaceHeads = new Map(found.map((c) => [c.cwd, c]));
+      key = repos.length ? `space:${hash(JSON.stringify(repos.map((r) => [r.slug, r.branches])))}` : null; why = spaceEmpty(found, repos);
+      fetch = async () => (await Promise.all(repos.map(async (r) => branchPrs(await gh(["api", "graphql", "-f", `query=${branchPrQuery(r.slug, r.branches)}`]))
+        .map((p) => ghTarget(p, { repo: r.slug, cwd: r.roots[p.headRefName] ?? null, source: now, context: this.contextOfPr(r.slug, r.roots[p.headRefName] ?? null, spaceC) }))))).flat();
+    } else if (now === "repo") {
+      key = sr ? `repo:${sr.slug}` : null;
+      fetch = async () => (await gh(["pr", "list", "-R", sr.slug, "--state", "open", "--limit", "50", "--json", GH_FIELDS])).map((p) => ghTarget(p, { repo: sr.slug, cwd: sr.root, source: now, context: this.contextOfPr(sr.slug, sr.root, spaceC) }));
+    } else {
+      key = "review";
+      fetch = async () => (await gh(["search", "prs", "--review-requested=@me", "--state", "open", "--limit", "50", "--json", "repository,number,title,author,updatedAt,url,isDraft"])).map((p) => {
+        const repo = p.repository?.nameWithOwner, cwd = sr && sr.slug === repo ? sr.root : null;
+        return ghTarget(p, { repo, cwd, source: now, context: this.contextOfPr(repo, cwd, null) });
+      });
+    }
+    if (!key) { this.srcLists[now] = { key: null, prs: [], why }; return shown(); } // nothing to ask GitHub about here: the list says what to do
+    const before = await readTextFile(sourcesFile()).catch(() => null), doc = JSON.parse(before ?? "{}");
+    if (stale()) return;
+    if (!force && doc[key] && Date.now() - doc[key].at < SOURCE_MS) { this.srcLists[now] = { key, why, ...doc[key] }; return shown(); }
+    const busy = (this.srcBusy ??= new Set()); // by list: neighbours can be fetched at the same time
+    if (busy.has(key)) return; // this list is being fetched: that answer serves this ask too
+    busy.add(key);
+    this.srcLists[now] = { key, why, prs: doc[key]?.prs ?? [], at: doc[key]?.at, loading: true }; if (!quiet) cx.notify();
+    const prs = await fetch().catch((e) => e);
+    busy.delete(key);
+    const here = now === "review" || !stale(); // another space's list: kept in sources.json for it, not shown in this one
+    if (prs instanceof Error) { if (here) { this.srcLists[now] = { ...this.srcLists[now], loading: false, error: `gh: ${String(prs.message ?? prs).slice(0, 160)}` }; cx.notify(); } return; }
+    if (here) { this.srcLists[now] = { key, why, prs, at: Date.now() }; this.dropMinimized(); }
+    for (let attempt = 0; attempt < 3; attempt++) { // compare-and-swap: another copy may write it too
+      const old = await readTextFile(sourcesFile()).catch(() => null);
+      try { await writeTextFile(sourcesFile(), JSON.stringify(pruneSources({ ...JSON.parse(old ?? "{}"), [key]: { at: Date.now(), prs } }, SOURCE_KEEP)), old); break; } catch { /* again */ }
+    }
+    if (here) shown();
   }
 
   // The listed PRs of the shown source, in the contexts the view shows.
@@ -906,9 +953,14 @@ export default class PrReview extends View {
   // A PR row's risk signal as chips (views.js riskSignal): the highest severity among its open findings, and
   // security's own mark. Nothing without a cached analysis or findings file.
   riskChips(t, url, id) {
-    // One mark (views.js rowMarks): "⛨ high" in red when an open finding is about security, else the severity in grey.
-    return rowMarks(this.risk?.get(url), null).map((m) => chip(t, m.text, m.security ? t.ansi1 : t.muted, m.security, `${id}-sev`,
-      `The highest severity among this PR's open findings, from the cached analysis and reviews${m.security ? `; ${SEC_MARK}: at least one of them is about security` : ""}`));
+    // One mark (views.js rowMarks): "⛨ high" when an open finding is about security, in the severity's color, on a
+    // filled ground when that is confirmed and in a dashed frame with "?" when it is only assumed (as in the review);
+    // else the severity in grey.
+    // A review in progress has its own mark in the registry (review.js riskOfCounts: with what its probes and checks
+    // confirmed): the row shows that one, so it agrees with the minimized chip.
+    const own = (shared("review.open") ?? []).find((r) => r.url === url)?.risk;
+    return rowMarks(own?.top ? own : this.risk?.get(url), null).map((m) => chip(t, markLabel(div, t, m), t[m.color] ?? t.muted, m.security, `${id}-sev`,
+      `The highest severity among this PR's open findings, from the cached analysis and reviews${m.security ? `; ${SEC_MARK}: at least one of them is about security` : ""}${m.words ? `.\n${m.words}` : ""}`));
   }
 
   // The list of the shown source, one row per PR: the ones under "In progress" are not repeated, open PRs come first
@@ -917,9 +969,11 @@ export default class PrReview extends View {
     const src = this.sourceNow(), sl = this.srcLists[src], inProgress = (shared("review.open") ?? []).filter(shownIn);
     const { list, above, started } = listRows(this.listNow(), inProgress, this.panelProgress().shown);
     // Mine: this space's repo and recent first, the rest folded (views.js mineGroups); the other lists by state.
-    const b = byState(list), g = src === "mine" ? mineGroups(list, this.spaceSlug?.slug ?? null) : { here: b.open, other: [], done: b.done };
+    // This space: the focused pane's PR first, the recently merged ones in the list with that word (not folded).
+    const focus = src === "space" ? this.spaceHeads?.get(location().cwd) ?? null : null;
+    const b = byState(list), g = src === "mine" ? mineGroups(list, this.spaceSlug?.slug ?? null) : src === "space" ? { here: spaceOrder(list, focus), other: [], done: [] } : { here: b.open, other: [], done: b.done };
     const open = g.here, done = g.done, rest = g.other;
-    const item = (id, on, top, sub, state, tag, click, pr) => v_flex().id(id).flex_none().px(8).py(4).rounded(7).cursor_pointer().tooltip(pr ? "Select this PR to see its diff" : "Use the diff of the focused pane's branch")
+    const item = (id, on, top, sub, state, tag, click, pr, tagTip = "Agent that opened this PR") => v_flex().id(id).flex_none().px(8).py(4).rounded(7).cursor_pointer().tooltip(pr ? "Select this PR to see its diff" : "Use the diff of the focused pane's branch")
       .when(on, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click(click)
       .child(h_flex().gap(6).child(div().flex_1().min_w(0).truncate().child(top)).when(Boolean(state) && state !== "open", (e) => e.child(div().id(`${id}-st`).tooltip(`PR state: ${state}`).flex_none().text_size(TYPE.micro).text_color(t[STATE[state]] ?? t.muted).child(state)))
         .when(Boolean(pr && isOpenPr(pr)), (e) => { // the one way into the review; a merged or closed PR has none
@@ -928,7 +982,7 @@ export default class PrReview extends View {
             : pill(`${id}-rv`, t, "Review", (_e, cx) => { cx.stop_propagation(); this.pickTarget(pr, cx, true); }, false, "Open this PR in the review layout"));
         }))
       .when(Boolean(sub), (e) => e.child(h_flex().gap(6).text_size(TYPE.panel).text_color(t.muted).child(div().id(`${id}-sub`).tooltip(src === "mine" ? "Repository and the session that opened it" : "Author, review status, lines added and removed, last update").flex_1().min_w(0).truncate().child(sub))
-        .when(Boolean(tag), (e) => e.child(div().id(`${id}-tg`).tooltip("Agent that opened this PR").flex_none().max_w(140).truncate().px(5).rounded(4).bg(t.raised).text_size(TYPE.micro).child(tag)))))
+        .when(Boolean(tag), (e) => e.child(div().id(`${id}-tg`).tooltip(tagTip).flex_none().max_w(140).truncate().px(5).rounded(4).bg(t.raised).text_size(TYPE.micro).child(tag)))))
       .when(Boolean(pr && (this.triage?.get(pr.url) || this.risk?.get(pr.url)?.top)), (e) => { // risk first, then the triage card: compact; the why shows on the picked PR
         const tri = this.triage?.get(pr.url);
         // At most three marks (views.js rowMarks): severity with ⛨, then priority and type as plain text.
@@ -944,18 +998,20 @@ export default class PrReview extends View {
     const row = (p) => (src === "mine"
       ? item(`pick-${p.url}`, this.prSel?.url === p.url, `#${p.number} ${p.title ?? ""}`,
         `${p.repo.split("/").pop()} · ${p.sessionTitle ?? p.session.slice(0, 8)}`, p.state, p.agent && `↳ ${p.agent}`, (_e, cx) => this.choose(p, cx), p)
-      : item(`pick-${src}-${p.url}`, this.prSel?.url === p.url, `#${p.number} ${p.title ?? ""}`, other(p), p.state, null, (_e, cx) => this.pickTarget(p, cx), p));
+      : item(`pick-${src}-${p.url}`, this.prSel?.url === p.url, `#${p.number} ${p.title ?? ""}`, src === "space" ? [p.head, other(p)].filter(Boolean).join(" · ") : other(p), p.state,
+        focusedPr(p, focus) ? "focused agent" : null, (_e, cx) => this.pickTarget(p, cx), p, "The PR of the branch the focused pane is on"));
     const inView = C.tagged(ctxDoc()) ? " (in this view)" : "", n = open.filter((p) => this.triage?.has(p.url)).length; // triaged rows of this list
     // One sentence for an empty list: what is going on, or what to do.
     const empty = src === "mine" ? (this.scanning ? "Searching transcripts for PRs…" : this.prs.length ? "No recent PRs from Claude sessions in this repository." : "No PRs from Claude sessions") : !sl || sl.loading ? "Asking GitHub…"
+      : src === "space" ? (above ? "Every open PR of this space's branches is in progress above." : sl.why ?? "")
       : src === "repo" && sl?.key === null ? "Open a space on a GitHub repo to list its PRs."
       : above ? "Every open PR here is in progress above." : src === "repo" ? `No open PRs in this repo${inView}` : `No open review requests${inView}`;
     return v_flex().flex_none().p(6)
-        .child(h_flex().flex_none().px(4).py(2).gap(6).items_center()
-          .child(h_flex().gap(2).p(2).rounded(7).border_1().border_color(t.border).children(SOURCES.map(([k, label]) =>
+        .child(h_flex().flex_none().flex_wrap().px(4).py(2).gap(6).items_center()
+          .child(h_flex().flex_wrap().gap(2).p(2).rounded(7).border_1().border_color(t.border).children(SOURCES.map(([k, label]) =>
             div().id(`pr-src-${k}-${this.uid}`).tooltip(SRC_TIP[k]).px(8).h(24).flex().items_center().rounded(5).cursor_pointer().text_size(TYPE.panel)
               .bg(src === k ? t.selected : t.chrome).text_color(src === k ? t.foreground : t.muted)
-              .on_click((_e, cx) => { setShared("pr.source", k); this.loadSource(cx); cx.notify(); }).child(label))))
+              .on_click((_e, cx) => { this.pickSource(k); this.loadSource(cx); cx.notify(); }).child(label))))
           .child(div().id(`pr-srcinfo-${this.uid}`).tooltip(src === "repo" ? "Repository these PRs come from" : "How long ago this list was fetched from GitHub").flex_1().min_w(0).truncate().text_size(TYPE.micro).text_color(t.muted)
             .child(src === "repo" ? this.spaceSlug?.slug ?? "" : sl?.loading ? "loading…" : sl?.at ? (Date.now() - sl.at < 60000 ? "just now" : `${age(new Date(sl.at).toISOString())} ago`) : ""))
           .when(src !== "mine", (e) => e.child(pill(`pr-src-reload-${this.uid}`, t, sl?.loading ? "…" : "↻", (_e, cx) => this.loadSource(cx, true), false, "Fetch this list from GitHub again", "Reload PR list"))))
@@ -1026,7 +1082,8 @@ export default class PrReview extends View {
     const { shown, more, total, left } = this.panelProgress(), old = (r) => Date.now() - (r.lastTouched ?? 0) > DONE_DAYS * 86400000;
     // A review that stood here a moment ago and whose PR was merged or closed since: said once, in a line of its own.
     const gone = leftNow(this.inProg, left);
-    if (gone) this.leftNote = gone;
+    if (gone) { this.leftNote = gone; this.leftUrls = new Set(left.map((r) => r.url)); }
+    else if (this.leftNote && shown.some((r) => this.leftUrls?.has(r.url))) this.leftNote = null; // listed again (its state is unknown again): the line no longer holds
     this.inProg = new Set(shown.map((r) => r.url));
     const drop = (r) => pill(`pr-drop-${r.url}`, t, "✕", (_e, cx) => { cx.stop_propagation(); this.dropReview(r.url, cx); }, false, "Remove from In progress. Your comments and progress are kept; opening the review again brings it back.", "Remove from In progress");
     return v_flex().flex_none().px(10).pt(8).pb(4).gap(2).border_b(1).border_color(t.border)
@@ -1097,7 +1154,7 @@ export default class PrReview extends View {
   onSpace(cx) {
     const url = (shared("pr.selected") ?? {})[selKey()];
     this.prSel = url && url !== BRANCH ? this.prs.find((p) => p.url === url) ?? (shared("pr.picked") ?? {})[url] ?? null : null;
-    this.branchPicked = url === BRANCH; this.picking = false; this.srcAsked = false; this.spaceSlug = null; this.showOther = false;
+    this.branchPicked = url === BRANCH; this.picking = false; this.srcAsked = false; this.spaceSlug = null; this.showOther = false; this.spaceAuto = null; this.spaceHeads = null;
     if (!this.prSel && !this.branchPicked) this.loadSource(cx);
     cx.notify();
   }
@@ -1206,7 +1263,7 @@ export default class PrReview extends View {
     // New rows (the file changed on disk): until they are coloured, a row whose text stayed keeps its colours.
     if (this.hl?.rows !== this.rows) {
       const old = this.hl?.spans && this.hl.file === this.open ? this.hl : null;
-      this.hl = { rows: this.rows, file: this.open, job: highlightJob(this.rows, langOf(this.open ?? "")), spans: null, kept: old && this.rows.map((r, i) => (old.rows[i]?.text === r.text ? old.spans[i] : null)) };
+      this.hl = { rows: this.rows, file: this.open, job: highlightJob(this.rows, langOf(this.open ?? "", this.rows.first)), spans: null, kept: old && this.rows.map((r, i) => (old.rows[i]?.text === r.text ? old.spans[i] : null)) };
       this.highlightMore(cx, this.hl);
     }
     this.spans = this.hl.spans ?? this.hl.kept;
@@ -1267,8 +1324,8 @@ export default class PrReview extends View {
         return h_flex().id(`f-${f.path}`).h(28).flex_none().px(8).gap(8).items_center().rounded(7).cursor_pointer().tooltip(f.path)
           .when(this.open === f.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.fh.focus(); this.askTop = false; this.pick(f.path, cx); })
           .child(h_flex().flex_1().min_w(0).child(div().text_color(t.dim).truncate().child(parts.length ? parts.join("/") + "/" : "")).child(div().min_w(0).truncate().child(name)))
-          .children(rowMarks(this.fileMarks?.get(f.path), null).map((m) => chip(t, m.text, m.security ? t.ansi1 : t.muted, m.security, `f-r-${f.path}`,
-            "The highest severity among this file's unresolved findings, from the cached analysis and reviews. Open the review to see them.")))
+          .children(rowMarks(this.fileMarks?.get(f.path), null).map((m) => chip(t, markLabel(div, t, m), t[m.color] ?? t.muted, m.security, `f-r-${f.path}`,
+            `The highest severity among this file's unresolved findings, from the cached analysis and reviews${m.words ? `: ${m.words}` : ""}. Open the review to see them.`)))
           .when(n > 0, (e) => e.child(div().id(`f-c-${f.path}`).tooltip(`${n} pending ${n === 1 ? "comment" : "comments"} on this file`).text_size(TYPE.micro).text_color(t.accent).child(`● ${n}`)))
           .when(f.add > 0, (e) => e.child(div().id(`f-a-${f.path}`).tooltip("Lines added in this file").text_size(TYPE.panel).text_color(t.ansi2).child(`+${f.add}`)))
           .when(f.del > 0, (e) => e.child(div().id(`f-d-${f.path}`).tooltip("Lines removed in this file").text_size(TYPE.panel).text_color(t.ansi1).child(`−${f.del}`)));

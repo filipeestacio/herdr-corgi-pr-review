@@ -51,7 +51,7 @@ const STUBS = {
     export const VirtualListScrollHandle = n, ScrollHandle = n, TextareaState = n, InputState = n, EditorState = n;`,
   herdr: `const S = globalThis.__rv, no = async () => { throw new Error("stub"); }, never = () => new Promise(() => {});
     export const exec = (...a) => (S.exec ? S.exec(...a) : no()), hc = no, readTextFile = async (p) => { if (S.files.has(p)) return S.files.get(p); throw new Error("stub"); }, pickFolder = no, writeTextFile = async () => {}, run = () => null;
-    export const spaces = () => S.spaces ?? [], panes = () => [], agents = () => [], terminals = () => [], focused = () => null, layout = () => null;
+    export const spaces = () => S.spaces ?? [], panes = () => S.panes ?? [], agents = () => [], terminals = () => S.terminals ?? [], focused = () => S.focused ?? null, layout = () => null;
     export const theme = () => S.theme, settings = () => ({}), props = () => S.props ?? { part: "review" };
     export const shared = (k) => S.store.get(k), setShared = (k, v) => S.store.set(k, v), appHome = () => "/h", home = () => "/h";
     export const nextCommand = never, watchFolder = never, openOverlay = (o) => { S.overlays.push(o); }, closeOverlay = () => {};`,
