@@ -33,6 +33,8 @@ import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCAL
 import { ghMd, mdBlocks } from "./views.js"; // GitHub comments as GitHub shows them
 import { wrapCode, codeCols, sliceSpans } from "./views.js"; // long lines wrap
 import { pairRows, pairSide, HALF_GUTTER, diffModeOf, oneSided, stackOf, chipAt, textW } from "./views.js"; // side by side; the bar's stack
+import { mdTarget } from "./views.js"; // Copy as Markdown: what it copies on each page
+const MD_W = textW("Copy as Markdown", 12.5) + 20; // the button's width on a layer's head, where clicks are placed by x
 import { plainText } from "./pr.js";
 import { pollDue, pollAfter, windowActive } from "./pr.js"; // background fetches (ghTick)
 import { hasSources, archLayout, archBands } from "./arch.js";
@@ -485,7 +487,7 @@ export const ReviewMode = {
     // sec-card:<node id> for a card of the Security page's picture.
     // page-part:<name> scrolls the open page until that part shows (pageView lists the names), as the wheel would.
     else if (name === "arch-view") { if (["diff", "before", "after"].includes(arg)) this.archMode = arg; }
-    else if (name === "arch-fit") { this.archFit = !this.archFitOn(); this.hsOf("rv-arch-canvas").x = 0; }
+    else if (name === "arch-fit") { this.archFit = !this.archFitOn(); this.hsOf("rv-arch-canvas").x = 0; this.doorShown = false; }
     else if (name === "arch-wrap") this.setArchWrap(!this.archWrapOn());
     else if (name === "sec-card") { this.page = "blast"; this.tab = "steps"; this.secCard(arg || null, cx); } // a click on a card of the Security page's picture ("": unlight)
     else if (name === "res-path") { this.page = "res"; this.tab = "steps"; this.resOpen = this.resOpen === arg ? null : arg || null; } // a click on a path of the Resilience page (its id; "" folds)
@@ -1704,8 +1706,9 @@ export const ReviewMode = {
       else if (this.collapsed.has(p) || this.overBudget?.has(p)) this.unfold(p); else this.collapsed.add(p);
     } else if (it.t === "fold") this.unfold(it.path);
     else if (it.t === "step") {
-      const deps = this.stepDeps(it.s), k = chipAt(x, this.press.w - 16, deps.map(([, w]) => w), 10); // the head's "Depends on" chips: px(16), gap(10)
-      if (k >= 0) this.goStep(this.steps().indexOf(deps[k][0]), cx); else this.goStep(it.i, cx, false);
+      const md = it.i === this.cur && !it.s.pseudo ? [MD_W] : []; // the open layer's "Copy as Markdown", after the chips
+      const deps = this.stepDeps(it.s), k = chipAt(x, this.press.w - 16, [...deps.map(([, w]) => w), ...md], 10); // the head's "Depends on" chips: px(16), gap(10)
+      if (k >= deps.length) this.copyMd(); else if (k >= 0) this.goStep(this.steps().indexOf(deps[k][0]), cx); else this.goStep(it.i, cx, false);
     }
     else if (it.t === "path") this.visit(it.h.id, cx);
     else if (it.t === "visfold" || (it.t === "vis" && it.bare)) this.toggleVis(it.text);
@@ -3022,8 +3025,11 @@ export const ReviewMode = {
     const body = { overview: () => this.overviewPage(t), arch: () => this.archPage(t, true), blast: () => this.blastPage(t), res: () => this.resPage(t) }[this.page];
     const parts = [].concat(body ? body() : div()), named = Array.isArray(parts[0]);
     this.pageParts = named ? parts.map(([k]) => k) : [];
+    // Copy as Markdown at the top right of every page: beside the first part (the head), which keeps the rest of the row.
+    const els = named ? parts.map(([, el]) => el) : parts;
+    if (body && this.prSel) els[0] = h_flex().w_full().gap(12).items_start().child(div().flex_1().min_w(0).child(els[0])).child(this.mdButton(t));
     return div().flex_1().min_h(0).relative()
-      .child(v_flex().id(`rv-page-${this.page}`).absolute().inset_0().overflow_y_scroll().when(Boolean(this.pageScrolls[this.page]), (e) => e.track_scroll(this.pageScrolls[this.page])).px(24).py(18).gap(named ? 12 : 14).children(named ? parts.map(([, el]) => el) : parts))
+      .child(v_flex().id(`rv-page-${this.page}`).absolute().inset_0().overflow_y_scroll().when(Boolean(this.pageScrolls[this.page]), (e) => e.track_scroll(this.pageScrolls[this.page])).px(24).py(18).gap(named ? 12 : 14).children(els))
       .child(Scrollbar.vertical(`rv-page-${this.page}`).absolute().inset_0());
   },
 
@@ -3116,8 +3122,9 @@ export const ReviewMode = {
     if (!a) return out([["head", this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams")], ["none", div().text_size(13.5).text_color(t.muted).child(this.ai ? "This analysis has no architecture picture (older analysis, or the PR touches no architecture). Re-analyze for one." : "No analysis yet: Analyze in the left column.")],
       ...(this.ai?.visuals?.length > 0 ? [["views", div().w_full().child(more())]] : [])]);
     const groups = new Set(a.nodes.map((n) => n.group)).size, L = this.archL(), fit = this.archFitOn(), marks = this.archMarksNow();
-    // The first time, the picture starts at the way in (the Internet card), wherever the layout put it.
-    if (!this.doorShown && L && !this.archWrapOn()) { const d = L.nodes.find((n) => n.id === "\0in"); if (d) this.hsOf("rv-arch-canvas").x = Math.max(0, d.x - 40); this.doorShown = true; }
+    // The first time, and after Fit changed the layout, the picture starts at the way in (the Internet card), wherever
+    // the layout put it. Not before the view is measured: Fit switches itself on then, and the cards move.
+    if (!this.doorShown && L && this.hsOf("rv-arch-canvas").viewW && !this.archWrapOn()) { const d = L.nodes.find((n) => n.id === "\0in"); if (d) this.hsOf("rv-arch-canvas").x = Math.max(0, d.x - 40); this.doorShown = true; }
     // The frames are the systems; a card's trust zone is a dot on it, ringed when it is really reachable from further out.
     const opts = { ...this.archOpts("arch"), marks, zoom: settings().zoom || 1, zones: a.zones ?? [], effective: this.effZones(a) }, count = (...st) => L.nodes.filter((n) => st.includes(n.status)).length; // of the cards shown (Before hides the added ones)
     return out([
@@ -3130,12 +3137,13 @@ export const ReviewMode = {
         .when(hasTrust(L), (e) => e.child(div().flex_none().child(trustLegend(L, t, a.zones))))
         .child(h_flex().flex_none().gap(2).p(2).rounded(7).border_1().border_color(t.border).child(seg("diff", "Structural diff")).child(seg("before", "Before")).child(seg("after", "After")))
         .child(div().id("rv-av-fit").flex_none().px(10).h(28).flex().items_center().rounded(7).border_1().border_color(fit ? t.accent : t.border).cursor_pointer().text_size(12.5)
-          .text_color(fit ? t.foreground : t.muted).tooltip(typeof this.archFit === "boolean" ? "Narrow cards with shorter texts, so more of the picture fits a row" : "Narrow cards with shorter texts: on by itself while the picture is wider than the view. A click decides for you").on_click((_e, cx) => { this.archFit = !fit; this.hsOf("rv-arch-canvas").x = 0; cx.notify(); }).child("Fit"))
+          .text_color(fit ? t.foreground : t.muted).tooltip(typeof this.archFit === "boolean" ? "Narrow cards with shorter texts, so more of the picture shows. It stays one row: scroll sideways for the rest" : "Narrow cards with shorter texts: on by itself while the picture is wider than the view. It stays one row: scroll sideways for the rest. A click decides for you").on_click((_e, cx) => { this.archFit = !fit; this.hsOf("rv-arch-canvas").x = 0; this.doorShown = false; cx.notify(); }).child("Fit"))
         .child(div().id("rv-av-wrap").flex_none().px(10).h(28).flex().items_center().rounded(7).border_1().border_color(this.archWrapOn() ? t.accent : t.border).cursor_pointer().text_size(12.5)
           .text_color(this.archWrapOn() ? t.foreground : t.muted).tooltip("On: a picture wider than the view goes on in a second row. Off: one row to scroll sideways")
           .on_click((_e, cx) => { this.setArchWrap(!this.archWrapOn()); cx.notify(); }).child("Wrap"))],
-      // Fit: narrow cards, and frames that do not fit the width go on in the next row whole (archBands never cuts a frame).
-      ["map", this.archCanvas(t, L, opts, { wrap: this.archWrapOn() || fit })],
+      // Fit only narrows the cards: the picture stays one row and scrolls sideways when it is still wider than the view.
+      // Rows (archBands) come from the Wrap switch alone.
+      ["map", this.archCanvas(t, L, opts)],
       ...(this.archFocus && a.nodes.some((x) => x.id === this.archFocus) ? [["card", this.archCard(t, a, marks)]] : []),
       ...(this.archFocus && this.drillAt(`arch:${this.archFocus}`) ? [["inside", this.drillPanel(t, `arch:${this.archFocus}`)]] : []),
       // Only the calls whose text is not on their line in the picture (a fan's, a stub's, a text cut short).
@@ -3316,9 +3324,8 @@ export const ReviewMode = {
   // Wrap: off by default (one row to scroll sideways); the choice is kept for every review (shared review.archWrap).
   archWrapOn() { return shared("review.archWrap") === true; },
   setArchWrap(on) { setShared("review.archWrap", on); this.hsOf("rv-arch-canvas").x = 0; },
-  // Fit (narrow cards): only when switched on; the picture wraps instead.
-  // Fit: the person's choice when there is one; else on as soon as the usual cards are wider than the view, so the
-  // picture opens with every frame in sight (the view's width is known after the first layout: until then, off).
+  // Fit (narrow cards, never rows): the person's choice when there is one; else on as soon as the usual cards are wider
+  // than the view, so more of the picture is in sight (the view's width is known after the first layout: until then, off).
   archFitOn() {
     if (typeof this.archFit === "boolean") return this.archFit;
     const s = this.hsOf("rv-arch-canvas"), L = s.viewW ? this.archL(false) : null;
@@ -4696,7 +4703,8 @@ export const ReviewMode = {
     return v_flex().flex_1().min_h(0)
       .child(v_flex().flex_none().px(14).py(10).gap(8).border_b(1).border_color(t.border)
         // How this number comes about: in short under it, as a sentence with every source in its help text.
-        .child(div().id("rv-fcount").tooltip(`${funnelLine(fun, name)} A finding with a fix sent stays unresolved until it is verified.`).text_size(13.5).font_semibold().child(countLine(c)))
+        .child(h_flex().gap(8).items_start().child(div().id("rv-fcount").flex_1().min_w(0).whitespace_normal().tooltip(`${funnelLine(fun, name)} A finding with a fix sent stays unresolved until it is verified.`).text_size(13.5).font_semibold().child(countLine(c)))
+          .when(Boolean(this.prSel), (e) => e.child(this.mdButton(t, "rv-md-f"))))
         .when(Boolean(funnelShort(fun)), (e) => e.child(div().id("rv-ffunnel").tooltip(funnelLine(fun, name)).mt(-6).truncate().text_size(12).text_color(t.muted).child(funnelShort(fun))))
         .child(h_flex().flex_wrap().gap(4).children(sources.map((x) => div().id(`rv-fsrcn-${x.k}`).tooltip(x.n ? `Findings ${name(x.k)} is a source of` : runs[x.k]?.state === "failed" ? `${name(x.k)} failed: ${runs[x.k].error ?? "no result"}` : ran[x.k] ? `${name(x.k)} ran and found nothing` : `${name(x.k)} has not run on this PR`)
           .px(8).h(22).flex().items_center().rounded(6).border_1().border_color(t.border).text_size(12).text_color(x.n ? t.foreground : t.muted).child(x.text)))
@@ -4934,7 +4942,10 @@ export const ReviewMode = {
           // "Depends on" the layers its code builds on (step.dependsOn): a click on one opens it (onItem, chipAt).
           .when(this.stepDeps(s).length > 0, (e) => e.child(div().id(`rv-ldeps-${it.i}`).flex_none().text_size(12.5).text_color(t.muted).tooltip("The layers whose code this one builds on: read them first").child("Depends on"))
             .children(this.stepDeps(s).map(([d, w]) => div().w(w).h(22).flex_none().px(6).flex().items_center().rounded(6).border_1().border_color(t.border).text_size(12.5).text_color(t.accent)
-              .truncate().child(plain(d.title))))))
+              .truncate().child(plain(d.title)))))
+          // Copy as Markdown, on the open layer's head (it copies that one): the last chip of the row (onItem, chipAt).
+          .when(on && !s.pseudo, (e) => e.child(div().id("rv-md-l").tooltip(this.mdNow().tip).accessibility_label("Copy this layer as Markdown").w(MD_W).h(22).flex_none().flex().items_center().justify_center().rounded(6).border_1().border_color(t.border)
+            .text_size(12.5).text_color(t.muted).hover((h) => h.text_color(t.foreground)).child("Copy as Markdown"))))
         .child(div().flex_none().max_w(LAYER_TEXT).line_height(1.55).text_size(13.5).text_color(t.foreground).child(TextView.markdown(`rv-lwhy-${it.i}`, s.why)))
         .when(s.questions.length > 0, (e) => e.child(div().id(`rv-lq-${it.i}`).tooltip("Questions to check while you read this layer's code").h(18).flex_none().mt(4).text_size(11.5).font_semibold().text_color(t.muted).child("CHECK"))
           .children(s.questions.map((q, k) => h_flex().flex_none().max_w(LAYER_TEXT).gap(8).items_start().text_size(13.5).line_height(1.55)
@@ -5272,7 +5283,7 @@ export const ReviewMode = {
     // The base is in the title's state; a PR that builds on this one stays here as "on top".
     const related = [...(ctx?.open ?? []).filter((p) => !p.stacked || p.above).map((p) => ({ ...p, state: p.above ? "on top" : "open" })), ...(ctx?.merged ?? []).map((p) => ({ ...p, state: "merged" }))];
     // A flow picture only when a path in it is broken or doubled: an unresolved finding breaks one of its calls.
-    const flow = (ai?.visuals ?? []).find((v) => v.kind === "flow" && this.openFindings().some((f) => f.breaks));
+    const flow = (ai?.visuals ?? []).find((v) => v.kind === "flow" && this.openFindings().some((f) => f.breaks?.node || f.breaks?.from));
     const surface = ai ? surfaceLine(ai.access, [...(ai.scope?.checked ?? []), ...(this.find.runs?.security?.scope?.checked ?? [])]) : null;
     return v_flex().flex_none().gap(2).text_size(13.5)
       .when(Boolean(ai), (e) => e.child(head("What the PR does", true))
@@ -5335,7 +5346,7 @@ export const ReviewMode = {
     this.note = `Review state copied as text (${text.trim().split("\n").length} lines), nothing was posted.${this.findings().some((f) => f.security) ? " Security findings are in it with their title only." : ""}`;
   },
 
-  // "Copy this page as Markdown" (the ⋯ menu): what the right side shows, as text to hand to an agent (markdown.js):
+  // "Copy as Markdown" (the button in a page's head, and "Copy this page as Markdown" in the ⋯ menu): what the right side shows, as text to hand to an agent (markdown.js):
   // the Overview, the open layer, the Architecture or the Security page; on the Findings tab the open finding, else
   // all unresolved ones; on Files and Comments the Overview. Pictures are Mermaid. Security findings are in it in
   // full: it goes to the clipboard only.
@@ -5349,17 +5360,26 @@ export const ReviewMode = {
       this.note = `The context to check ${list.length === 1 ? "the open finding" : `${list.length} unresolved security findings`} is on the clipboard as Markdown (${text.trim().split("\n").length} lines), nothing was posted.`;
       return;
     }
-    const layer = this.tab === "steps" && !this.page ? this.steps()[this.cur] : null, one = this.tab === "findings" && this.ffocus ? this.findingById(this.ffocus) : null;
-    const [what, text] = one ? ["The open finding is", findingMd(one, { ...base, status: statusOf(one), asks })]
-      : this.tab === "findings" ? ["The unresolved findings are", findingsMd(findings, { ...base, statusOf, asks })]
-      : layer && !layer.pseudo ? [`The layer "${plain(layer.title)}" is`, layerMd(layer, { ...base, n: this.cur + 1, files: this.filesOf(layer), findings: this.layerFindings(layer), statusOf })]
-      : this.tab === "steps" && this.page === "arch" ? ["The architecture is", architectureMd({ ...base, ai, findings, statusOf })]
-      : this.tab === "steps" && this.page === "blast" ? ["The Security page is", securityMd({ ...base, ai, findings, statusOf, runs: this.find.runs })]
-      : this.tab === "steps" && this.page === "res" ? ["The Resilience page is", resilienceMd({ ...base, res: this.resNow(), arch: ai?.arch ?? null, names: new Map((ai?.arch?.nodes ?? []).map((n) => [n.id, n.label ?? n.id])) })]
-      : ["The Overview is", overviewMd({ ...base, ai, findings, statusOf, checks: this.checksNow(), related: this.ctx })];
+    const m = this.mdNow(), layer = this.steps()[this.cur], one = this.findingById(this.ffocus);
+    const text = { finding: () => findingMd(one, { ...base, status: statusOf(one), asks }),
+      findings: () => findingsMd(findings, { ...base, statusOf, asks }),
+      layer: () => layerMd(layer, { ...base, n: this.cur + 1, files: this.filesOf(layer), findings: this.layerFindings(layer), statusOf }),
+      arch: () => architectureMd({ ...base, ai, findings, statusOf }),
+      blast: () => securityMd({ ...base, ai, findings, statusOf, runs: this.find.runs }),
+      res: () => resilienceMd({ ...base, res: this.resNow(), arch: ai?.arch ?? null, names: new Map((ai?.arch?.nodes ?? []).map((n) => [n.id, n.label ?? n.id])) }),
+      overview: () => overviewMd({ ...base, ai, findings, statusOf, checks: this.checksNow(), related: this.ctx }) }[m.kind]();
     copyText(text);
-    this.note = `${what} on the clipboard as Markdown (${text.trim().split("\n").length} lines), nothing was posted.`;
+    this.note = `Copied ${m.name} as Markdown (${text.trim().split("\n").length} lines) to the clipboard. Nothing was posted.`;
   },
+  // What Copy as Markdown copies where the person is (views.js mdTarget): the open finding or the unresolved ones on
+  // the Findings tab, the open layer of the analysis, the page shown, else the Overview.
+  mdNow() {
+    const layer = this.tab === "steps" && !this.page ? this.steps()[this.cur] : null;
+    return mdTarget({ tab: this.tab, page: this.page, layer: layer && !layer.pseudo ? plain(layer.title) : null, finding: Boolean(this.tab === "findings" && this.ffocus && this.findingById(this.ffocus)) });
+  },
+  // The button for it, at the right end of the head of every page it can copy: quiet (a frame, muted text until the
+  // pointer is on it); its help says what it copies here.
+  mdButton(t, id = "rv-md") { return pill(id, t, "Copy as Markdown", (_e, cx) => { this.copyMd(); cx.notify(); }).tooltip(this.mdNow().tip).accessibility_label("Copy this page as Markdown"); },
   // What "Copy context to check findings" is about: the finding open in the Findings tab, else on the Security page
   // the unresolved security findings; [] elsewhere (the menu leaves the entry out).
   checkList() {
