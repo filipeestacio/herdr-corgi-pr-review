@@ -1,7 +1,7 @@
 // Run: node test_arch.mjs  (the architecture / blast radius layout: columns, lanes, ports, fans, stubs, hops, badges,
 // card sizes, focus, orchestrator states)
 import assert from "node:assert/strict";
-import { archLayout, archBands, archFocus, archMarks, pathMark, labelLines, zoneArch, stateLayout, sourceStyle, hasSources, crossings, clampText, wrapLines, bundleChips, markRoom, MARK_CARD_H, ARCH, LABEL } from "./arch.js";
+import { archLayout, archBands, archFocus, archMarks, pathMark, labelLines, zoneArch, stateLayout, sourceStyle, hasSources, crossings, lineStats, clampText, wrapLines, bundleChips, markRoom, MARK_CARD_H, ARCH, LABEL } from "./arch.js";
 import { blastArch } from "./pr.js";
 
 const inside = (s, r) => (s.y1 === s.y2
@@ -568,10 +568,15 @@ console.log("ok");
   const arch = { groups: [{ id: "g", label: "Lambda", kind: "lambda" }, { id: "h", label: "Middle", kind: "x" }, { id: "k", label: "Far", kind: "x" }],
     nodes: [N("a", "g", "far caller"), N("b", "g", "near caller"), N("c", "g", "other"), N("m1", "h", "first"), N("t2", "h", "near target"), N("t3", "k", "far target")],
     edges: [{ from: "a", to: "t3", label: "to the far one" }, { from: "b", to: "t2", label: "to the near one" }, { from: "c", to: "m1", label: "x" }, { from: "m1", to: "t2", label: "x" }, { from: "t2", to: "t3", label: "y" }] };
+  // The middle frame as tall as the first one leaves no way between the frames: both lines go under the picture.
+  const full = { ...arch, nodes: [...arch.nodes, N("m2", "h", "second"), N("m3", "h", "third")] };
   for (const fit of [false, true]) {
-    const L = archLayout(arch, "diff", () => 0, fit, { labels: true }), y = (id) => L.nodes.find((n) => n.id === id).y;
-    assert.deepEqual([L.paths.filter((p) => p.kind === "long").length, L.hops.length], [2, 0]);
+    const L = archLayout(full, "diff", () => 0, fit, { labels: true }), y = (id) => L.nodes.find((n) => n.id === id).y;
+    assert.deepEqual([L.paths.filter((p) => p.kind === "long").length, L.hops.length, lineStats(L).around], [2, 0, 2]);
     assert.ok(y("a") > y("b"), "the line that ends further right starts lower");
+    // With room over and under the middle frame neither goes round the picture, and still nothing crosses.
+    const free = archLayout(arch, "diff", () => 0, fit, { labels: true });
+    assert.deepEqual([free.paths.filter((p) => p.kind === "long").length, free.hops.length, lineStats(free).around], [2, 0, 0]);
   }
   console.log("ok long lines nest");
 }
@@ -615,7 +620,7 @@ console.log("ok");
     assert.deepEqual([L.hops.length, L.overlaps.length, up.length, L.top > 0], [0, 0, 1, true]);
     assert.ok(Math.min(...L.nodes.map((n) => n.y), ...L.groups.map((g) => g.y)) >= L.top, "nothing but the channel above");
     const B = archBands(L, Math.round(L.width / 3));
-    assert.ok(B.some((b) => b.y0 === 0) && B.every((b) => b.y0 <= L.top));
+    assert.ok(B.some((b) => b.y0 === 0) && B.some((b) => b.y0 >= L.top), "the band with the line shows its channel, one without starts at its frames");
   }
   console.log("ok a line over the picture");
 }
@@ -637,4 +642,109 @@ console.log("ok");
   assert.deepEqual(markRoom(m("Nothing ever calls send_reminders or publish_overdue in production"), 210), { lines: 2, rows: 3, h: MARK_CARD_H });
   assert.equal(markRoom(m("No retry", 3), 140).lines, 1, "'No retry and 2 more' still fits 23 characters");
   console.log("ok mark room");
+}
+
+// A layout's lines in numbers: crossings, bends, length, and the long lines that run round the whole picture.
+{
+  const P = (key, kind, ...xy) => ({ key, kind, segments: xy.map(([x1, y1, x2, y2]) => ({ x1, y1, x2, y2 })) });
+  const L = { groups: [{ x: 0, y: 0, w: 300, h: 100 }], trunks: [], paths: [P("a", "next", [0, 10, 50, 10], [50, 10, 50, 40], [50, 40, 100, 40]), P("b", "next", [0, 30, 60, 30], [60, 30, 100, 30]),
+    P("c", "long", [0, 60, 20, 60], [20, 60, 20, 120], [20, 120, 200, 120], [200, 120, 200, 80], [200, 80, 220, 80]), P("d", "stub", [0, 90, 16, 90])] };
+  assert.deepEqual(lineStats(L), { crossings: 1, overlaps: 0, bends: 6, length: 130 + 100 + 320, around: 1, covered: 0 }, "a straight line has no bend, a stub does not count, c runs under the frame");
+  assert.equal(lineStats({ ...L, paths: [...L.paths, { ...P("e", "next", [0, 5, 9, 5]), text: { x: 100, y: 110, w: 40, h: 20 } }] }).covered, 1, "c runs under e's text");
+  console.log("ok line stats");
+}
+
+// The owner's boundary map, rebuilt with other names: a frame of four operator cards, two small frames in the middle
+// column, one call from an operator card to the far column. The call takes the free way between the frames instead
+// of the way round the picture, its card stands where that way is straight, the frame both operator lines go into
+// stands level with them (lower than its place in the stack, the picture no taller), and nothing crosses.
+{
+  const N = (id, group, label) => ({ id, group, label, description: "", type: "component" }), E = (from, to, label, dashed = false) => ({ from, to, label, crosses: true, dashed });
+  const arch = { groups: [["ops", "Operators", "operator"], ["out", "Outside", "public"], ["gw", "Gateway", "operator"], ["ctl", "Control plane", "operator"], ["app", "Workers", "internal"], ["data", "Storage", "data"]].map(([id, label, trust]) => ({ id, label, kind: trust, trust })),
+    nodes: [N("caller", "out", "anyone on the internet"), N("api", "gw", "Public API"), N("report", "ops", "report script"), N("bucket", "data", "Event bucket"), N("toggle", "ops", "toggle script"), N("admin", "ctl", "Admin API"),
+      N("deployA", "ops", "operator who deploys the gateway"), N("deployB", "ops", "operator who deploys the control plane"), N("stream", "app", "Delivery stream"), N("worker", "app", "Worker function"), N("secret", "data", "Signing secret"),
+      N("bus", "app", "Event bus"), N("archive", "data", "Event archive")],
+    edges: [E("caller", "api", "1. ‖ token · body, Authorization header"), E("caller", "api", "2. ‖ signature · body, signature header"), E("report", "bucket", "3. ‖ iam · scripts/report.sh", true), E("toggle", "admin", "4. ‖ iam · scripts/toggle.sh"),
+      E("deployA", "api", "5. ‖ deploy access · API secret; hook secret", true), E("deployB", "admin", "6. ‖ deploy access · ADMIN_PROFILE", true), E("api", "worker", "7. ‖ iam · function:Invoke"), E("worker", "secret", "8. ‖ iam · secrets:GetValue"),
+      E("bus", "archive", "9. ‖ iam · detail (body), detail-type", true), E("stream", "bucket", "10. ‖ iam · storage:PutObject")] };
+  const lay = (a) => archLayout(a, "diff", () => 0, true, { labels: true, lines: () => true }); // as the Security page lays it out
+  const L = lay(arch), s = lineStats(L), g = (id) => L.groups.find((x) => x.id === id), path = (n) => L.paths.find((p) => p.label.startsWith(`${n}. `)), bendsOf = (p) => lineStats({ ...L, paths: [p], trunks: [] }).bends;
+  // Before: 2 crossings, 18 bends, 4698 px of lines, the long line round the picture.
+  assert.deepEqual([s.crossings, s.overlaps, s.around, s.covered], [0, 0, 0, 0], "nothing crosses, no line round the picture");
+  assert.ok(s.bends <= 6 && s.length < 3800, `bends ${s.bends}, length ${s.length}`);
+  assert.deepEqual([bendsOf(path(4)), bendsOf(path(6))], [0, 0], "both lines into the control plane's card run straight");
+  assert.ok(g("ctl").y > g("gw").y + g("gw").h + ARCH.GAP_G, "the control plane's frame stands lower than right under the gateway's");
+  assert.equal(Math.max(...L.groups.map((x) => x.y + x.h)), g("ops").y + g("ops").h, "the picture is no taller than its tallest column");
+  assert.ok(L.height <= g("ops").y + g("ops").h, "no channel under the picture any more");
+  const long = path(3), frames = L.groups.filter((x) => x.id !== "ops" && x.id !== "data"); // its own frame and its target's aside
+  assert.equal(long.kind, "long"); assert.ok(bendsOf(long) <= 2, "out of its card straight to the last gutter, then into its target");
+  assert.ok(!long.segments.some((sg) => frames.some((r) => inside(sg, r))), "the long line runs through no frame on its way");
+  for (const a of L.groups) for (const b of L.groups) assert.ok(a === b || a.x >= b.x + b.w || b.x >= a.x + a.w || a.y >= b.y + b.h + ARCH.GAP_G || b.y >= a.y + a.h + ARCH.GAP_G, `${a.id} and ${b.id} keep their gap`);
+  assert.equal(L.paths.filter((p) => p.text).length, 10, "every line still carries its text");
+  assert.deepEqual(L.paths.map((p) => p.label.split(".")[0]).sort((a, b) => a - b), ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"], "the crossings keep their numbers");
+  assert.equal(L.hops.length, crossings([...L.paths.filter((p) => p.kind === "next" || p.kind === "long"), ...L.trunks]).length);
+  // The same data: the same picture. One call less far away: no card moves.
+  assert.deepEqual(lay(arch), L);
+  const less = lay({ ...arch, edges: arch.edges.filter((e) => !e.label.startsWith("9.")) });
+  assert.deepEqual(less.nodes.map((n) => [n.id, n.col, n.y]), L.nodes.map((n) => [n.id, n.col, n.y]), "a call less: every card in its column at its height");
+  // Wrapped into bands, the line through the picture goes on at its height in the next band.
+  assert.ok(archBands(L, Math.round(L.width / 2)).length > 1);
+  console.log("ok frames and long lines run straight");
+}
+
+// A line between two cards is straight where both sides have room (the taller card's port slides); a frame alone in
+// its column comes down to the card that calls it, and the frame it calls follows, so both lines are straight.
+{
+  const N = (id, group, description = "d") => ({ id, group, label: id, description, type: "service" });
+  const arch = { groups: ["a", "b", "c"].map((id) => ({ id, label: id, kind: "x" })), nodes: [N("a1", "a"), N("a2", "a"), N("b1", "b"), N("c1", "c", "A long description that makes this card taller than the others, over three lines of text in all.")],
+    edges: [{ from: "a2", to: "b1", label: "x" }, { from: "b1", to: "c1", label: "y" }] };
+  const L = archLayout(arch), y = (id) => L.nodes.find((n) => n.id === id).y, s = lineStats(L);
+  assert.deepEqual([s.bends, s.crossings], [0, 0], "both lines straight");
+  assert.ok(y("b1") === y("a2") && y("c1") < y("b1") && y("c1") > y("a1"), "b came down to a2 and c after it, less far: its taller card's port slid");
+  assert.ok(Math.max(...L.groups.map((g) => g.y + g.h)) <= L.groups.find((g) => g.id === "a").h, "no taller than before");
+  // Wrapped, a band shows from where its own frames start: the lowered frame's band has no empty strip over it.
+  const B = archBands(L, L.groups.find((g) => g.id === "a").w + 60), gb = L.groups.find((g) => g.id === "b");
+  assert.ok(B.length > 1 && B.find((b) => b.x0 <= gb.x && gb.x < b.x1).y0 >= gb.y - 12 && B[0].y0 === 0, JSON.stringify(B.map((b) => [b.x0, b.y0, b.h])));
+  console.log("ok straight lines");
+}
+
+// The demo PR's maps (demo/fixtures/review, in a checkout of the repository) are no worse than before the frames and
+// long lines moved: no more crossings, bends, length or ways round the picture, on the Security page and both sizes
+// of the architecture map.
+{
+  const { existsSync, readFileSync } = await import("node:fs"), FX = new URL("../../demo/fixtures/review/", import.meta.url);
+  if (!existsSync(FX)) console.log("skipped the demo PR's maps: no demo/fixtures/review next to this copy of the mod");
+  else {
+    const { mapReview, withSecurity } = await import("./pr.js"), { mapArch, crossingsOf, crossingChanged, secPicture } = await import("./views.js");
+    const fx = (f) => JSON.parse(readFileSync(new URL(f, FX), "utf8")), saved = fx("analysis-s.json"), doc = fx("findings-s.json");
+    const ai = withSecurity({ ...mapReview(saved.answer, saved.hunks), head: doc.security.head }, doc.security, null, doc.security.head), a = ai.arch;
+    const rows = crossingsOf({ arch: a, access: ai.access, threats: ai.threats, gates: ai.gates, bypasses: ai.bypasses, findings: doc.findings });
+    const sec = archLayout(secPicture(rows.filter(crossingChanged), a, (r) => rows.indexOf(r) + 1), "diff", () => 0, true, { labels: true, lines: () => true });
+    const was = { sec: [0, 16, 3029, 2], wide: [0, 18, 5417, 2], fit: [0, 22, 4986, 2] }; // crossings + overlaps, bends, length, round the picture
+    const maps = { sec, wide: archLayout(mapArch(a, ai.access, ai.bypasses), "diff", () => 0, false, { labels: true }), fit: archLayout(mapArch(a, ai.access, ai.bypasses), "diff", () => 0, true, { labels: true }) };
+    for (const [k, L] of Object.entries(maps)) {
+      const s = lineStats(L), now = [s.crossings + s.overlaps, s.bends, s.length, s.around];
+      now.forEach((v, i) => assert.ok(v <= was[k][i], `${k}: ${now} was ${was[k]}`));
+      assert.equal(s.covered, 0);
+    }
+    assert.ok(lineStats(sec).bends <= 8 && lineStats(sec).around <= 1, "the Security page's map: half the bends, one line less round the picture");
+    console.log("ok the demo PR's maps are no worse");
+  }
+}
+
+// Straight lines never cost crossings: a dense invented map (six frames of six cards, each card calling into the next
+// frame, ten calls that skip columns) crosses and covers no more lines than with every frame and port left where the
+// stack put it (opts.still: the layout's own try, the picture as it was before frames moved).
+{
+  const groups = Array.from({ length: 6 }, (_, g) => ({ id: `g${g}`, label: `Frame ${g}`, kind: "x" })), nodes = groups.flatMap((g, k) => Array.from({ length: 6 }, (_, i) => ({ id: `n${k}_${i}`, group: g.id, label: `card ${k} ${i}`, description: "d" })));
+  const edges = [];
+  for (let k = 0; k < 5; k++) for (let i = 0; i < 6; i++) { edges.push({ from: `n${k}_${i}`, to: `n${k + 1}_${(i * 5 + k) % 6}`, label: `call ${k} ${i}` }); if (i % 2) edges.push({ from: `n${k}_${i}`, to: `n${k + 1}_${(i + 2) % 6}`, label: `also ${k} ${i}` }); }
+  for (let j = 0; j < 10; j++) edges.push({ from: `n${j % 3}_${j % 6}`, to: `n${(j % 3) + 2 + (j % 2)}_${(j * 2) % 6}`, label: `far ${j}` });
+  const tangle = (L) => lineStats(L).crossings + 2 * lineStats(L).overlaps;
+  for (const opts of [{ labels: true }, { labels: true, lines: () => true }]) {
+    const L = archLayout({ groups, nodes, edges }, "diff", () => 0, true, opts), still = archLayout({ groups, nodes, edges }, "diff", () => 0, true, { ...opts, over: new Set(), still: true });
+    assert.ok(tangle(L) <= tangle(still), `${tangle(L)} was ${tangle(still)}`);
+    assert.equal(L.hops.length, lineStats(L).crossings, "every crossing that stays has its hop");
+  }
+  console.log("ok straight lines cost no crossing");
 }
