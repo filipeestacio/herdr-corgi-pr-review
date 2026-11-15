@@ -48,20 +48,27 @@ def ledger_dir():
     return pathlib.Path(os.path.expanduser(path)) if path else None
 
 
-# Secrets a model run never needs: tokens, secrets and cloud or GitHub credentials of the window (a model reads the
-# PR's text and can run allowed commands). Kept: the account's own login (CLAUDE_*, ANTHROPIC_*, e.g.
-# CLAUDE_CODE_OAUTH_TOKEN), AWS_* when Claude runs on Bedrock (CLAUDE_CODE_USE_BEDROCK), and whatever the context sets.
-SECRET = re.compile(r"(_TOKEN|_SECRET)$|^(AWS_|GH_)")
+# What a model run gets from the window's environment: an allowlist, everything else is dropped (API keys, passwords,
+# tokens, SSH_AUTH_SOCK, GIT_*, cloud and GitHub credentials: a model reads the PR's text and can run allowed commands).
+# Kept: what a CLI needs to start (KEEP), locale and XDG folders, proxy and CA settings, the run's own login (LOGIN:
+# CLAUDE_*, ANTHROPIC_*, e.g. CLAUDE_CODE_OAUTH_TOKEN; CODEX_LOGIN for a Codex run), the cloud login when Claude runs
+# on Bedrock (AWS_*) or Vertex (GOOGLE_*, CLOUD_ML_*), and whatever the context sets itself.
+KEEP = {"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE", "TZ", "TMPDIR", "TERM", "COLORTERM", "NO_COLOR", "__CF_USER_TEXT_ENCODING",
+        "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS"}
+KEEP_PREFIX = ("LC_", "XDG_")
 LOGIN = re.compile(r"^(CLAUDE_|ANTHROPIC_)")
+CODEX_LOGIN = re.compile(r"^(CODEX_|OPENAI_)")
+CLOUD = {"CLAUDE_CODE_USE_BEDROCK": ("AWS_",), "CLAUDE_CODE_USE_VERTEX": ("GOOGLE_", "CLOUD_ML_")}
 
 
-def env_for(context):
-    """The process env without secrets (SECRET, but the login: LOGIN), with the context's vars applied (None unsets).
-    git refuses abbreviated long options in every run: a model's `git blame --con` would else be --contents, past a
-    rule that denies the full name."""
+def env_for(context, login=LOGIN):
+    """The process env reduced to the allowlist above (login: whose login stays), with the context's vars applied
+    (None unsets). git refuses abbreviated long options in every run: a model's `git blame --con` would else be
+    --contents, past a rule that denies the full name."""
     mine = (context or {}).get("env") or {}
-    bedrock = str(mine.get("CLAUDE_CODE_USE_BEDROCK", os.environ.get("CLAUDE_CODE_USE_BEDROCK", ""))).lower() not in ("", "0", "false")
-    keep = lambda k: not SECRET.search(k) or LOGIN.match(k) or (bedrock and k.startswith("AWS_"))  # noqa: E731
+    on = lambda flag: str(mine.get(flag, os.environ.get(flag, ""))).lower() not in ("", "0", "false")  # noqa: E731
+    cloud = tuple(p for flag, prefixes in CLOUD.items() if on(flag) for p in prefixes)
+    keep = lambda k: k.upper() in KEEP or k.startswith(KEEP_PREFIX) or bool(login.match(k)) or k.startswith(cloud)  # noqa: E731
     env = {**{k: v for k, v in os.environ.items() if keep(k)}, "GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS": "1"}
     for k, v in mine.items():
         if v is None:
