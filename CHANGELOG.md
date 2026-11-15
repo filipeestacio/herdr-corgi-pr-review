@@ -1,5 +1,373 @@
 # Changelog
 
+## 0.10.0 (2026-11-15)
+
+### Features
+
+- review: pick, reviews, add and fix-finding commands, the same as their clicks
+- panel: one row per PR with its risk signal, merged PRs folded
+- panel: Review is the header's filled button, pending comments open Finish your review
+- review: mark the PR a stacked PR sits on in the related context
+- review: link requirements, findings and the picture; a fixed severity scale
+- review: one finding per defect, a fix sent stays unresolved, one count
+- review: keep the token breakdown of a run, report requirements no finding names
+- review: pass the newer analysis fields through to the views
+- review: the left column shows what is unresolved, not run data
+- review: the task check as one list under a verdict line on the Overview
+- review: findings and comments are written as markdown, titles stay plain
+- review: name the rules in the bar, copy the review state, offer to save again
+- review: the file tree names findings in words and has a 16 px tick
+- review: show a layer's check questions and pictures once, over its code
+- review: verify a sent fix on its own branch, before it is in the PR
+- review: fold finding cards in the diff to one line and show what a finding claims
+- review: the architecture map shows where the flow breaks and wraps into a second row
+- review: the Security page is a list with what each run checked and who may reach what
+- review: trust zones, crossing edges and where a security finding is reachable from
+- review: previews say what an agent gets and may do, Finish knows the findings
+- review: render Markdown in comment and finding cards
+- review: ask for a call's text on its line in a layer's flow picture
+- review: a finding becomes a structured comment, written like the reviewer's own
+- review: pair a diff's old and new lines for a side-by-side view
+- review: a fix stays on its branch until the reviewer applies it, and Submit waits for a verdict while high findings are open
+- review: pass a finding's reachability through findingFacts
+- review: a finding's steps into the PR, how the count comes about, owner and effort
+- review: the security reviewer draws the security view and a threat model
+- review: decide from the diff alone whether the security review starts by itself
+- review: wrap long diff lines instead of cutting them off
+- review: copy a page as Markdown, and the context to check findings
+- review: effort per finding and depends_on per layer
+- review: move the PR's pages into the Analysis tab, above its layers
+- review: draw a diff's old and new lines side by side, cards under them over the whole width
+- review: code is read and judged by at least Sonnet, Haiku only for text
+- review: click, select, comment and go to definition on either half of the side-by-side diff
+- review: Security page with the map in a security view, trust zones as frames, attack surface and a grid behind the pictures
+- review: switch the diff between side by side and unified, side by side by default where it fits
+- review: keep new and deleted files in one full-width column side by side
+- review: show the security run's view and start it by itself when the diff gives a reason
+- review: keep long diff lines on one line and scroll them sideways; wrap is a switch
+- review: a verify agent's task, its answer file and its result on the finding
+- review: Verify with an agent at an open finding, a security finding and for all security findings
+- panel: at most three marks per PR row, security first, no Deep review beside Low effort
+- review: a note in a file the public reaches is a finding, whatever its category
+- review: count the verdict by what decides a merge, and the parts the Overview reads
+- review: the Overview in two columns, the decision left and the understanding right
+- review: pr-review.fstep:<id>:<step> opens a step's details, as its click does
+- review: how the findings count comes about, in one muted line under it
+- review: short names, what changed, files read, introduced_here and the way from outside
+- review: What each run checked opens a row to its whole text and the findings behind a Finding, and Clean names the files read
+- review: count "Needs your attention" by decision and take in every security finding
+- review: show the stack beside the PR title, a click opens the other PR
+- review: an open finding in the Findings tab shows its facts as its card in the diff does
+- review: what changed from the analysis, findings already there before the PR, no second red
+- review: show the layers a layer depends on in its head, a click opens one
+- review: carry "⛨ n" on the Analysis tab while security findings are unresolved
+- review: pictures open their place again, and a state diagram over the code folds to one line unless a finding sits at a transition
+- review: a folded security finding says how sure it is (derived, assumed, confirmed)
+- review: mark a layer that opens a way in or grants a right, finding or not
+- review: say when a layer's file has more lines outside the layer, a click shows the whole file
+- review: a finding's card in the diff shows what its other sources say
+- review: graph paper behind the sequence picture; a state picture takes its width from stateLayout
+- review: a way in whose check an open finding can pass reads Auth, can fail open
+- review: What each run checked marks contradictions, and Clean comes with the files read
+- review: the security run names the gate at each crossing, who changes what, and every crossing it did not assess
+- review: show the analysis' head and age at the top of the Analysis tab
+- review: the Overview as the personas agreed: an action, Before merge, and the rest folded
+- review: recommendModel and a run offer with the recommended model, a class up or down and its price, on the Security page
+- review: What each run checked says what a reviewer run was allowed to do
+- review: what_changed entries of one thought in twelve words, a requirement's why in twenty
+- review: the Security page is a boundary map: a sentence from the data, the trust boundary crossings with their checks and results, and a picture by trust zone from three crossings on
+- review: the crossings read the security run's gates and effective zones, and fold the crossings not assessed into one line
+- review: the security run's own prompt checks what /security-review checked, plus rights and retries
+- review: boundary map data that agrees with itself: runs_in, in-process calls, principals, paths, reach conflicts
+- review: the boundary table takes in the attack surface and the rights, shows the way to the asset and where the data disagree; the map has an Internet card at the way in
+- review: the boundary page reads the run's bypasses, reach_conflict and operator ways, and draws the way from the door with the gate in front of its target
+- review: a resilience run: how a failure spreads through the PR, as facts at their lines
+- review: resilience ladders, budgets and blockers in pr.js, and where the run would start
+- review: a Resilience page: where the run starts, the paths a failure spreads along with their picture, action and probe, and its blockers on the Overview
+- review: the Resilience page reads a path in either shape, the view's own or withResilience's
+- review: the resilience run weighs each part the PR adds against its cost
+- review: the Resilience page runs on withResilience and resilienceStart, lights the cards of a path's places, and prices a first run from its measured typical cost
+- review: probes that run a PR's code in a sandbox to show a suspected failure
+- review: Resilience shows complexity against use, reads R-D's names and cost, and takes probes from probesNow with their confirm step
+- review: resilience ladders for paths named by their lines, and the map's marks
+- review: map marks for a call without a timeout and from what a path breaks
+- review: a card with a mark of the chosen resilience path is lit with it
+- review: a taken-over principal as the threat of a right, runs_in in several processes, effective zones passed on
+- review: a long line from a column's top card may run over the picture when that saves a crossing
+- pr-review: bind resilience deps to the map, add signal, request paths and writers
+- review: resilience page in words, readable map, prices, verdict and watch list (wave R2 V4-V8)
+- pr-review: block a dishonest route, one blocker per redelivery, retry under redelivery unjustified
+- review: a queue's mark at the queue, a call's marks and unlimited redelivery on the call (wave R2 V3)
+- review: the probe's base in the runner's words, and its sandbox kept for the evidence (wave R2 V6)
+- review: the resilience export says what the page says (wave R2)
+- pr-review: a raising failure is at least platform_only, parts judged by purpose
+- review: a band of the wrapped map leaves out the strip over the picture it does not need
+- review: the resilience page reads the R2 data (reach, unseen and watch, same cause, unclear blockers dated by their probe, state rules, races not possible today)
+- review: a redelivered batch over its timeout shows its budget under the ladder (wave R2 V1)
+- review: whether a part works today under it, and the overruled signal in the seen tooltip (R2 D6, D2)
+- review: resilience verdict short with its count, the map at the path's start; a finding marks only its transition; dimmed card texts at 4.5:1 (wave C2 V2, V4, V5)
+- review: a reproduced probe confirms its path's findings, with the platform modeled when it was (wave C2 V3)
+- pr-review: merge findings by cause, a reach row, blocks once wired, no secrets in model runs
+- review: no cut text: a finding's mark in two lines on the map, the crossings as a list with Who, Check, Holds only if and Result in view (wave C2 V1)
+- review: a path that cannot happen today blocks once wired, after the blockers and said apart (wave C2 D3 view)
+- review: say what a fix agent costs: an estimate in the preview, the cost so far while it runs
+- review: persona backlog, boundary map, resilience page with probes, fewer fetches
+
+### Fixes
+
+- review: read the findings of a forked /code-review instead of counting 0
+- review: "open" names one thing
+- review: a jump to a layer or a file lands at the top
+- review: send the structured answer once; seat the state diagram in its layer
+- review: a fix branch starts at the PR head, and a fix agent cannot push
+- review: the scope line no longer reads "3 skimmed (skimmed)"
+- review: scripts write no bytecode into the mod's folder
+- review: say the composer's hint once and keep "Post now" away from the main button
+- review: bound the gutter marks of a finding by the lines that are shown
+- review: the page's parts as the architecture package names them; ask: stays the Ask drawer's
+- review: the fix-several preview starts with the list only, Discard asks alone
+- review: a finding's buttons come in one order in the list and in the diff
+- review: bring back the Overview page, the since banner and openRelated
+- review: state diagram lines run through a skipped row, and the picture is as wide as its lines
+- review: findings up to three lines apart with the same claim are one finding
+- review: the same line with a different claim stays two findings
+- review: anchor a side-by-side selection on its own half's lines
+- review: suggestions join their line again, reviewer lines move to code first
+- review: start the security run by itself only for a trusted PR; match a zone's name without spaces
+- review: start the security review by itself only on a trusted PR, and confine every reviewer
+- review: cards on the map are opaque, so the grid does not show through them
+- review: Architecture impact draws its map once
+- review: show a bot's HTML comment as its text, an image as its alt text
+- review: no "0 of 0 files viewed" under a layer without files
+- review: the Overview names every precondition of a finding
+- review: draw the architecture map once, in one row unless Wrap is on
+- review: the map is one row by default, Wrap is remembered, and a wrapped map never cuts a frame
+- review: deny git options by their shortest prefix, and run the analysis under the reviewers' rules
+- review: the security picture follows the same Wrap setting as the architecture map
+- review: a finding outside the diff opens its file read-only, a failed jump's note goes with the next
+- review: keep the left column whole at any width
+- review: the Security picture shows only what matters for security, and none without security data
+- review: Architecture impact folds the list of calls, and More views draws a sequence as a sequence diagram
+- review: order "By focus" by the grade each layer row shows
+- review: a PR stacked on this one is no merge blocker either; related.py lists it as stacked_above
+- review: a finding that breaks a requirement of this PR is the PR's, also in old lines
+- review: model runs call git only through safegit.py, which keeps every path inside the checkout
+- review: the Overview one line a row, what is met folded, what needs attention first
+- review: one name for the green button: "Finish your review"
+- review: a finding's state shows only when it is not unresolved
+- review: compare a finding's line range with the diff instead of building it
+- review: the Overview's Security group carries the ⛨ sign like the verdict and the bar
+- review: a jump to a file or a page closes a file opened read-only
+- review: say a layer's sentence once, in its head over the code
+- review: jumpTo and goDef share one path rule, and a jump from goDef never calls it again
+- review: a jump that goDef starts never calls goDef again, so the two cannot loop
+- review: ⛨ marks a finding only when its effect is access or data, not who found it
+- review: let the slash commands' fixed git commands run, and keep plain git off paths outside
+- review: show what is going on at the top of the Analysis tab, not under the page
+- review: the Overview names the PRs stacked on this one
+- review: turn a slash command's review into findings also when it is the main answer's text
+- review: rebuild the review when the PR gets a new head
+- review: the architecture map is framed by system again; a card's trust zone is a dot, a call over a boundary names both zones
+- review: git only through an allowlist in safegit.py, plain git denied for every run
+- review: a finding's mark on the map names the finding, and a click opens it
+- panel: mark a PR row with ⛨ by isSecurity, as the review does
+- review: a note about an action in the text color; an error in red stays until closed
+- review: safegit splits options the way git does, or refuses
+- review: built-in read-only commands of a run read only inside the checkout
+- review: a reviewer's allowed tools name a helper by its file name, not its path
+- review: a flaw is the PR's when the PR opens the way to it, and one in unchanged code is not
+- pr-review: prune analysis run folders and old findings and replies
+- review: a crossing's result comes from threats only, a way in starts with who arrives, a principal maps to its frame, and a call in one process is no crossing
+- review: an in-process call bypasses a boundary only into code with its own way in
+- review: fix and verify agents start without the context's MCP servers
+- review: runs_in may name a frame, and a caller the analysis draws itself is no second way in
+- review: fix and verify agents start without the context's MCP servers
+- review: read a checkout's files only as regular files inside it, and stop a runs_in cycle
+- review: the Overview's context line reads the PR context from the review
+- review: the Overview hands the theme to the run offer
+- review: system and zone frames are opaque, the grid stays between them
+- review: the map opens in Fit when it is wider than the view, and a way in stays next to its caller from outside
+- review: show GitHub comments as GitHub does and size them to their text
+- review: a line of the boundary picture says what goes over it and its check; the tooltip explains instead of repeating the label
+- review: the sequence diagram uses the room it has, keeps every call and its text inside, lifelines stand out
+- review: one finding per defect at one named resource, also a few lines apart
+- review: a click in a picture ends the drag its press began, so the picture no longer jumps back
+- review: a call to itself on the last column keeps its text left of the lifeline, clear of its loop
+- review: the run offer wraps inside its column
+- review: every group of pictures takes the page's width, sequence lifelines in full contrast
+- review: long lines take part in card and lane order, so avoidable crossings with next-column calls go
+- review: resilience blockers for visible effects only, one cause once, and the base rule for what was there before
+- review: a bounded poison message and a request that just times out block nothing
+- review: probes on Linux run under bwrap, or count as unfenced
+- review: the question before a probe says what unfenced code can do
+- review: a probe without a sandbox says so
+- review: the Linux probe sandbox binds no / and no socket, the interpreter never shows the home
+- pr-review: stop the LSP bridge when Herdr quits
+- review: boundary crossings: right and call as one row, defects assess nothing, zones passed on in one process, ways through every gate; Fit wraps whole frames
+- review: two long lines from one column nest on their channels where their order allows
+- review: runs_in as a list takes the most exposed zone; effective zones come from the data with the crossing they hang on
+- review: lines running on top of each other are counted, and lanes avoid them before crossings
+- review: the runner reads a probe's strength from its source and says what the base run means
+- pr-review: reach a card without a place by its file's name
+- pr-review: number the picture's edges, count only calls a path takes
+- pr-review: mark resilience runs that saw edge ids, flag older ones for a re-run
+- review: a probe id outside 1 to 40 letters, digits, - and _ is refused everywhere
+- review: a resilience path's way names the cards of its calls
+- review: the resilience map keeps a line in every card a path marks; shorter probe evidence; names of checks capitalised
+- review: a path's mark in a card of the resilience map has its own line, apart from a finding's chip
+- review: the macOS probe sandbox reads from an allowlist
+- review: one ranking before the merge: the box over the layers is the Overview's list
+- review: no MCP for the Ask and Send review tabs, a push lock in git itself, and a trust question that names what it turns on
+- review: offer a finished run as Re-run with its last run, not as a first Run
+- review: state chips without a frame, a real Viewed box, and the last word leftovers
+- review: a file's heading in the Comments tab shows that file in the diff
+- review: count "Before merge" by cause: a later finding of one cause stands at its first
+
+### Other
+
+- docs(recipe): the panel's header, list rows and pending comments as they are now
+- chore: merge the panel package
+- chore: merge the analysis package
+- chore: merge the overview package
+- chore: merge the left column package
+- chore: merge the prompt and bytecode changes
+- chore(review): keep stack.js's header comment as the architecture package has it
+- Merge branch 'feat/ux-backlog' into feat/ux-overview
+- chore: merge the diff package
+- chore: merge the fix package
+- chore: merge the findings tab package
+- chore: merge copy as Markdown
+- chore: merge the analysis tab in the left column
+- chore: merge security on demand and the threat model
+- chore: merge the architecture map and security page
+- chore: merge no Haiku for code work
+- chore: merge the security view wiring
+- chore: merge the side-by-side diff
+- Merge branch 'feat/ux-backlog' into feat/ux-prompts
+- Merge branch 'feat/ux-backlog' into feat/ux-prompts
+- chore: merge near-duplicate findings
+- test(review): the security view test merges two sources that make the same claim
+- chore: merge the trusted-only security start and tighter reviewer rights
+- chore: merge the regrouped overview
+- chore: merge verify with an agent
+- chore: merge the analysis' new fields
+- perf(review): remember where a reviewer's finding anchors, so drawing a view does not rescan every file
+- chore: merge the overview follow-up and the new analysis fields
+- chore: merge the overview without the wall of text
+- chore: merge the PR list, stack and diff round 4
+- Merge branch 'feat/ux-backlog' into feat/ux-overview4
+- chore: merge the security sign on the overview group
+- chore: merge the findings tab round 4
+- Merge branch 'feat/ux-backlog' into feat/ux-overview4
+- chore: merge the left column round 4
+- chore: merge the overview after the personas' proposal
+- perf(pr-review): ask for the PR list only while the panel can be seen
+- chore: merge the jump guard and the security mark rule
+- chore: merge the map and security page round 4
+- perf(review): check the head and GitHub comments every 5 minutes while the window is in front
+- chore: merge feat/ux-backlog
+- chore: merge the left column follow-ups
+- chore: merge the overview follow-ups
+- chore: merge safegit, the security-run fields and the analysis round 4
+- perf(review): reuse the PR checkout when it is already at the head
+- chore: merge the security mark in the PR list
+- chore: merge the safegit allowlist and shorter what_changed
+- chore: merge the footer notes rule
+- chore: merge the safegit option parser fix
+- chore: merge feat/ux-backlog
+- chore: merge the read barrier outside the checkout
+- chore: merge the system map and the security boundary page
+- chore: merge the sharper security prompt
+- test(review): the tokenizer timing check takes the best of three runs
+- Merge branch 'feat/ux-backlog' into feat/ux-fetch4
+- chore: merge impact and introduced_here rules for the security run
+- chore: merge the fetch and refresh audit with cache cleanup
+- Merge branch 'feat/ux-backlog' into feat/ux-data5
+- chore: merge feat/ux-backlog
+- Merge branch 'feat/ux-backlog' into feat/ux-data5
+- chore: merge feat/ux-backlog
+- chore: merge the boundary map data (wave 5)
+- chore: merge feat/ux-backlog
+- chore: merge the boundary map fixes (wave 5)
+- chore: merge feat/ux-backlog
+- chore: merge the boundary map on the wave 5 data
+- chore: merge feat/ux-backlog
+- test(review): a render smoke test of every tab, page, layer, finding and popover on the fixtures
+- chore: merge feat/ux-backlog into the smoke test
+- chore: merge the boundary map check on wave 5 data and the map fit
+- chore: merge feat/ux-backlog
+- chore: merge GitHub markdown in comments
+- test(review): the smoke test writes a comment at a line; the stand-in inputs keep their value
+- chore: merge feat/ux-backlog into the smoke test
+- chore: merge feat/ux-arch5b
+- chore: merge feat/ux-data5b
+- test(review): the smoke test shows GitHub's threads in Markdown, resolved, outdated and from a bot
+- chore: merge feat/ux-backlog into the smoke test
+- chore: merge feat/ux-smoke
+- chore: merge feat/ux-diag5
+- chore: merge full-width views and lifelines
+- chore: merge fewer edge crossings on the map
+- chore: merge feat/ux-backlog
+- Merge branch 'feat/ux-backlog' into feat/ux-res-data
+- chore: merge the resilience run and its data
+- chore: merge feat/ux-backlog
+- Merge branch 'feat/ux-backlog' into feat/ux-res-data
+- chore: merge complexity against benefit in the resilience run
+- chore: merge feat/ux-backlog
+- chore: merge resilience probes in a sandbox
+- chore: merge feat/ux-backlog
+- test(review): the probe redaction test builds its addresses, so the leak scan stays clean
+- chore: merge the resilience page
+- Merge branch 'feat/ux-backlog' into feat/ux-res-data2
+- chore: merge the Linux probe sandbox
+- Merge branch 'feat/ux-backlog' into feat/ux-res-data2
+- chore: merge fewer resilience blockers, ladders and marks
+- chore: merge feat/ux-res-probe2
+- chore: merge feat/ux-res-data2
+- wip(review): resilience marks from marksOf on the cards of the chosen path
+- wip(review): a resilience mark at a file finds the card that names that file
+- chore: merge feat/ux-backlog
+- test(review): a neutral path for the folder-above check
+- chore: merge feat/ux-res-probe3
+- chore: merge feat/ux-res-view2
+- wip(review): boundary crossings fold a right into its call, skip defects, pass zones on and walk every gate
+- chore: merge the LSP bridge that ends with Herdr
+- chore: merge feat/ux-backlog
+- chore: merge nested channels below the map
+- chore: merge feat/ux-data5c
+- chore: merge feat/ux-backlog
+- chore: merge the last boundary map corrections (wave 5c)
+- chore: merge runs_in as a list on the boundary map
+- wip(review): probe agent writes only the script, the review runs probe.py
+- chore: merge a channel above the map and no overlapping lines
+- wip(review): a probe's strength from its syntax tree, not from a docstring
+- chore: merge the fixed probe flow
+- Merge branch 'feat/ux-backlog' into feat/ux-res-data3
+- test(review): smoke tour of the resilience page with signals, blind spots and a probe not run
+- chore: merge resilience data bound to the map
+- Merge branch 'feat/ux-backlog' into feat/ux-res-view3
+- chore: merge the edge id note and fresh security fixture
+- Merge branch 'feat/ux-backlog' into feat/ux-res-view3
+- Merge branch 'feat/ux-backlog' into feat/ux-sec-edges
+- chore: merge the probe id rule
+- chore: merge signal from raises and additions measured by purpose
+- Merge branch 'feat/ux-backlog' into feat/ux-res-view3
+- chore: merge the resilience page after the role check (R2)
+- chore: merge works today and the run's own signal word
+- chore: merge a mark on its own line
+- chore: merge no MCP for PR text tabs, honest trust and push
+- chore: merge the macOS probe sandbox as an allowlist
+- chore: merge the sandbox allowlist, no MCP for PR text tabs and the push lock into the overview fixes
+- Merge branch 'feat/ux-backlog' into feat/ux-c2-view
+- chore: merge one ranking on the Overview and re-run offers
+- chore: merge no cut text, security as a list, probes confirm
+- Merge branch 'feat/ux-backlog' into feat/ux-c2-view
+- chore: merge paths that block once wired
+- Merge branch 'feat/ux-backlog' into feat/ux-c2-data
+- chore: merge the cause-counting data round (C2 D) into the overview fixes
+- chore: merge findings by cause, reach row, blocks once wired, no secrets in runs
+- chore: merge the fix agent's cost estimate and running cost
+
 ## 0.9.0 (2026-11-13)
 
 ### Features
