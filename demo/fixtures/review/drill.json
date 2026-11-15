@@ -1,0 +1,111 @@
+{
+ "summary": "`status.py` defines the loan lifecycle (borrowed, reminded, overdue, returned). It has a table of allowed moves and a function that works out a loan's status from its dates. **No production code imports it**, and only `library/tests/test_status.py` does.\n\n- **New `Status` enum and `MOVES` table** in `library/status.py`: `RETURNED` maps to an empty set, so no move leaves it. This is the \"never back from returned\" rule.\n- **New `move(current, new)`** returns `new` if it is in `MOVES[current]`. Otherwise it raises `ValueError`. Nothing calls it, so the rule is not enforced anywhere.\n- **New `status_of(loan, on)`** derives the status from `Loan.returned_on`, `due_on` and `reminded_on`, which it reads from `loans.py`. The order of checks is returned, then overdue, then reminded, then borrowed.\n- **`reminded_on` is set by `reminders.py:21`**, but `status_of` is never called to read it back. `api.late` and the reminder selection use their own date checks (`reminders.py:12`).",
+ "visual": {
+  "kind": "flow",
+  "title": "status.py: enum, allowed moves and date-based status",
+  "nodes": [
+   {
+    "id": "loan",
+    "label": "Loan (loans.py)",
+    "at": "library/loans.py:9",
+    "note": "Source of the dates that status_of reads; due_on is borrowed_on + LOAN_DAYS.\n= returned_on = None | date, reminded_on = None | date, due_on = borrowed_on + LOAN_DAYS",
+    "changed": true,
+    "source": "implemented",
+    "evidence": "library/loans.py:15"
+   },
+   {
+    "id": "status_of",
+    "label": "status_of(loan, on)",
+    "at": "library/status.py:27",
+    "note": "Derives a status from the dates: returned, then overdue, then reminded, then borrowed.\n= on = a date; result is one of the four Status members",
+    "changed": true,
+    "source": "implemented",
+    "evidence": "library/status.py:29"
+   },
+   {
+    "id": "enum",
+    "label": "Status (str, Enum)",
+    "at": "library/status.py:5",
+    "note": "Four states: BORROWED, REMINDED, OVERDUE, RETURNED. The values are the strings 'borrowed' etc.\n= Status.RETURNED.value = 'returned'",
+    "changed": true,
+    "source": "implemented",
+    "evidence": "library/status.py:5"
+   },
+   {
+    "id": "moves",
+    "label": "MOVES",
+    "at": "library/status.py:12",
+    "note": "Maps each status to the set of statuses it may go to. RETURNED maps to an empty set.\n= MOVES[OVERDUE] = {RETURNED}, MOVES[RETURNED] = set()",
+    "changed": true,
+    "source": "implemented",
+    "evidence": "library/status.py:12"
+   },
+   {
+    "id": "move",
+    "label": "move(current, new)",
+    "at": "library/status.py:20",
+    "note": "Returns new if MOVES[current] allows it, otherwise raises ValueError.\n= move(OVERDUE, BORROWED) raises ValueError 'a loan can't go from overdue to borrowed'",
+    "changed": true,
+    "source": "implemented",
+    "evidence": "library/status.py:22"
+   },
+   {
+    "id": "caller",
+    "label": "Production caller (none)",
+    "note": "No production module imports status; only library/tests/test_status.py does.",
+    "changed": false,
+    "source": "spec"
+   }
+  ],
+  "edges": [
+   {
+    "from": "loan",
+    "to": "status_of",
+    "label": "returned_on, due_on, reminded_on",
+    "changed": true,
+    "source": "implemented",
+    "evidence": "library/status.py:29"
+   },
+   {
+    "from": "status_of",
+    "to": "enum",
+    "label": "returns a Status member",
+    "changed": true,
+    "source": "implemented",
+    "evidence": "library/status.py:30"
+   },
+   {
+    "from": "enum",
+    "to": "moves",
+    "label": "Status members as keys and values",
+    "changed": true,
+    "source": "implemented",
+    "evidence": "library/status.py:13"
+   },
+   {
+    "from": "moves",
+    "to": "move",
+    "label": "MOVES[current] is the set of allowed targets",
+    "changed": true,
+    "source": "implemented",
+    "evidence": "library/status.py:22"
+   },
+   {
+    "from": "caller",
+    "to": "move",
+    "label": "would pass (current, new); missing",
+    "changed": false,
+    "source": "spec"
+   },
+   {
+    "from": "caller",
+    "to": "status_of",
+    "label": "would pass (loan, on); missing",
+    "changed": false,
+    "source": "spec"
+   }
+  ]
+ },
+ "cost": 0.0853807,
+ "at": 1794575118027
+}

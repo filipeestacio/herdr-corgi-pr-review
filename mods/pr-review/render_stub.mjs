@@ -4,14 +4,20 @@
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 
-export const S = (globalThis.__rv = { errs: [], lists: [], store: new Map(), files: new Map(), props: null }); // files: what readTextFile finds
+// files: what readTextFile finds; clicks: an element's id → its on_click handler (from the last frame drawn);
+// overlays: what openOverlay was asked to show.
+export const S = (globalThis.__rv = { errs: [], lists: [], store: new Map(), files: new Map(), props: null, clicks: new Map(), overlays: [] });
 const where = () => new Error().stack.split("\n").slice(3, 6).map((s) => s.trim()).join(" | ");
 const bad = (v) => v === null || v === undefined || (typeof v === "number" && !Number.isFinite(v));
 S.el = () => {
+  let id = null, click = null;
   const p = new Proxy(function () {}, {
     get(_, k) {
       if (k === "then") return undefined;
       return (...a) => {
+        if (k === "id") id = a[0];
+        if (k === "on_click") click = a[0];
+        if ((k === "id" || k === "on_click") && id !== null && click) S.clicks.set(id, click);
         if (k === "when") return a[0] ? a[1](p) : p;
         if (k === "map") return a[0](p);
         if (k === "children") { for (const c of a[0]) if (bad(c)) S.errs.push(`children: ${c} at ${where()}`); return p; }
@@ -46,7 +52,7 @@ const STUBS = {
     export const spaces = () => [], panes = () => [], agents = () => [], terminals = () => [], focused = () => null, layout = () => null;
     export const theme = () => S.theme, settings = () => ({}), props = () => S.props ?? { part: "review" };
     export const shared = (k) => S.store.get(k), setShared = (k, v) => S.store.set(k, v), appHome = () => "/h", home = () => "/h";
-    export const nextCommand = never, watchFolder = never, openOverlay = () => {}, closeOverlay = () => {};`,
+    export const nextCommand = never, watchFolder = never, openOverlay = (o) => { S.overlays.push(o); }, closeOverlay = () => {};`,
 };
 registerHooks({
   resolve: (spec, ctx, next) => (STUBS[spec] ? { url: `stub:${spec}`, shortCircuit: true } : next(spec, ctx)),
