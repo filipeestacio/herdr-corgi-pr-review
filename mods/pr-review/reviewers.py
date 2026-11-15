@@ -84,6 +84,8 @@ PRINCIPAL_KINDS = ["internet", "operator", "ci", "role"]
 CHANGES = ["added", "widened", "narrowed", "removed", "unchanged"]
 STRIDE = ["S", "T", "R", "I", "D", "E"]
 EFFECTS = ["allow", "deny"]  # deny: a rule that takes a right away or narrows it (a guard at the resource, no grant)
+DATA_KINDS = ["credential", "secret", "personal", "content", "other"]  # what a sensitive field is (dataflow.js KINDS)
+SINKS = ["log", "error", "queue", "store", "third_party", "response"]  # where it ends or stays (dataflow.js SINKS)
 S = review.S
 WHERE = {"type": "object", "properties": {"access": S, "from": S, "to": S}}
 SECURITY = {
@@ -98,7 +100,10 @@ SECURITY = {
         "where": WHERE, "principal": S, "check": {"enum": CHECKS}, "at": S, "source": {"enum": ["config", "code"]}, "holds_if": S, "carries": review.STRINGS}}},
     "threats": {"type": "array", "items": {"type": "object", "required": ["where", "boundary", "threat", "stride", "findings", "result", "goal"], "properties": {
         "where": WHERE, "boundary": S, "threat": S, "stride": {"enum": STRIDE}, "findings": review.STRINGS, "result": {"enum": THREAT_RESULTS}, "goal": S,
-        "path": review.STRINGS, "evidence": S, "note": S}}}}
+        "path": review.STRINGS, "evidence": S, "note": S}}},
+    "data": {"type": "array", "maxItems": 8, "items": {"type": "object", "required": ["id", "name", "kind", "steps"], "properties": {
+        "id": S, "name": S, "kind": {"enum": DATA_KINDS}, "steps": {"type": "array", "items": {"type": "object", "required": ["node"], "properties": {
+            "node": S, "at": S, "sink": {"enum": SINKS}, "protected": S, "retention": S}}}}}}}
 ASK_SECURITY = (
     " Each finding also has ref (f1, f2, … in order; threats name findings by it) and reachability (who can reach the flaw: "
     "public, authenticated, internal_only, or unknown when the code does not show it). In infrastructure code, a permission "
@@ -116,12 +121,12 @@ ASK_SECURITY = (
     "Organizations\"); never parts of two accounts in one zone. access: who may do what on the resources "
     "that the PR's code and infrastructure code add or change (IAM policies and roles, resource policies, routes and their "
     "authorizers, public flags), one row per grant or entry point, at most 16: id (acc1, acc2, … in order), resource (its "
-    "name in the template), kind (e.g. queue, function, route, bucket, table), principal (who gets it: a function, a role, "
+    "name in the template; \"*\" when the grant names every resource), kind (e.g. queue, function, route, bucket, table), principal (who gets it: a function, a role, "
     "\"anyone on the internet\"), principal_node (the id of the picture's node or group (frame) that is the principal, e.g. "
     "the group of the function whose role gets the grant; none when no node or group is it), principal_kind (internet: anyone from outside; operator: a person running a script, the "
     "console or a manual deploy; ci: a CI or deploy pipeline; role: a role or function of the system), change (added, "
     "widened, narrowed, removed or unchanged: what this PR does to the grant or entry), actions (e.g. sqs:SendMessage, "
-    "\"call GET /items\"), public (true when it is reachable without credentials of the cloud account), auth (what checks "
+    "\"call GET /items\"; a wildcard as the policy writes it, e.g. \"s3:*\" or \"*\"), public (true when it is reachable without credentials of the cloud account), auth (what checks "
     "the caller, e.g. \"bearer token checked in handler.py\"), auth_kind (none: nothing checks the caller; code: a check in "
     "the application's code; gateway: an authorizer or key at the gateway; iam: the cloud's IAM), used (false when nothing "
     "in the code uses the grant), at (file:line), node (the id of its picture node, if any), effect (deny for a rule "
@@ -168,7 +173,20 @@ ASK_SECURITY = (
     "attacker reaches in the end, one sentence), path (the ids of the nodes or groups from the principal to what the "
     "attacker reaches, also the steps that cross no boundary, e.g. [\"internet\", \"handler\", \"consumer\", \"mailer\"]), "
     "evidence (file:line, for mitigated), note (a few words; for not_assessed the reason). A finding's reachable_from "
-    "and reachability name the same place as the threat that names it.")
+    "and reachability name the same place as the threat that names it. data: the sensitive data the PR's code reads, "
+    "passes on, writes or sends, at most 8, only what the code shows and none from guessing: id (d1, d2, … in order), "
+    "name (as the code calls it, e.g. \"bearer token (Authorization header)\", \"member's mail address\"), kind "
+    "(credential: what proves who someone is, e.g. a token, a password, a session, an API key; secret: a value the "
+    "system keeps to itself, e.g. a signing key or a shared secret in configuration; personal: data about a person, "
+    "e.g. a mail address, a name, an id document, payment data; content: what users wrote or uploaded; other), steps "
+    "(its way in order, one step for each place where it starts, is passed on, is written or is sent: node (the id of "
+    "the picture's node it is at), at (file:line), sink (only where it ends or stays: log: written to a log; error: "
+    "put into an error message or an exception's text; queue; store: a table, bucket, file or cache; third_party: "
+    "sent to a service outside the system; response: returned to the caller; left out where it only passes), "
+    "protected (how it is protected at this step in a few words, e.g. \"TLS\", \"encrypted with the bucket's KMS "
+    "key\", \"masked\", \"hashed\", \"compared in constant time, never stored\"; empty when the code does not "
+    "say, never a guess), retention (for a log, a queue or a store: the rule that removes it, with its file:line; "
+    "empty when the code names none)). Empty when the PR's code touches no such data.")
 ASK_JSON = "\n\n" + ASK
 
 
@@ -335,7 +353,9 @@ def security_view(answer, findings, pic, changed, root=None):
     trust); gates [{where, principal, check, at, source, holds_if, carries}]; threats [{id: t1.., where, boundary,
     threat, stride, findings: finding ids, result, goal, evidence, note, derived?}]; effective_zones [{node, drawn,
     effective, where}]; bypasses [{from, to, edge}] (a call in one process between
-    zones of different trust: no crossing, but it needs a threat like one). where is {access} or {from, to, edge}.
+    zones of different trust: no crossing, but it needs a threat like one); data [{id: d1.., name, kind, steps: [{node,
+    at, sink?, protected, retention}]}] (the sensitive data the PR's code moves, each with its way over the picture's
+    cards). where is {access} or {from, to, edge}.
     Also: a node without a zone of its own stands in the zone of what it runs_in; access[].principal_node only when the
     picture has that node or group (else None); threats[].path only ids the picture has (and "internet" first); a
     finding whose threat sits at another place than its reachable_from gets reach_conflict and the more exposed of the
@@ -500,7 +520,19 @@ def security_view(answer, findings, pic, changed, root=None):
             effective[node] = {"node": node, "drawn": drawn, "effective": caller, "where": w}
     reach_conflict(findings, threats, rows, trust)
     rows += operator_rows(gates, rows, nodes, root)
-    return {"zones": zones, "access": rows, "crossing": crossing, "bypasses": bypasses, "gates": gates, "threats": threats, "effective_zones": list(effective.values())}
+    # The sensitive data the answer names, each with its way (dataflow.js): only the steps at a card of the picture; a
+    # kind outside the list is "other", a sink outside it none; an entry without a step on the picture drops out.
+    # Empty texts stay empty: "not stated" is what the page says then, never a guess here.
+    data = []
+    for d in answer.get("data") or []:
+        if not isinstance(d, dict) or not str(d.get("name") or "").strip():
+            continue
+        steps = [{"node": s["node"], "at": str(s.get("at") or ""), **({"sink": s["sink"]} if s.get("sink") in SINKS else {}),
+                  "protected": str(s.get("protected") or "").strip(), "retention": str(s.get("retention") or "").strip()}
+                 for s in d.get("steps") or [] if isinstance(s, dict) and s.get("node") in ids]
+        if steps and len(data) < 8:
+            data.append({"id": f"d{len(data) + 1}", "name": str(d["name"]).strip(), "kind": d.get("kind") if d.get("kind") in DATA_KINDS else "other", "steps": steps})
+    return {"zones": zones, "access": rows, "crossing": crossing, "bypasses": bypasses, "gates": gates, "threats": threats, "effective_zones": list(effective.values()), "data": data}
 
 
 # How exposed a place is: an access row by its own words (public and nothing checks: public; public behind a check:

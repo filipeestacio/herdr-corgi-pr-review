@@ -159,7 +159,16 @@ lone = reviewers.security_view({"access": [{"resource": "Api", "at": "t.yaml:3",
 assert "opened_by_pr" not in lone["access"][0] and "principal_kind" not in lone["access"][0] and lone["access"][0]["change"] == "added"
 assert [x["result"] for x in lone["threats"]] == ["not_assessed"], "no diff: the row stays; a finding result needs a finding"
 assert reviewers.security_view({"access": [{"resource": "Old", "at": "t.yaml:3", "change": "unchanged"}]}, [], {}, {"t.yaml": {3}})["threats"] == [], "an unchanged grant needs no entry"
-assert reviewers.security_view({}, [], {}, {}) == {"zones": [], "access": [], "crossing": [], "bypasses": [], "gates": [], "threats": [], "effective_zones": []}
+assert reviewers.security_view({}, [], {}, {}) == {"zones": [], "access": [], "crossing": [], "bypasses": [], "gates": [], "threats": [], "effective_zones": [], "data": []}
+# The sensitive data the answer names: only steps on a card of the picture, a kind or a sink outside the lists does not
+# pass as said, empty texts stay empty (the page says "not stated"), an entry without a step on the picture goes.
+dv = reviewers.security_view({"data": [
+    {"id": "x", "name": " bearer token ", "kind": "credential", "steps": [{"node": "client"}, {"node": "handler", "at": "lib/handler.py:9", "protected": " TLS ", "sink": "nowhere"}, {"node": "moon", "sink": "log"}]},
+    {"name": "mail address", "kind": "pii", "steps": [{"node": "worker", "at": "lib/worker.py:4", "sink": "log", "retention": None}]},
+    {"name": "gone", "kind": "secret", "steps": [{"node": "moon"}]}, {"name": "", "steps": [{"node": "handler"}]}, "text"]}, [], pic, None)["data"]
+assert dv == [{"id": "d1", "name": "bearer token", "kind": "credential", "steps": [{"node": "client", "at": "", "protected": "", "retention": ""}, {"node": "handler", "at": "lib/handler.py:9", "protected": "TLS", "retention": ""}]},
+              {"id": "d2", "name": "mail address", "kind": "other", "steps": [{"node": "worker", "at": "lib/worker.py:4", "sink": "log", "protected": "", "retention": ""}]}], dv
+assert set(reviewers.SECURITY["data"]["items"]["properties"]["kind"]["enum"]) == set(reviewers.DATA_KINDS) and "data" in reviewers.findings_schema("security")["required"], "the schema asks for it"
 
 # Welle 5: zones through runs_in, a call in one process is no crossing but may bypass one, the principal's node, the
 # path of a threat, a reach that disagrees with its threat, and an operator way in from a gate's condition.
