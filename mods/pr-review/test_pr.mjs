@@ -1118,6 +1118,9 @@ console.log("ok");
   const list = pr.withThreats([flood, bug, plain], sec);
   assert.deepEqual(list.map((f) => [f.id, f.threats ?? null, pr.isSecurity(f)]), [["f1", ["t1"], true], ["f2", null, false], ["f3", null, false]]);
   assert.equal(pr.withThreats(list, sec), list, "nothing to add: the same array");
+  // The ⛨'s help text says which kind; what follows from ⛨ (title only in the copied state) follows from the effect.
+  assert.deepEqual([pr.secWhy(list[0]), pr.secWhy({ ...list[0], impact: "unauthorized_access" }), pr.secWhy({ security: true, impact: "data_exposure" }), pr.secWhy(list[2])],
+    ["Security: named by a threat (t1).", "Security: access or data; also named by a threat (t1).", "Security: access or data.", ""]);
   assert.deepEqual([pr.secByEffect(list[0]), pr.secByEffect({ ...list[0], impact: "unauthorized_access" }), pr.secByEffect({ security: true })], [false, true, true], "⛨ through a threat alone is not security by effect");
   const merged = pr.mergeFindings(list).findings, counts = pr.findingCounts(merged, () => "open");
   assert.deepEqual([merged.find((f) => f.id === "f1").security, merged.find((f) => f.id === "f1").threats, counts.security], [true, ["t1"], 1], "the chip, the navigation and the verdict count it");
