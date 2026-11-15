@@ -130,7 +130,12 @@ async function tour(v, name) {
   for (const p of v.resNow()?.paths ?? []) act(v, `res-path:${p.id}`, at(`Resilience, path ${p.id}`));
   for (const c of ["res-more", "res-clean", "res-add", ...v.probeList().map((p) => `res-probe-open:${p.id}`), "res-path:"]) act(v, c, at(`Resilience, ${c}`));
   v.command("page:overview", cx); v.rulesOpen = true; draw(v, at("Overview, rules open"));
-  for (const a of [...(v.ai?.asks ?? []).map((x) => x.id), "other"]) act(v, `criterion:${a}`, at(`Overview, criterion ${a}`));
+  for (const a of [...(v.ai?.asks ?? []).map((x) => x.id), "other", "crit", "extra", "nc", "bm-all"]) act(v, `criterion:${a}`, at(`Overview, criterion ${a}`));
+  // The bar: the verdict's excerpt stands in for the Overview's verdict line, so not beside it; the diff's switches
+  // (what shows under the lines, one or two columns, line wrap) only beside a diff.
+  act(v, "page:overview", at("Overview, the bar")); assert.ok(!S.clicks.has("rv-mr") && !S.clicks.has("rv-diffmode"), at("no excerpt and no diff switches beside the Overview"));
+  act(v, "page:arch", at("Architecture, the bar")); assert.ok(S.clicks.has("rv-mr") === v.verdictNow().length > 0 && !S.clicks.has("rv-diffmode"), at("the excerpt beside another page, no diff switches"));
+  act(v, "files", at("files, the bar")); assert.ok(S.clicks.has("rv-diffmode") && S.clicks.has("rv-wrap"), at("the diff's switches beside the diff")); v.command("steps", cx);
   v.command("page:blast", cx);
   for (const k of ["quiet", "unchanged", ...(v.ai?.access ?? []).map((x) => `a:${x.id}`), ...(v.ai?.arch?.edges ?? []).map((_e, k) => `e:${k}`)]) act(v, `cross:${k}`, at(`Security, crossing ${k}`));
   for (const n of v.ai?.arch?.nodes ?? []) act(v, `sec-card:${n.id}`, at(`Security, card ${n.id}`));
@@ -154,7 +159,9 @@ async function tour(v, name) {
     for (const k of ["reported", "evidence", "sent", "verified", "in_pr"]) { v.fstep = { id: f.id, key: k }; draw(v, at(`finding ${f.id}, step ${k}`)); }
     v.fstep = null;
   }
-  act(v, "findings-sort:quick", at("findings, quick wins first")); act(v, "findings-sort:", at("findings, usual order"));
+  // The order is a switch of two (Severity | Quickest fix), offered once a finding says how much work its fix is.
+  act(v, "findings-sort:quick", at("findings, quickest fix first")); assert.equal(S.clicks.has("rv-fsort-quick"), v.findings().some((f) => f.effort), at("the order switch is there with efforts only"));
+  act(v, "findings-sort:", at("findings, by severity"));
   v.tab = "files";
   for (const f of v.findings()) act(v, `finding-card:${f.id}`, at(`files, card ${f.id} toggled`));
   v.fopen = null;

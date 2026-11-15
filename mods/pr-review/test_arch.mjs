@@ -1,7 +1,7 @@
 // Run: node test_arch.mjs  (the architecture / blast radius layout: columns, lanes, ports, fans, stubs, hops, badges,
 // card sizes, focus, orchestrator states)
 import assert from "node:assert/strict";
-import { archLayout, archBands, archFocus, archMarks, pathMark, labelLines, zoneArch, stateLayout, sourceStyle, hasSources, crossings, clampText, wrapLines, ARCH, LABEL } from "./arch.js";
+import { archLayout, archBands, archFocus, archMarks, pathMark, labelLines, zoneArch, stateLayout, sourceStyle, hasSources, crossings, clampText, wrapLines, bundleChips, markRoom, MARK_CARD_H, ARCH, LABEL } from "./arch.js";
 import { blastArch } from "./pr.js";
 
 const inside = (s, r) => (s.y1 === s.y2
@@ -618,4 +618,23 @@ console.log("ok");
     assert.ok(B.some((b) => b.y0 === 0) && B.every((b) => b.y0 <= L.top));
   }
   console.log("ok a line over the picture");
+}
+
+// Finding chips that would touch are one bundle; one that joins two bundles makes them one; far ones stay alone.
+{
+  const c = (x, y, w = 46) => ({ x, y, w });
+  assert.deepEqual(bundleChips([c(0, 0), c(50, 0), c(200, 0)]).map((g) => g.length), [1, 1, 1], "4 px apart and more: each its own chip");
+  assert.deepEqual(bundleChips([c(0, 0), c(48, 0), c(200, 0)]).map((g) => g.length), [2, 1], "closer than the gap");
+  assert.deepEqual(bundleChips([c(0, 0), c(96, 0), c(48, 9)]).map((g) => g.length), [3], "the third touches both");
+  assert.deepEqual(bundleChips([c(0, 0), c(10, 30)]).map((g) => g.length), [1, 1], "a row below is not touching");
+  console.log("ok chip bundles");
+}
+
+// A card's mark: a finding that fits one line takes two rows (chip and line), a longer one three, as before.
+{
+  const m = (title, n = 1) => ({ n, severity: "high", findings: [{ title, severity: "high" }] });
+  assert.deepEqual(markRoom(m("No retry"), 210), { lines: 1, rows: 2, h: 33 });
+  assert.deepEqual(markRoom(m("Nothing ever calls send_reminders or publish_overdue in production"), 210), { lines: 2, rows: 3, h: MARK_CARD_H });
+  assert.equal(markRoom(m("No retry", 3), 140).lines, 1, "'No retry and 2 more' still fits 23 characters");
+  console.log("ok mark room");
 }

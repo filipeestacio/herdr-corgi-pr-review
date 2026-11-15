@@ -82,7 +82,7 @@ const all = [f("m1", "medium", { breaks: { node: "c" } }), sec, f("l1", "low"), 
     rules: [{ rule: "Tests for new code", source: "CLAUDE.md", status: "fail", where: "a.py:3", why: "None." }] };
   const text = overviewMd({ ...base, ai, findings: all, statusOf, checks: [{ name: "Conventional Commit title", ok: true, why: "feat: x" }, { name: "CI: unit", ok: false, why: "fail", ci: true }, { name: "Tests for new code", ok: false, rule: true }],
     related: { stacked_on: { number: 1, title: "base", url: "https://example.test/pull/1" } } });
-  assert.ok(text.startsWith(`${first}\n\n# Review overview: feat: x\n\n**Verdict:** 1 security cause, high (reach assumed) · 0 of 2 acceptance criteria met · 2 checks failed\n**Merge risk:** high. No auth.\n`));
+  assert.ok(text.startsWith(`${first}\n\n# Review overview: feat: x\n\n**Verdict:** 1 security cause, high (assumed reachable) · 0 of 2 acceptance criteria met · 2 checks failed\n**Merge risk:** high. No auth.\n`));
   assert.match(text, /\*\*Stacked on:\*\* #1 base \(https:\/\/example\.test\/pull\/1\)\. This PR merges after it\.\n\*\*Components:\*\* 1 new component, 1 without an owner\n/);
   assert.match(text, /## Check against the task: 0 of 2 acceptance criteria met, 1 extra\n\n### Security\n\n- \*\*high\*\* security: T s1 \(`a\.py:3-9`\) · Assumed, not checked\n/);
   assert.match(text, /### Acceptance criteria\n\n- \*\*broken\*\*: Only staff call it\n  - Why: No check\.\n  - \*\*high\*\* security: T s1 [^\n]*\n- \*\*partly\*\*: Mails once\n  - No finding backs this state\.\n/);
