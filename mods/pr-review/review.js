@@ -163,7 +163,7 @@ const REVIEW_CAP = { haiku: 0.5, sonnet: 3, opus: 8 }; // reviewers.py BUDGET, p
 const codexMenu = () => [{ value: "", label: "Codex default" }, ...codexChoices()];
 const openCodexMenu = () => { const cur = shared("review.codexModel") || ""; return openOverlay({ mod: "pr-review", props: { part: "cmenu", key: "codex",
   items: codexMenu().map((c) => [`${c.value === cur ? "✓ " : ""}${c.label}`, false, `codex-model:${c.value}`]) }, kind: "popup", width: 240, height: 14 + 32 * codexMenu().length }); };
-const reviewsPop = () => { const cx = hasTool("codex"); return { width: 500, height: 28 + 60 * (reviewersNow().length + 1) + (cx && codexChoices().length ? 36 : 0) + (cx ? 96 : 60) }; };
+const reviewsPop = () => { const cx = hasTool("codex"); return { width: 500, height: 28 + 60 * (reviewersNow().length + 1) + (cx && codexChoices().length ? 36 : 0) + (cx ? 152 : 60) }; };
 export function renderReviews() {
   const t = theme(), runs = runsOf(shared("review.reviewers") ?? {}), meta = shared("review.meta") ?? {}, pr = shared("review.target"), mine = meta.url === pr?.url;
   const total = mine ? meta.findings?.total ?? 0 : 0, a = mine ? meta.shown : null, cap = REVIEW_CAP[tierOf(model())];
@@ -182,14 +182,14 @@ export function renderReviews() {
         + (k === "codex" ? (done ? " · Codex does not report its price" : "") : !r?.state ? ` · capped at $${cap}` : "") + (k === "security" && mine && meta.securityOffer ? `. ${meta.securityOffer}` : "");
       return row(k, label, c, line, r?.state === "failed", r?.state === "running" ? div().flex_none().child(SPIN[0]).frames(SPIN, 90)
         : pill(`rv-rrun-${k}`, t, runLabel(r, k === "codex" || !mine ? null : meta.prices?.[k] ?? null, "", true), () => { run(`pr-review.reviewer:${k}`); closeOverlay(props().overlay); }).flex_none()
-          .tooltip(k === "codex" ? "Run the codex CLI read-only on the PR head, with its own login; its price is not reported" : `One read-only review of the PR head with ${modelLabel(model())}, capped at $${cap}`));
+          .tooltip(k === "codex" ? `Run the codex CLI on the PR head, with its own login; its price is not reported. ${TH.CODEX_MAY} On someone else's PR in Restricted Mode it asks once first.` : `One read-only review of the PR head with ${modelLabel(model())}, capped at $${cap}`));
     }))
     .when(hasTool("codex") && codexChoices().length > 0, (e) => e.child(h_flex().px(8).gap(8).items_center()
       .child(div().text_size(TYPE.small).text_color(t.muted).child("Codex review model"))
       .child(pill("rv-cxm", t, `${cur.label} ▾`, () => openCodexMenu()).tooltip(cur.description || "The model in Codex's own settings"))))
     .child(div().px(8).pt(4).text_size(TYPE.small).line_height(1.45).whitespace_normal().text_color(t.muted)
       .child(`Claude reviews: ${accountOf(pr ? prCtx(pr) : C.defaultOf(ctxDoc()))}. They read the PR head in a checkout, read-only, and send the diff and the files they open to the provider.`
-        + (hasTool("codex") ? " Codex review: the codex CLI with its own login. It is a second provider (OpenAI) and gets the same checkout." : "")));
+        + (hasTool("codex") ? ` Codex review: the codex CLI with its own login. It is a second provider (OpenAI) and gets the same checkout. ${TH.CODEX_MAY}` : "")));
 }
 
 // "?" in the bar (or the ? key) opens this popup (props {part: "keys"}): the review's keys.
@@ -640,7 +640,7 @@ export const ReviewMode = {
       .child(div().whitespace_normal().text_color(t.muted).child("Trusting it turns on:"))
       .child(v_flex().gap(2).pl(8).children(TH.TRUST_TURNS_ON.map((x, k) => h_flex().id(`rv-trust-on-${k}`).gap(6).items_start().text_color(t.muted)
         .child(div().flex_none().child("·")).child(div().flex_1().min_w(0).whitespace_normal().child(x)))))
-      .child(div().whitespace_normal().text_color(t.muted).child("In Restricted Mode each of these asks you first or stays off: agents ask before every command and read only your own settings, the security review is offered instead of started, Java has no build import and Rust no go-to-definition. Reading the diff, the reviewers you start and the AI analysis work the same either way."))
+      .child(div().whitespace_normal().text_color(t.muted).child("In Restricted Mode each of these asks you first or stays off: agents ask before every command and read only your own settings, the security review is offered instead of started, Java has no build import and Rust no go-to-definition, and the Codex review asks once before it runs. Reading the diff, the Claude reviewers you start and the AI analysis work the same either way."))
       .child(h_flex().gap(8).flex_wrap()
         .child(pill("rv-trust-pr", t, "Trust this PR", (_e, cx) => this.trust("pr", cx), false, t.foreground).tooltip("Turn on everything listed above for this PR"))
         .when(Boolean(pr.repo), (e) => e.child(pill("rv-trust-repo", t, `Trust all PRs in ${pr.repo}`, (_e, cx) => this.trust("repo", cx)).tooltip(`Turn on everything listed above for every PR in ${pr.repo} from now on, also those by other people${this.repoVis?.[pr.repo] === "PUBLIC" ? ": this repository is public, so anyone can open one" : ""}`)))
@@ -1147,6 +1147,8 @@ export const ReviewMode = {
     const pr = this.prSel, w = this.worktree;
     if (!reviewersNow().some(([k]) => k === kind) || !pr?.url) return;
     if (!w || w.local) { this.note = !w ? "Could not run: the PR head is not checked out yet" : "Could not run: reviewers need a PR (not a branch diff)"; return cx.notify(); }
+    // Codex on someone else's PR in Restricted Mode: asked once per PR (the note says what the run may do), the next click runs it.
+    if (kind === "codex" && !this.trustedPr(pr) && this.codexAsked !== pr.url) { this.codexAsked = pr.url; this.note = TH.CODEX_ASK; return cx.notify(); }
     const req = { kind, url: pr.url, number: pr.number, context: this.ctxReq(), model: use ?? model(), codexModel: shared("review.codexModel") || null, worktree: w.path, base: pr.base ?? "main",
       head: w.head, level: "medium", file: `${findDir()}/${hash(pr.url)}.json`, ...(auto ? { auto } : {}) };
     this.find.runs[kind] = { state: "running", busy: true, started: new Date().toISOString(), scope: null, error: null, head: w.head, ...(auto ? { auto } : {}) };
@@ -2011,6 +2013,17 @@ export const ReviewMode = {
     f.target = target;
     this.sendText.set_value(f.prompt(target === "sub" ? f : null));
   },
+  // The push lock for an agent that works in a worktree of `base` (threads.js noPushEnv): every remote of the clone
+  // gets a push URL no git can open, and git itself is asked where it would push now. A remote it would still push
+  // to (a git before 2.46 cannot clear a remote's own pushurl) stops the start: no agent without the lock.
+  async pushLock(base) {
+    const names = ((await exec("git", ["-C", base, "remote"], { timeout: 20000 })).stdout ?? "").split("\n").filter(Boolean), lock = TH.noPushEnv(names);
+    const asked = await exec(lock[0], [...lock.slice(1), ...TH.pushLockProbe(names)], { cwd: base, timeout: 20000 });
+    const open = asked.code === 0 ? TH.pushLockOpen(asked.stdout, names) : ["?"];
+    // The URLs themselves are not shown: a push URL may carry a token.
+    if (open.length) throw new Error("git in this checkout could still push to a remote, so no agent starts. A remote's own push URL can be turned off from git 2.46 on; update git or remove the remote's pushurl.");
+    return lock;
+  },
   // A new Claude in a fresh worktree on the fix branch from the PR head the preview named (shown under the PR's agent
   // when one runs). Nothing is typed into another session: the fix stays on its branch until the reviewer applies it.
   startSubFix(p, text, cx) {
@@ -2019,9 +2032,9 @@ export const ReviewMode = {
     this.sending = true; this.note = null;
     cx.spawn(async (cx) => {
       try {
-        const { git, head } = await this.addWorktree(base, f);
+        const lock = await this.pushLock(base), { git, head } = await this.addWorktree(base, f);
         const id = Date.now().toString(36), { agent } = this.sendAgent();
-        const r = await hc(TH.subAgentArgs({ parent: agent?.address ?? null, cwd: f.path, name: `fix-${id}`, env: this.ctxEnv(this.ctxId()), task: text, job: id, auto: trusted, model: model() }));
+        const r = await hc(TH.subAgentArgs({ parent: agent?.address ?? null, cwd: f.path, name: `fix-${id}`, env: this.ctxEnv(this.ctxId()), task: text, job: id, auto: trusted, model: model(), lock }));
         if (r.code !== 0) { await git(["worktree", "remove", "--force", f.path]); await git(["branch", "-D", f.branch]); throw new Error((r.stderr || r.stdout).trim().slice(0, 200)); }
         const terminal = JSON.parse(r.stdout).address;
         this.updateThreads(cx, (d) => TH.addFix(d, key, { id, branch: f.branch, path: f.path, base, head, items: f.items, terminal, target: "sub", at: Date.now(), state: "running" }));
@@ -5664,9 +5677,9 @@ export const ReviewMode = {
     this.sending = true; this.note = null;
     cx.spawn(async (cx) => {
       try {
-        const { git, head } = await this.addWorktree(base, v);
+        const lock = await this.pushLock(base), { git, head } = await this.addWorktree(base, v);
         const id = Date.now().toString(36), { agent } = this.sendAgent();
-        const r = await hc(TH.subAgentArgs({ parent: agent?.address ?? null, cwd: v.path, name: `verify-${id}`, env: this.ctxEnv(this.ctxId()), task: text, job: id, auto: trusted, model: model(), kind: "verify", deny: TH.NO_NET }));
+        const r = await hc(TH.subAgentArgs({ parent: agent?.address ?? null, cwd: v.path, name: `verify-${id}`, env: this.ctxEnv(this.ctxId()), task: text, job: id, auto: trusted, model: model(), kind: "verify", deny: TH.NO_NET, lock }));
         if (r.code !== 0) { await git(["worktree", "remove", "--force", v.path]); await git(["branch", "-D", v.branch]); throw new Error((r.stderr || r.stdout).trim().slice(0, 200)); }
         const proof = { state: "running", job: id, ids: v.ids, path: v.path, branch: v.branch, base, terminal: JSON.parse(r.stdout).address, head, at: Date.now() };
         this.writeStatus(cx, (st) => ({ ...st, ...Object.fromEntries(v.ids.map((k) => [k, { ...st[k], proof }])) }));
@@ -5757,7 +5770,10 @@ export const ReviewMode = {
       try {
         await git(["worktree", "prune"]); // worktrees of starts that were cut off (their folders are gone)
         const { head } = await this.addWorktree(base, { branch, path, head: this.headNow() });
-        await exec("mkdir", ["-p", `${path}/${TH.PROBE_DIR}`]); // the agent may write there only, so the folder is there
+        // The two places the agent may write are made new: whatever the PR checked in there (a link out of the
+        // checkout that a write would follow, a script of its own) is gone before the agent starts. It has no shell to make a link.
+        const fresh = await exec("sh", TH.probeFresh(path));
+        if (fresh.code !== 0) throw new Error(`the probe folder could not be made: ${String(fresh.stderr).trim().slice(0, 160)}`);
         const mb = this.prSel.base ? (await git(["merge-base", head, `origin/${this.prSel.base}`]).catch(() => null))?.stdout?.trim() || null : null;
         const path_ = (this.ai?.resilience?.paths ?? this.find?.resilience?.paths ?? []).find((x) => x.id === p.of);
         const findings = this.findings().filter((f) => (path_?.findings ?? p.findings ?? []).some((x) => f.ids.includes(x)));
@@ -5790,8 +5806,8 @@ export const ReviewMode = {
       const id = key.slice(key.lastIndexOf("|") + 1);
       if (!TH.PROBE_ID.test(id)) continue; // never into a path or the runner's argv
       cx.spawn(async (cx) => {
-        const read = (f) => readTextFile(`${p.path}/${f}`).catch(() => "");
-        const answer = TH.parseProbeAnswer(await read(TH.VERIFY_FILE), id);
+        // The answer file was made new at the start (TH.probeFresh) and the agent has no shell: no link can be there.
+        const answer = TH.parseProbeAnswer(await readTextFile(`${p.path}/${TH.VERIFY_FILE}`).catch(() => ""), id);
         const all = terminals(), t = all.find((x) => x.address === p.terminal), late = Date.now() - p.at;
         const ended = Boolean(answer) || late > 900000 || (all.length > 0 && late > 60000 && (!t || t.state !== "live" || (t.status?.state ?? t.status) === "done"));
         if (!ended || this.probeBusy.has(key) || this.deep.probes?.[key]?.job !== p.job) return;
@@ -5799,9 +5815,10 @@ export const ReviewMode = {
         const git = (args) => exec("git", ["-C", p.base, ...args], { timeout: 60000 }).catch(() => null);
         try {
           if (p.terminal) run("terminal.kill", { terminal: p.terminal });
-          const script = await read(`${TH.PROBE_DIR}/${id}.py`);
-          if (script.trim()) await exec("python3", [this.probeRunner(), p.path, id, ...(p.mb ? ["--base", p.mb] : [])], { timeout: 120000 }).catch(() => null);
-          const out = TH.probeOutcome(id, { result: script.trim() ? (await read(`${TH.PROBE_DIR}/${id}.result.json`)) || null : null, answer, script });
+          // Script and result only as the runner prints them (TH.probeRan): it opens the script without following a
+          // link and refuses anything but a plain file in the probe folder. The review reads neither file itself.
+          const ran = TH.probeRan(await exec("python3", [this.probeRunner(), p.path, id, ...(p.mb ? ["--base", p.mb] : [])], { timeout: 120000 }).catch(() => null));
+          const out = TH.probeOutcome(id, { ...ran, answer });
           this.updateDeep(cx, (d) => ({ ...d, probes: { ...(d.probes ?? {}), [key]: { ...out, branch: p.branch } } }));
           this.note = `Probe ${id}: ${out.status.replace("_", " ")}${out.line ? `, ${out.line}` : ""}.`;
         } finally {

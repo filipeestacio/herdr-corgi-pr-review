@@ -143,11 +143,12 @@ in but not run.
 
 | Program | Needed for | macOS | Linux |
 |---|---|---|---|
-| `git` | diffs, checkouts | `brew install git` | `sudo apt install git` |
+| `git` (2.46 or later for the full push lock) | diffs, checkouts, the push lock of fix and verify agents | `brew install git` | `sudo apt install git` |
 | `gh` (logged in) | PR lists, diffs, CI checks, clones | `brew install gh`, `gh auth login` | `sudo apt install gh` |
 | `claude` (logged in) | the AI analysis, reviewers, triage, fix checks | `npm install -g @anthropic-ai/claude-code` | same |
 | `python3` | the helper scripts (standard library only) | `brew install python` | `sudo apt install python3` |
-| `codex` (optional) | the Codex reviewer, offered only when installed | `npm install -g @openai/codex` | same |
+| `codex` (optional, with permission profiles; checked with 0.164) | the Codex reviewer, offered only when installed | `npm install -g @openai/codex` | same |
+| `bwrap` (optional, Linux only) | the sandbox a probe's script runs in | built in (`sandbox-exec`) | `sudo apt install bubblewrap` |
 | `acli` (optional) | the Jira ticket a PR names, in the task check | `brew tap atlassian/homebrew-acli && brew install acli` | see Atlassian's docs |
 
 Optional language servers turn on go-to-definition and hover for their language; a missing one only turns it off
@@ -156,6 +157,16 @@ for that language: `typescript-language-server` + `tsc` (TypeScript, JavaScript)
 
 The reviewers use Claude Code's `/security-review` and a `/code-review` command; without the command in your
 Claude setup the same review runs as a plain prompt.
+
+What happens without them:
+
+- `git` older than 2.46 cannot turn off a remote's own push URL (`remote.<name>.pushurl`). pr-review asks git before
+  a fix or verify agent starts; in a clone with such a remote the agent does not start and the note says why.
+- A `codex` without permission profiles (`default_permissions`), or one set up only in `~/.codex/config.toml`
+  (another provider, the login in the keyring), fails the Codex review with Codex's own error. It never falls back
+  to a run that reads more.
+- Without a sandbox (`bwrap` missing on Linux, or not allowed to make its namespaces) every probe asks first and
+  says that its script can read and change your files and reach the network.
 
 ## Install in three steps
 
@@ -240,7 +251,26 @@ your sessions and PRs you authored. For anyone else's PR it asks first, as VS Co
 
 - **Trust this PR** or **Trust all PRs in owner/repo**: language servers run as usual.
 - **Stay in Restricted Mode**: Java skips the build import, TypeScript uses your global install, Go downloads nothing
-  and skips cgo, and rust-analyzer doesn't start. Go-to-definition finds less. The diff, comments and reviews, the
-  reviewers and the AI analysis work the same.
+  and skips cgo, and rust-analyzer doesn't start. Go-to-definition finds less. The Codex review asks once before
+  it runs. The diff, comments and reviews, the Claude reviewers and the AI analysis work the same.
 
 The header shows **Restricted Mode · Trust** until you trust the PR.
+
+## What the runs may do
+
+Every run reads code and text from the PR, which may carry instructions for a model. So each one is fenced, and the
+popups say the same as this list:
+
+- **Claude reviewers and the AI analysis** read the PR checkout and its git history, write nothing and have no
+  network and no MCP servers. They get an allowlist of your environment: what a CLI needs to start and the account's
+  own login, no other key, token, password or agent socket.
+- **Codex review** reads the PR checkout and its clone's `.git` folder, nothing else on the machine. It writes
+  nothing. Codex itself reaches its provider (OpenAI, a second provider); the commands it runs reach nothing. MCP
+  servers, hooks, plugins, apps and Codex config, yours and the PR's, are off.
+- **Fix and verify agents** work in their own worktree. Their git cannot push: every remote, also one with a push
+  URL of its own, and every URL given to `git push` lead to an address no git can open, and `git push`,
+  `git send-pack` and `gh pr create` are denied. Not covered: what an agent sets against it on purpose (a push URL
+  of its own, a cleared environment), `git send-pack` inside a script, or a push through the GitHub API.
+- **Probes**: an agent without a shell writes one script; the review runs it in a sandbox with no network, nothing
+  from your home and writes only to a temporary folder. A link or a script the PR checked in at the agent's paths
+  is removed before the agent starts.
