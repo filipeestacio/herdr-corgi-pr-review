@@ -1078,7 +1078,8 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     assert.deepEqual([started.length, S.store.get("editor.choice")?.repos?.["/h/w/.git"]?.main ?? null, Boolean(v.editorTarget)], [0, null, true], `${who}: another menu's pick is not taken`);
     v.command(`editor-use:${v.editorTarget.token}:idea`, cx); await settle(); draw(v, `editor, ${who}: another editor picked for the project`);
     assert.equal(S.store.get("editor.choice")?.repos?.["/h/w/.git"]?.main, "idea");
-    S.props = {}; const panel = new PrReview(); panel.init({}, cx); await settle(); panel.prSel = v.prSel; panel.context = panel.key(); panel.patch = v.patch; panel.files = v.patch; panel.open = v.patch[0].path; draw(panel, `editor, ${who}: the panel's head and its file link`);
+    S.props = {}; const panel = new PrReview(); panel.init({}, cx); await settle(); panel.prSel = v.prSel; panel.context = panel.key(); panel.patch = v.patch; panel.files = v.patch; panel.open = v.patch[0].path; S.ids = new Set(); draw(panel, `editor, ${who}: the panel's head and its file link`);
+    { const ids = [...S.ids]; S.ids = null; assert.ok(ids.includes(`ed-file-${panel.uid}`) && ids.includes(`ed-file-${panel.uid}-more`), `${who}: the open file's row carries the link and its ▾`); }
     S.props = null; S.store.set("editor.choice", null);
   }
   EV.forgetEditors(); S.exec = null;

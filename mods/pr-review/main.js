@@ -1547,9 +1547,10 @@ export default class PrReview extends View {
       .when(tab === "diff" && this.files.length > 0, (e) => e.child(pill(`pr-wrap-${this.uid}`, t, shared("review.wrap") === true ? "Wrap on" : "Wrap off", () => setShared("review.wrap", shared("review.wrap") !== true), false,
         "Long lines wrap, or are cut at the panel's edge. The review's Line wrap switch is the same setting.")))
       .when(tab === "diff" && Boolean(this.open && !this.patch), (e) => e
-        .child(pill(`mode-${this.uid}`, t, this.mode === "file" ? "Diff view" : "File view", (_e, cx) => this.setMode(this.mode === "file" ? "diff" : "file", cx), false, "Switch between the diff and the whole file")))
-      // The open file at the picked line, in the person's editor: for a branch, and for a PR whose checkout the review made.
-      .children(tab === "diff" && this.open ? editorLink(this, t, `file-${this.uid}`, { root: this.checkoutRoot(), file: this.open, line: (this.sel !== null && this.rows[this.sel]?.number) || this.rows.find((r) => r.number)?.number || null, foreign: this.editorForeign(), where: this.prSel ? "in the checkout of this PR" : "in this checkout" }, cx) : []);
+        .child(pill(`mode-${this.uid}`, t, this.mode === "file" ? "Diff view" : "File view", (_e, cx) => this.setMode(this.mode === "file" ? "diff" : "file", cx), false, "Switch between the diff and the whole file")));
+    // The open file at the picked line, in the person's editor: for a branch, and for a PR whose checkout the review
+    // made. It stands at the file's name in the list (the open file's row), its ▾ at the link.
+    const fileLink = () => editorLink(this, t, `file-${this.uid}`, { root: this.checkoutRoot(), file: this.open, line: (this.sel !== null && this.rows[this.sel]?.number) || this.rows.find((r) => r.number)?.number || null, foreign: this.editorForeign(), where: this.prSel ? "in the checkout of this PR" : "in this checkout" }, cx);
     // Picking: reviews in progress and the sources' list in one scroll, so nothing stacks over anything.
     // The bodies are built only when they are shown (pickBody, files, diffBody are asked for below): a frame with a
     // PR chosen built the whole list of PRs before, and one with the list shown every file and diff line.
@@ -1584,7 +1585,8 @@ export default class PrReview extends View {
         return h_flex().id(`f-${f.path}`).h(28).flex_none().px(8).gap(8).items_center().rounded(7).cursor_pointer().tooltip(drag ? `${f.path}. Drag it onto a terminal to paste its path.` : f.path)
           .when(Boolean(drag), (e) => e.drag_paths([drag])) // a click still picks the file
           .when(this.open === f.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.fh.focus(); this.askTop = false; this.pick(f.path, cx); })
-          .child(h_flex().flex_1().min_w(0).child(div().text_color(t.dim).truncate().child(parts.length ? parts.join("/") + "/" : "")).child(div().min_w(0).truncate().child(name)))
+          .child(h_flex().flex_1().min_w(0).items_center().child(div().text_color(t.dim).truncate().child(parts.length ? parts.join("/") + "/" : "")).child(div().min_w(0).truncate().child(name))
+            .when(this.open === f.path, (e) => e.child(h_flex().flex_none().ml(8).children(fileLink()))))
           .children(rowMarks(this.fileMarks?.get(f.path), null).map((m) => chip(t, markLabel(div, t, m), t[m.color] ?? t.muted, m.security, `f-r-${f.path}`,
             `The highest severity among this file's unresolved findings, from the cached analysis and reviews${m.words ? `: ${m.words}` : ""}. Open the review to see them.`)))
           .when(n > 0, (e) => e.child(div().id(`f-c-${f.path}`).tooltip(`${n} pending ${n === 1 ? "comment" : "comments"} on this file`).text_size(TYPE.micro).text_color(t.accent).child(`● ${n}`)))
