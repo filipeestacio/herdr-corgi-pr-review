@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.12.0 (2026-11-15)
+
+### Features
+
+- pr-review: tick findings in the Findings tab and fix the ticked ones together
+
+### Other
+
+- chore: merge feat/findings-select
+
 ## 0.11.2 (2026-11-15)
 
 ### Fixes
