@@ -193,9 +193,16 @@ assert.equal(riskSignal({ findings: [{ id: "d", reviewer: "claude", severity: "h
 assert.deepEqual(riskSignal({ analysis: {} }), { top: null, open: 0, security: false });
 
 // The progress of a review in progress says "layers", like the review's tab, and leaves out what is zero.
-assert.equal(progressText({ steps: 6, stepsChecked: 0, files: 9, filesViewed: 2, comments: 1, replies: 0, fixedThreads: 0, findingsOpen: 11 }), "0/6 layers · 2/9 files · 1 comment · 11 open findings");
-assert.equal(progressText({ steps: 1, stepsChecked: 1, comments: 2, replies: 1, fixedThreads: 3, findingsOpen: 1 }), "1/1 layers · 2 comments · 1 reply · 3 fixed · 1 open finding");
+assert.equal(progressText({ steps: 6, stepsChecked: 0, files: 9, filesViewed: 2, comments: 1, replies: 0, fixedThreads: 0, findingsOpen: 11 }), "0/6 layers · 2/9 files · 1 comment · 11 unresolved findings");
+assert.equal(progressText({ steps: 1, stepsChecked: 1, comments: 2, replies: 1, fixedThreads: 3, findingsOpen: 1 }), "1/1 layers · 2 comments · 1 reply · 3 fixed · 1 unresolved finding");
 assert.equal(progressText(), "");
+{ // per file of a chosen PR: the highest open severity and whether one is about security; a settled finding counts no more
+  const { fileRisk } = await import("./views.js");
+  const fs = [{ id: "a", file: "x.py", severity: "high", category: "security" }, { id: "b", file: "x.py", severity: "low" }, { id: "c", file: "y.py", severity: "medium" }, { id: "d", file: "z.py", severity: "high" }];
+  const m = fileRisk({ findings: fs.slice(0, 3), analysis: { steps: [{ findings: [fs[3]] }] }, status: { d: { s: "fixed" }, a: { s: "progress" } } });
+  assert.deepEqual([...m].map(([k, r]) => [k, r.top, r.open, r.security]), [["x.py", "high", 2, true], ["y.py", "medium", 1, false]]);
+  assert.equal(fileRisk().size, 0);
+}
 
 assert.equal(pendingText([{ file: "a.py" }]), "1 pending comment in 1 file");
 assert.equal(pendingText([{ file: "a.py" }, { file: "a.py" }, { file: "b.py" }]), "3 pending comments in 2 files");

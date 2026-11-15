@@ -62,9 +62,18 @@ function install(view, row, cx) {
   cx.notify();
 }
 
+// The first line of Setup: what the list below comes to. rows: [{id, status}], at: when it was checked (ms).
+export function setupSummary(rows, at, now = Date.now()) {
+  const off = rows.filter((x) => x.status === "missing" || x.status === "logged-out"), extra = rows.filter((x) => x.status === "optional-missing").length;
+  const min = Math.max(0, Math.round((now - at) / 60000));
+  const found = off.length ? `${off.length} of ${rows.length} programs ${off.length === 1 ? "is" : "are"} missing or not signed in: ${off.map((x) => x.id).join(", ")}. Install opens a terminal with the command typed in, not run.`
+    : extra ? `Everything required was found; ${extra} optional ${extra === 1 ? "program is" : "programs are"} not installed.` : `All ${rows.length} programs were found.`;
+  return `${found} Checked ${min < 1 ? "just now" : min < 60 ? `${min} min ago` : `${Math.round(min / 60)} h ago`}.`;
+}
+
 export function renderSetup(view, t) {
   const s = shared(SETUP_KEY), r = rows();
-  const btn = (id, label, click, strong = false, tip = "") => div().id(id).tooltip(tip).flex_none().px(8).h(22).flex().items_center().rounded(5).border_1()
+  const btn = (id, label, click, strong = false, tip = "") => div().id(id).tooltip(tip).flex_none().px(8).h(24).flex().items_center().rounded(5).border_1()
     .border_color(strong ? t.accent : t.border).text_size(11).text_color(strong ? t.foreground : t.muted).cursor_pointer()
     .hover((st) => st.text_color(t.foreground)).on_click(click).child(label);
   const line = (x) => v_flex().flex_none().px(8).py(5).gap(2).rounded(6).hover((st) => st.bg(t.hover))
@@ -81,11 +90,11 @@ export function renderSetup(view, t) {
     .child(v_flex().id("pr-setup").absolute().inset_0().overflow_y_scroll().p(10).gap(8)
       .child(h_flex().flex_none().gap(8).items_center()
         .child(div().flex_1().min_w(0).text_size(12).text_color(t.muted).whitespace_normal()
-          .child(view.setupBusy ? "Checking…" : s ? `Checked ${new Date(s.at).toLocaleTimeString()}. A mod can't install programs; Install opens a terminal with the command typed in, not run.` : "Not checked yet."))
+          .child(view.setupBusy ? "Checking…" : s ? setupSummary(r ?? [], s.at) : "Not checked yet."))
         .child(btn("setup-check", view.setupBusy ? "…" : "Check again", (_e, cx) => runSetup(view, cx, true), false, "Look for the programs again"))
         .child(btn("setup-close", "Close", (_e, cx) => { view.view = "diff"; cx.notify(); }, false, "Leave Setup and go back")))
       .children(r ? GROUPS.map(([need, title]) => v_flex().flex_none().gap(2)
-        .child(div().px(8).pt(4).text_size(11).font_semibold().text_color(t.muted).child(title.toUpperCase()))
+        .child(div().px(8).pt(4).text_size(11).font_semibold().text_color(t.muted).child(title))
         .children(r.filter((x) => x.need === need).map(line))) : []))
     .child(Scrollbar.vertical("pr-setup").absolute().inset_0());
 }

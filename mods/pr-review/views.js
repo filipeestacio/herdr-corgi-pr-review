@@ -42,13 +42,13 @@ export function riskSignal({ analysis = null, findings = null, status = null } =
     security: open.some(isSecurity) }; // as the review's ⛨ (pr.js isSecurity): what it does, not who found it
 }
 
-// "0/6 layers · 2/9 files · 1 comment · 11 open findings" for a review in progress (open-reviews.json `progress`,
+// "0/6 layers · 2/9 files · 1 comment · 11 unresolved findings" for a review in progress (open-reviews.json `progress`,
 // whose fields keep their names: steps, stepsChecked).
 export function progressText(p = {}) {
   const n = (count, one, many) => (count ? `${count} ${count === 1 ? one : many}` : null);
   return [p.steps ? `${p.stepsChecked ?? 0}/${p.steps} layers` : null, p.files ? `${p.filesViewed ?? 0}/${p.files} files` : null,
     n(p.comments, "comment", "comments"), n(p.replies, "reply", "replies"), p.fixedThreads ? `${p.fixedThreads} fixed` : null,
-    n(p.findingsOpen, "open finding", "open findings")].filter(Boolean).join(" · ");
+    n(p.findingsOpen, "unresolved finding", "unresolved findings")].filter(Boolean).join(" · "); // the review's word for them
 }
 
 // "3 pending comments in 2 files": what "Finish your review" would take along.
@@ -1442,6 +1442,18 @@ export function mdTarget({ tab, page = null, layer = null, finding = false } = {
   if (tab === "steps" && page === "blast") return { kind: "blast", name: "the Security page", tip: tip("this page, nothing folded: every trust boundary crossing with its check, way and threats, the boundary picture as Mermaid, the security findings in full with their code, the rights granted and what each run checked") };
   if (tab === "steps" && page === "res") return { kind: "res", name: "the Resilience page", tip: tip("this page, nothing folded: the parts this PR adds, every path with its way as Mermaid, retries, time budget, race, state, action and probe, the calls with their limits, what happens when a dependency is slow, overloaded or down, all checks and what to watch after the merge") };
   return { kind: "overview", name: "the Overview", tip: tip("the Overview: the verdict, everything before the merge with its code, the criteria with their findings, what was not checked, what the PR does, the new parts, the repo's rules and checks and the related PRs") };
+}
+
+// A PR or review named in a command (pick:<ref>, drop:<ref>): its URL, owner/repo#number, or the bare number, which is
+// the first one in the list's order when two repos have a PR of that number. Rows and state are keyed by URL.
+export const byRef = (list, ref) => (list ?? []).find((x) => x.url === ref || `${x.repo}#${x.number}` === ref) ?? (list ?? []).find((x) => String(x.number) === ref) ?? null;
+
+// The risk signal per file of a chosen PR (as riskSignal, by the findings' file): path → {top, open, security}. The
+// panel marks its file rows with it, so the diff there shows what the review already knows.
+export function fileRisk({ analysis = null, findings = null, status = null } = {}) {
+  const by = new Map();
+  for (const f of [...(findings ?? []), ...(analysis?.steps ?? []).flatMap((x) => x.findings ?? [])]) if (f?.file) by.set(f.file, [...(by.get(f.file) ?? []), f]);
+  return new Map([...by].map(([path, list]) => [path, riskSignal({ findings: list, status })]).filter(([, r]) => r.open > 0));
 }
 
 // ---- the Security page's picture and its "if … is compromised" lines, for the page and for its Markdown alike

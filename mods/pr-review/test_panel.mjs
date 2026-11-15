@@ -132,4 +132,61 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   assert.equal(calls.filter((c) => c.includes("worktree remove")).length, 1, "one with nothing only there goes at once");
   S.exec = null; S.props = {};
 }
+
+// ---- back from a review the panel shows that review's PR, not the one picked before (shared "pr.fromReview")
+{
+  const { byRef } = await import("./views.js");
+  const pr = (repo, n) => ({ url: `https://github.com/${repo}/pull/${n}`, repo, number: n, title: `PR ${n}`, headSha: "abc", base: "main" });
+  const a = pr("o/r", 7), x = pr("o/other", 7), y = pr("o/r", 9);
+  assert.deepEqual([byRef([a, x, y], "7"), byRef([a, x, y], "o/other#7"), byRef([a, x, y], x.url), byRef([a, x, y], "9"), byRef([a], "8")], [a, x, x, y, null], "two PRs numbered 7: the bare number is the first, the repo or the URL names the other");
+  S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOString(), prs: [a] }));
+  Map.prototype.set.call(S.store, "pr.selected", { "all@s1": a.url }); Map.prototype.set.call(S.store, "pr.picked", {});
+  // The review of X was opened by a Resume in a list (no pick), then minimized: the review copy hands X over.
+  Map.prototype.set.call(S.store, "review.target", x); Map.prototype.set.call(S.store, "review.back", "corgi");
+  S.props = { part: "review" }; const rv = new PrReview(); rv.init({}, cx); await flush(); rv.command("minimize", cx);
+  assert.equal(S.store.get("pr.fromReview")?.url, x.url, "leaving the review hands its PR over");
+  S.props = {}; const v = new PrReview(); v.init({}, cx); v.render(cx);
+  assert.ok(v.restoring && !v.srcAsked, "no list while it comes back");
+  await flush();
+  assert.deepEqual([v.prSel?.url, S.store.get("pr.fromReview"), S.store.get("pr.selected")["all@s1"]], [x.url, null, x.url], "the panel shows the review's PR and remembers it for this space");
+  const w = new PrReview(); w.init({}, cx); await flush();
+  assert.equal(w.prSel?.url, x.url, "and again after the next remount");
+}
+
+// ---- resuming a review: the first frame drawn stands on the tab and page you left, the list scrolls there when it comes
+{
+  const { splitPatch } = await import("./pr.js");
+  const target = { url: "https://github.com/o/r/pull/3", repo: "o/r", number: 3, title: "t", headSha: "abc", base: "main" };
+  const diff = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1,2 +1,2 @@\n def a():\n-    return 1\n+    return 2\ndiff --git a/b.py b/b.py\n--- a/b.py\n+++ b/b.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n";
+  S.files.set("/h/pr-data/review-progress.json", JSON.stringify({ [target.url]: { seen: ["a.py"], ui: { tab: "steps", page: null, fileFocus: "b.py", cur: 1, order: "reading" } } }));
+  Map.prototype.set.call(S.store, "review.target", target); S.props = { part: "review" };
+  S.exec = async (cmd, args) => (cmd === "gh" && args[1] === "diff" ? { code: 0, stdout: diff, stderr: "" } : { code: 1, stdout: "", stderr: "stub" });
+  const seen = []; // what each frame would show: held frames draw nothing of the review
+  const v = new PrReview(); v.init({}, cx);
+  for (let k = 0; k < 40 && !(v.hunks && v.resumed); k++) { v.render(cx); seen.push(v.resumed === target.url ? [v.tab, v.order, Boolean(v.hunks)] : "held"); for (const fn of timers.splice(0)) fn(cx); await new Promise((r) => setImmediate(r)); }
+  assert.ok(seen.includes("held") || seen.length, "frames are held until the place is read");
+  assert.deepEqual(seen.filter((x) => x !== "held").map((x) => `${x[0]}/${x[1]}`).filter((x) => x !== "steps/reading"), [], "no frame on another tab or order than the one you left");
+  await flush(); v.patch ??= splitPatch(diff);
+  assert.deepEqual([v.tab, v.order, v.resumed, [...v.collapsed].includes("a.py")], ["steps", "reading", target.url, true], "the tab, the order and the folded viewed file are back");
+  // What you did since stays when the diff loads again (a new head).
+  v.tab = "files"; await v.onSource(cx);
+  assert.equal(v.tab, "files", "a later load does not put the old place back");
+  S.exec = null; S.props = {};
+}
+
+// ---- Setup's first line says what the list comes to
+{
+  const { setupSummary } = await import("./setup-view.js");
+  const now = 1e12, row = (id, status) => ({ id, status });
+  assert.equal(setupSummary([row("git", "ok"), row("gh", "ok")], now - 120000, now), "All 2 programs were found. Checked 2 min ago.");
+  assert.equal(setupSummary([row("git", "ok"), row("codex", "optional-missing")], now, now), "Everything required was found; 1 optional program is not installed. Checked just now.");
+  assert.match(setupSummary([row("git", "missing"), row("gh", "logged-out"), row("x", "ok")], now + 5000, now), /^2 of 3 programs are missing or not signed in: git, gh\. .* Checked just now\.$/);
+}
+// ---- "Discard" asks once
+{
+  S.props = {}; const v = new PrReview(); v.init({}, cx); await flush();
+  v.reviewKey = "k"; v.comments = [{ id: "1", file: "a.py", text: "x" }, { id: "2", file: "a.py", text: "y" }];
+  v.discardAll(cx); assert.deepEqual([v.discardAsk, v.comments.length], [true, 2], "the first click asks");
+  v.discardAll(cx); assert.deepEqual([v.discardAsk, v.comments.length], [false, 0], "the second deletes them");
+}
 console.log("panel ok");
