@@ -49,6 +49,12 @@ git("worktree", "add", "-q", ".worktrees/review")
 main_id, wt_id = b.repo_id(repo), b.repo_id(os.path.join(repo, ".worktrees", "review"))
 assert main_id.endswith("-main") and wt_id.endswith("-wt") and main_id[:-5] == wt_id[:-3], (main_id, wt_id)
 assert b.throwaway(os.path.join(repo, ".worktrees", "review")) and not b.throwaway(repo)
+# The review worktree in Herdr's folder for worktrees (<worktrees>/<repo>/pr-review): a linked worktree of that name.
+# A main checkout that happens to be called pr-review is not one.
+central = os.path.join(tempfile.mkdtemp(), "x", "pr-review")
+git("worktree", "add", "-q", "--detach", central)
+named = os.path.join(tempfile.mkdtemp(), "pr-review"); os.makedirs(named); git("init", "-q", cwd=named)
+assert b.throwaway(central) and b.throwaway(central + os.sep) and not b.throwaway(named) and not b.throwaway(os.path.dirname(central))
 
 # Symbols and references (the Impact picture): the pure parts, then both endpoints against a stand-in language server.
 L = ["def total(items, rate):", "x = total(a,", "   b(1), \")\",", "   c)", "const f = async (a,", "  b) => 1", "class A:", "y = name"]

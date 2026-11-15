@@ -236,9 +236,27 @@ Optional, in `~/.config/herdr-app/pr-review.config.json`:
 { "language": "English", "cloneRoot": "~/code", "globalRules": "PR titles follow Conventional Commits.", "ledger": null, "dryRun": false }
 ```
 
-`language` is what the AI writes in; `cloneRoot` is where PR checkouts are cloned on request; `globalRules` are
-conventions every PR is checked against; `ledger` is a folder for a JSONL usage ledger of every LLM call; `dryRun`
-makes "Submit review" write the GitHub payload to `pr-data/review-dry-run.json` instead of posting it.
+`language` is what the AI writes in; `cloneRoot` is the folder where a PR's repository is looked for and, when you
+click "Clone to …", cloned into (default `~/code`; with `"cloneRoot": "~/Work/Claude"` a clone goes to
+`~/Work/Claude/<repo>`); `globalRules` are conventions every PR is checked against; `ledger` is a folder for a JSONL
+usage ledger of every LLM call; `dryRun` makes "Submit review" write the GitHub payload to
+`pr-data/review-dry-run.json` instead of posting it.
+
+### Where checkouts go
+
+The mod makes no folder inside your repositories. The checkout of the PR head that a review reads, and the checkout
+of every fix, verify and probe agent, are git worktrees in Herdr's folder for worktrees, the one its own New worktree
+uses: `<worktrees.directory>/<repo>/<branch>`, with a `-` for every `/` in the branch name. The review's checkout
+sits on no branch and is called `pr-review`. The folder is set in Herdr's `settings.json` and defaults to
+`~/.herdr/worktrees`:
+
+```json
+{ "worktrees": { "directory": "~/Developer/worktrees" } }
+```
+
+A review checkout that an earlier version made at `<clone>/.worktrees/review` is still used and is never removed by
+the mod. To have that repository's review checkout in the folder above, remove the old one yourself:
+`git -C <clone> worktree remove .worktrees/review`.
 
 ## Customize
 

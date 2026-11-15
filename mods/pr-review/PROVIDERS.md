@@ -99,7 +99,9 @@ All keys optional.
 
 - `language`: what the AI writes in (analysis, reviewer verdicts, fix checks) and asks your agent to answer in.
   Prompts are English either way. Default English.
-- `cloneRoot`: where clones go when no context says otherwise. Default `~/code`.
+- `cloneRoot`: where clones go when no context says otherwise. Default `~/code`; for example `"~/Work/Claude"`.
+  The checkouts made from a clone (the review's, a fix agent's) are not kept there but in Herdr's folder for
+  worktrees (`worktrees.directory` in Herdr's `settings.json`, default `~/.herdr/worktrees`).
 - `globalRules`: conventions every PR is checked against, next to the repo's own CLAUDE.md, AGENTS.md,
   CONTRIBUTING.md, `.github/*instructions*.md` and ADRs.
 - `ledger`: a folder for a usage ledger. Each LLM call appends one line to `usage-YYYY-MM.jsonl` there:
