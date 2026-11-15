@@ -29,6 +29,11 @@ export const sourceLegend = (t) => h_flex().gap(10).text_size(TYPE.small).text_c
 export const chip = (t, label, color, solid = false, id = null, tip = null) => div().flex_none().px(6).py(1).rounded(5).bg(color + (solid ? "33" : "1a"))
   .when(Boolean(id && tip), (e) => e.id(id).tooltip(tip)).text_size(TYPE.micro).font_semibold().text_color(color).child(label);
 
+// The title line of a section of the Architecture page (Impact, Infrastructure changes, Schema changes): its name, and
+// what it counts in words next to it.
+export const sectionTitle = (t, name, counts = "") => h_flex().gap(10).items_baseline().flex_wrap().child(div().text_size(TYPE.title).font_semibold().child(name))
+  .when(Boolean(counts), (e) => e.child(div().text_size(TYPE.body).text_color(t.muted).child(counts)));
+
 // What a triage chip (pr.js triageOf) means, for its tooltip.
 const TRIAGE_TIP = { "High security risk": "Unresolved high-severity security findings, or a high merge risk", "Security risk": "Unresolved security findings on this PR",
   "Deep review": "Size or risk suggests reading this closely", "Quick look": "Small and low risk: a quick look should do",

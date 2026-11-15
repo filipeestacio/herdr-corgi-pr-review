@@ -7,7 +7,7 @@ import { div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { readTextFile, writeTextFile, appHome, settings, shared } from "herdr";
 import { markRoom, ARCH } from "./arch.js";
-import { archView, laidOut } from "./stack.js";
+import { archView, laidOut, sectionTitle } from "./stack.js";
 import { TYPE } from "./views.js";
 import { hash } from "./pr.js";
 import { call, supported } from "./defs.js";
@@ -46,8 +46,7 @@ const decorate = (t, id, edit = null) => (n) => (n.rows?.length ? [v_flex().id(`
  * when there is nothing to say yet.
  */
 export function impactSection(t, st, o) {
-  const title = (counts) => h_flex().gap(10).items_baseline().flex_wrap().child(div().text_size(TYPE.title).font_semibold().child("Impact"))
-    .when(Boolean(counts), (e) => e.child(div().text_size(TYPE.body).text_color(t.muted).child(counts ?? "")));
+  const title = (counts) => sectionTitle(t, "Impact", counts);
   const line = (text, c = t.muted) => div().w_full().whitespace_normal().text_size(TYPE.body).text_color(c).child(text);
   const box = (...kids) => [["impact", v_flex().id("rv-impact").w_full().gap(8).pt(6).children(kids.filter(Boolean))]];
   if (!st || st.state === "loading" || st.state === "none") return [];

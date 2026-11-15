@@ -6,6 +6,7 @@
 import { div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { TYPE } from "./views.js";
+import { sectionTitle } from "./stack.js";
 import { infraSource, infraSummary, noticeText, rowText, foldText, unreadText } from "./infra.js";
 
 export function infraSection(t, o) {
@@ -33,7 +34,7 @@ export function infraSection(t, o) {
   const count = (k, one) => (k ? `${k} ${one}${k === 1 ? "" : "s"}` : null);
   const counts = [count(m.cards.filter((c) => c.status !== "unchanged").length, "resource"), count(m.rows.length, "value"), count(m.notices.length, "notice")].filter(Boolean).join(" · ");
   return v_flex().w_full().gap(8).pt(6)
-    .child(div().text_size(TYPE.body).font_semibold().text_color(t.muted).child(`Infrastructure changes · ${counts}`))
+    .child(sectionTitle(t, "Infrastructure changes", counts))
     .child(div().text_size(TYPE.small).text_color(t.muted).whitespace_normal().child(infraSource(m)))
     // A changed backend, provider or Transform stands above the picture: it changes where or how everything below runs.
     .children(m.notices.map((n, k) => h_flex().gap(8).items_start().child(div().flex_none().text_size(TYPE.small).line_height(1.5).text_color(t.ansi3).child("⚠")).child(line(`rv-infra-note${k}`, noticeText(n), `${n.file}:${n.line}`, t.foreground))))

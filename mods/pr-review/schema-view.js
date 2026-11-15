@@ -6,7 +6,7 @@ import { div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { exec, readTextFile, appHome, settings } from "herdr";
 import { TYPE } from "./views.js";
-import { laidOut } from "./stack.js";
+import { laidOut, sectionTitle } from "./stack.js";
 import { SCHEMA_SOURCE, SCHEMA_MARKS, SCHEMA_STATES, schemaFiles, schemaWants, schemaSteps, schemaPicture, schemaMarks, schemaSummary, foldText, unreadText, edgeText } from "./schema.js";
 
 const ROW = 18; // a row of a card, as the layout counts it
@@ -54,7 +54,7 @@ export function schemaSection(t, o) {
     .child(div().text_size(TYPE.small).text_color(t.muted).child("From fixed rules over the changes above, not from a review."))
     .children(m.risks.map((r, k) => h_flex().gap(8).items_start().child(div().flex_none().text_size(TYPE.small).line_height(1.5).text_color(t.ansi3).child("⚠")).child(line(`rv-schema-risk${k}`, r.text, r.at, t.foreground))))]] : [];
   return [["schema", v_flex().id("rv-schema").w_full().gap(8).pt(6)
-    .child(div().text_size(TYPE.body).font_semibold().text_color(t.muted).child(`Schema changes · ${m.total}`))
+    .child(sectionTitle(t, "Schema changes", [m.total && `${m.total} ${m.total === 1 ? "table" : "tables"}`, m.risks.length && `${m.risks.length} ${m.risks.length === 1 ? "risk hint" : "risk hints"}`].filter(Boolean).join(" · ")))
     .child(div().text_size(TYPE.small).text_color(t.muted).whitespace_normal().child(SCHEMA_SOURCE))
     .when(Boolean(P), (e) => e.child(div().text_size(TYPE.body).text_color(t.muted).whitespace_normal().child(`${schemaSummary(m)}${P.arch.folded ? ` ${foldText(P.arch.folded)}` : ""}`))
       .child(h_flex().id("rv-schema-legend").gap(12).flex_wrap().text_size(TYPE.small).text_color(t.muted).tooltip("A column's state is its sign and the word over its rows; the letters are its marks")
