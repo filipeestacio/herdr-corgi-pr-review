@@ -35,7 +35,7 @@ import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCAL
 import { ghMd, mdBlocks } from "./views.js"; // GitHub comments as GitHub shows them
 import { wrapCode, codeCols, sliceSpans } from "./views.js"; // long lines wrap
 import { rowMarks, riskOfCounts, placeOf, patchSymlink } from "./views.js"; // the minimized chip's mark, from the registry entry; a card's place
-import { editorFor, editorMark, editorLink, editorCommand, openEditorMenu, editorFull } from "./editor-view.js"; // "Open in <Editor>"
+import { editorFor, editorMark, editorLink, editorCommand, openEditorMenu, editorFull, editorMenuTip } from "./editor-view.js"; // "Open in <Editor>"
 import { pageBadge, signOf, signEl, markLabel } from "./views.js"; // one sign for severity and certainty: nav rows, the bar, rows, chips
 import { pairRows, pairSide, HALF_GUTTER, diffModeOf, oneSided, stackOf, chipAt, textW } from "./views.js"; // side by side; the bar's stack
 import { mdTarget, secPicture, secBlast, resNoPicture } from "./views.js"; // Copy as Markdown: what it copies on each page; the Security page's picture and lines
@@ -5443,7 +5443,7 @@ export const ReviewMode = {
 
         // "IntelliJ ↗" and its ▾ as zones of fixed width (onItem finds them by x); "Opening IntelliJ …" for three seconds after a click.
         .children(((m) => (m ? [div().id(`rv-fh-ed-${f.path}`).tooltip(m.tip).accessibility_label(`Open in ${editorFull(m.id)}`).w(FILE_EDIT).flex_none().truncate().text_size(TYPE.small).text_color(m.busy ? t.dim : t.muted).child(m.text),
-          div().id(`rv-fh-edm-${f.path}`).tooltip("Other editors, Copy path, Look again").accessibility_label("Other editors").w(FILE_EDIT_MORE).flex_none().text_size(TYPE.small).text_color(t.muted).child("▾")] : []))(this.fileEditMark(f)))
+          div().id(`rv-fh-edm-${f.path}`).tooltip(editorMenuTip).accessibility_label("Other editors").w(FILE_EDIT_MORE).flex_none().text_size(TYPE.small).text_color(t.muted).child("▾")] : []))(this.fileEditMark(f)))
         .child(div().id(`rv-fh-st-${f.path}`).tooltip(`File ${f.status} (${letter} in the file tree)`).w(70).flex_none().text_size(TYPE.small).font_semibold().text_color(t[col]).child(`${String(f.status ?? "")[0]?.toUpperCase() ?? ""}${String(f.status ?? "").slice(1)}`))
         // The name drags as the file's path in the checkout (main.js fileDragPath); a click on it still folds the file.
         .child(((drag) => mono(div()).flex_1().min_w(0).truncate().font_semibold().text_size(TYPE.body)

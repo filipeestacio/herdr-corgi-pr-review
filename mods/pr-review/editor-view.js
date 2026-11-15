@@ -15,7 +15,6 @@ const roots = new Map(); // checkout root → {marks, common, linked}: its proje
 const opening = new Map(); // a target's key → until when its link says "Opening …" and takes no click
 // Herdr's localStorage (per mod copy). Under node (the tests) there is none, and asking for it prints a warning.
 const store = () => (typeof process !== "undefined" && process.versions?.node ? null : globalThis.localStorage ?? null);
-const os = () => shared("pr-review.setup")?.os ?? "darwin";
 
 export const setEditors = (list) => { extra = E.extraEditors(list); }; // pr-review.config.json "editors"
 const stored = () => { if (!known) { try { known = JSON.parse(store()?.getItem(KEY) ?? "null"); } catch { known = null; } } return known; };
@@ -23,13 +22,15 @@ export const dryOpened = () => dryRuns;
 export const forgetEditors = () => { known = null; looking = null; asked = false; roots.clear(); reads.clear(); opening.clear(); extra = []; dryRuns = []; try { store()?.removeItem(KEY); } catch { /* none */ } }; // tests
 
 // Finds the installed editors by reading the files that say so (editor.js candidates): no process. Within a day the
-// remembered answer is taken (force: the menu's "Look again", and after an editor could not be started).
-// "None found" may be a bad moment (the system not known yet at start): it holds for ten minutes and is not stored.
+// remembered answer is taken (force: the menu's "Look for installed editors again", and after an editor could not be started).
+// The files of both systems are read (macOS apps first): which system this is need not be known, and is not at start.
+// "None found" holds for ten minutes and is not stored: an editor installed since is found without a restart.
+const fresh = (s) => Boolean(s) && Date.now() - s.at < (Object.keys(s.found ?? {}).length ? DAY : NONE_MS);
 export function lookForEditors(force = false) {
-  const s = stored(), none = s && !Object.keys(s.found ?? {}).length;
-  if (!force && s && Date.now() - s.at < (none ? NONE_MS : DAY)) return Promise.resolve(s.found);
+  const s = stored();
+  if (!force && fresh(s)) return Promise.resolve(s.found);
   return (looking ??= (async () => {
-    const cands = E.candidates(home(), os()), present = await Promise.all(cands.map((c) => readTextFile(c.path).then((x) => x !== null).catch(() => false)));
+    const cands = ["darwin", "linux"].flatMap((o) => E.candidates(home(), o)), present = await Promise.all(cands.map((c) => readTextFile(c.path).then((x) => x !== null).catch(() => false)));
     known = { at: Date.now(), found: E.foundFrom(cands, present) };
     try { if (Object.keys(known.found).length) store()?.setItem(KEY, JSON.stringify(known)); else store()?.removeItem(KEY); } catch { /* kept in memory */ }
     return known.found;
@@ -60,12 +61,14 @@ function rootInfo(root, cx) {
 }
 
 // The editor a link for this target names: {id, why}, or null while the editors are not known yet or none is
-// installed (then there is no link). The first ask starts the lookup after this render, and reads the root meanwhile.
+// installed (then there is no link). An ask without a fresh answer (none yet, a day old, or "none found" ten minutes
+// ago) starts the lookup after this render, and reads the root meanwhile; the answer from before is used until then.
 export function editorFor(target, cx) {
   const root = target?.root;
   if (!root) return null;
   const s = stored(), r = rootInfo(root, cx);
-  if (!s) { if (!looking && !asked && cx) { asked = true; later(cx, () => lookForEditors().then(() => { asked = false; })); } return null; }
+  if (!fresh(s) && !looking && !asked && cx) { asked = true; later(cx, () => lookForEditors().finally(() => { asked = false; })); }
+  if (!s) return null;
   return E.editorOf({ file: target.file ?? null, marks: r.marks, linked: r.linked, choice: shared(CHOICE), key: r.common, found: s.found, extra, foreign: Boolean(target.foreign) });
 }
 
@@ -113,7 +116,7 @@ export async function openIn(target, id = null) {
   const r = await exec(argv[0], argv[1], { timeout: 20000 }).catch((e) => ({ code: 1, stderr: String(e) }));
   if (r.code === 0) return null;
   known = null; try { store()?.removeItem(KEY); } catch { /* none */ } // it may be gone: look again the next time
-  return `${E.editorName(use, extra)} could not be started. Choose another editor with ▾.`;
+  return E.failedText(use, extra);
 }
 
 const keyOf = (target) => `${target.root}\n${target.file ?? ""}\n${target.line ?? ""}`;
@@ -135,17 +138,22 @@ export async function chooseEditor(root, id) {
   if (changed) setShared(CHOICE, choice);
 }
 
-// The ▾ menu as a small menu's items ([label, danger, command]) for the mod's menu part.
-export function editorMenu(target) {
+// The ▾ menu as a small menu's items ([label, danger, command]) for the mod's menu part. token: this menu's own
+// (openEditorMenu), in the commands of the entries that act on its target.
+export function editorMenu(target, token = "") {
   const r = roots.get(target.root) ?? { linked: false };
   return E.menuItems({ now: editorFor(target, null), found: stored()?.found ?? {}, extra, linked: r.linked, file: target.file ?? null, line: target.line ?? null })
     .map((m) => [m.kind === "copy" ? `${m.text} (${m.hint})` : m.hint ? `${m.text} · ${m.hint}` : m.text, false,
-      m.kind === "editor" ? `editor-use:${m.id}` : m.kind === "copy" ? "editor-copy" : m.kind === "again" ? "editor-look" : "editor-none"]);
+      m.kind === "editor" ? `editor-use:${token}:${m.id}` : m.kind === "copy" ? `editor-copy:${token}` : m.kind === "again" ? "editor-look" : "editor-none"]);
 }
+// A menu's commands go to every copy of the mod, and a menu closed with Esc leaves its target behind: each menu has a
+// token, kept with the target and named in its commands, so only the copy whose menu it is acts, and only on the
+// target of the menu that was clicked (editorCommand).
 export function openEditorMenu(view, target) {
-  view.editorTarget = target;
+  const token = Math.random().toString(36).slice(2, 10);
+  view.editorTarget = { ...target, token };
   // Once the root is read: the menu says "this repo" or "worktrees of this repo" by what it is.
-  return Promise.all([rootRead(target.root), lookForEditors()]).then(() => { const items = editorMenu(target); openOverlay({ mod: "pr-review", props: { part: "cmenu", key: "editor", items }, kind: "popup", width: 440, height: 12 + 30 * items.length }); });
+  return Promise.all([rootRead(target.root), lookForEditors()]).then(() => { const items = editorMenu(target, token); openOverlay({ mod: "pr-review", props: { part: "cmenu", key: "editor", items }, kind: "popup", width: 440, height: 12 + 30 * items.length }); });
 }
 
 // The words of a link for a target.
@@ -153,46 +161,54 @@ export const editorTip = (id, target) => E.linkTip(id, { dir: target.root, file:
 export const editorLabel = (id, short = false) => (short ? E.shortLabel(id, extra) : E.linkLabel(id, extra));
 export const editorOpening = (id) => E.openingLabel(id, extra);
 export const editorFull = (id) => E.editorName(id, extra);
+export const editorMenuTip = E.MENU_TIP; // the ▾'s tooltip, for a ▾ a list row draws itself
 // What a place shows for a target, as data (a list row draws it into its own zones): null when there is no link.
 export function editorMark(target, cx, short = false) {
   if (!target?.root || refused(target)) return null;
   const ed = editorFor(target, cx);
   if (!ed) return null;
   const busy = isOpening(target);
-  return { id: ed.id, busy, text: busy ? (short ? "…" : editorOpening(ed.id)) : editorLabel(ed.id, short), tip: editorTip(ed.id, target) };
+  return { id: ed.id, busy, text: busy ? editorOpening(ed.id) : editorLabel(ed.id, short), tip: editorTip(ed.id, target) };
 }
 
 // The link for a place outside a virtual list: [] when there is nothing to open or no editor. Link form: the
-// editor's name and a ▾ with the menu. Short form (a card's row): the monogram in a reserved width, dimmed until it
-// is pointed at; a right click opens the menu. view.openEditor(target, cx) is the click.
+// editor's name and a ▾ with the menu. Short form (a row of a list or a card): a place of SHORT_W that is always
+// kept, so nothing moves, and the monogram in it only while the pointer is on that place: a list of rows is not a
+// column of "VS ↗". After a click it says "Opening <Editor> …" for its three seconds, as wide as that is. A right
+// click opens the menu. view.openEditor(target, cx) is the click.
+// ponytail: the pointer on the link's own place shows it, not the pointer anywhere on its row; a row would have to
+// report its hover and the view draw again for every row passed (gpui-kit has no hover of a parent in a child's style).
+export const SHORT_W = 44;
 export function editorLink(view, t, key, target, cx, short = false) {
   const m = editorMark(target, cx, short);
   if (!m) return [];
   const base = (id) => div().id(id).flex_none().flex().items_center().text_size(TYPE.panel).accessibility_label(`Open in ${editorFull(m.id)}`);
   const click = (e) => (m.busy ? e.text_color(t.dim) : e.cursor_pointer().on_click((_e, cx) => { cx.stop_propagation(); view.openEditor(target, cx); }));
-  if (short) return [click(base(`ed-${key}`).w(44).h(20).justify_end().text_color(t.dim).hover((s) => s.text_color(t.foreground)).tooltip(`${m.tip} Right-click for other editors.`)
+  if (short) return [click(base(`ed-${key}`).min_w(SHORT_W).h(20).justify_end().text_color(`${t.foreground.slice(0, 7)}00`).hover((s) => s.text_color(t.foreground)).tooltip(E.shortTip(m.tip))
     .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openEditorMenu(view, target); })).child(m.text)];
   return [h_flex().flex_none().items_center().border_1().border_color(t.border).rounded(5)
     .child(click(base(`ed-${key}`).h(24).px(8).rounded(5).text_color(t.muted).hover((s) => s.text_color(t.foreground)).tooltip(m.tip)).child(m.text))
     .child(div().id(`ed-${key}-more`).flex_none().h(24).px(5).flex().items_center().border_l(1).border_color(t.border).text_size(TYPE.panel).text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground))
-      .tooltip("Other editors, Copy path, Look again").accessibility_label("Other editors").on_click((_e, cx) => { cx.stop_propagation(); openEditorMenu(view, target); }).child("▾"))];
+      .tooltip(E.MENU_TIP).accessibility_label("Other editors").on_click((_e, cx) => { cx.stop_propagation(); openEditorMenu(view, target); }).child("▾"))];
 }
 
 // What every copy of the mod does with the editor commands (main.js panelCommand, review.js command): true when
 // taken. editor:<path>[:<line>] is a click on a file's link in the copy's checkout (no path: the checkout itself);
-// editor-use:<id>, editor-copy and editor-look are the menu's entries for view.editorTarget. copy: the function
-// that puts a text on the clipboard.
+// editor-use:<token>:<id>, editor-copy:<token> and editor-look are the menu's entries (the token: that menu's, see
+// openEditorMenu). copy: the function that puts a text on the clipboard.
 export function editorCommand(view, c, cx, copy = null) {
   const [name, ...rest] = c.split(":"), arg = rest.join(":");
   if (name === "editor") {
     const m = /^(.*?)(?::(\d+))?$/.exec(arg), root = view.checkoutRoot?.() ?? null;
     if (root) view.openEditor({ root, file: m[1] || null, line: m[2] ? Number(m[2]) : null, foreign: view.editorForeign?.() ?? false }, cx);
     else notify({ title: "Open in editor", body: "There is no local checkout of this PR to open.", level: "error" });
-  } else if (name === "editor-use") {
-    const target = view.editorTarget;
-    if (!target) return true; // another copy's menu
-    view.editorTarget = null; chooseEditor(target.root, arg); view.openEditor(target, cx, arg); // the pick is written once the root is read; the click opens with it at once
-  } else if (name === "editor-copy") { const x = view.editorTarget; view.editorTarget = null; if (x?.file && copy) copy(`${x.file}${x.line ? `:${x.line}` : ""}`); }
+  } else if (name === "editor-use" || name === "editor-copy") {
+    const [token, ...id] = rest, { token: mine, ...target } = view.editorTarget ?? {};
+    if (!mine || mine !== token) return true; // another copy's menu, or a menu of this copy that was closed without a pick
+    view.editorTarget = null;
+    if (name === "editor-copy") { if (target.file && copy) copy(`${target.file}${target.line ? `:${target.line}` : ""}`); }
+    else { chooseEditor(target.root, id.join(":")); view.openEditor(target, cx, id.join(":")); } // the pick is written once the root is read; the click opens with it at once
+  }
   else if (name === "editor-look") cx.spawn(async (cx) => { await lookForEditors(true); cx.notify(); });
   else if (name !== "editor-none") return false;
   return true;

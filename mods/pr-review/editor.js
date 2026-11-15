@@ -128,6 +128,12 @@ export function openArgv(id, how, { dir = null, file = null, line = null } = {},
 export const linkLabel = (id, extra = []) => `${of(id, extra)?.label ?? id} ↗`;
 export const shortLabel = (id, extra = []) => `${of(id, extra)?.short ?? id} ↗`;
 export const openingLabel = (id, extra = []) => `Opening ${of(id, extra)?.label ?? id} …`;
+// The menu, in one wording wherever it is named: the ▾'s tooltip, a short link's tooltip (a short link has no ▾: a
+// right click opens its menu) and the sentence after an editor that did not start. The words are the menu's own
+// entries (menuItems: "Copy path", "Look for installed editors again").
+export const MENU_TIP = "Other editors, Copy path, Look for installed editors again.";
+export const shortTip = (tip) => `${tip} Right-click: other editors, Copy path, Look for installed editors again.`;
+export const failedText = (id, extra = []) => `${editorName(id, extra)} could not be started. Open the link's menu (its ▾, or a right-click on a short link) to choose another editor or to look for installed editors again.`;
 export function linkTip(id, { dir = null, file = null, line = null, where = "", foreign = false } = {}, extra = []) {
   const name = editorName(id, extra);
   if (!file) return `Open ${dir} in ${name}.`;

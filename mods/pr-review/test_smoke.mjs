@@ -1067,7 +1067,13 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
       assert.deepEqual([started, S.toasts.map((x) => /not a regular file of its checkout/.test(x.body))], [[], [true]], `${who}: ${path} (${kind}) is not opened`);
     }
     is = "file"; S.toasts = null; assert.equal(asked > 0, !trusted, `${who}: git is ${trusted ? "not " : ""}asked what the path is`); asked = 0;
-    EV.openEditorMenu(v, v.fileEditTarget(v.patch[0])); v.command("editor-use:idea", cx); await settle(); draw(v, `editor, ${who}: another editor picked for the project`);
+    // The menu's commands carry its token: a pick of a menu that is not this copy's open one does nothing (a menu closed
+    // with Esc leaves its target behind, and every copy gets every command).
+    EV.openEditorMenu(v, v.fileEditTarget(v.patch[0])); const stale = v.editorTarget.token;
+    EV.openEditorMenu(v, v.fileEditTarget(v.patch[0])); started.length = 0;
+    v.command(`editor-use:${stale}:idea`, cx); v.command("editor-use:idea", cx); v.command(`editor-copy:${stale}`, cx); await settle();
+    assert.deepEqual([started.length, S.store.get("editor.choice")?.repos?.["/h/w/.git"]?.main ?? null, Boolean(v.editorTarget)], [0, null, true], `${who}: another menu's pick is not taken`);
+    v.command(`editor-use:${v.editorTarget.token}:idea`, cx); await settle(); draw(v, `editor, ${who}: another editor picked for the project`);
     assert.equal(S.store.get("editor.choice")?.repos?.["/h/w/.git"]?.main, "idea");
     S.props = {}; const panel = new PrReview(); panel.init({}, cx); await settle(); panel.prSel = v.prSel; panel.context = panel.key(); panel.patch = v.patch; panel.files = v.patch; panel.open = v.patch[0].path; draw(panel, `editor, ${who}: the panel's head and its file link`);
     S.props = null; S.store.set("editor.choice", null);

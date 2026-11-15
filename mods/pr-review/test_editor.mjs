@@ -2,7 +2,7 @@
 // editor a place gets, what may be opened, and the one program a click starts. No editor is started here: only the
 // program and its arguments are looked at.)
 import assert from "node:assert/strict";
-import { buildScript } from "./editor.js";
+import { buildScript, MENU_TIP, shortTip, failedText } from "./editor.js";
 import { EDITORS, LINE_BASE, PROJECT_MARKS, candidates, foundFrom, installed, gitLink, editorOf, withChoice, safeFile, foreignBlocked, openArgv, extraEditors, linkLabel, shortLabel, openingLabel, linkTip, menuItems } from "./editor.js";
 
 // Installed editors are found by reading files: each app's Info.plist in both Applications folders (macOS), the
@@ -85,6 +85,12 @@ assert.equal(editorOf({ found: {}, extra }).id, "nvim");
 assert.deepEqual([linkLabel("idea"), shortLabel("idea"), shortLabel("vscode"), openingLabel("idea")], ["IntelliJ ↗", "IJ ↗", "VS ↗", "Opening IntelliJ …"]);
 assert.equal(linkTip("vscode", { dir: "/co" }), "Open /co in VS Code.");
 assert.equal(linkTip("vscode", { dir: "/co", file: "src/api/limits.ts", line: 42, where: "in the checkout of this PR" }), "Open src/api/limits.ts at line 42 in VS Code, in the checkout of this PR.");
+// The menu is named in one wording: the ▾'s tooltip, a short link's tooltip and the sentence after a failed start use
+// the words of the menu's own entries, and the last one fits a short link too (it has no ▾).
+{ const again = menuItems({ file: "a.py" }).find((m) => m.kind === "again").text, copy = menuItems({ file: "a.py" }).find((m) => m.kind === "copy").text;
+  for (const text of [MENU_TIP, shortTip("Open a.py in VS Code."), failedText("vscode")]) assert.ok(text.toLowerCase().includes(again.toLowerCase()), text);
+  assert.ok(MENU_TIP.includes(copy) && shortTip("x").includes(copy) && shortTip("Open a.py.").startsWith("Open a.py. Right-click: "));
+  assert.equal(failedText("idea"), "IntelliJ IDEA could not be started. Open the link's menu (its ▾, or a right-click on a short link) to choose another editor or to look for installed editors again."); }
 assert.match(linkTip("idea", { file: "A.java", line: 5, foreign: true }), /^Open A\.java at line 5 in IntelliJ IDEA\. Only the file is opened, not its folder: .*$/);
 const four = { ...found, cursor: { app: "/c" }, zed: { app: "/z" } };
 const menu = menuItems({ now: { id: "idea", why: "suggested: a JVM file" }, found: four, file: "src/A.java", line: 5 });

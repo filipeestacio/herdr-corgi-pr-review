@@ -498,7 +498,9 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   const EV = await import("./editor-view.js");
   EV.forgetEditors(); S.toasts = [];
   const runs = [], opens = () => runs.filter((r) => r[0] === "open");
-  S.exec = async (cmd, args = []) => { runs.push([cmd, ...args]); return { code: cmd === "open" ? 0 : 1, stdout: "", stderr: "" }; };
+  // safegit.py regular-file (a PR that is not trusted): a.py is a regular file of the checkout, link.py is not.
+  S.exec = async (cmd, args = []) => { runs.push([cmd, ...args]); if (args[2] === "regular-file") return ["a.py", "s.main.kts"].includes(args[3]) ? { code: 0, stdout: `${args[1]}/${args[3]}`, stderr: "" } : { code: 1, stdout: "", stderr: "" };
+    return { code: cmd === "open" ? 0 : 1, stdout: "", stderr: "" }; };
   const VS = "/Applications/Visual Studio Code.app", IJ = "/h/Applications/IntelliJ IDEA Ultimate.app";
   for (const app of [VS, IJ]) S.files.set(`${app}/Contents/Info.plist`, "<plist/>");
   const mine = { url: "https://github.com/o/r/pull/3", repo: "o/r", number: 3, title: "t", headSha: "abc", base: "main" }, other = { ...mine, url: "https://github.com/x/y/pull/9", repo: "x/y", number: 9, source: "repo", author: "someone" };
@@ -528,13 +530,13 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   timers.length = 0; runs.length = 0; v.panelCommand("editor:", cx); await settle();
   assert.deepEqual(opens(), [["open", "-a", VS, "/co/r"]], "without a path: the checkout");
   // The ▾ menu's pick: that editor, kept for this project's worktrees in the shared choice, written once.
-  runs.length = 0; reset(); v.editorTarget = { root: "/co/r", file: "src/B.java", line: 2 }; v.panelCommand("editor-use:vscode", cx); await settle();
+  runs.length = 0; reset(); v.editorTarget = { root: "/co/r", file: "src/B.java", line: 2, token: "t1" }; v.panelCommand("editor-use:t1:vscode", cx); await settle();
   assert.deepEqual([opens(), S.store.get("editor.choice"), n.writes.filter((k) => k === "editor.choice").length],
     [[["open", "vscode://file/co/r/src/B.java:2"]], { default: null, repos: { "/clones/r/.git": { worktree: "vscode" } } }, 1], "kept under the shared git folder, for its worktrees");
-  reset(); v.editorTarget = { root: "/co/r", file: "src/C.java" }; v.panelCommand("editor-use:vscode", cx); await settle();
+  reset(); v.editorTarget = { root: "/co/r", file: "src/C.java", token: "t2" }; v.panelCommand("editor-use:t2:vscode", cx); await settle();
   assert.equal(n.writes.filter((k) => k === "editor.choice").length, 0, "the same pick again writes nothing");
   assert.equal(EV.editorFor({ root: "/co/r", file: "src/A.java" }, cx).id, "vscode", "and beats the file's ending from now on");
-  let copied = null; v.editorTarget = { root: "/co/r", file: "src/A.java", line: 7 }; EV.editorCommand(v, "editor-copy", cx, (x) => { copied = x; });
+  let copied = null; v.editorTarget = { root: "/co/r", file: "src/A.java", line: 7, token: "t3" }; EV.editorCommand(v, "editor-copy:t3", cx, (x) => { copied = x; });
   assert.equal(copied, "src/A.java:7", "Copy path");
   // A PR from a source that is not trusted: a file alone; not its folder, not a build file, nothing outside the checkout.
   Map.prototype.set.call(S.store, "review.worktree", { url: other.url, head: "h", path: "/co/y" }); v.prSel = other;
@@ -545,6 +547,16 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   assert.deepEqual(opens(), [["open", "vscode://file/co/y/a.py:5"]], "only the file");
   runs.length = 0; v.panelCommand("editor:", cx); await settle(); v.panelCommand("editor:pom.xml", cx); await settle(); v.panelCommand("editor:../x", cx); await settle();
   assert.deepEqual([opens(), S.toasts.map((t) => t.level)], [[], ["error", "error", "error"]], "none of these starts a process; each says why, as a toast");
+  // What the checkout holds at the path decides, not the path's text: a symlink the PR added is not opened.
+  runs.length = 0; S.toasts.length = 0; v.panelCommand("editor:link.py", cx); await settle();
+  assert.deepEqual([opens(), runs.map((r) => r[3]), S.toasts.map((t) => /not a regular file of its checkout/.test(t.body))], [[], ["regular-file"], [true]]);
+  // Its build scripts never go to IntelliJ, also not by a pick in the menu.
+  runs.length = 0; S.toasts.length = 0; v.editorTarget = { root: "/co/y", file: "a.py", foreign: true, token: "t5" }; v.panelCommand("editor-use:t5:idea", cx); await settle();
+  assert.equal(opens().length, 1, "a source file may go to IntelliJ");
+  runs.length = 0;
+  assert.match(await EV.openIn({ root: "/co/y", file: "s.main.kts", foreign: true }, "idea"), /IntelliJ IDEA evaluates a build script/);
+  assert.deepEqual([await EV.openIn({ root: "/co/y", file: "s.main.kts", foreign: true }), opens()], [null, [["open", "vscode://file/co/y/s.main.kts:1"]]], "by itself it goes to VS Code");
+  S.toasts.length = 0;
   // No checkout: nothing to open, and no process.
   Map.prototype.set.call(S.store, "review.worktree", null); runs.length = 0; S.toasts.length = 0; v.panelCommand("editor:a.py:5", cx); await settle();
   assert.deepEqual([v.checkoutRoot(), opens(), S.toasts.length], [null, [], 1]);
@@ -570,7 +582,7 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
     Map.prototype.set.call(S.store, "review.worktree", { url: mine.url, head: "abc", path: "/gradle" }); Map.prototype.set.call(S.store, "editor.choice", null);
     timers.length = 0; runs.length = 0; v.panelCommand("editor:", cx); await settle(); await settle();
     assert.deepEqual(opens(), [["open", "-a", IJ, "/gradle"]], "the kind of project is read before the editor is chosen");
-    v.editorTarget = { root: "/wt2" }; S.files.set("/wt2/.git", "gitdir: /clones/z/.git/worktrees/w\n"); v.panelCommand("editor-use:idea", cx); await settle(); await settle();
+    v.editorTarget = { root: "/wt2", token: "t4" }; S.files.set("/wt2/.git", "gitdir: /clones/z/.git/worktrees/w\n"); v.panelCommand("editor-use:t4:idea", cx); await settle(); await settle();
     assert.deepEqual(S.store.get("editor.choice")?.repos, { "/clones/z/.git": { worktree: "idea" } }, "and a pick for a folder not shown yet lands under its project, as a worktree's");
   }
   // "dryRun": true in the mod's settings (every test home has it): a click starts nothing and keeps what it would
@@ -599,6 +611,15 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   EV.forgetEditors(); for (const app of [VS, IJ]) S.files.delete(`${app}/Contents/Info.plist`);
   EV.editorFor({ root: "/co/r" }, cx); await flush(); await flush();
   assert.deepEqual([EV.editorFor({ root: "/co/r" }, cx), EV.editorLink(v, S.theme, "k", { root: "/co/r" }, cx).length], [null, 0]);
+  // An editor installed after that: a link's own ask looks again once "none found" is ten minutes old, not only a
+  // click in a menu that is not there without a link. And the system need not be known: Linux's launcher script
+  // is read like the macOS apps (the setup check that says which system this is may not have run yet).
+  { S.files.set("/usr/bin/code", "#!/bin/sh\n");
+    EV.editorFor({ root: "/co/r" }, cx); await flush(); await flush();
+    assert.equal(EV.editorFor({ root: "/co/r" }, cx), null, "within ten minutes: not asked again");
+    const real = Date.now; Date.now = () => real() + 11 * 60000;
+    try { EV.editorFor({ root: "/co/r" }, cx); await flush(); await flush(); assert.equal(EV.editorFor({ root: "/co/r" }, cx)?.id, "vscode", "after ten minutes: found, by its command line tool"); }
+    finally { Date.now = real; S.files.delete("/usr/bin/code"); } }
   EV.forgetEditors(); S.exec = null; timers.length = 0;
 }
 // Watched repos: the oldest of more than three is cancelled at once, the others when the copy closes; a cancelled
