@@ -573,3 +573,16 @@ export function timelineView(L, t, id, { jump = null, go = null, num = () => nul
       .child(h_flex().gap(10).child(div().w(LABEL).flex_none()).child(div().relative().flex_none().w(L.W).h(16).border_t(1).border_color(t.border)
         .children(g.ticks.flatMap((x, j) => [div().absolute().left(x.x).top(0).w(1).h(4).bg(t.muted), div().id(`${id}-g${k}-t${j}`).absolute().left(x.x + 3).top(2).text_size(TYPE.micro).text_color(t.muted).child(x.label)]))))));
 }
+
+// A fault tree of the Resilience page (faulttree.js faultTree) with the flow engine, left to right: the usual cards
+// when they fit into `room` px, else the narrow ones. No numbers on the lines and no list of them: a line here only
+// says "then". A card whose words do not fit gets them in full under the picture. A click on a card with a place
+// calls onJump(place, cx).
+export function faultTreeView(v, t, id, onJump, wrapX = null, room = 0) {
+  const usual = flowModel(v, false), L = !room || usual.width + 24 <= room ? usual : flowModel(v), cut = L.nodes.filter((n) => n.cut);
+  return v_flex().id(id).flex_none().mt(4).p(10).gap(8).rounded(8).border_1().border_color(t.border).bg(t.surface)
+    .child(div().text_size(TYPE.small).font_semibold().whitespace_normal().child(v.title ?? ""))
+    .child((wrapX ?? nativeX)(`${id}-fs`, L.width + 4, L.height + 4, archView(L, t, `${id}-av`, onJump ? (n, _e, cx) => { onJump(n.at, cx); cx.stop_propagation(); } : null, null, { numbers: false }), 6))
+    .children(cut.map((n, k) => h_flex().id(`${id}-c${k}`).gap(10).items_start().text_size(TYPE.small).line_height(1.45)
+      .child(div().w(200).flex_none().whitespace_normal().text_color(t.muted).child(n.label ?? n.id)).child(div().flex_1().min_w(0).whitespace_normal().child(n.description ?? ""))));
+}

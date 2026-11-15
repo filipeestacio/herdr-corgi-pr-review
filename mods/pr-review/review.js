@@ -53,7 +53,8 @@ import { wayOf, wayText, passZones, runsIn } from "./views.js"; // panel round 3
 import { transitionMarks, effectiveFrom, inProcess, mapArch, crossingsOf, crossingChanged, secSentence, TRUST_ORDER, asideOf, threatCited, blastOf, skipText, guardLine } from "./views.js";
 import { trustLegend, hasTrust } from "./stack.js";
 import { timelineOf, timelineLayout } from "./timeline.js"; // Resilience: the picture "Timing"
-import { timelineView } from "./stack.js";
+import { timelineView, faultTreeView } from "./stack.js";
+import { faultTrees, FAULT_NOTE } from "./faulttree.js"; // Resilience: a case's fault tree under "When a dependency fails"
 import { scopeTable, scopeConflicts, runSummary, AREA_NAME, areaFindings, surfaceOf, EXPOSURE, reachLevel, secOrder, extraWays } from "./views.js";
 import * as TH from "./threads.js";
 import { leftWidth, rowClick, CHIP_W, ASK_W, keyRoute, scopeLine, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf, rangeLabel, pinAnchor, pinAdd, pinDrop, pinsOf, pinsOn, codePins, drillPush, drillTo, crumbs, drillKey, cachePut, mapDrill, exploreId, exploreIndex, exploreAi, pathOf, lineOf, repoOfRemote, exploreTrust, layersForNode } from "./explore.js";
@@ -516,6 +517,7 @@ export const ReviewMode = {
     else if (name === "res-add") { this.page = "res"; this.resAddOpen = !this.resAddOpen; } // the parts this PR adds, folded or open
     else if (name === "res-more") { this.page = "res"; this.resAll = !this.resAll; }
     else if (name === "res-clean") { this.page = "res"; this.resClean = !this.resClean; }
+    else if (name === "res-tree") { this.page = "res"; this.resTreeOpen = this.resTreeOpen === arg ? null : arg || null; } // res-tree:<dependency's index>:<case>, a case's fault tree ("" folds)
     else if (name === "res-time") { this.page = "res"; this.resTimeOpen = this.resTimeOpen === false; } // the picture "Timing", folded or open
     else if (name === "res-probe-open") { this.page = "res"; this.resProbeOpen = this.resProbeOpen === arg ? null : arg; } // a probe's script and output
     else if (name === "cross") { this.page = "blast"; this.tab = "steps"; if (arg === "quiet") this.crossQuiet = !this.crossQuiet; else if (arg === "unchanged") this.crossAll = !this.crossAll; else this.crossOpen = this.crossOpen === arg ? null : arg || null; } // a click on a row of "Trust boundary crossings" (its key: a:<access id> | e:<edge index>)
@@ -4268,23 +4270,32 @@ export const ReviewMode = {
     const rows = resDepRows(res, paths);
     if (!rows.length) return null;
     const COLOR = { no: t.ansi1, partly: t.foreground, yes: t.ansi2 }; // red only for what breaks, and only its mark
-    const one = (c, id) => {
+    // A case's fault tree (faulttree.js), folded: "▸" at the case unfolds it under the dependency's row, one at a time.
+    // A click on a card shows its line, on the path's card the path.
+    const trees = new Map(faultTrees(res, paths, (id) => this.resNums?.get(id) ?? null).map((x) => [`${x.k}:${x.when}`, x.tree]));
+    const treeGo = (at, cx) => (String(at).startsWith("path:") ? this.resGo(at.slice(5), this.resNums?.get(at.slice(5)), cx) : this.jumpTo(at, cx));
+    const treeOf = (k) => { const key = [...trees.keys()].find((x) => x === this.resTreeOpen && x.startsWith(`${k}:`)); return key ? [v_flex().id(`rv-res-tree-${k}`).pl(12).gap(2)
+      // as wide as the map above it (its scroller's measured room): the usual cards when they fit, else the narrow ones
+      .child(div().text_size(TYPE.small).text_color(t.muted).whitespace_normal().child(FAULT_NOTE)).child(faultTreeView(trees.get(key), t, `rv-res-tree-${key.replace(":", "-")}`, treeGo, this.wrapX(), (this.wrapX().room("rv-res-canvas") || 900) - 12))] : []; };
+    const fold = (el, key, id) => el.when(trees.has(key), (e) => e.child(div().id(`${id}-t`).flex_none().text_color(t.muted).cursor_pointer().hover((x) => x.text_color(t.foreground)).tooltip(this.resTreeOpen === key ? "Fold what follows" : "What follows from it, step by step, down to what a caller and on-call see")
+      .on_click((_e, cx) => { this.resTreeOpen = this.resTreeOpen === key ? null : key; cx.stop_propagation(); cx.notify(); }).child(this.resTreeOpen === key ? "▾" : "▸")));
+    const one = (c, id, k) => {
       const go = c.path ? (_e, cx) => this.resGo(c.path, c.number, cx) : c.at ? (_e, cx) => this.jumpTo(c.at, cx) : null;
       const tip = [c.effect, c.path ? `Opens path ${c.number}${c.blocks ? ", a blocker" : ""}, and scrolls to it.` : c.at ? `Opens ${c.at}.` : ""].filter(Boolean).join(" ");
-      return h_flex().id(id).gap(5).items_start().min_w(0).px(4).rounded(4).when(Boolean(cur) && c.path === cur?.id, (e) => e.bg(t.selected))
+      return fold(h_flex().id(id).gap(5).items_start().min_w(0).px(4).rounded(4).when(Boolean(cur) && c.path === cur?.id, (e) => e.bg(t.selected))
         .when(Boolean(go), (e) => e.cursor_pointer().hover((x) => x.underline()).on_click(go)).when(Boolean(tip), (e) => e.tooltip(tip))
-        .child(div().min_w(0).whitespace_normal().text_color(c.handled === "yes" ? this.softText(t) : t.foreground).child(c.words)).child(div().flex_none().font_semibold().text_color(COLOR[c.handled] ?? t.muted).child(c.mark));
+        .child(div().min_w(0).whitespace_normal().text_color(c.handled === "yes" ? this.softText(t) : t.foreground).child(c.words)).child(div().flex_none().font_semibold().text_color(COLOR[c.handled] ?? t.muted).child(c.mark)), `${k}:${c.when}`, id);
     };
     return v_flex().id("rv-res-deps").gap(6).when(stale, (e) => e.opacity(resFade(t)))
       .child(h_flex().gap(8).items_center().child(div().text_size(TYPE.title).font_semibold().child(`When a dependency fails · ${rows.length}`)).child(div().flex_1())
         .child(div().text_size(TYPE.small).text_color(t.muted).child(String(res.downstreamLine ?? "").replace(/^\d+ dependenc\w+, /, ""))))
-      .children(rows.map((d, k) => h_flex().id(`rv-res-dep-${k}`).gap(12).items_start().text_size(TYPE.small).line_height(1.45)
+      .children(rows.flatMap((d, k) => [h_flex().id(`rv-res-dep-${k}`).gap(12).items_start().text_size(TYPE.small).line_height(1.45)
         .child(v_flex().w(240).flex_none().child(div().font_semibold().whitespace_normal().child(d.dep))
           .child(div().id(`rv-res-dep-what-${k}`).text_size(TYPE.small).text_color(t.muted).truncate().tooltip([d.what, d.entry && `reached from ${d.entry}`].filter(Boolean).join(", ")).child([d.entry && `from ${d.entry}`, d.what].filter(Boolean).join(" · "))))
         .child(v_flex().flex_1().min_w(0).gap(1)
-          .child(h_flex().flex_wrap().gap_x(8).gap_y(1).children(d.cases.map((c) => one(c, `rv-res-dep-${k}-${c.when}`))))
+          .child(h_flex().flex_wrap().gap_x(8).gap_y(1).children(d.cases.map((c) => one(c, `rv-res-dep-${k}-${c.when}`, k))))
           .when(d.open.length > 0, (e) => e.child(div().id(`rv-res-dep-${k}-open`).px(4).text_size(TYPE.small).text_color(t.muted).whitespace_normal().child(`The code cannot tell: ${d.open.join(", ")}.`))))
-        .when(Boolean(d.at), (e) => e.child(div().id(`rv-res-dep-at-${k}`).flex_none().text_color(t.accent).cursor_pointer().on_click((_e, cx) => this.jumpTo(d.at, cx)).child(`${String(d.at).split("/").pop()} ↗`)))));
+        .when(Boolean(d.at), (e) => e.child(div().id(`rv-res-dep-at-${k}`).flex_none().text_color(t.accent).cursor_pointer().on_click((_e, cx) => this.jumpTo(d.at, cx)).child(`${String(d.at).split("/").pop()} ↗`))), ...treeOf(k)]));
   },
   // The chosen path: the person's (resOpen), else the first blocker, else the first path.
   resPathOf(paths) { return paths.find((p) => p.id === this.resOpen) ?? (this.resOpen === null ? null : paths.find((p) => p.blocker) ?? paths[0] ?? null); },

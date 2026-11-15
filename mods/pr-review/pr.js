@@ -1456,7 +1456,7 @@ const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 // card its call leads to). A case decides nothing by itself: where it breaks it names a path, and the path blocks by
 // the rules above.
 export const RES_WHEN = { slow: "slow", overloaded: "overloaded", down: "down", bad_answer: "bad answer", recovers: "recovers" };
-const WHEN_IS = { slow: "is slow", overloaded: "is overloaded", down: "is down", bad_answer: "answers wrong", recovers: "comes back" };
+export const WHEN_IS = { slow: "is slow", overloaded: "is overloaded", down: "is down", bad_answer: "answers wrong", recovers: "comes back" };
 const WHEN_MARK = { ...RES_WHEN, bad_answer: "wrong answer", recovers: "back again" };
 export function downstreamOf(block, arch) {
   const ids = new Set((block?.paths ?? []).map((p) => p.id)), edges = arch?.edges ?? [];

@@ -303,6 +303,15 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     assert.ok(v4.pageParts.includes(`p:${ps.at(-1)}`), "its path is a part of the page, also one under \"n more\", so the click can scroll to it");
     assert.ok(v4.resNow().paths.find((p) => p.id === ps.at(-1)).marks.some((m) => m.at === "mailer" && m.mark === "✕ when slow"), "and the map marks the dependency");
     for (const id of ["rv-res-dep-0-down", "rv-res-dep-at-0"]) { click(id, "a dependency's line"); draw(v4, `after ${id}`); }
+    // A case's fault tree: "▸" unfolds it under the row, a click on its path's card opens that path; a case with
+    // nothing but its words (down: handled, no effect, no path) has none.
+    assert.ok(!S.clicks.has("rv-res-dep-0-down-t"), "no tree for a case with nothing to follow");
+    v4.resOpen = null; click("rv-res-dep-0-slow-t", "a case's tree"); S.ids = new Set(); draw(v4, "a case's fault tree, open"); const ids = S.ids; S.ids = null;
+    assert.ok(v4.resTreeOpen === "0:slow" && ids.has("rv-res-tree-0"), "the tree stands under its dependency's row");
+    const card = [...S.clicks.keys()].filter((k) => k.startsWith("rv-res-tree-0-slow-av-n")); assert.ok(card.length >= 2, "its cards with a place can be clicked");
+    for (const id of card) click(id, "a card of the tree"); assert.equal(v4.resOpen, ps.at(-1), "the path's card opens the path");
+    draw(v4, "after the tree's cards"); act(v4, "res-tree:0:slow", "the tree folded by its command"); assert.equal(v4.resTreeOpen, null);
+    assert.match((await import("./markdown.js")).resilienceMd({ pr: {}, head: v4.head, res: v4.resNow(), arch: v4.ai?.arch }), /## When a dependency fails, step by step \(1\)\n\n[^\n]+\n\n### Mailer is slow\n\n```mermaid\nflowchart LR\n/, "the export has the tree as a flowchart");
     assert.match((await import("./markdown.js")).resilienceMd({ pr: {}, head: v4.head, res: v4.resNow(), arch: v4.ai?.arch }), /## When a dependency fails \(\d+\)\n\n- Mailer/, "the export has the dependencies");
   }
 }
@@ -528,7 +537,7 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   // second wording (the text has it as Certainty and Preconditions).
   const NOT_COPIED = [/recommended because/, /^Re-run \(/, /^Run probe/, /^last run .* ago/, /^A click shows the way\.$/, /^Verify (all \d+ )?with an agent/, /^Derived from the code that was read;$/, /^It needs nothing else:$/, /^it holds as the code stands\.$/, /lit on the map, the rest dimmed/, /^Open a path to light it on the map\.$/,
     /^in a sandbox, without network, at most 30 s$/, /^\d+ more: /, /^\d+ [^.]*(criteria|high|medium|low|observable|blockers?|paths?) ▸$/, /^GitHub read .* ago/, /^call over a trust boundary$/, /^Look inside/, /Ask names it/, /^This analysis has no further details for this card\.$/, /^“Look inside” reads/, /^“↻ Refresh diagrams”/,
-    /^and \d+ more in the Findings tab$/, /^Ask about this layer$/, /^A finding sent to Fix stays unresolved and shows here/, /^not counted as findings$/, /^Each call has its own scale\.$/];
+    /^and \d+ more in the Findings tab$/, /^Ask about this layer$/, /^A finding sent to Fix stays unresolved and shows here/, /^not counted as findings$/, /^Each call has its own scale\.$/, /^Scroll sideways for the whole picture →$/];
   const norm = (x) => String(x).toLowerCase().replace(/,? \d+ (s|min|h|d|days?) ago/g, "").replace(/#\d+;|#quot;|#lt;|#gt;/g, " ").replace(/[^a-z0-9äöüß]+/g, " ").trim();
   const drawn = (states, part) => { const all = new Set(); for (const st of states) { st(); S.texts = null; S.lists.length = 0; v.render(cx); S.lists.length = 0; S.texts = all; part(); } S.texts = null; return [...all]; };
   const missing = (texts, md) => { const text = norm(md), segs = [...new Set(texts.flatMap((x) => x.split(/(?<=[.;:])\s+|\s·\s|\n+/)).map((x) => x.replace(/^\*\*Suggested:\*\*\s*/, "").replace(/ and \d+ more$/, "")))].filter((x) => x.trim().length >= 20 && x.trim().split(/\s+/).length >= 4);
@@ -575,7 +584,7 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     const dn = [{ dep: "Mailer", kind: "external", mode: "sync", at: "library/mailer.py:14", cases: [{ when: "slow", handled: "no", how: "waits up to 7 s", effect: "The request hangs until its timeout.", path: paths[0].id, findings: [] },
       { when: "down", at: "library/mailer.py:19", handled: "yes", how: "fails fast", effect: "", path: null, findings: [] }, { when: "recovers", at: null, handled: "not_checkable", how: "", effect: "", path: null, findings: [] }] }];
     const keep = v.find.resilience; v.find.resilience = { ...keep, downstream: dn }; if (v.ai.resilience) v.ai.resilience = { ...v.ai.resilience, downstream: dn };
-    const md = check("Resilience with dependencies", drawn([() => v.command("res-path:", cx)], page), {});
+    const md = check("Resilience with dependencies", drawn([() => v.command("res-path:", cx), () => v.command("res-tree:0:slow", cx)], page), { flowchart: 2 });
     assert.ok(mdParts(md).parts.some((p) => /^When a dependency fails \(1\)$/.test(p.title)) && /- Mailer \(/.test(md), "the dependencies are a part of the text and of the preview");
     v.find.resilience = keep; if (v.ai.resilience) delete v.ai.resilience.downstream;
   }
