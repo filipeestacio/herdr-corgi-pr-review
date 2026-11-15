@@ -5708,7 +5708,10 @@ export const ReviewMode = {
       try {
         await git(["worktree", "prune"]); // worktrees of starts that were cut off (their folders are gone)
         const { head } = await this.addWorktree(base, { branch, path, head: this.headNow() });
-        await exec("mkdir", ["-p", `${path}/${TH.PROBE_DIR}`]); // the agent may write there only, so the folder is there
+        // The two places the agent may write are made new: whatever the PR checked in there (a link out of the
+        // checkout that a write would follow, a script of its own) is gone before the agent starts. It has no shell to make a link.
+        const fresh = await exec("sh", TH.probeFresh(path));
+        if (fresh.code !== 0) throw new Error(`the probe folder could not be made: ${String(fresh.stderr).trim().slice(0, 160)}`);
         const mb = this.prSel.base ? (await git(["merge-base", head, `origin/${this.prSel.base}`]).catch(() => null))?.stdout?.trim() || null : null;
         const path_ = (this.ai?.resilience?.paths ?? this.find?.resilience?.paths ?? []).find((x) => x.id === p.of);
         const findings = this.findings().filter((f) => (path_?.findings ?? p.findings ?? []).some((x) => f.ids.includes(x)));
@@ -5741,8 +5744,8 @@ export const ReviewMode = {
       const id = key.slice(key.lastIndexOf("|") + 1);
       if (!TH.PROBE_ID.test(id)) continue; // never into a path or the runner's argv
       cx.spawn(async (cx) => {
-        const read = (f) => readTextFile(`${p.path}/${f}`).catch(() => "");
-        const answer = TH.parseProbeAnswer(await read(TH.VERIFY_FILE), id);
+        // The answer file was made new at the start (TH.probeFresh) and the agent has no shell: no link can be there.
+        const answer = TH.parseProbeAnswer(await readTextFile(`${p.path}/${TH.VERIFY_FILE}`).catch(() => ""), id);
         const all = terminals(), t = all.find((x) => x.address === p.terminal), late = Date.now() - p.at;
         const ended = Boolean(answer) || late > 900000 || (all.length > 0 && late > 60000 && (!t || t.state !== "live" || (t.status?.state ?? t.status) === "done"));
         if (!ended || this.probeBusy.has(key) || this.deep.probes?.[key]?.job !== p.job) return;
@@ -5750,9 +5753,10 @@ export const ReviewMode = {
         const git = (args) => exec("git", ["-C", p.base, ...args], { timeout: 60000 }).catch(() => null);
         try {
           if (p.terminal) run("terminal.kill", { terminal: p.terminal });
-          const script = await read(`${TH.PROBE_DIR}/${id}.py`);
-          if (script.trim()) await exec("python3", [this.probeRunner(), p.path, id, ...(p.mb ? ["--base", p.mb] : [])], { timeout: 120000 }).catch(() => null);
-          const out = TH.probeOutcome(id, { result: script.trim() ? (await read(`${TH.PROBE_DIR}/${id}.result.json`)) || null : null, answer, script });
+          // Script and result only as the runner prints them (TH.probeRan): it opens the script without following a
+          // link and refuses anything but a plain file in the probe folder. The review reads neither file itself.
+          const ran = TH.probeRan(await exec("python3", [this.probeRunner(), p.path, id, ...(p.mb ? ["--base", p.mb] : [])], { timeout: 120000 }).catch(() => null));
+          const out = TH.probeOutcome(id, { ...ran, answer });
           this.updateDeep(cx, (d) => ({ ...d, probes: { ...(d.probes ?? {}), [key]: { ...out, branch: p.branch } } }));
           this.note = `Probe ${id}: ${out.status.replace("_", " ")}${out.line ? `, ${out.line}` : ""}.`;
         } finally {

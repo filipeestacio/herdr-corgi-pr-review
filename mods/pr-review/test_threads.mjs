@@ -323,6 +323,32 @@ console.log("threads ok");
   assert.deepEqual([none.status, none.line, none.reason], ["not_run", "The agent wrote no script for this claim.", ""], "no script: not run, and no word about tools");
   assert.deepEqual([TH.probeOutcome("p1", { answer: { result: "no_script", reason: "the claim needs a real SQS queue" } }).line], ["No script: the claim needs a real SQS queue"]);
   assert.equal(TH.probeOutcome("p1", { script: "  " }).status, "not_run");
+  // A PR that checks in the agent's write targets as links out of the checkout, or a script of its own: gone before the
+  // agent starts, and what the links pointed to is untouched.
+  { const { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, lstatSync, readdirSync, readFileSync, rmSync } = await import("node:fs"), { tmpdir } = await import("node:os"), { execFileSync } = await import("node:child_process");
+    const d = mkdtempSync(`${tmpdir()}/probe-fresh-`);
+    try {
+      for (const planted of ["folder link", "file links", "own script", "nothing"]) {
+        const w = `${d}/${planted.replace(" ", "-")}`; mkdirSync(`${w}/out`, { recursive: true }); writeFileSync(`${w}/out/victim.py`, "mine\n"); writeFileSync(`${w}/out/answers`, "mine\n");
+        if (planted === "folder link") symlinkSync(`${w}/out`, `${w}/${TH.PROBE_DIR}`);
+        if (planted !== "folder link" && planted !== "nothing") mkdirSync(`${w}/${TH.PROBE_DIR}`);
+        if (planted === "file links") { symlinkSync(`${w}/out/victim.py`, `${w}/${TH.PROBE_DIR}/p1.py`); symlinkSync(`${w}/out/answers`, `${w}/${TH.VERIFY_FILE}`); }
+        if (planted === "own script") writeFileSync(`${w}/${TH.PROBE_DIR}/p1.py`, "print('reproduced by the PR')\n");
+        execFileSync("sh", TH.probeFresh(w));
+        assert.ok(lstatSync(`${w}/${TH.PROBE_DIR}`).isDirectory() && !lstatSync(`${w}/${TH.PROBE_DIR}`).isSymbolicLink(), planted);
+        assert.deepEqual([readdirSync(`${w}/${TH.PROBE_DIR}`), readdirSync(w).includes(TH.VERIFY_FILE)], [[], false], planted);
+        assert.deepEqual([readFileSync(`${w}/out/victim.py`, "utf8"), readFileSync(`${w}/out/answers`, "utf8")], ["mine\n", "mine\n"], planted);
+      }
+    } finally { rmSync(d, { recursive: true, force: true }); } }
+  // Script and result come from the runner's own output only: a refused script (a link) shows nothing of any file.
+  const printed = JSON.stringify({ id: "p1", status: "reproduced", line: "2 mails", script: "print('reproduced 2 mails')\n" });
+  assert.deepEqual(TH.probeRan({ code: 0, stdout: printed, stderr: "" }), { result: JSON.parse(printed), script: "print('reproduced 2 mails')\n", refused: "" });
+  assert.equal(TH.probeOutcome("p1", { ...TH.probeRan({ code: 0, stdout: printed, stderr: "" }) }).script, "print('reproduced 2 mails')");
+  const link = TH.probeOutcome("p1", { ...TH.probeRan({ code: 2, stdout: "", stderr: "probe: refused: .pr-review-probe/p1.py must be a plain file\n" }), answer: { result: "written", reason: "counts mails" } });
+  assert.deepEqual([link.status, link.line, link.script, link.output], ["not_run", "Not run: .pr-review-probe/p1.py must be a plain file.", "", ""]);
+  assert.deepEqual(TH.probeRan({ code: 3, stdout: "", stderr: "probe: refused: x is not there" }), { result: null, script: "", refused: "" }, "no script is no refusal");
+  assert.equal(TH.probeOutcome("p1", { ...TH.probeRan({ code: 3, stdout: "", stderr: "" }), answer: { result: "no_script", reason: "needs a real queue" } }).line, "No script: needs a real queue");
+  assert.deepEqual([TH.probeRan(null).refused, TH.probeRan({ code: 0, stdout: "{not json" }).refused, TH.probeRan({ code: 1, stdout: "", stderr: "Traceback" }).refused], Array(3).fill("the runner gave no result"));
   assert.equal(TH.probeOutcome("p1", { result: "{not json", script: "print(1)" }).status, "script_failed", "a script that ran without a readable result failed");
   assert.equal(TH.probeOutcome("p1", { result: JSON.stringify({ id: "other", status: "reproduced" }), script: "x" }).status, "script_failed", "another probe's file does not count");
   assert.equal(TH.probeOutcome("p1", { result: JSON.stringify({ id: "p1", status: "reproduced", base: { status: "x", verdict: "made_up" } }), script: "x" }).base.verdict, "unknown");

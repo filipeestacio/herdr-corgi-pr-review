@@ -532,12 +532,24 @@ const toolTalk = (s) => /\b(bash|denied|permission|tool|dontask|don't ask|allowe
 // probe's or not readable: script_failed, because the script was there and ran.
 // → {state: "done", status, strength, line, base {status, line, rev, verdict} | null, pre_existing, network_barrier,
 // head, ms, output, reason, script, at}.
-export function probeOutcome(id, { result = null, answer = null, script = "", at = Date.now() } = {}) {
+// Before a probe agent starts in its worktree (argv for sh): its probe folder and its answer file are removed,
+// whatever they are, and the folder is made new. rm removes a link itself, never what it points to.
+export const probeFresh = (path) => ["-c", 'rm -rf -- "$1" "$2" && mkdir -- "$1"', "sh", `${path}/${PROBE_DIR}`, `${path}/${VERIFY_FILE}`];
+// What the review takes from one call of probe.py ({code, stdout, stderr}, or null when it gave nothing): the result
+// and the script as the runner printed them, or why it ran nothing (refused: exit 2 with its reason, e.g. a script
+// that is a link; "" when there is no script, exit 3). The review reads no file of the agent's folder itself.
+export function probeRan(ran) {
+  let result = null;
+  try { result = ran?.code === 0 ? JSON.parse(ran.stdout) : null; } catch { result = null; }
+  const refused = result || ran?.code === 3 ? "" : ran?.code === 2 ? short(String(ran.stderr ?? "").replace(/^probe: refused:\s*/, ""), 200) : "the runner gave no result";
+  return { result, script: String(result?.script ?? ""), refused };
+}
+export function probeOutcome(id, { result = null, answer = null, script = "", refused = "", at = Date.now() } = {}) {
   let r = null;
   try { r = typeof result === "string" ? JSON.parse(result) : result; } catch { r = null; }
   if (r && (r.id !== id || !PROBE_STATUS.includes(r.status))) r = null;
   const said = answer?.reason && !toolTalk(answer.reason) ? answer.reason : "";
-  if (!String(script ?? "").trim()) return { state: "done", status: "not_run", strength: null, line: said ? `No script: ${said}` : "The agent wrote no script for this claim.", base: null, pre_existing: false,
+  if (!String(script ?? "").trim()) return { state: "done", status: "not_run", strength: null, line: refused ? `Not run: ${refused}.` : said ? `No script: ${said}` : "The agent wrote no script for this claim.", base: null, pre_existing: false,
     network_barrier: false, head: null, ms: 0, output: "", reason: said, script: "", at };
   const base = r?.base ? { status: PROBE_STATUS.includes(r.base.status) ? r.base.status : "script_failed", line: short(r.base.line, 300), rev: short(r.base.rev, 40),
     verdict: BASE_WORDS[r.base.verdict] ? r.base.verdict : "unknown" } : null;
