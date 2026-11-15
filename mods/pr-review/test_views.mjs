@@ -906,8 +906,26 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   const r = (url, repo, lastDays, progress = {}, status = "in-progress") => ({ url, repo, status, lastTouched: now - lastDays * 86400000, progress });
   const reg = [r("opened", "o/here", 0, { files: 9, steps: 6 }), r("viewed", "o/else", 1, { filesViewed: 2 }), r("here", "o/here", 2, { comments: 1 }),
     r("merged", "o/here", 0, { stepsChecked: 1 }), r("old", "o/here", 20, { filesViewed: 1 }), r("sent", "o/else", 3, {}, "sent"), r("done", "o/here", 0, { filesViewed: 1 }, "done")];
-  assert.deepEqual(inProgressNow(reg, { states: new Map([["merged", "merged"]]), slug: "o/here", now }).map((x) => x.url), ["here", "viewed", "sent"],
-    "only opened, merged, untouched for 14 days and done ones are not in progress; the space's repo first");
+  assert.deepEqual(inProgressNow(reg, { states: new Map([["merged", "merged"]]), slug: "o/here", now }).map((x) => x.url), ["here"],
+    "in a space on a repo: its reviews; only opened, merged, untouched for 14 days and done ones are not in progress");
+  assert.deepEqual(inProgressNow(reg, { states: new Map([["merged", "merged"]]), now }).map((x) => x.url), ["viewed", "here", "sent"], "outside a GitHub repo: every repo's, by last touch");
+  // "Show all" adds the older ones; the merged one is listed apart with its state; nothing with work in it is lost.
+  const { progressRows, inProgressLeft, removedText } = await import("./views.js");
+  const states = new Map([["merged", "merged"]]), rows = progressRows(reg, { states, slug: "o/here", now });
+  assert.deepEqual([rows.shown.map((x) => x.url), rows.more, rows.total], [["here"], 3, 4], "the other repos' reviews and the old one wait behind Show all");
+  const all = progressRows(reg, { states, slug: "o/here", now, all: true });
+  assert.deepEqual([all.shown.map((x) => x.url), all.more], [["here", "old", "viewed", "sent"], 3], "all: the one untouched for 20 days and the other repos too; more says what Show fewer hides");
+  assert.deepEqual(inProgressLeft(reg, states).map((x) => [x.url, x.state]), [["merged", "merged"]]);
+  assert.equal([...rows.shown, ...progressRows(reg, { states, now, all: true }).shown, ...rows.left].some((x) => x.url === "opened" || x.url === "done"), false, "only opened or done: nowhere");
+  assert.equal(removedText({ number: 2, progress: { comments: 2 } }), "#2 removed from In progress. Its 2 pending comments and your progress are kept.");
+  assert.equal(removedText({ number: 7, progress: {} }), "#7 removed from In progress. Your progress is kept.");
+  // The layout shows the panel: its block not hidden, no hidden column around it, up in its stack; null without a block.
+  const { panelShown } = await import("./views.js");
+  const block = { id: "pr", type: "block", content: { mod: "pr-review" } }, bar = { id: "bar", type: "block", content: { mod: "pr-review", props: { part: "bar" } } };
+  const side = (hidden) => ({ id: "root", type: "row", children: [{ id: "main", type: "block" }, { id: "review", type: "column", hidden, children: [block] }] });
+  const stack = (active) => ({ id: "root", children: [{ id: "panel", type: "column", children: [{ id: "panel-body", type: "stack", active, children: [{ id: "files", content: { mod: "files" } }, block] }] }] });
+  assert.deepEqual([panelShown(side(false)), panelShown(side(true)), panelShown(stack("pr")), panelShown(stack("files")), panelShown({ id: "root", children: [bar] }), panelShown(null)],
+    [true, false, true, false, null, null]);
   const sel = withPick(withPick({ a: 1, b: 2 }, "a", 3), "c", 4, 2);
   assert.deepEqual(sel, { a: 3, c: 4 }, "set again moves to the end; the newest kept");
   console.log("ok panel relevance");

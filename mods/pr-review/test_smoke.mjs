@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { S, cx as base } from "./render_stub.mjs";
 
 const { default: PrReview } = await import("./main.js");
-const { splitPatch, hunksOf, diffRows, hash } = await import("./pr.js");
+const { splitPatch, hunksOf, diffRows, hash, mapReview } = await import("./pr.js");
 const { foldOnOpen, resWatch } = await import("./views.js");
 const R = await import("./review.js");
 const { withThreadState, addThreads, addFollowup } = await import("./threads.js");
@@ -307,7 +307,8 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   S.spaces = [{ id: "sA", active: true, folder: "/h/a" }];
   const v = new PrReview(); v.init({}, cx); await settle();
   v.spaceSlug = { root: "/h/a", slug: "saefty/corgi-demo" };
-  assert.deepEqual(v.inProgressList().map((r) => r.number), [2], "In progress: work done and not merged; one only opened is not there");
+  assert.deepEqual(v.panelProgress().shown.map((r) => r.number), [2], "In progress: work done and not merged; one only opened is not there");
+  assert.deepEqual(v.panelProgress().left.map((r) => [r.number, r.state]), [[1, "merged"]], "the merged one is listed apart, dimmed");
   assert.equal(S.store.get("review.minimized"), null, "the chip of a merged PR goes");
   for (const src of ["mine", "repo", "review"]) { S.store.set("pr.source", src); v.picking = true; draw(v, `panel: the ${src} list`); }
   S.store.set("pr.source", "mine"); v.showOther = v.showDone = true; draw(v, "panel: Mine with the other repos and the merged ones unfolded");
@@ -318,6 +319,42 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   assert.equal(v.prSel, null, "another space shows its own pick (none yet: the list), not the PR from the first one");
   S.spaces = [{ id: "sA", active: true, folder: "/h/a" }]; v.onSpace(cx);
   assert.equal(v.prSel?.url, prs[0].url, "back in the first space: its pick again");
+  // In progress: the other repo's review and one not touched for 20 days wait behind "Show all", the merged one is
+  // dimmed with its state; ✕ removes one (its minimized chip too) and offers Undo, which puts it back.
+  S.store.set("review.open", [reg(prs[0], { filesViewed: 2, files: 9, comments: 1 }), reg(prs[1], { filesViewed: 1 }, now - 1000), reg(prs[3], { stepsChecked: 1 }, now - 2000), reg(prs[2], { comments: 2 }, now - 20 * 86400000)]);
+  S.store.set("review.minimized", { target: prs[0], at: now });
+  v.spaceSlug = { root: "/h/a", slug: "saefty/corgi-demo" }; v.picking = true; draw(v, "panel: In progress with more behind Show all");
+  assert.deepEqual([v.panelProgress().shown.map((r) => r.number), v.panelProgress().more], [[2], 2]);
+  v.allOpen = true; draw(v, "panel: In progress, all shown");
+  assert.deepEqual(v.panelProgress().shown.map((r) => r.number), [2, 5, 9], "all: this repo's first, then the other repo's");
+  v.dropReview(prs[0].url, cx); await settle(); draw(v, "panel: a review removed, Undo offered");
+  assert.ok(!S.store.get("review.open").some((r) => r.number === 2) && S.store.get("review.minimized") === null && v.undo?.number === 2, "✕ takes the review and its chip away and keeps it for Undo");
+  v.undoDrop(cx); await settle(); draw(v, "panel: the removal undone");
+  assert.deepEqual([S.store.get("review.open")[0].number, v.undo], [2, null], "Undo puts it back");
+  v.allOpen = false;
+  // A chosen PR with its diff: a line picked (the composer), a comment added, edited, a whole-file one, the pending
+  // bar; Walkthrough without and with an analysis; Setup; a diff that did not come; a note.
+  S.exec = async (cmd, args) => (cmd === "gh" && args[1] === "diff" ? { code: 0, stdout: fx("pr2.diff"), stderr: "" } : { code: 1, stdout: "", stderr: "stub" });
+  v.memo.clear(); v.context = null; v.choose(prs[0], cx); await settle(); draw(v, "panel: PR #2 with its diff");
+  assert.ok(v.files.length > 1 && v.rows.length > 0 && !v.error, "the diff is shown");
+  v.sel = v.rows.findIndex((r) => r.kind === "+"); draw(v, "panel: a line picked, the composer under it");
+  v.selEnd = v.sel + 2; v.question = "Why this?"; v.addComment(cx); await settle(); draw(v, "panel: a pending comment and the bar");
+  assert.equal(v.comments.length, 1, "the comment was added");
+  v.editComment(v.comments[0], cx); draw(v, "panel: the comment being edited"); v.cancel(cx);
+  v.askTop = true; draw(v, "panel: a comment on the whole file"); v.askTop = false;
+  v.pick(v.files[1].path, cx); await settle(); draw(v, "panel: another file");
+  v.openWalk(cx, false); await settle(); draw(v, "panel: Walkthrough without an analysis");
+  {
+    const saved = JSON.parse(fx("analysis.json")), hunks = hunksOf(v.patch), at = new Map(hunks.map((h) => [h.id, h])), r = mapReview(saved.answer, saved.hunks.map((h) => ({ ...h, ...(at.get(h.id) ?? {}) })));
+    v.walkHunks = hunks; v.walk = { ...saved, title: r.title, summary: r.summary, asks: r.asks, steps: [...r.steps].sort((a, b) => a.order - b.order).map((x) => ({ ...x, text: x.text || x.why })) };
+    for (let k = 0; k <= v.walk.steps.length + 1; k++) { v.step = k; draw(v, `panel: Walkthrough, layer ${k}`); }
+    v.walkMore = true; v.walkError = "The model gave no answer"; draw(v, "panel: Walkthrough, its options and an error"); v.walkMore = false; v.walkError = null;
+  }
+  v.view = "setup"; draw(v, "panel: Setup"); v.view = "diff";
+  v.note = "Could not open: gh pr view: not found"; v.error = "Error: gh pr diff: could not resolve"; v.files = []; draw(v, "panel: a diff that did not come, and a note"); v.note = null;
+  S.exec = null;
+  // A remount with that pick: the frame before prs.json is read shows no list.
+  { const w = new PrReview(); w.init({}, cx); draw(w, "panel: the pick from before coming back"); assert.ok(w.restoring && !w.srcAsked); await settle(); assert.ok(!w.restoring); }
   S.props = { part: "mini" }; S.store.set("review.minimized", { target: prs[0], at: now });
   const mini = new PrReview(); mini.init({}, cx); draw(mini, "the minimized review's chip");
   S.spaces = null; S.props = null;
