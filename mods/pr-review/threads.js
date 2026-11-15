@@ -555,7 +555,12 @@ export const TRUST_TURNS_ON = [
   "Probes start without asking you, in their sandbox (no network, nothing from your home).",
   "The security review starts by itself when the diff gives reasons for one.",
   "Language servers for go-to-definition run code from the repository: build scripts, proc macros, its own TypeScript, downloads.",
+  "The Codex review starts on your click without asking first. It sends the PR's code and text to a second provider (OpenAI).",
 ];
+// What a Codex run may do (reviewers.py codex_args), word for word in the Reviews popup and before the run.
+export const CODEX_MAY = "Reads: the PR checkout and its clone's .git folder, nothing else on this machine. Writes: nothing. Network: Codex itself reaches its provider, the commands it runs reach nothing. MCP servers, hooks, plugins, apps and Codex config, yours and the PR's: off.";
+// Someone else's PR in Restricted Mode: the first click on Codex review shows this, the second runs it.
+export const CODEX_ASK = `This PR is by someone else. Codex would send its code and text to a second provider (OpenAI), and that text may carry instructions for it. ${CODEX_MAY} Click Codex review again to run it.`;
 
 
 // ---- fix worktrees left on disk (review.js "Fix worktrees…": listed on a click, removed on a click, never on their own)

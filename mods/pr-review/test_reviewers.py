@@ -31,20 +31,28 @@ git = f"Bash(python3 {reviewers.review.SAFEGIT} '/work/check out' *)"
 assert allowed == ("Read", "Grep", "Glob", "Agent", git), allowed
 assert "Bash(git *)" in denied, "no plain git at all: only safegit.py, fixed to this checkout"
 assert reviewers.allowed({"kind": "security", "worktree": "/work/check out"}) == list(allowed), "the run records what it was allowed"
-assert reviewers.allowed({"kind": "codex", "worktree": "/w"})[0].startswith("codex review: sandbox_mode read-only")
+assert reviewers.allowed({"kind": "codex", "worktree": "/w"})[0].startswith("codex exec review: reads the checkout and its clone's .git only, no writes")
 assert reviewers.review.git_hint("/work/check out").startswith(f"Call git only as `python3 {reviewers.review.SAFEGIT} '/work/check out' <command>")
 assert reviewers.review.git_hint("/w") in reviewers.findings_schema("claude", "/w")["description"], "a slash command's fork sees the schema"
 assert reviewers.review.permissions(None, "Read")[3:5] == ("--allowedTools", "Read") and reviewers.review.git_hint(None) == "", "no checkout: no git"
 import llm  # noqa: E402
 assert llm.env_for(None)["GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS"] == "1"
-# C2 S4: a model run gets no tokens, secrets, AWS_* or GH_* of the window; the account's login stays.
+# A model run gets an allowlist of the window's environment: no key, password, token, agent socket, GIT_*, AWS_* or
+# GH_* of the window; what a CLI needs to start and the run's own login stay.
 _saved = dict(os.environ)
-os.environ.update({"GH_TOKEN": "g", "GITHUB_TOKEN": "g", "AWS_SECRET_ACCESS_KEY": "a", "AWS_PROFILE": "p", "MY_SECRET": "s", "NPM_TOKEN": "n",
-                   "CLAUDE_CODE_OAUTH_TOKEN": "login", "ANTHROPIC_API_KEY": "key", "HOME_X": "keep"})
-os.environ.pop("CLAUDE_CODE_USE_BEDROCK", None)
+_gone = {"GH_TOKEN": "g", "GITHUB_TOKEN": "g", "AWS_SECRET_ACCESS_KEY": "a", "AWS_PROFILE": "p", "MY_SECRET": "s", "NPM_TOKEN": "n", "STRIPE_API_" + "KEY": "k",
+         "DB_PASS" + "WORD": "w", "SSH_AUTH_SOCK": "/s", "GIT_SSH_COMMAND": "x", "GIT_DIR": "/elsewhere", "OPENAI_API_" + "KEY": "o", "HOME_X": "unknown"}
+_kept = {"CLAUDE_CODE_OAUTH_TOKEN": "login", "ANTHROPIC_API_" + "KEY": "key", "CLAUDE_CONFIG_DIR": "/c", "PATH": "/bin", "HOME": "/h", "LANG": "C", "LC_ALL": "C",
+         "TMPDIR": "/t", "https_proxy": "http://p", "CODEX_HOME": "/cx"}
+os.environ.update({**_gone, **_kept})
+os.environ.pop("CLAUDE_CODE_USE_BEDROCK", None), os.environ.pop("CLAUDE_CODE_USE_VERTEX", None)
 _e = llm.env_for(None)
-assert not {"GH_TOKEN", "GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY", "AWS_PROFILE", "MY_SECRET", "NPM_TOKEN"} & set(_e), sorted(k for k in _e if "TOKEN" in k or k.startswith(("AWS_", "GH_")))
-assert (_e["CLAUDE_CODE_OAUTH_TOKEN"], _e["ANTHROPIC_API_KEY"], _e["HOME_X"]) == ("login", "key", "keep")
+assert not set(_gone) & set(_e), sorted(set(_gone) & set(_e))
+assert not {k: v for k, v in _kept.items() if k != "CODEX_HOME" and _e.get(k) != v}, "what a Claude run needs stays"
+assert "CODEX_HOME" not in _e, "Codex's login is for the Codex run only"
+_cx = llm.env_for(None, llm.CODEX_LOGIN)
+assert (_cx["CODEX_HOME"], _cx["OPENAI_API_" + "KEY"], _cx["PATH"], _cx["HOME"]) == ("/cx", "o", "/bin", "/h") and not [k for k in _cx if k.startswith(("CLAUDE_", "ANTHROPIC_", "GH_", "SSH_"))], \
+    "a Codex run gets Codex's login and not Claude's"
 assert llm.env_for({"env": {"CLAUDE_CODE_USE_BEDROCK": "1"}})["AWS_PROFILE"] == "p", "on Bedrock the AWS login stays"
 assert llm.env_for({"env": {"GH_TOKEN": "mine"}})["GH_TOKEN"] == "mine", "what the context sets itself stays"
 os.environ.clear(); os.environ.update(_saved)
@@ -291,4 +299,37 @@ reviewers.merge(file, "security", "h1", [{"id": "s1", "reviewer": "security"}], 
 reviewers.merge(file, "security", "h1", None, {"state": "running"})
 doc = json.loads(file.read_text())
 assert doc["security"] == {"threats": []} and doc["runs"]["security"] == {"state": "running"} and doc["findings"][0]["head"] == "h1"
+# The Codex run: a permission profile instead of Codex's "read-only" sandbox (which reads the whole disk), and nothing
+# of the user's or the PR's Codex setup (MCP servers, hooks, plugins, apps, rules, config).
+import shutil  # noqa: E402
+import subprocess  # noqa: E402
+with tempfile.TemporaryDirectory() as d:
+    d = os.path.realpath(d)
+    g = lambda *a, cwd: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t", *a], cwd=cwd, check=True, capture_output=True,  # noqa: E731
+                                    env={**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"})  # no hooks or templates of this machine
+    clone, wt, out = f"{d}/clone", f"{d}/clone/.worktrees/review", f"{d}/outside"
+    os.makedirs(clone), os.makedirs(out), pathlib.Path(out, "marker.txt").write_text("MARKER\n")
+    g("init", "-q", cwd=clone), pathlib.Path(clone, "f.txt").write_text("in the PR\n"), g("add", ".", cwd=clone), g("commit", "-qm", "c", cwd=clone)
+    g("worktree", "add", "-q", "--detach", wt, cwd=clone)
+    a = reviewers.codex_args({"worktree": wt, "base": "main", "codexModel": "m-1"}, "/bin/echo")
+    assert a[:5] == ["/bin/echo", "exec", "review", "--base", "origin/main"] and a[-2:] == ["-c", 'model="m-1"'], a
+    for flag in ("--ignore-user-config", "--ignore-rules", "--strict-config"):
+        assert flag in a, flag
+    assert [a[k + 1] for k, x in enumerate(a) if x == "--disable"] == ["hooks", "plugins", "apps"], "no hooks, plugins or connectors"
+    sets = [a[k + 1] for k, x in enumerate(a) if x == "-c"]
+    assert not [s for s in sets if s.startswith("sandbox_mode")] and 'default_permissions="review"' in sets and 'approval_policy="never"' in sets, sets
+    files = next(s for s in sets if s.startswith("permissions.review.filesystem="))
+    assert f'"{wt}"="read"' in files and f'"{clone}/.git"="read"' in files and '":slash_tmp"="none"' in files and '"write"' not in files, files
+    assert f'"{clone}"=' not in files and f'"{os.path.expanduser("~")}"=' not in files, "neither the clone's other files nor the home folder"
+    assert '"inherit"="core"' in next(s for s in sets if s.startswith("shell_environment_policy=")), "the model's commands get no key of Codex's own"
+    codex = shutil.which("codex")
+    if codex and sys.platform == "darwin":  # Codex's own sandbox with exactly these settings (`codex sandbox`: no model, no login)
+        profile = [x for s in sets if s.startswith(("default_permissions", "permissions.", "shell_environment_policy")) for x in ("-c", s)]
+        os.makedirs(f"{d}/codex-home")
+        script = f"cat f.txt; git log --stat --format=%s | grep -c f.txt; cat '{out}/marker.txt'; ls '{os.environ['HOME']}'; ls '{d}/codex-home'; cat '{clone}/f.txt'; echo x > w.txt; env"
+        r = subprocess.run([os.path.realpath(codex), "sandbox", *profile, "--", "/bin/sh", "-c", script], cwd=wt, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                           timeout=120, env={"PATH": os.environ["PATH"], "HOME": os.environ["HOME"], "CODEX_HOME": f"{d}/codex-home", "LEAK_API_" + "KEY": "k"})
+        assert r.stdout.startswith("in the PR\n1\n"), ("the checkout and, through git, the clone's history are readable", r.stdout[:200], r.stderr[:300])
+        assert r.stderr.count("not permitted") == 5 and "MARKER" not in r.stdout, ("a file beside the clone, the home folder, Codex's home, the clone's other files, a write", r.stderr)
+        assert not os.path.exists(f"{wt}/w.txt") and "LEAK_API_" not in r.stdout and "GIT_CONFIG_GLOBAL=/dev/null" in r.stdout, r.stdout[:300]
 print("ok")

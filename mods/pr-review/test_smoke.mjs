@@ -332,6 +332,13 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   v.worktree = { url: v.prSel.url, head: v.head, path: "/h/w" }; v.repoVis = { [v.prSel.repo]: "PUBLIC" };
   for (const tab of ["files", "steps", "findings"]) act(v, tab, `someone else's PR, the trust question on ${tab}`);
   click("rv-trust-no", "stay in Restricted Mode"); draw(v, "someone else's PR, Restricted Mode kept");
+  // Codex on it: the first click asks and says what the run may do, the second starts it; a trusted PR starts at once.
+  { const { CODEX_ASK } = await import("./threads.js"), { SETUP_KEY } = await import("./setup-view.js"), was = S.store.get(SETUP_KEY), ran = [];
+    S.store.set(SETUP_KEY, { ...was, found: { ...was?.found, codex: true } }); S.exec = async (...a) => { ran.push(a); return { code: 0, stdout: "", stderr: "" }; };
+    v.runReviewer("codex", cx); assert.equal(v.note, CODEX_ASK); assert.ok(/Reads: the PR checkout .* Writes: nothing\. Network: .* MCP servers, hooks/.test(v.note)); assert.equal(ran.length, 0, "asked, not started");
+    draw(v, "someone else's PR, Codex asks first");
+    v.runReviewer("codex", cx); assert.equal(ran.length, 1, "the second click starts it"); assert.equal(v.find.runs.codex.state, "running");
+    S.exec = null; S.store.set(SETUP_KEY, was); delete v.find.runs.codex; v.note = null; }
   S.store.set("pr-review.trustAsked", []); draw(v, "the trust question again"); click("rv-trust-pr", "trust this PR"); draw(v, "someone else's PR, trusted");
 }
 // Explore: the start (no repo, no topic), then an exploration with its answer, its pages, layers and cards, the

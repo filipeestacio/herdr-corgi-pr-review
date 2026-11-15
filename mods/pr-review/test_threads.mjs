@@ -386,7 +386,7 @@ console.log("threads ok");
     git(["fetch", "-q", "origin"], lock);
     assert.equal(execFileSync("git", ["-C", `${d}/r.git`, "for-each-ref"]).toString(), "", "nothing arrived");
   } finally { rmSync(d, { recursive: true, force: true }); }
-  assert.deepEqual(["auto mode", "own agent session", "Probes start without asking", "security review starts by itself", "Language servers"].filter((w) => !TH.TRUST_TURNS_ON.some((x) => x.includes(w))), [], "the trust prompt names all of it");
+  assert.deepEqual(["auto mode", "own agent session", "Probes start without asking", "security review starts by itself", "Language servers", "Codex review starts on your click"].filter((w) => !TH.TRUST_TURNS_ON.some((x) => x.includes(w))), [], "the trust prompt names all of it");
   console.log("agents with PR text ok");
 }
 
