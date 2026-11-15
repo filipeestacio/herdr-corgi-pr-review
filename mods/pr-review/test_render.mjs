@@ -19,7 +19,7 @@ function review(files) {
     const n = 5 + ((i * 37) % 120);
     text += `diff --git a/src/f${i}.ts b/src/f${i}.ts\n--- a/src/f${i}.ts\n+++ b/src/f${i}.ts\n@@ -1,${n} +1,${n} @@\n${"+x\n".repeat(n)}`;
   }
-  v.prSel = target; v.patch = files ? splitPatch(text) : [];
+  v.prSel = target; v.resumed = target.url; v.patch = files ? splitPatch(text) : []; // resumed: where you were is known (render holds its frame until then)
   v.hunks = hunksOf(v.patch).map((h) => ({ ...h, rows: diffRows(h.lines) }));
   v.byId = new Map(v.hunks.map((h) => [h.id, h])); v.fileHunks = new Map();
   for (const h of v.hunks) v.fileHunks.set(h.path, [...(v.fileHunks.get(h.path) ?? []), h]);

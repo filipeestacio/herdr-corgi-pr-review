@@ -139,10 +139,10 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
     .when(Boolean(opts.onFocus), (e) => e.cursor_pointer().on_click((_e, cx) => { opts.onFocus(p.to, cx); cx.stop_propagation(); })), dimP(p), textFade)] : []));
   // A frame: a group, or a trust zone (arch.js zoneArch: the colour of its trust level, a light tint, the level's word
   // in the header). A bare group (cards outside every zone) has no frame.
-  const groups = L.groups.flatMap((g, i) => (g.bare ? [] : [div().id(`${id}-g${i}`).absolute().left(g.x).top(g.y).w(g.w).h(g.h).rounded(12).border_1().border_dashed()
+  const groups = L.groups.flatMap((g, i) => (g.bare ? [] : [div().id(`${id}-g${i}`).absolute().left(g.x).top(g.y).w(g.w).h(g.h).rounded(12).border_1().when(!SOLID(g.trust), (e) => e.border_dashed())
     // Opaque: the grid stays in the space between systems, never behind a frame's cards and call labels.
     .border_color(g.trust ? trustColor(t, g.trust) : t.border).bg(g.trust ? solidOver(t.background, trustColor(t, g.trust) + "0f") : t.background).child(h_flex().px(PAD_IN).h(26).items_center().gap(6).text_size(11.5)
-      .child(div().flex_1().min_w(0).truncate().font_semibold().text_color(t.foreground).child(g.label ?? ""))
+      .child(div().id(`${id}-gl${i}`).flex_1().min_w(0).truncate().font_semibold().text_color(t.foreground).tooltip(g.label ?? "").child(g.label ?? "")) // the name gives way, the level (kind) stays
       .child(div().flex_none().text_color(g.trust ? trustColor(t, g.trust) : t.muted).child(g.kind ?? "")))]));
   // A call over a trust boundary: two bars across its line, before the arrow; the tooltip names both zones (opts.zones).
   const zoneById = new Map((opts.zones ?? []).map((z) => [z.id, z])), zoneOfN = (nid) => zoneById.get(L.nodes.find((x) => x.id === nid)?.zone);
@@ -220,7 +220,10 @@ function flowModel(v, fit = true) {
 }
 const cap = (s) => String(s ?? "").replace(/^./, (c) => c.toUpperCase());
 // Trust zones (arch.js zoneArch): a colour per trust level, none of them the severity red.
-const TRUST = { public: "ansi3", authenticated: "ansi4", internal: "ansi6", data: "ansi5" };
+// operator has no hue (the theme's are taken: green says mitigated, red severity): the muted colour and a solid line,
+// where every other level is dashed (SOLID).
+const TRUST = { public: "ansi3", operator: "muted", authenticated: "ansi4", internal: "ansi6", data: "ansi5" };
+const SOLID = (trust) => trust === "operator";
 const trustColor = (t, trust) => t[TRUST[trust] ?? "ansi6"];
 // Whether a picture has something about trust to explain: zones as frames or as dots on cards, or a call over a boundary.
 export const hasTrust = (L) => Boolean(L) && (L.groups.some((g) => g.trust) || L.nodes.some((n) => n.zone) || L.paths.some((p) => p.crosses));
@@ -229,7 +232,7 @@ export const hasTrust = (L) => Boolean(L) && (L.groups.some((g) => g.trust) || L
 export function trustLegend(L, t, zones = []) {
   const framed = L.groups.some((g) => g.trust), byId = new Map((zones ?? []).map((z) => [z.id, z.trust]));
   const levels = [...new Set(framed ? L.groups.map((g) => g.trust).filter(Boolean) : L.nodes.map((n) => byId.get(n.zone)).filter(Boolean))];
-  const swatch = (z) => (framed ? div().w(10).h(10).rounded(3).border_1().border_dashed().border_color(trustColor(t, z)).bg(trustColor(t, z) + "33") : div().w(9).h(9).rounded_full().bg(trustColor(t, z)));
+  const swatch = (z) => (framed ? div().w(10).h(10).rounded(3).border_1().when(!SOLID(z), (e) => e.border_dashed()).border_color(trustColor(t, z)).bg(trustColor(t, z) + "33") : div().w(9).h(9).rounded_full().bg(trustColor(t, z)));
   return h_flex().gap(10).text_size(11.5).text_color(t.muted)
     .when(levels.length > 0, (e) => e.child("Trust zones:").children(levels.map((z) => h_flex().gap(4).items_center().child(swatch(z)).child(z))))
     .when(L.paths.some((p) => p.crosses), (e) => e.child(h_flex().gap(4).items_center().child(div().font_semibold().text_color(t.ansi3).child("‖")).child("call over a trust boundary")));

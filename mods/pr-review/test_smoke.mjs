@@ -4,8 +4,16 @@
 // analysis, without findings, while runs are going, after they failed, and for someone else's PR. Any exception,
 // sync or in a spawned task, and any null or non-finite value handed to an element fails it.)
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { S, cx as base } from "./render_stub.mjs";
+
+// The fixtures live in the repository, not in the mod folder: a copy of mods/pr-review alone (an installed mod, a
+// bundle) cannot run this test, and says so instead of failing on a missing file or passing on nothing.
+const FIXTURES = new URL("../../demo/fixtures/review/", import.meta.url);
+if (!existsSync(FIXTURES)) {
+  console.error(`test_smoke: no fixtures at ${FIXTURES.pathname}. This test needs demo/fixtures/review of the mod's repository; run it in a checkout of the repository, not in a copy of the mod folder.`);
+  process.exit(1);
+}
 
 const { default: PrReview } = await import("./main.js");
 const { splitPatch, hunksOf, diffRows, hash, mapReview } = await import("./pr.js");
@@ -13,7 +21,7 @@ const { foldOnOpen, resWatch } = await import("./views.js");
 const R = await import("./review.js");
 const { withThreadState, addThreads, addFollowup } = await import("./threads.js");
 const { mapAnswer, threadAdd, pinAdd } = await import("./explore.js");
-const fx = (name) => readFileSync(new URL(`../../demo/fixtures/review/${name}`, import.meta.url), "utf8");
+const fx = (name) => readFileSync(new URL(name, FIXTURES), "utf8");
 
 // cx.spawn runs the task (as Herdr does) and keeps it, to wait for; a task that throws is a failure, except for the
 // stand-ins' own "stub" (no exec, no files) that the real code meets as a failed command.
@@ -86,6 +94,7 @@ async function open({ diff, analysis = null, findings = null, ctx = null, pr = 2
   if (findings) S.files.set(`/h/pr-data/findings/${hash(url)}.json`, findings);
   const v = new PrReview(); v.init({}, cx);
   v.prSel = target; v.patch = splitPatch(diff);
+  await v.applyResume(cx); assert.equal(v.resumed, url, "where you were is read: frames are no longer held");
   v.hunks = hunksOf(v.patch).map((h) => ({ ...h, rows: diffRows(h.lines) }));
   v.byId = new Map(v.hunks.map((h) => [h.id, h])); v.fileHunks = new Map();
   for (const h of v.hunks) v.fileHunks.set(h.path, [...(v.fileHunks.get(h.path) ?? []), h]);
@@ -279,7 +288,7 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     assert.ok(v4.pageParts.includes(`p:${ps.at(-1)}`), "its path is a part of the page, also one under \"n more\", so the click can scroll to it");
     assert.ok(v4.resNow().paths.find((p) => p.id === ps.at(-1)).marks.some((m) => m.at === "mailer" && m.mark === "✕ when slow"), "and the map marks the dependency");
     for (const id of ["rv-res-dep-0-down", "rv-res-dep-at-0"]) { click(id, "a dependency's line"); draw(v4, `after ${id}`); }
-    assert.match((await import("./markdown.js")).resilienceMd({ pr: {}, head: v4.head, res: v4.resNow(), arch: v4.ai?.arch }), /## When a dependency fails\n\n- Mailer/, "the export has the dependencies");
+    assert.match((await import("./markdown.js")).resilienceMd({ pr: {}, head: v4.head, res: v4.resNow(), arch: v4.ai?.arch }), /## When a dependency fails \(\d+\)\n\n- Mailer/, "the export has the dependencies");
   }
 }
 // The analysis read again after the findings file (a reload of the mod reads them in either order; Refresh diagrams
@@ -395,6 +404,11 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   v.selEnd = v.sel + 2; v.question = "Why this?"; v.addComment(cx); await settle(); draw(v, "panel: a pending comment and the bar");
   assert.equal(v.comments.length, 1, "the comment was added");
   v.editComment(v.comments[0], cx); draw(v, "panel: the comment being edited"); v.cancel(cx);
+  v.panelCommand("discard", cx); draw(v, "panel: Discard asked about"); assert.equal(v.comments.length, 1); v.discardAsk = false;
+  // What the review knows, on the files and next to the diff's size.
+  S.files.set(`/h/pr-data/findings/${hash(prs[0].url)}.json`, JSON.stringify({ findings: [{ id: "f1", file: v.files[0].path, line: 1, severity: "high", category: "security", title: "t" }, { id: "f2", file: v.files[1].path, line: 2, severity: "low", title: "u" }], status: {} }));
+  await v.loadMarks(prs[0].url); draw(v, "panel: findings marked on the files");
+  assert.deepEqual([v.fileMarks.get(v.files[0].path)?.top, v.risk.get(prs[0].url)?.open], ["high", 2], "the files and the PR carry the review's findings");
   v.askTop = true; draw(v, "panel: a comment on the whole file"); v.askTop = false;
   v.pick(v.files[1].path, cx); await settle(); draw(v, "panel: another file");
   v.openWalk(cx, false); await settle(); draw(v, "panel: Walkthrough without an analysis");
@@ -404,11 +418,17 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     for (let k = 0; k <= v.walk.steps.length + 1; k++) { v.step = k; draw(v, `panel: Walkthrough, layer ${k}`); }
     v.walkMore = true; v.walkError = "The model gave no answer"; draw(v, "panel: Walkthrough, its options and an error"); v.walkMore = false; v.walkError = null;
   }
-  v.view = "setup"; draw(v, "panel: Setup"); v.view = "diff";
+  v.panelCommand("setup", cx); draw(v, "panel: Setup"); v.panelCommand("setup:close", cx); assert.equal(v.view, "diff", "setup:close leaves Setup like its Close button"); draw(v, "panel: Setup closed");
+  // The other scripted clicks: the folds, a pick and a removal by owner/repo#number (two repos can share a number).
+  for (const c of ["picker", "merged", "other", "progress-all", "progress-all", "merged", "other"]) { v.panelCommand(c, cx); draw(v, `panel: command ${c}`); }
+  v.panelCommand(`drop:${prs[0].repo}#${prs[0].number}`, cx); await settle(); assert.equal(v.undo?.url, prs[0].url); v.panelCommand("undrop", cx); await settle(); assert.equal(v.undo, null);
   v.note = "Could not open: gh pr view: not found"; v.error = "Error: gh pr diff: could not resolve"; v.files = []; draw(v, "panel: a diff that did not come, and a note"); v.note = null;
   S.exec = null;
   // A remount with that pick: the frame before prs.json is read shows no list.
   { const w = new PrReview(); w.init({}, cx); draw(w, "panel: the pick from before coming back"); assert.ok(w.restoring && !w.srcAsked); await settle(); assert.ok(!w.restoring); }
+  // Back from the review of another PR (minimized, or Back): the panel shows that PR, not the pick from before.
+  { S.store.set("pr.fromReview", prs[1]); const w = new PrReview(); w.init({}, cx); await settle(); draw(w, "panel: back from a review, its PR shown");
+    assert.deepEqual([w.prSel?.url, S.store.get("pr.fromReview")], [prs[1].url, null], "the review's PR, handed over once"); }
   S.props = { part: "mini" }; S.store.set("review.minimized", { target: prs[0], at: now });
   const mini = new PrReview(); mini.init({}, cx); draw(mini, "the minimized review's chip");
   S.spaces = null; S.props = null;
@@ -436,7 +456,19 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
 {
   const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json") });
   const drawn = (what) => { S.ids = new Set(); draw(v, what); const got = [...S.ids].filter((x) => /^rv-md(-|$)/.test(x)); S.ids = null; return got; };
-  const copied = (name) => { v.note = null; v.command("copy-md", cx); assert.ok(v.note?.startsWith(`Copied ${name} as Markdown (`) && v.note.endsWith("Nothing was posted."), `the footer after copying ${name}: ${v.note}`); };
+  // A click opens the preview (every section with its size, the code context, the first lines); a section and the
+  // code can be left out; Copy says in the footer what was copied.
+  const copied = (name) => {
+    v.note = null; v.command("copy-md", cx);
+    assert.ok(v.mdPrev && v.note === null, `${name}: the preview first, nothing copied yet`);
+    S.ids = new Set(); draw(v, `${name}: the preview`); const ids = [...S.ids]; S.ids = null;
+    const doc = v.mdShown();
+    assert.ok(ids.includes("rv-mdprev") && ids.includes("rv-mdprev-copy") && ids.filter((x) => /^rv-mdprev-p\d+$/.test(x)).length === doc.parts.length, `${name}: the preview lists every section`);
+    if (doc.parts.length) { act(v, "md-part:0", `${name}: a section left out`); assert.ok(!v.mdText().startsWith("##") && v.mdOff().has(0)); act(v, "md-part:0", `${name}: the section back in`); }
+    act(v, "md-code", `${name}: without the code context`); act(v, "md-code", `${name}: with it again`);
+    v.command("md-copy", cx);
+    assert.ok(!v.mdPrev && v.note?.startsWith(`Copied ${name} as Markdown (`) && v.note.endsWith("Nothing was posted."), `the footer after copying ${name}: ${v.note}`);
+  };
   for (const [page, name] of [["overview", "the Overview"], ["arch", "the architecture"], ["blast", "the Security page"], ["res", "the Resilience page"]]) {
     v.command(`page:${page}`, cx);
     assert.deepEqual(drawn(`${page}: Copy as Markdown`), ["rv-md"], `${page} has the button once`); copied(name);
@@ -449,7 +481,78 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   assert.ok(drawn("an open finding: Copy as Markdown").includes("rv-md-f")); copied("the open finding");
   for (const tab of ["files", "comments"]) { v.command(tab, cx); assert.deepEqual(drawn(`${tab}: no Copy as Markdown`), [], `${tab} has no page to copy and no button`); }
   const empty = await open({ ...PR2 });
-  for (const c of ["page:overview", "page:arch", "page:blast", "page:res", "findings", "copy-md"]) act(empty, c, `nothing analyzed yet: ${c}`);
+  for (const c of ["page:overview", "copy-md", "md-close", "page:arch", "copy-md", "md-close", "page:blast", "copy-md", "md-close", "page:res", "copy-md", "md-close", "findings", "copy-md", "md-copy"]) act(empty, c, `nothing analyzed yet: ${c}`);
+}
+// The Markdown of a page says what the page shows: every text the page draws (each crossing and path opened in turn,
+// the folds open), sentence by sentence, is in its Markdown, except what only serves the page (NOT_COPIED). Every
+// picture is a Mermaid block that reads as one, and the code context has the lines of the places named, no block
+// empty or twice.
+{
+  const { mdParts, codeStats } = await import("./markdown.js");
+  const doc = JSON.parse(fx("findings-s.json")); doc.resilience = JSON.parse(fx("resilience-r2.json"));
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify(doc) }), tt = S.theme;
+  v.deep = { ...v.deep, probes: { [v.probeKey("r1")]: { state: "done", status: "reproduced", line: "handled=1, no mail", ms: 1100, head: "ccddf95", base: { status: "script_failed", verdict: "new_in_pr", line: "ImportError" }, pre_existing: false, network_barrier: true,
+    script: "from library.mailer import Mailer\nprint('reproduced handled=1, no mail')\n", output: "reproduced handled=1, no mail\n" } } };
+  // (A mark that ends in "and 2 more" counts what the text lists in full: compared without that end.)
+  // What a page draws for itself and a text does not need: offers and prices of runs, ages, buttons, hints how to use
+  // the page, lines that only fold or count what the text has in full, and the certainty said in the page's own
+  // second wording (the text has it as Certainty and Preconditions).
+  const NOT_COPIED = [/recommended because/, /^Re-run \(/, /^Run probe/, /^last run .* ago/, /^A click shows the way\.$/, /^Verify (all \d+ )?with an agent/, /^Derived from the code that was read;$/, /^It needs nothing else:$/, /^it holds as the code stands\.$/, /lit on the map, the rest dimmed/,
+    /^in a sandbox, without network, at most 30 s$/, /^\d+ more: /, /^\d+ [^.]*(criteria|high|medium|low|observable|blockers?|paths?) ▸$/, /^GitHub read .* ago/, /^call over a trust boundary$/, /^Look inside/, /Ask names it/, /^This analysis has no further details for this card\.$/, /^“Look inside” reads/, /^“↻ Refresh diagrams”/,
+    /^and \d+ more in the Findings tab$/, /^Ask about this layer$/, /^A finding sent to Fix stays unresolved and shows here/, /^not counted as findings$/];
+  const norm = (x) => String(x).toLowerCase().replace(/,? \d+ (s|min|h|d|days?) ago/g, "").replace(/#\d+;|#quot;|#lt;|#gt;/g, " ").replace(/[^a-z0-9äöüß]+/g, " ").trim();
+  const drawn = (states, part) => { const all = new Set(); for (const st of states) { st(); S.texts = null; S.lists.length = 0; v.render(cx); S.lists.length = 0; S.texts = all; part(); } S.texts = null; return [...all]; };
+  const missing = (texts, md) => { const text = norm(md), segs = [...new Set(texts.flatMap((x) => x.split(/(?<=[.;:])\s+|\s·\s|\n+/)).map((x) => x.replace(/^\*\*Suggested:\*\*\s*/, "").replace(/ and \d+ more$/, "")))].filter((x) => x.trim().length >= 20 && x.trim().split(/\s+/).length >= 4);
+    return segs.filter((x) => !NOT_COPIED.some((re) => re.test(x.trim())) && norm(x.replace(/…$/, "")) && !text.includes(norm(x.replace(/…$/, "")))); };
+  // A Mermaid block as Mermaid reads it: a known diagram, every line of a known form, frames closed, no call to a card that is not there.
+  const mermaidBad = (lines) => {
+    const [kind, ...raw] = lines, rest = raw.map((l) => l.replace(/#\w+;/g, "")), ids = new Set(), bad = []; // an entity code ("#58;") is text
+    if (kind === "flowchart LR") {
+      let open = 0;
+      for (const l of rest) { let m;
+        if (/^\s*subgraph \w+\["[^"]*"\]$/.test(l)) open++; else if (/^\s*end$/.test(l)) open--;
+        else if ((m = /^\s*(\w+)\["[^"]*"\](:::\w+)?$/.exec(l))) ids.add(m[1]);
+        else if ((m = /^\s*(\w+) (?:-->|-\.->|==>)(?:\|"[^"]*"\|)? (\w+)$/.exec(l))) { if (!ids.has(m[1]) || !ids.has(m[2])) bad.push(`unknown card: ${l}`); }
+        else if (!/^\s*(classDef \w+ [\w:#,. -]+|class [\w,]+ \w+|linkStyle \d+ [\w:#,. -]+)$/.test(l)) bad.push(l); }
+      if (open) bad.push("a frame is not closed");
+    } else if (kind === "stateDiagram-v2") { for (const l of rest) if (!/^\s*state "[^"]*" as \w+$/.test(l) && !/^\s*(\[\*\]|\w+) --> (\[\*\]|\w+)( : [^:;]+)?$/.test(l)) bad.push(l); }
+    else if (kind === "sequenceDiagram") { for (const l of rest) if (!/^\s*participant \w+ as [^:;]+$/.test(l) && !/^\s*\w+-?->>\w+: [^;]+$/.test(l) && !/^\s*Note over \w+: [^:;]*$/.test(l)) bad.push(l); }
+    else bad.push(`unknown diagram: ${kind}`);
+    return bad;
+  };
+  const pictures = (md) => { const out = [], lines = md.split("\n"); for (let i = 0; i < lines.length; i++) if (lines[i] === "```mermaid") { const k = lines.indexOf("```", i + 1); out.push(lines.slice(i + 1, k)); i = k; } return out; };
+  const check = (name, texts, want) => {
+    const md = v.mdText(true), pics = pictures(md), heads = md.split("\n").filter((l) => /^Code `[^`]+:\d+-\d+`:$/.test(l)), cs = codeStats(md);
+    assert.deepEqual(missing(texts, md), [], `${name}: what the page shows and its Markdown does not have`);
+    assert.deepEqual(pics.flatMap(mermaidBad), [], `${name}: a Mermaid block does not read as one`);
+    for (const [kind, n] of Object.entries(want)) assert.ok(pics.filter((p) => p[0].startsWith(kind)).length >= n, `${name}: ${n} ${kind} pictures as Mermaid, found ${pics.filter((p) => p[0].startsWith(kind)).length}`);
+    assert.equal(new Set(heads).size, heads.length, `${name}: a place's code is there once`);
+    assert.ok(cs.blocks === heads.length && cs.lines >= cs.blocks && !/```\w*\n```/.test(md), `${name}: no code block is empty`);
+    assert.ok(mdParts(md).parts.length > 0 && mdParts(v.mdText(false)).parts.every((p) => !p.lines.some((l) => /^Code `/.test(l))), `${name}: sections for the preview, and none of the code without the code context`);
+    return md;
+  };
+  const a = v.ai.arch, paths = v.resNow().paths, page = () => v.pageView(tt);
+  v.command("page:blast", cx); v.crossAll = true;
+  const sec = check("Security", drawn(["", ...(v.ai.access ?? []).map((x) => `a:${x.id}`), ...a.edges.map((_e, k) => `e:${k}`)].map((k) => () => v.command(`cross:${k}`, cx)), page), { flowchart: 1 });
+  // A security finding with a range of lines has those lines as code, from the diff with its marks.
+  const ranged = v.findings().find((f) => f.security && f.end > f.line && v.fileHunks.has(f.file));
+  assert.ok(ranged && new RegExp(`Code \`${ranged.file.replace(/[.]/g, "\\.")}:\\d+-\\d+\`:\\n\\n\`\`\`diff\\n`).test(sec), "a finding's lines stand under it as a diff block");
+  v.command("page:res", cx);
+  check("Resilience", drawn([...paths.map((p) => () => v.command(`res-path:${p.id}`, cx)), () => { v.command("res-more", cx); v.command("res-clean", cx); v.command("res-add", cx); v.command("res-probe-open:r1", cx); }], page),
+    { flowchart: 1 + paths.filter((p) => (p.via ?? []).length > 0).length, sequenceDiagram: (v.resNow().races ?? []).filter((r) => paths.some((p) => (p.findings ?? []).some((id) => (r.findings ?? []).includes(id)))).length });
+  v.command("page:overview", cx); v.rulesOpen = true; v.relOpen = true;
+  check("Overview", drawn([() => {}, ...[...v.ai.asks.map((x) => x.id), "other"].map((k) => () => v.command(`criterion:${k}`, cx))], page), {});
+  v.command("page:arch", cx);
+  check("Architecture impact", drawn([() => {}, ...a.nodes.map((n) => () => v.command(`card:${n.id}`, cx))], page), { flowchart: 1 });
+  v.command("order:reading", cx); v.command("step:0", cx);
+  const st = v.steps()[0];
+  check("a layer", drawn([() => {}], () => { v.stepRow(st, 0, tt); v.item({ t: "step", s: st, i: 0 }, tt); }), { stateDiagram: (st.visuals ?? []).filter((x) => x.kind === "state_machine").length });
+  v.command("findings", cx); v.ffocus = null;
+  const all = drawn([() => {}], () => v.findingsPane(tt));
+  check("the Findings tab", all, {});
+  const f = v.findings().find((x) => x.sources.length > 1); v.ffocus = f.id;
+  const one = drawn(["reported", "evidence", "sent", "verified", "in_pr"].map((k) => () => { v.fstep = { id: f.id, key: k }; }), () => v.findingsPane(tt)).filter((x) => !all.includes(x));
+  check("an open finding", one, {}); v.fstep = null;
 }
 await settle();
 assert.deepEqual(late, [], "a spawned task threw");

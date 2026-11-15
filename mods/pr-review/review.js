@@ -19,6 +19,7 @@ import { taskList, taskHead, verdictParts, reviewState, certaintyLine, severityT
 import { findingSteps, funnel, funnelLine, ownerOf, quickFirst, hasEffort, publicFiles, funnelShort, diffPath } from "./pr.js"; // the Findings tab
 import { withProof, PROOF_WORDS } from "./pr.js"; // Verify with an agent
 import { overviewMd, findingMd, findingsMd, layerMd, architectureMd, securityMd, verifyContextMd, resilienceMd } from "./markdown.js"; // Copy this page as Markdown
+import { mdParts, mdJoin, codeStats } from "./markdown.js"; // its preview: the text in sections, the code context counted
 import { highlightJob, highlightStep, highlightLines, langOf, colors, renderLine, refAt } from "./syntax.js";
 import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js";
 import { recommendModel, tierSteps } from "./pr.js";
@@ -33,8 +34,8 @@ import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCAL
 import { ghMd, mdBlocks } from "./views.js"; // GitHub comments as GitHub shows them
 import { wrapCode, codeCols, sliceSpans } from "./views.js"; // long lines wrap
 import { pairRows, pairSide, HALF_GUTTER, diffModeOf, oneSided, stackOf, chipAt, textW } from "./views.js"; // side by side; the bar's stack
-import { mdTarget } from "./views.js"; // Copy as Markdown: what it copies on each page
-const MD_W = textW("Copy as Markdown", 12.5) + 20; // the button's width on a layer's head, where clicks are placed by x
+import { mdTarget, secPicture, secBlast, resNoPicture } from "./views.js"; // Copy as Markdown: what it copies on each page; the Security page's picture and lines
+const MD_W = textW("⧉ Copy as Markdown…", 12.5) + 22; // the button's width on a layer's head, where clicks are placed by x
 import { plainText } from "./pr.js";
 import { pollDue, pollAfter, windowActive } from "./pr.js"; // background fetches (ghTick)
 import { hasSources, archLayout, archBands } from "./arch.js";
@@ -43,11 +44,12 @@ import { markRoom, FIT as ARCH_FIT, ARCH as ARCH_SIZE } from "./arch.js"; // a c
 import { resStartOf, resOrder, resPicture, budgetBar, resPathView, resCardOf, resSentence, resMarksOn } from "./views.js";
 import { resWord, resToolText, resVerdict, resWatch, resTwice, PROBE_TYPICAL, resEdgeMarks, resByProbe, RES_MARK_ROW, resMarkRows, resMarkLines, resVerdictParts, resStartCard } from "./views.js";
 import { withProbes, certaintyText, probedText } from "./views.js"; // wave C2 V3: a reproduced probe confirms its findings // wave R2: words, verdict, watch, doubled ways
+import { withThreats, secNote, secByEffect, secWhy } from "./pr.js"; // the Security page: one count, and a run from before its current rules
 import { withResilience, resilienceStart, RUN_TYPICAL } from "./pr.js"; // the Resilience run's data // the Resilience page
 import { keepLast } from "./views.js"; // every cache has a limit
 import { resDepRows, resMeta, resFade } from "./views.js"; // Resilience: dependencies that fail or are overloaded; a path's second line; readable dimming
 import { wayOf, wayText, passZones, runsIn } from "./views.js"; // panel round 3: ways through every gate, zones passed on
-import { transitionMarks, effectiveFrom, inProcess, mapArch, crossingsOf, crossingChanged, secSentence, TRUST_ORDER, asideOf, threatCited, blastOf, skipText } from "./views.js";
+import { transitionMarks, effectiveFrom, inProcess, mapArch, crossingsOf, crossingChanged, secSentence, TRUST_ORDER, asideOf, threatCited, blastOf, skipText, guardLine } from "./views.js";
 import { trustLegend, hasTrust } from "./stack.js";
 import { scopeTable, scopeConflicts, runSummary, AREA_NAME, areaFindings, surfaceOf, EXPOSURE, reachLevel, secOrder, extraWays } from "./views.js";
 import * as TH from "./threads.js";
@@ -261,7 +263,9 @@ export async function startExplore(root = null) {
   setShared("review.explore", { start: true, root, space: focused()?.space ?? null, at: Date.now() });
   run("layout.switch", { name: plan.name });
 }
-const leave = () => run("layout.switch", { name: shared("review.back") || "main" });
+// Leaving hands the review's PR to the panel (shared "pr.fromReview"): back there it shows this PR, whichever way the
+// review was opened (a Resume in a list, the minimized chip, Go to, a related PR), not the one picked before.
+const leave = () => { const pr = shared("review.target"); if (pr?.url) setShared("pr.fromReview", pr); run("layout.switch", { name: shared("review.back") || "main" }); };
 // Minimize: back to the previous layout with the review kept as one entry (part "mini", a float in the main layout):
 // Open brings it back where it was, ✕ drops it. One at a time: minimizing another review replaces it.
 const minimize = () => { const pr = shared("review.target"); if (pr) setShared("review.minimized", { target: pr, at: Date.now() }); leave(); };
@@ -273,10 +277,11 @@ export function renderMini() {
     .text_size(12).text_color(t.foreground).tooltip(`${pr.repo ?? ""}#${pr.number ?? ""} ${pr.title ?? ""}`)
     .on_mouse_down("left", (_e, cx) => cx.stop_propagation()) // a press the mod doesn't stop would drag the float
     .child(div().flex_none().font_semibold().child(`Review #${pr.number ?? ""}`))
+    .when(Boolean(pr.title), (e) => e.child(div().flex_none().max_w(220).truncate().text_color(t.muted).child(pr.title)))
     .child(div().id("rv-mini-open").px(8).h(22).flex().items_center().rounded_full().cursor_pointer().text_color(t.accent).hover((x) => x.bg(t.hover))
       .tooltip("Back to the review, where you left it").on_click(() => startReview(pr)).child("Resume"))
     .child(div().id("rv-mini-x").w(22).h(22).flex().items_center().justify_center().rounded_full().cursor_pointer().text_color(t.muted).hover((x) => x.bg(t.hover))
-      .tooltip("Close the minimized review").accessibility_label("Close minimized review").on_click(() => setShared("review.minimized", null)).child("✕"));
+      .tooltip("Remove this chip. The review stays in progress with its comments; the panel's In progress resumes it.").accessibility_label("Remove the minimized review's chip").on_click(() => setShared("review.minimized", null)).child("✕"));
 }
 
 const pill = (id, t, label, click, on = false, color) => div().id(id).flex_none().whitespace_nowrap().px(9).h(26).flex().items_center().rounded(6).border_1()
@@ -480,7 +485,12 @@ export const ReviewMode = {
     else if (name === "gh-details") { const id = Number(arg) || arg; if (!(this.ghOpen ??= new Set()).delete(id)) this.ghOpen.add(id); } // gh-details:<comment id>: a click on that GitHub comment
     else if (name === "copy-link") copyText(this.prSel?.url ?? "");
     else if (name === "copy-state") this.copyState();
-    else if (name === "copy-md") this.copyMd(arg); // copy-md: this page; copy-md:verify: the context for an agent that checks the open finding, or the unresolved security findings
+    else if (name === "copy-md") this.copyMd(arg);
+    // The preview of Copy as Markdown: md-part:<n> ticks a section, md-code the code context, md-copy copies, md-close closes.
+    else if (name === "md-part" && this.mdPrev) { const x = this.mdShown().parts[Number(arg)]; if (x && !this.mdPrev.off.delete(x.title)) this.mdPrev.off.add(x.title); }
+    else if (name === "md-code" && this.mdPrev) this.mdPrev.code = !this.mdPrev.code;
+    else if (name === "md-copy") this.mdCopy();
+    else if (name === "md-close") this.mdPrev = null; // copy-md: this page; copy-md:verify: the context for an agent that checks the open finding, or the unresolved security findings
     else if (name === "criterion") this.toggleAsk(arg); // criterion:<ask id> | other: a click on a row of the Overview's task check
     else if (name === "open-gh") { if (this.prSel?.url) openUrl(this.prSel.url); }
     else if (name === "model") { if (arg) setShared("review.model", codeModel(arg)); }
@@ -548,6 +558,7 @@ export const ReviewMode = {
     this.full = {}; this.gaps = {}; this.whole = new Set(); this.collapsed = new Set(); this.hunks = null;
     this.rowsMemo = null; this.ghMemo = null; this.fitMemos = null; // what was computed for the PR before goes with it
     this.ctx = null; this.since = null; this.sinceOn = false; this.lastReviewed = null; this.page = "overview"; this.aiFile = null; this.needClone = null;
+    this.resumed = null; this.resumeIn = null; this.pendingScroll = null;
   },
 
   // A new diff: its hunks, progress and the cached analysis, if any.
@@ -565,21 +576,19 @@ export const ReviewMode = {
       if (hs.length) fileHunks.set(f.path, hs);
       if (Date.now() - t > 12) { await new Promise((r) => cx.timer.after(0, r)); t = Date.now(); if (this.patch !== patch) return; }
     }
+    // Progress, folds and where you were before the list exists: the first frame with the diff has the viewed files
+    // folded and stands where you left (it used to come after the threads were read, half a second of the top of Files).
+    const p = await this.resumeOf(url);
+    this.resumeIn = null; // a later load (a new head) reads what was saved since
+    if (this.patch !== patch) return;
+    this.prog = { visited: new Set(p.visited ?? []), checked: p.checked ?? {}, handled: p.handled ?? {}, seen: new Set(p.seen ?? []) };
+    this.collapsed = new Set([...this.prog.seen, ...foldOnOpen(this.patch)]);
+    this.takeResume(url, p);
     this.hunks = hunks; this.fileHunks = fileHunks;
     this.byId = new Map(this.hunks.map((h) => [h.id, h]));
     this.diffLines = diffLines(this.hunks);
     this.loadGhComments(cx);
     await this.loadThreads(cx);
-    const p = JSON.parse(await readTextFile(progressFile()).catch(() => null) ?? "{}")[url] ?? {};
-    this.prog = { visited: new Set(p.visited ?? []), checked: p.checked ?? {}, handled: p.handled ?? {}, seen: new Set(p.seen ?? []) };
-    this.collapsed = new Set([...this.prog.seen, ...foldOnOpen(this.patch)]);
-    const back = resumeFields(p.ui);
-    if (back) { // resume: where you were
-      Object.assign(this, back.fields);
-      if (back.model && codeModel(back.model) !== shared("review.model")) setShared("review.model", codeModel(back.model));
-      if (back.values !== undefined && back.values !== valuesOn()) setShared("review.values", back.values);
-      this.pendingScroll = back.scroll;
-    }
     this.uiSaved = JSON.stringify(this.uiState());
     this.head = this.prSel.headSha ?? null; // from prs.json (prs.py) or the branch's gh pr view; else asked when a file is opened
     // Since your last review: the mark before this visit (registerReview moves it to this head as "seen" afterwards).
@@ -714,6 +723,30 @@ export const ReviewMode = {
       exec("python3", [`${appHome()}/mods/pr-review/prs.py`, "--prune"]).catch(() => null); // bounds the cache folder
       this.publish(); cx.notify();
     });
+  },
+
+  // Where you were in this PR's review (review-progress.json), read once as soon as the PR is known: render holds its
+  // frame for that read (a few ms), so the first frame drawn is on the tab and page you left, and the list scrolls to
+  // your place in the frame it first appears (pendingScroll). Taken once per PR: a later load keeps what you did since.
+  resumeOf(url) {
+    if (this.resumeIn?.url !== url) this.resumeIn = { url, p: readTextFile(progressFile()).then((x) => JSON.parse(x ?? "{}")[url] ?? {}).catch(() => ({})) };
+    return this.resumeIn.p;
+  },
+  takeResume(url, p) {
+    if (this.prSel?.url !== url || this.resumed === url) return;
+    this.resumed = url;
+    const back = resumeFields(p.ui);
+    if (!back) return;
+    Object.assign(this, back.fields);
+    if (back.model && codeModel(back.model) !== shared("review.model")) setShared("review.model", codeModel(back.model));
+    if (back.values !== undefined && back.values !== valuesOn()) setShared("review.values", back.values);
+    this.pendingScroll = back.scroll;
+  },
+  async applyResume(cx) {
+    const url = this.prSel?.url;
+    if (!url || this.resumed === url) return;
+    this.takeResume(url, await this.resumeOf(url));
+    cx.notify();
   },
 
   // Progress and where you were (tab, file, hunk, step, order, selection, model, values) for resuming; the oldest
@@ -1073,7 +1106,7 @@ export const ReviewMode = {
     const [doc, rep] = await Promise.all([readTextFile(`${base}.json`).catch(() => null), readTextFile(`${base}.jsonl`).catch(() => null)]);
     if (this.prSel?.url !== url) return;
     const d = doc ? JSON.parse(doc) : {};
-    this.find = { ...this.find, list: d.findings ?? [], runs: runsOf(d.runs), status: d.status ?? {}, reports: parseReports(rep), security: d.security ?? null, resilience: d.resilience ?? null, loaded: url };
+    this.find = { ...this.find, list: withThreats(d.findings ?? [], d.security), runs: runsOf(d.runs), status: d.status ?? {}, reports: parseReports(rep), security: d.security ?? null, resilience: d.resilience ?? null, loaded: url };
     for (const r of Object.values(this.find.runs)) if (r.busy && Date.now() - Date.parse(r.started) > 30 * 60000) { r.busy = false; r.state = "failed"; r.error = "Stopped without a result"; }
     setShared("review.reviewers", this.find.runs);
     this.securityNow(cx);
@@ -1193,8 +1226,8 @@ export const ReviewMode = {
   findingComment(f, cx) {
     const rows = this.rowsFor(f.file), i = rows.findIndex((r) => atLine(r, f.line, false));
     const anchor = i >= 0 ? selection(rows, i) : { start: f.line, end: f.line, old: false, hunk: f.code };
-    this.comments = [...this.comments, { id: Date.now().toString(36), file: f.file, ...anchor, head: this.head, text: TH.findingCommentText(f), from: f.reviewer, ...(f.security ? { security: true } : {}) }];
-    this.persist(cx); this.note = `Added to the pending review.${f.security ? ` ${PUBLIC_TIP}` : ""}`; cx.notify();
+    this.comments = [...this.comments, { id: Date.now().toString(36), file: f.file, ...anchor, head: this.head, text: TH.findingCommentText(f), from: f.reviewer, ...(secByEffect(f) ? { security: true } : {}) }]; // the note about public comments: only for access or data
+    this.persist(cx); this.note = `Added to the pending review.${secByEffect(f) ? ` ${PUBLIC_TIP}` : ""}`; cx.notify();
   },
 
   // "Ask an agent…": what a click would start, decided before the preview so that it can say so. live: the PR's agent
@@ -1254,11 +1287,12 @@ export const ReviewMode = {
       prompt: (sub) => [fixPrompt(list, this.pr, report, this.lang()), sub ? TH.worktreeNote(sub.branch, sub.path) : null].filter(Boolean).join("\n\n"),
       sent: (cx) => { for (const f of list) this.setFinding(f, "progress", cx, { fixHead: this.headNow() }); } });
   },
-  // "Fix several…": the reviewer picks which unresolved findings one agent fixes together. Security findings are not
-  // offered: each goes alone, so that its change stays one commit to check.
+  // "Fix several…": the reviewer picks which unresolved findings one agent fixes together. Security findings about
+  // access or data (pr.js secByEffect) are not offered: each goes alone, so that its change stays one commit to check.
+  // A finding that is ⛨ only because a threat stands on it (a flood, a script that stops halfway) is offered.
   fixSeveral(cx) {
     const open = this.findings().filter((f) => ["open", "recheck"].includes(this.fstatus(f)));
-    this.fix([], cx, open.filter((f) => !f.security), open.filter((f) => f.security).length);
+    this.fix([], cx, open.filter((f) => !secByEffect(f)), open.filter((f) => secByEffect(f)).length);
   },
   // A tick in that list: the preview is built again for what is ticked now (branch name and text follow).
   fixPick(id, cx) {
@@ -2418,7 +2452,7 @@ export const ReviewMode = {
     else if (k === "shift-/" || e.key === "?") this.command("keys", cx);
     else if (k === "a" || k === "x") { const s = this.openSugs().find((x) => x.key === this.sug); if (s) (k === "a" ? this.takeSug(s, cx) : this.dropSug(s, cx)); } // only the note that is open: its line says so
     else if (k === "s" || k === "f") this.tab = k === "s" ? "steps" : "files";
-    else if (k === "escape") { if (this.sendP) this.sendP = null; else if (this.replyTo) this.replyTo = null; else if (this.selected().length) this.clearSel(cx); else if (this.finishOpen) this.finishOpen = false; else if (this.composing) this.closeComposer(cx); else if (this.defFile) this.defFile = null; else if (this.defAt) this.defAt = null; else if (this.drawerState() === "open") this.setDrawer(null, cx); else if (this.archFocus || this.blastFocus || this.askHl) this.archFocus = this.blastFocus = this.askHl = null; else leave(); }
+    else if (k === "escape") { if (this.mdPrev) this.mdPrev = null; else if (this.sendP) this.sendP = null; else if (this.replyTo) this.replyTo = null; else if (this.selected().length) this.clearSel(cx); else if (this.finishOpen) this.finishOpen = false; else if (this.composing) this.closeComposer(cx); else if (this.defFile) this.defFile = null; else if (this.defAt) this.defAt = null; else if (this.drawerState() === "open") this.setDrawer(null, cx); else if (this.archFocus || this.blastFocus || this.askHl) this.archFocus = this.blastFocus = this.askHl = null; else leave(); }
     else return;
     cx.stop_propagation(); cx.notify();
   },
@@ -2933,7 +2967,8 @@ export const ReviewMode = {
     const sec = this.prSel ? this.openFindings().filter((f) => f.security) : [], changed = (this.ai?.arch?.nodes ?? []).some((n) => n.status && n.status !== "unchanged");
     const worstSec = ["high", "medium", "low"].find((s) => sec.some((f) => f.severity === s));
     const plain = (id, tip, color, text) => div().id(id).tooltip(tip).flex_none().text_size(12.5).font_semibold().text_color(color).child(text);
-    const mark = { blast: sec.length > 0 && plain("rv-nav-sec", `${sec.length} unresolved security ${sec.length === 1 ? "finding" : "findings"}`, t[SEV[worstSec]] ?? t.ansi1, `⛨ ${sec.length}`),
+    const secN = this.prSel ? this.counts().security : 0; // once per cause, as the verdict, the chip and the sentence of the Security page count
+    const mark = { blast: secN > 0 && plain("rv-nav-sec", `${secN} unresolved security ${secN === 1 ? "cause" : "causes"}`, t[SEV[worstSec]] ?? t.ansi1, `⛨ ${secN}`),
       arch: changed && plain("rv-nav-arch", "The architecture picture differs before and after this PR", t.accent, "Changed"),
       res: (this.resNow()?.paths ?? []).some((p) => p.blocker) && plain("rv-nav-res", "Paths that stand before the merge", t.foreground, String(this.resNow().paths.filter((p) => p.blocker).length)) };
     return v_flex().flex_none().px(8).pt(8).gap(2)
@@ -2949,7 +2984,7 @@ export const ReviewMode = {
   // The Analysis tab's label: its layers, and "⛨ n" while security findings are unresolved (the one security signal
   // that shows from every tab, since the pages are inside this tab).
   analysisLabel(t) {
-    const sec = this.prSel ? this.openFindings().filter((f) => f.security).length : 0;
+    const sec = this.prSel ? this.counts().security : 0; // once per cause, the number of the verdict
     return h_flex().gap(6).items_center().child(`Analysis${this.ai ? ` · ${this.ai.steps.filter((s) => !s.pseudo).length}` : ""}`)
       .when(sec > 0, (e) => e.child(div().text_color(t.ansi1).child(`⛨ ${sec}`)));
   },
@@ -3236,7 +3271,7 @@ export const ReviewMode = {
         .children(found.slice(0, 6).map(({ f, edge }) => h_flex().id(`rv-arch-cf-${f.id}`).gap(8).items_start().px(6).py(3).rounded(6).text_size(13).cursor_pointer().hover((x) => x.bg(t.hover))
           .tooltip("Open this finding and show its line in the diff").on_click((_e, cx) => { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); cx.notify(); })
           .child(badge(t, f.severity, t[SEV[f.severity]] ?? t.accent))
-          .when(Boolean(f.security), (x) => x.child(chip(t, "⛨ Security", t.ansi1, true)))
+          .when(Boolean(f.security), (x) => x.child(chip(t, "⛨ Security", t.ansi1, true, `rv-secwhy-${f.id}`, secWhy(f))))
           .child(div().flex_1().min_w(0).whitespace_normal().line_height(1.4).child(plain(f.title)))
           .when(Boolean(edge) || f.breaks?.node === n.id, (x) => x.child(div().flex_none().text_size(12).text_color(t.muted).child(edge ? `breaks the call ${edge.from === n.id ? `to ${name(edge.to)}` : `from ${name(edge.from)}`}` : "breaks the flow here")))
           .child(div().flex_none().text_size(12).text_color(t.muted).child(`${f.file.split("/").pop()}:${f.line}`))))
@@ -3869,6 +3904,7 @@ export const ReviewMode = {
     // Security findings: ⛨ ones (pr.js isSecurity) and the category's own (a right granted and not used, low).
     const sec = this.findings().filter((f) => f.security || f.category === "security"), open = sec.filter((f) => OPEN_ST.includes(this.fstatus(f)));
     const runs = this.find.runs, sr = runs.security, title = (text) => div().text_size(14).font_semibold().child(text);
+    const secN = this.counts().security; // the one number: ⛨ findings once per cause (the verdict, the navigation and "Before merge" name the same)
     // The unresolved findings a named threat stands on that are no ⛨ finding (a flood, a script that leaves a guardrail
     // off): listed and marked here too, counted apart ("⛨" stays what pr.js isSecurity says).
     const threats = this.ai?.threats ?? [], cited = threatCited(threats, this.openFindings()).filter((f) => !open.includes(f)), shown = [...open, ...cited];
@@ -3885,7 +3921,7 @@ export const ReviewMode = {
       const stated = (f.reachable_from ?? []).map((id) => all.find((x) => x.id === id)).filter(Boolean);
       return stated.length ? { ways: stated, stated: true } : { ways: surface.entries.filter((x) => (x.node && x.node === cardOf.get(f.id)) || x.at === `${f.file}:${f.line}`), stated: false };
     };
-    const LEVEL = { public: "public", authenticated: "authenticated", internal: "internal_only", data: "internal_only" }, zoned = (a?.zones ?? []).length > 0;
+    const LEVEL = { public: "public", operator: "internal_only", authenticated: "authenticated", internal: "internal_only", data: "internal_only" }, zoned = (a?.zones ?? []).length > 0;
     const order = secOrder(shown.map((f) => { const r = rowOf(f); return r ? { f, level: r.kind === "entry" ? "public" : LEVEL[r.from.trust] ?? "unknown", crosses: r.kind !== "bypass" && r.kind !== "operator" }
       : { f, level: reachLevel(f, waysOf(f).ways), crosses: zoned ? (a.edges ?? []).some((e) => e.crosses && !inProcess(e) && e.to === cardOf.get(f.id)) : null }; }));
     const ctx = { open, marks, surface, cardOf, waysOf, rowOf, crossings, why: new Map(order.map((r) => [r.f.id, r.why])), focus: this.blastFocus ?? null, name: (id) => a?.nodes.find((n) => n.id === id)?.label ?? (a?.groups ?? []).find((g) => g.id === id)?.label ?? (id === "internet" ? "Internet" : id),
@@ -3903,9 +3939,12 @@ export const ReviewMode = {
     const head = v_flex().gap(6)
       .on_size_change((_s, cx) => this.loadVisibility(cx)) // once the page is laid out: is the repo public
       .child(h_flex().gap(10).items_center().flex_wrap().child(div().flex_1().text_size(20).font_semibold().child("Security"))
-        .child(chip(t, `⛨ Security · ${open.length}`, open.length ? t.ansi1 : t.muted, true, "rv-bl-secn", "Unresolved security findings, from every source"))
+        .child(chip(t, `⛨ Security · ${secN}`, secN ? t.ansi1 : t.muted, true, "rv-bl-secn", "Unresolved security findings from every source, counted once per cause: access or data, or what a named threat stands on"))
         .when(data && sr?.state === "running", (e) => e.child(pill("rv-bl-run", t, "Security review running…", () => {}).tooltip("The security reviewer is reading the PR head"))))
       .when(data && sr?.state !== "running", (e) => e.child(this.runOffer("security", t)))
+      // pr.js secNote: a run from before the current rules of the security view; what it left open may be the old prompt's.
+      .when(data && sr?.state === "done" && Boolean(secNote(this.ai)), (e) => e.child(div().id("rv-sec-rules").text_size(12.5).text_color(t.ansi3).whitespace_normal().line_height(1.5)
+        .child("This security review is older than the current rules for guards, operators and taken-over roles, so a crossing it calls not assessed may only be left open by the old prompt. Re-run it for the current view.")))
       // Someone else's PR with reasons (pr.js securityStart offer): why the Run button is there, with its cap.
       .when(data && Boolean(this.secOfferText()), (e) => e.child(div().id("rv-sec-offer").text_size(13).whitespace_normal().line_height(1.5).text_color(t.ansi3)
         .child(`${this.secOfferText()} Run security review: capped at $${REVIEW_CAP[tierOf(model())]}.`)));
@@ -3913,7 +3952,7 @@ export const ReviewMode = {
     // A picture only from three changed crossings on: below that the table says it all.
     const map = data && a && changed.length >= 3 ? this.secMap(t, a, ctx, changed) : null;
     return [["head", head], ...(data ? [] : [["empty", this.secEmpty(t)]]),
-      ...(data ? [["sentence", div().id("rv-sec-sentence").text_size(14).line_height(1.5).whitespace_normal().max_w(1000).child(secSentence(crossings, open.length, cited.length))], ["crossings", this.secCrossings(t, title, crossings)]] : []),
+      ...(data ? [["sentence", div().id("rv-sec-sentence").text_size(14).line_height(1.5).whitespace_normal().max_w(1000).child(secSentence(crossings, secN, cited.length, asideOf({ arch: a, access: this.ai?.access ?? [] }).guards.filter((g) => g.loosened).length))], ["crossings", this.secCrossings(t, title, crossings)]] : []),
       ...(map ? [["map", map]] : []), ["findings", this.secIntro(t, sec, open, cited)], ...order.map(({ f }) => [`f:${f.id}`, this.secFinding(t, f, ctx)]),
       ["scope", this.secScope(t, title)]];
   },
@@ -3929,25 +3968,7 @@ export const ReviewMode = {
     const marksAll = ctx.marks, eff = this.effZones(a), num = (r) => ctx.crossings.indexOf(r) + 1;
     const key = `${JSON.stringify(rows.map((r) => [r.key, r.result, r.check, num(r)]))}|${[...marksAll.nodes.keys()]}|${[...eff.keys()]}`;
     if (this.secMemo?.key !== key) {
-      const nodes = new Map(), edges = [], card = (id) => a.nodes.find((n) => n.id === id);
-      // A frame per zone (two zones of one trust level, e.g. in two cloud accounts, stay apart); whoever arrives from
-      // outside stands outside every zone, an operator's script with the operators.
-      const lane = (r, side) => { const z = side === "from" ? r.from : r.to; return side === "from" && r.kind === "operator" ? "operator" : side === "from" && r.kind === "entry" ? "outside" : z.trust ? `z:${z.name}` : "unknown"; };
-      const put = (id, label, type, trust) => { if (!nodes.has(id)) nodes.set(id, { id, label, type, group: `t:${trust}`, status: undefined, description: "" }); return id; };
-      for (const r of rows) {
-        const from = r.ends.from ? put(r.ends.from, card(r.ends.from)?.label ?? r.ends.from, card(r.ends.from)?.type, lane(r, "from")) : put(`\0who:${r.kind}:${r.identity}`, r.kind === "operator" ? r.from.name : r.identity ?? "unnamed", r.kind === "entry" ? "external" : "component", lane(r, "from"));
-        const to = r.ends.to ? put(r.ends.to, card(r.ends.to)?.label ?? r.ends.to, card(r.ends.to)?.type, lane(r, "to")) : null;
-        // The line says what goes over it (what an attacker controls, else the call or right); a check by its kind; a
-        // crossing assessed and still unchecked "no check"; one not assessed only its dashes. The rest is the tooltip.
-        const over = r.carries?.length ? [].concat(r.carries).slice(0, 2).join(", ") : r.kind === "right" ? (r.actions ?? []).slice(0, 1).join("") || r.what : r.what;
-        const check = r.kind === "bypass" ? "bypasses the boundary" : r.check ? `‖ ${r.check.replace(/, in the (code|config)$/, "")}` : r.result !== "not_assessed" ? "no check" : null;
-        const tip = [`${num(r)}. ${r.what || over}`, r.kind === "bypass" ? "A call in one process: it bypasses the boundary of the code it reaches." : r.check ? `Checked by ${r.check}${r.expects ? `, expects ${r.expects}` : ""}${r.holds_if ? `; holds only if ${r.holds_if}` : ""}.` : r.result === "not_assessed" ? "Not assessed: no threat names this crossing." : "No check on this crossing.", r.result !== "not_assessed" ? `Result: ${r.result}.` : null].filter(Boolean).join("\n");
-        if (to) edges.push({ from, to, label: `${num(r)}. ${[check, over].filter(Boolean).join(" · ")}`, tip, crosses: r.kind !== "bypass", dashed: r.result === "not_assessed", evidence: r.at ?? undefined });
-      }
-      const zs = TRUST_ORDER.flatMap((tr) => (a.zones ?? []).filter((z) => z.trust === tr)), zoneNamed = (g) => zs.find((z) => `z:${z.name ?? z.id}` === g);
-      const used = new Set([...nodes.values()].map((n) => n.group)), groups = ["operator", "outside", ...zs.map((z) => `z:${z.name ?? z.id}`), "unknown"].filter((g) => used.has(`t:${g}`))
-        .map((g) => (zoneNamed(g) ? { id: `t:${g}`, label: zoneNamed(g).trust[0].toUpperCase() + zoneNamed(g).trust.slice(1), kind: zoneNamed(g).name ?? zoneNamed(g).id, trust: zoneNamed(g).trust }
-          : { id: `t:${g}`, label: g === "operator" ? "Operators and CI" : g === "outside" ? "Outside" : "Zone not named", kind: g === "outside" ? "internet" : "", trust: g === "outside" ? "public" : undefined }));
+      const { groups, nodes: cards, edges } = secPicture(rows, a, num), nodes = new Map(cards.map((n) => [n.id, n])); // views.js: the same picture as the page's Markdown
       const marks = { nodes: new Map([...marksAll.nodes].filter(([id]) => nodes.has(id))), edges: new Map() };
       // Fit: narrow cards, so the zones fit the page's width more often (the Data column was cut off).
       this.secMemo = { key, marks, L: archLayout({ groups, nodes: [...nodes.values()], edges }, "diff", (n) => (marks.nodes.has(n.id) ? MARK_CARD_ROWS : 0) + (eff.has(n.id) ? 1 : 0), true, { labels: true, lines: () => true }) };
@@ -3987,10 +4008,7 @@ export const ReviewMode = {
     const arch = this.ai?.arch, nodeOf = (id) => arch?.nodes.find((n) => n.id === id), label = (id) => nodeOf(id)?.label ?? (arch?.groups ?? []).find((g) => g.id === id)?.label ?? (id === "internet" ? "Internet" : id);
     // ponytail: an operator's row shares its card with the way in; its "Also here" would repeat that row's.
     const marks = this.archMarksNow(), here = (r) => (r.kind === "operator" ? [] : [...new Set([...(marks.nodes.get(r.ends.to)?.findings ?? []), ...(r.edge !== undefined ? marks.edges.get(r.edge)?.findings ?? [] : [])])].filter((f) => !r.findings.includes(f)));
-    // A way in this PR opens that the task does not ask for (views.js extraWays: an "extra" ask in its files).
-    const fileOf = (at) => (at ? /^(.*?)(:\d+)?$/.exec(String(at))[1] : null);
-    const extra = new Map(extraWays((this.ai?.asks ?? []).map((q) => ({ ...q, files: [...(q.hunks ?? []).map((h) => this.byId.get(h)?.path), ...(q.findings ?? []).map((id) => this.findingById(id)?.file)].filter(Boolean) })),
-      rows.filter((r) => r.kind === "entry").map((r) => ({ ...r.access, k: r.key, files: [fileOf(r.access.at), fileOf(nodeOf(r.ends.to)?.at)].filter(Boolean) }))).map((m) => [m.entry.k, m.ask]));
+    const extra = this.secExtra(rows); // a way in this PR opens that the task does not ask for
     const goTo = (f) => (_e, cx) => { const j = this.pageParts.indexOf(`f:${f.id}`); if (j >= 0) this.pageScrolls.blast.scroll_to_item(j); else { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); } cx.stop_propagation(); cx.notify(); };
     const flist = (k, list, id) => v_flex().gap(2).children(list.slice(0, 3).map((f) => h_flex().id(`rv-sec-cr-${id}-${k}-${f.id}`).gap(4).items_start().cursor_pointer().tooltip(plain(f.title)).on_click(goTo(f))
       .child(badge(t, f.severity, t[SEV[f.severity]] ?? t.accent)).child(div().flex_1().min_w(0).whitespace_normal().child(plain(f.title))))).when(list.length > 3, (e) => e.child(div().text_color(t.muted).child(`and ${list.length - 3} more`)));
@@ -4045,24 +4063,9 @@ export const ReviewMode = {
         .when(also.length > 0, (e) => e.child(v_flex().pl(28).gap(2).child(div().text_size(11.5).text_color(t.muted).child("Also at this place")).child(flist(k, also, "h"))))
         .when(open, (e) => e.child(strip(r)));
     };
-    // If a frame with a way in is compromised: what its principal may do (the rights rows that start there), unused too.
-    // By principal behind a way in (views.js blastOf: a frame can be a whole account with several roles); what such a
-    // frame reaches in one process stays by frame.
-    const groupOf = (id) => nodeOf(id)?.group ?? null, frames = [...new Set(rows.filter((r) => r.kind === "entry").map((r) => groupOf(r.ends.to)).filter(Boolean))];
-    const aside = asideOf({ arch, access: this.ai?.access ?? [], threats: this.ai?.threats ?? [], findings: this.openFindings() }), byPrincipal = blastOf(arch, this.ai?.access ?? []);
-    const tails = new Map(), blast = [...frames.map((g) => {
-      // The rights by frame only for data without a principal's card (an older run); else they stand by principal above.
-      const name = (arch?.groups ?? []).find((x) => x.id === g)?.label ?? g, rights = byPrincipal.length ? [] : rows.filter((r) => r.kind === "right" && r.ends.from && (groupOf(r.ends.from) === g || runsIn(nodeOf(r.ends.from)).includes(g)));
-      // What it reaches in one process: the cards of other frames its cards call without a boundary, and on from there.
-      const reach = [], seen = new Set((arch?.nodes ?? []).filter((n) => n.group === g || runsIn(n).includes(g)).map((n) => n.id));
-      for (const id of [...seen]) for (const e of arch?.edges ?? []) if (e.from === id && inProcess(e) && !seen.has(e.to)) { seen.add(e.to); reach.push(label(e.to)); for (const e2 of arch.edges) if (e2.from === e.to && inProcess(e2) && !seen.has(e2.to)) { seen.add(e2.to); reach.push(label(e2.to)); } }
-      const can = [...rights.map((r) => `${(r.actions ?? []).join(", ") || "act"} on ${r.ends.to ? label(r.ends.to) : r.access?.resource ?? "a resource"}${r.unused ? " (granted, not used)" : ""}`), reach.length && `call ${reach.join(" and ")} in the same process`].filter(Boolean);
-      // One principal in this frame (a function and its role): what it reaches in one process joins that principal's line.
-      const mine = byPrincipal.filter((b) => b.frame === g);
-      if (mine.length === 1 && can.length) { tails.set(mine[0], can.join("; ")); return null; }
-      return can.length ? `If ${name} is compromised, it can ${can.join("; ")}.` : byPrincipal.length ? null : `If ${name} is compromised, it holds no right the data names.`;
-    })].filter(Boolean);
-    blast.unshift(...byPrincipal.map((b) => (tails.has(b) ? `${b.text.replace(/\.$/, "")}; ${tails.get(b)}.` : b.text)));
+    // If a frame with a way in is compromised: what its principal may do (views.js secBlast, by principal behind a way in).
+    const aside = asideOf({ arch, access: this.ai?.access ?? [], threats: this.ai?.threats ?? [], findings: this.openFindings() });
+    const blast = secBlast(rows, arch, this.ai?.access ?? []);
     return v_flex().id("rv-sec-crossings").gap(8).p(12).rounded(10).border_1().border_color(t.border).bg(t.surface)
       .child(h_flex().gap(10).items_center().flex_wrap().child(title("Trust boundary crossings")).child(div().text_size(12.5).text_color(t.muted).child("The ways in, the rights and the calls this PR opens or changes across a trust boundary. A click shows the way.")))
       .child(rows.length ? v_flex().w_full().gap(6).text_size(12.5).line_height(1.45)
@@ -4073,11 +4076,19 @@ export const ReviewMode = {
       .children(blast.map((s, i) => h_flex().id(`rv-sec-blast-${i}`).gap(8).items_start().text_size(12.5).line_height(1.5).child(div().flex_none().text_color(t.ansi3).child("⚠")).child(div().flex_1().min_w(0).whitespace_normal().child(s))))
       // No crossings: a rule that takes a right away guards its resource (with the threat it holds against), and a
       // right on something the map does not show.
-      .children(aside.guards.map((g, i) => h_flex().id(`rv-sec-guard-${i}`).gap(8).items_start().text_size(12.5).line_height(1.5).child(div().flex_none().text_color(t.ansi2).child("⛨"))
-        .child(div().flex_1().min_w(0).whitespace_normal().child(`${g.text}${g.threats.map((x) => ` Holds against: ${plain(x.threat ?? "")} (${String(x.result ?? "").replace(/_/g, " ")}${x.evidence ? `, ${x.evidence}` : ""}).`).join("")}`))))
+      .children(aside.guards.map((g, i) => h_flex().id(`rv-sec-guard-${i}`).gap(8).items_start().text_size(12.5).line_height(1.5).child(div().flex_none().text_color(g.loosened ? t.ansi1 : t.ansi2).child(g.loosened ? "⚠" : "⛨"))
+        .child(div().flex_1().min_w(0).whitespace_normal().when(Boolean(g.loosened), (e) => e.text_color(t.ansi1)).child(plain(guardLine(g))))))
       .when(aside.rights.length > 0, (e) => e.child(div().id("rv-sec-offmap").text_size(12).text_color(t.muted).whitespace_normal().line_height(1.5)
         .child(`Also granted, on nothing the map shows: ${aside.rights.map((r) => r.text).join(" ")}`)))
       .when(!rows.some((r) => r.kind === "operator"), (e) => e.child(div().text_size(12).text_color(t.dim).child("Operator and CI ways (admin scripts, deploys, guardrails): none named by the data, not assessed.")));
+  },
+  // A way in this PR opens that the task does not ask for (views.js extraWays: an "extra" ask in its files):
+  // Map(crossing key -> ask). For the page's rows and their Markdown.
+  secExtra(rows) {
+    const arch = this.ai?.arch, nodeOf = (id) => arch?.nodes.find((n) => n.id === id);
+    const fileOf = (at) => (at ? /^(.*?)(:\d+)?$/.exec(String(at))[1] : null);
+    return new Map(extraWays((this.ai?.asks ?? []).map((q) => ({ ...q, files: [...(q.hunks ?? []).map((h) => this.byId.get(h)?.path), ...(q.findings ?? []).map((id) => this.findingById(id)?.file)].filter(Boolean) })),
+      rows.filter((r) => r.kind === "entry").map((r) => ({ ...r.access, k: r.key, files: [fileOf(r.access.at), fileOf(nodeOf(r.ends.to)?.at)].filter(Boolean) }))).map((m) => [m.entry.k, m.ask]));
   },
   // A card of the picture lit (null: none), and its first row below brought into view.
   secCard(id, cx) {
@@ -4378,9 +4389,7 @@ export const ReviewMode = {
         .child(div().w(200).text_color(t.muted).whitespace_normal().child(w.kind === "W" ? w.guard || "none" : "")).child(at(w.at, `rv-res-w-${p.id}-${k}`))
         .when(Boolean(w.breaks), (e) => e.child(div().text_color(t.ansi1).child("breaks the rule"))))));
     // No picture of the path's kind: a grey line says which data is missing, never another path's picture.
-    const NONE = { retry: "the run named no retry or redelivery on this path's calls", timeout: "the run named no batch size, time per record and timeout for this path",
-      race: "the run named no steps of this race", state: "the run named no writers for this state" };
-    return div().id(`rv-res-nopic-${p.id}`).text_size(12.5).text_color(t.muted).whitespace_normal().child(`no picture: ${NONE[p.kind] ?? "the run named no call on this path that multiplies or times out"}`);
+    return div().id(`rv-res-nopic-${p.id}`).text_size(12.5).text_color(t.muted).whitespace_normal().child(resNoPicture(p)); // views.js: the same words as the page's Markdown
   },
   // A probe in its path: before its run the claim and Run probe (for someone else's PR the script and the sentence of
   // what it does first); after it the result as symbol and word, strength, the one number, the base, head and time,
@@ -4623,7 +4632,7 @@ export const ReviewMode = {
     const sure = (f) => (f.security ? [f.certainty ? certaintyText(f) : "not rated", f.path_certainty && (REACH[f.path_certainty] ?? `reach ${f.path_certainty}`)].filter(Boolean).join(" · ") : f.certainty === "assumed" ? "assumed" : "");
     const finding = (f, id) => {
       const st = this.fstatus(f), settled = st === "fixed" || st === "dismissed", note = [sure(f), st !== "open" && FSTATUS[st]?.[0]].filter(Boolean).join(" · ");
-      return h_flex().id(id).tooltip([f.title, `${f.severity[0].toUpperCase()}${f.severity.slice(1)}${f.security ? ", security" : ""}`, certaintyLine(f), "Click to open this finding."].filter(Boolean).join("\n")).gap(8).items_center()
+      return h_flex().id(id).tooltip([f.title, `${f.severity[0].toUpperCase()}${f.severity.slice(1)}`, secWhy(f), certaintyLine(f), "Click to open this finding."].filter(Boolean).join("\n")).gap(8).items_center()
         .pl(10).pr(6).py(3).rounded(4).border_l(3).border_color(settled ? t.border : t[SEV[f.severity]] ?? t.muted).cursor_pointer().hover((s) => s.bg(t.hover))
         .on_click((_e, cx) => { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); cx.stop_propagation(); })
         .child(div().w(16).flex_none().text_color(f.security ? t.ansi1 : t.muted).child(f.security ? "⛨" : ""))
@@ -4725,6 +4734,16 @@ export const ReviewMode = {
     return v_flex().flex_none().gap(2).text_size(13.5).children(out);
   },
 
+  // Each source with what it found: a number, "no findings" (it ran), "failed" or "not run" (the Findings tab's line
+  // and its Markdown).
+  findingSources(all = this.findings()) {
+    const runs = this.find.runs, name = (k) => REVIEWERS[k]?.[0] ?? k;
+    const ran = { analysis: Boolean(this.ai), ...Object.fromEntries(Object.keys(ALL_REVIEWERS).map((k) => [k, runs[k]?.state === "done"])) };
+    return [...new Set(["analysis", ...reviewersNow().map(([k]) => k), ...all.flatMap((x) => x.sources.map((y) => y.reviewer))])].map((k) => {
+      const n = all.filter((x) => x.sources.some((y) => y.reviewer === k)).length;
+      return { k, n, text: runs[k]?.state === "running" ? `${name(k)}: running` : n ? `${name(k)} ${n}` : runs[k]?.state === "failed" ? `${name(k)}: failed` : ran[k] ? `${name(k)}: no findings` : `${name(k)}: not run` };
+    }).filter((x) => x.k !== "ai" || x.n);
+  },
   // The Findings tab: every finding once, one line each, in sections by state (pr.js findingStatus): the unresolved
   // ones with a fix sent (what is known about each fix, and Verify) and without, Fixed, Dismissed, then the AI notes. A click opens a finding in
   // place and shows its line in the diff. It has no filters of its own: the bar's Show switch is the one filter.
@@ -4733,12 +4752,8 @@ export const ReviewMode = {
     const by = (...st) => all.filter((x) => st.includes(this.fstatus(x)));
     const unresolved = by("open", "recheck"), sent = by("progress");
     const name = (k) => REVIEWERS[k]?.[0] ?? k, fun = funnel(all, (f) => this.fstatus(f));
-    // Each source with what it found: a number, "no findings" (it ran), "failed" or "not run".
     const ran = { analysis: Boolean(this.ai), ...Object.fromEntries(Object.keys(ALL_REVIEWERS).map((k) => [k, runs[k]?.state === "done"])) };
-    const sources = [...new Set(["analysis", ...reviewersNow().map(([k]) => k), ...all.flatMap((x) => x.sources.map((y) => y.reviewer))])].map((k) => {
-      const n = all.filter((x) => x.sources.some((y) => y.reviewer === k)).length;
-      return { k, n, text: runs[k]?.state === "running" ? `${name(k)}: running` : n ? `${name(k)} ${n}` : runs[k]?.state === "failed" ? `${name(k)}: failed` : ran[k] ? `${name(k)}: no findings` : `${name(k)}: not run` };
-    }).filter((x) => x.k !== "ai" || x.n);
+    const sources = this.findingSources(all);
     // The order "Quickest fix" is offered once a finding says how much work its fix is; it reorders every section.
     const efforts = hasEffort(all), order = (list) => (efforts && this.fsort ? quickFirst(list) : list);
     const row = (x) => {
@@ -4757,7 +4772,7 @@ export const ReviewMode = {
           // The effort word stands in a row only while the list is sorted by it (it explains the order); else it is
           // one of the open finding's facts ("Fix effort").
           .when(Boolean(x.effort) && Boolean(this.fsort), (e) => e.child(div().id(`rv-fef-${x.id}`).tooltip("How much work the fix is, as the analysis sees it: quick, moderate or heavy").flex_none().pt(1).text_size(12).text_color(t.muted).child(x.effort)))
-          .when(Boolean(x.security), (e) => e.child(badge(t, "⛨ Security", t.ansi1).bg(t.ansi1 + "26")))
+          .when(Boolean(x.security), (e) => e.child(badge(t, "⛨ Security", t.ansi1).bg(t.ansi1 + "26").id(`rv-fsec-${x.id}`).tooltip(secWhy(x))))
           .children([certaintyWord(t, x, `rv-fcert-${x.id}`)].filter(Boolean))
           .child(div().flex_1().min_w(120).font_semibold().text_color(settled ? t.muted : t.foreground).when(!wide, (e) => e.truncate()).when(wide, (e) => e.whitespace_normal()).child(x.title))
           .child(div().flex_none().text_size(12).text_color(t.muted).child(`${x.file.split("/").pop()}:${x.line}${this.findRow(x) < 0 ? " · outside the diff" : ""}`))
@@ -4819,7 +4834,7 @@ export const ReviewMode = {
         .child(v_flex().id("rv-find-left").absolute().inset_0().overflow_y_scroll().px(8).pb(12).gap(2)
           // The two kinds of unresolved findings add up to the number in the tab and in the line above.
           .child(section("FIX SENT", sent, verify, sentHint))
-          .child(section("NO FIX SENT", unresolved, unresolved.filter((x) => !x.security).length > 1 && pill("rv-fixall", t, "Fix several…", (_e, cx) => this.fixSeveral(cx)).tooltip("Pick which of these findings one agent fixes together; a preview first. Security findings are fixed one at a time.")))
+          .child(section("NO FIX SENT", unresolved, unresolved.filter((x) => !secByEffect(x)).length > 1 && pill("rv-fixall", t, "Fix several…", (_e, cx) => this.fixSeveral(cx)).tooltip("Pick which of these findings one agent fixes together; a preview first. Security findings are fixed one at a time.")))
           .when(c.fixed > 0, (e) => e.child(section("FIXED", by("fixed"))))
           .when(c.dismissed > 0, (e) => e.child(section("DISMISSED", by("dismissed"))))
           // Suggestions alone on their lines: notes, not findings, not counted above.
@@ -4969,7 +4984,7 @@ export const ReviewMode = {
       const open = this.findOpen(f), state = stateWord(st) ? div().id(`rv-lfst-${f.id}`).tooltip("Where this finding stands: fix sent, fixed (verified), dismissed, or unresolved with its line changed since").flex_none().text_size(12).font_semibold().text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(stateWord(st)) : null;
       const head = (e) => e.child(div().w(10).flex_none().text_size(12).text_color(t.muted).child(open ? "▾" : "▸"))
         .child(badge(t, f.severity, c).id(`rv-lfs-${f.id}`).tooltip(`${f.severity} is the highest severity among this finding's sources. The scale:\n${SEVERITY_SCALE}`))
-        .when(Boolean(f.security), (x) => x.child(badge(t, "⛨ Security", t.ansi1).bg(t.ansi1 + "26").id(`rv-lfsec-${f.id}`).tooltip("A security finding: the security review found it, or its content is about security")));
+        .when(Boolean(f.security), (x) => x.child(badge(t, "⛨ Security", t.ansi1).bg(t.ansi1 + "26").id(`rv-lfsec-${f.id}`).tooltip(secWhy(f) || "A security finding")));
       const sources = div().id(`rv-lfr-${f.id}`).tooltip("Where this finding comes from, each source with its own severity").min_w(0).truncate().text_size(12).font_semibold().text_color(t.muted).child(this.sourcesOf(f));
       if (!open) return div().id(`rv-lf-${f.id}`).tooltip("Open this finding: what it claims, its text, its suggestion and its actions").w_full().h(FIND_FOLDED).pl(GUTTER).pr(16).pt(6).pb(2).cursor_pointer()
         .child(head(card(h_flex())).size_full().px(12).gap(8).items_center().border_t(1).border_b(1).text_size(13.5)
@@ -5045,8 +5060,8 @@ export const ReviewMode = {
             .children(this.stepDeps(s).map(([d, w]) => div().w(w).h(22).flex_none().px(6).flex().items_center().rounded(6).border_1().border_color(t.border).text_size(12.5).text_color(t.accent)
               .truncate().child(plain(d.title)))))
           // Copy as Markdown, on the open layer's head (it copies that one): the last chip of the row (onItem, chipAt).
-          .when(on && !s.pseudo, (e) => e.child(div().id("rv-md-l").tooltip(this.mdNow().tip).accessibility_label("Copy this layer as Markdown").w(MD_W).h(22).flex_none().flex().items_center().justify_center().rounded(6).border_1().border_color(t.border)
-            .text_size(12.5).text_color(t.muted).hover((h) => h.text_color(t.foreground)).child("Copy as Markdown"))))
+          .when(on && !s.pseudo, (e) => e.child(div().id("rv-md-l").tooltip(this.mdNow().tip).accessibility_label("Copy this layer as Markdown").w(MD_W).h(22).flex_none().flex().items_center().justify_center().rounded(6).border_1().border_color(this.mdPrev ? t.accent : t.border).bg(t.raised)
+            .text_size(12.5).text_color(t.foreground).child("⧉ Copy as Markdown…"))))
         .child(div().flex_none().max_w(LAYER_TEXT).line_height(1.55).text_size(13.5).text_color(t.foreground).child(TextView.markdown(`rv-lwhy-${it.i}`, s.why)))
         .when(s.questions.length > 0, (e) => e.child(div().id(`rv-lq-${it.i}`).tooltip("Questions to check while you read this layer's code").h(18).flex_none().mt(4).text_size(11.5).font_semibold().text_color(t.muted).child("CHECK"))
           .children(s.questions.map((q, k) => h_flex().flex_none().max_w(LAYER_TEXT).gap(8).items_start().text_size(13.5).line_height(1.55)
@@ -5223,6 +5238,11 @@ export const ReviewMode = {
           : 'No PR selected: click "Review" on a PR in the PR panel.'))
         .child(pill("rv-empty-back", t, "← Back (Esc)", () => leave()).tooltip("Leave the review (Esc)"));
     }
+    // Where you were is not read yet (applyResume): hold the frame, so the first one drawn stands there.
+    if (this.resumed !== this.prSel?.url) {
+      if (!this.resumeQueued) { this.resumeQueued = true; cx.timer.after(0, (cx) => { this.resumeQueued = false; this.applyResume(cx); }); }
+      return root;
+    }
     // A page (Overview, Architecture…) or a definition covers the list: skip building it (a big PR's diff is the bulk
     // of a render, and a picture's sideways scroll renders per wheel event); this.items/at/byKey keep the last list.
     const listShown = !this.defFile && !(this.tab === "steps" && this.page);
@@ -5304,6 +5324,7 @@ export const ReviewMode = {
             .child(pill("rv-handover-x", t, "Later", (_e, cx) => { this.applyBlocked = null; cx.notify(); }).tooltip("Dismiss this notice"))))
           .when(this.finishOpen && !this.sendP, (e) => e.child(this.finishPopover(t)))
           .when(Boolean(this.sendP), (e) => e.child(this.sendPopover(t)))
+          .when(Boolean(this.mdPrev) && !this.sendP, (e) => e.child(this.mdPopover(t)))
           .when(!this.drawerSqueezes() && this.drawerState() === "open", (e) => e.child(div().absolute().top(0).right(0).bottom(0).child(this.askDrawer(t))))
           .when(this.drawerState() === "collapsed", (e) => e.child(div().absolute().top(0).right(0).bottom(0).child(this.drawerStrip(t)))))
         .when(this.drawerSqueezes(), (e) => e.child(this.askDrawer(t))));
@@ -5445,7 +5466,7 @@ export const ReviewMode = {
     const text = reviewState({ pr: this.prSel, head: this.worktree?.head ?? this.prSel.headSha ?? "", list: this.taskNow(), counts: this.counts(), findings: this.findings(), statusOf: (f) => this.fstatus(f),
       progress: `Reviewer's progress: ${p.filesViewed} of ${p.files} files viewed, ${p.comments} pending ${p.comments === 1 ? "comment" : "comments"}.`, behavior, fixOf, cost: this.costNow() });
     copyText(text);
-    this.note = `Review state copied as text (${text.trim().split("\n").length} lines), nothing was posted.${this.findings().some((f) => f.security) ? " Security findings are in it with their title only." : ""}`;
+    this.note = `Review state copied as text (${text.trim().split("\n").length} lines), nothing was posted.${this.findings().some((f) => secByEffect(f)) ? " Security findings about access or data are in it with their title only." : ""}`;
   },
 
   // "Copy as Markdown" (the button in a page's head, and "Copy this page as Markdown" in the ⋯ menu): what the right side shows, as text to hand to an agent (markdown.js):
@@ -5462,16 +5483,76 @@ export const ReviewMode = {
       this.note = `The context to check ${list.length === 1 ? "the open finding" : `${list.length} unresolved security findings`} is on the clipboard as Markdown (${text.trim().split("\n").length} lines), nothing was posted.`;
       return;
     }
+    this.mdPrev = this.mdPrev ? null : { off: new Set(), code: true, texts: {} }; // the preview first: what goes into the text, and how much
+  },
+  // The Markdown of what the person looks at (views.js mdTarget), whole and unfolded, as the page's own sources give
+  // it; code: with the code blocks of the places it names (from the diff and the files this review has loaded).
+  mdText(code = true) {
+    const ai = this.ai, findings = this.findings(), statusOf = (f) => this.fstatus(f), asks = ai?.asks ?? [];
+    const base = { pr: this.prSel, head: this.headNow() ?? "", code: code ? this.mdCode() : null, moreOf: (f) => this.mdMore(f) };
     const m = this.mdNow(), layer = this.steps()[this.cur], one = this.findingById(this.ffocus);
-    const text = { finding: () => findingMd(one, { ...base, status: statusOf(one), asks }),
-      findings: () => findingsMd(findings, { ...base, statusOf, asks }),
-      layer: () => layerMd(layer, { ...base, n: this.cur + 1, files: this.filesOf(layer), findings: this.layerFindings(layer), statusOf }),
-      arch: () => architectureMd({ ...base, ai, findings, statusOf }),
-      blast: () => securityMd({ ...base, ai, findings, statusOf, runs: this.find.runs }),
-      res: () => resilienceMd({ ...base, res: this.resNow(), arch: ai?.arch ?? null, names: new Map((ai?.arch?.nodes ?? []).map((n) => [n.id, n.label ?? n.id])) }),
-      overview: () => overviewMd({ ...base, ai, findings, statusOf, checks: this.checksNow(), related: this.ctx }) }[m.kind]();
+    const rows = this.mergeRows();
+    return { finding: () => findingMd(one, { ...base, status: statusOf(one), asks, stepsOf: (f) => findingSteps(f, this.find.status[f.id], { report: this.find.reports[f.id], facts: this.fixFacts(f) }) }),
+      findings: () => findingsMd(findings, { ...base, statusOf, asks, notes: this.openSugs(), sources: this.findingSources().map((x) => x.text) }),
+      layer: () => layerMd(layer, { ...base, n: this.cur + 1, files: this.filesOf(layer), findings: this.layerFindings(layer), statusOf, open: this.openFindings(), deps: this.stepDeps(layer).map(([d]) => plain(d.title)),
+        access: layerAccess(ai?.access, this.filesOf(layer))?.text ?? null, hunks: this.present(layer).map((id) => this.byId.get(id)).filter(Boolean).map((h) => ({ path: h.path, rows: h.rows })) }),
+      arch: () => architectureMd({ ...base, ai, findings, statusOf, layersOf: (n) => this.cardLayerList(n).map((s) => plain(s.title)),
+        placesIn: (path) => [...(this.fileHunks ?? new Map())].filter(([p]) => p === path || p.endsWith(`/${path}`) || path.endsWith(`/${p}`)).flatMap(([, h]) => h).length }),
+      blast: () => securityMd({ ...base, ai, findings, statusOf, runs: this.find.runs, eff: ai?.arch ? this.effZones(ai.arch) : null, extra: this.secExtra(crossingsOf({ arch: ai?.arch ?? null, access: ai?.access ?? [], threats: ai?.threats ?? [], gates: ai?.gates ?? [], bypasses: ai?.bypasses ?? [], findings: this.openFindings() })) }),
+      res: () => resilienceMd({ ...base, res: this.resNow(), arch: ai?.arch ?? null, names: new Map((ai?.arch?.nodes ?? []).map((n) => [n.id, n.label ?? n.id])), findings, statusOf, probes: this.resNow() ? this.probesNow() : null,
+        cost: this.resNow()?.cost ?? this.find.runs?.resilience?.cost ?? null }),
+      overview: () => overviewMd({ ...base, ai, findings, statusOf, checks: this.checksNow(), related: this.ctx, verdict: this.prSel ? this.verdictNow() : null, action: verdictAction(rows), rows,
+        nc: notChecked({ ai, runs: this.find.runs, open: this.openFindings() }), resLine: this.resLine(), cost: this.costNow() || null, funnel: funnel(findings, statusOf),
+        size: (this.patch ?? []).length ? `${this.patch.length} ${this.patch.length === 1 ? "file" : "files"} +${this.patch.reduce((n, f) => n + (f.add ?? 0), 0)} −${this.patch.reduce((n, f) => n + (f.del ?? 0), 0)}` : null,
+        flow: (ai?.visuals ?? []).find((v) => v.kind === "flow" && this.openFindings().some((f) => f.breaks?.node || f.breaks?.from)) ?? null }) }[m.kind]();
+  },
+  // The code of a file as the review holds it: its diff rows, with the whole file where it is loaded; by the end of a
+  // path too ("mailer.py:14"). Nothing is fetched for it.
+  mdCode() {
+    const paths = (this.patch ?? []).map((f) => f.path), known = [...new Set([...paths, ...Object.keys(this.full ?? {}).filter((k) => Array.isArray(this.full[k]))])];
+    return (file) => { const hit = known.includes(file) ? file : known.filter((p) => p.endsWith(`/${file}`)); const path = Array.isArray(hit) ? (hit.length === 1 ? hit[0] : null) : hit; return path ? { path, rows: this.rowsFor(path, true) } : null; };
+  },
+  // What the view knows about a finding beyond its own fields: its layer, and what is known about its fix.
+  mdMore(f) { const li = this.layerOf(f); return [li >= 0 && ["Layer", `${li + 1}. ${plain(this.steps()[li]?.title)}`], ...this.fixFacts(f)].filter(Boolean); },
+  // The preview's text: whole, or without the code blocks; built once per choice while the preview is open.
+  // A part left out is remembered by its title (the code context adds parts of its own).
+  mdShown(code = this.mdPrev.code) {
+    const p = this.mdPrev, at = `${this.mdNow().kind}|${this.cur}|${this.ffocus}`, k = code ? "code" : "plain";
+    if (p.at !== at) { p.at = at; p.texts = {}; p.off = new Set(); }
+    return (p.texts[k] ??= mdParts(this.mdText(code)));
+  },
+  mdOff(doc = this.mdShown()) { return new Set(doc.parts.map((x, k) => (this.mdPrev.off.has(x.title) ? k : -1)).filter((k) => k >= 0)); },
+  // "Copy" in the preview: the chosen parts go to the clipboard, the footer says what and how much.
+  mdCopy() {
+    if (!this.mdPrev) return;
+    const m = this.mdNow(), doc = this.mdShown(), off = this.mdOff(doc), text = mdJoin(doc, off), left = off.size, cs = codeStats(text);
     copyText(text);
-    this.note = `Copied ${m.name} as Markdown (${text.trim().split("\n").length} lines) to the clipboard. Nothing was posted.`;
+    this.note = `Copied ${m.name} as Markdown (${text.trim().split("\n").length} lines${left ? `, ${doc.parts.length - left} of ${doc.parts.length} sections` : ""}${cs.blocks ? `, ${cs.blocks} code ${cs.blocks === 1 ? "block" : "blocks"}` : ""}) to the clipboard. Nothing was posted.`;
+    this.mdPrev = null;
+  },
+  // The preview before copying: every section of the text with its size and a tick to leave it out, the code context
+  // as one choice of its own, the size of what is chosen, the first lines as they will be copied, then Copy.
+  mdPopover(t) {
+    const m = this.mdNow(), p = this.mdPrev, doc = this.mdShown(), off = this.mdOff(doc), text = mdJoin(doc, off), lines = text.trim().split("\n");
+    const cs = codeStats(mdJoin(this.mdShown(true))), box = (on) => div().w(16).flex_none().text_color(on ? t.accent : t.muted).child(on ? "☑" : "☐");
+    const row = (id, on, label, size, click, tip) => h_flex().id(id).tooltip(tip).gap(8).px(6).h(24).items_center().rounded(6).cursor_pointer().hover((s) => s.bg(t.hover)).on_click(click)
+      .child(box(on)).child(div().flex_1().min_w(0).truncate().text_color(on ? t.foreground : t.muted).child(label)).child(div().flex_none().text_size(12).text_color(t.muted).child(size));
+    return v_flex().id("rv-mdprev").absolute().top(8).right(12).w(640).max_h_full().overflow_y_scroll().p(14).gap(10).rounded(10).border_1().border_color(t.border).bg(t.popover).shadow_lg()
+      .text_size(13).text_color(t.foreground).on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .child(h_flex().gap(8).items_center().child(div().flex_1().font_semibold().text_size(14).child(`Copy ${m.name} as Markdown`))
+        .child(pill("rv-mdprev-x", t, "✕", (_e, cx) => { this.mdPrev = null; cx.notify(); }).tooltip("Close without copying").accessibility_label("Close")))
+      .child(div().text_size(12.5).line_height(1.5).text_color(t.muted).whitespace_normal().child("Everything the page shows, also what is folded there, with every picture as Mermaid. It goes to the clipboard only; nothing is posted. Untick a section to leave it out."))
+      .child(v_flex().gap(1)
+        .child(row("rv-mdprev-head", true, "Title and summary", `${doc.head.filter((l) => l.trim()).length} lines`, () => {}, "The PR, the commit and the page's first lines: always in the text"))
+        .children(doc.parts.map((x, k) => row(`rv-mdprev-p${k}`, !off.has(k), x.title, `${x.n} ${x.n === 1 ? "line" : "lines"}`, (_e, cx) => { if (!p.off.delete(x.title)) p.off.add(x.title); cx.notify(); }, off.has(k) ? "Left out. Click to put it back in" : "In the text. Click to leave it out")))
+        .when(cs.blocks > 0, (e) => e.child(row("rv-mdprev-code", p.code, `Code context (${cs.blocks} ${cs.blocks === 1 ? "block" : "blocks"}, ${cs.lines} lines)`, "inside the sections above",
+          (_e, cx) => { p.code = !p.code; cx.notify(); }, "The lines each place names, from the diff with + and − marks, at most 12 lines a place, each place once. Click to leave the code out or put it in"))))
+      .child(div().id("rv-mdprev-first").p(8).rounded(6).border_1().border_color(t.border).bg(t.background).font_family(settings().font_family ?? "JetBrains Mono").text_size(11.5).line_height(1.5).text_color(t.muted)
+        .children(lines.slice(0, 14).map((l) => div().truncate().child(l || " "))).when(lines.length > 14, (e) => e.child(div().text_color(t.dim).child(`… ${lines.length - 14} more lines`))))
+      .child(h_flex().gap(8).items_center()
+        .child(div().flex_1().text_size(12.5).text_color(t.muted).child(`${lines.length} lines · ${doc.parts.length - off.size} of ${doc.parts.length} sections${p.code && cs.blocks ? ` · ${codeStats(text).blocks} code blocks` : ""}`))
+        .child(pill("rv-mdprev-cancel", t, "Cancel", (_e, cx) => { this.mdPrev = null; cx.notify(); }).tooltip("Close without copying"))
+        .child(pill("rv-mdprev-copy", t, "Copy", (_e, cx) => { this.mdCopy(); cx.notify(); }, true, t.foreground).tooltip("Copy the chosen sections to the clipboard as Markdown")));
   },
   // What Copy as Markdown copies where the person is (views.js mdTarget): the open finding or the unresolved ones on
   // the Findings tab, the open layer of the analysis, the page shown, else the Overview.
@@ -5479,9 +5560,9 @@ export const ReviewMode = {
     const layer = this.tab === "steps" && !this.page ? this.steps()[this.cur] : null;
     return mdTarget({ tab: this.tab, page: this.page, layer: layer && !layer.pseudo ? plain(layer.title) : null, finding: Boolean(this.tab === "findings" && this.ffocus && this.findingById(this.ffocus)) });
   },
-  // The button for it, at the right end of the head of every page it can copy: quiet (a frame, muted text until the
-  // pointer is on it); its help says what it copies here.
-  mdButton(t, id = "rv-md") { return pill(id, t, "Copy as Markdown", (_e, cx) => { this.copyMd(); cx.notify(); }).tooltip(this.mdNow().tip).accessibility_label("Copy this page as Markdown"); },
+  // The button for it, at the right end of the head of every page it can copy: a button to see (raised, its text in
+  // the foreground). It opens the preview (what goes into the text and how much), which has Copy.
+  mdButton(t, id = "rv-md") { return pill(id, t, "⧉ Copy as Markdown…", (_e, cx) => { this.copyMd(); cx.notify(); }, Boolean(this.mdPrev), t.foreground).bg(t.raised).tooltip(this.mdNow().tip).accessibility_label("Copy this page as Markdown"); },
   // What "Copy context to check findings" is about: the finding open in the Findings tab, else on the Security page
   // the unresolved security findings; [] elsewhere (the menu leaves the entry out).
   checkList() {
