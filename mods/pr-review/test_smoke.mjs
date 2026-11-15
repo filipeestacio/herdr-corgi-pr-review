@@ -266,6 +266,25 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   assert.ok((v3.resNow()?.unseen ?? []).length > 0 && v3.resNow().paths.some((p) => p.same_cause), "unseen and one cause blocking once come from the data");
   await tour(v3, "PR #2, a real resilience run with the R2 schema");
 }
+// The Security page with what a webhook PR adds to it: a deny rule (a guard), a right on something off the map, an
+// operator's script whose row and call are one way, two derived operator ways that say the same, a finding that only
+// a threat makes part of the page.
+{
+  const doc = JSON.parse(fx("findings-s.json")), sec = doc.security, row = (id, more) => ({ id, public: false, auth_kind: "iam", change: "added", principal_kind: "role", at: "template.yaml:30", ...more });
+  sec.access.push(row("acc5", { resource: "QueuePolicy", kind: "queue", principal: "everyone but the FrontDesk role", principal_node: null, node: "queue", actions: ["deny sqs:SendMessage"], auth: "resource policy" }),
+    row("acc6", { resource: "FrontDesk logs", kind: "log group", principal: "FrontDesk function", principal_node: "g_fd", actions: ["logs:PutLogEvents"] }),
+    row("acc7", { resource: "replay.sh", kind: "script", principal: "operator with queue credentials", principal_node: null, principal_kind: "operator", node: "events", actions: ["sqs:SendMessage"] }),
+    row("acc8", { resource: "configuration", principal: "operator who deploys handler", principal_node: null, principal_kind: "operator", node: "handler", actions: ["set configuration"], change: "unchanged", derived: true, from_gate: 0, value_from: null }),
+    row("acc9", { resource: "configuration", principal: "operator who deploys handler", principal_node: null, principal_kind: "operator", node: "handler", actions: ["set configuration"], change: "unchanged", derived: true, from_gate: 0, value_from: null }));
+  sec.threats.push({ id: "t8", where: { access: "acc5" }, boundary: "Account → queue", threat: "Another principal sends to the queue.", stride: "S", findings: [], result: "mitigated", goal: "Forged events.", path: ["queue"], evidence: "template.yaml:30", note: "" });
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify(doc) });
+  const { asideOf, crossingsOf } = await import("./views.js"), data = { arch: v.ai.arch, access: v.ai.access, threats: v.ai.threats, gates: v.ai.gates, bypasses: v.ai.bypasses, findings: v.openFindings() };
+  const aside = asideOf(data), rows = crossingsOf(data);
+  assert.deepEqual([aside.guards.length, aside.rights.length, rows.filter((r) => r.kind === "operator" && r.derived).length, rows.some((r) => r.key === "a:acc5" || r.key === "a:acc6")], [1, 1, 2, false],
+    "one guard and one right off the map under the crossings, and the two same operator rows as one (next to the fixture's own)");
+  act(v, "page:blast", "Security with a guard");
+  await tour(v, "PR #2 with a guard, a right off the map and an operator's script");
+}
 // Someone else's PR with reasons for a security review: the offers instead of a start.
 {
   const ctx = { ...JSON.parse(fx("ctx.json")), security_trigger: { run: true, reasons: [{ text: "New route /remind" }, { text: "Token check changed" }] } };
