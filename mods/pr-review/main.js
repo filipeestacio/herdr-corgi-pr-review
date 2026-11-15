@@ -17,17 +17,17 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, Editor, EditorState, TextView } from "gpui-base";
 import { spaces, panes, terminals, focused, agents, exec, hc, run, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, home, layout, props, watchFolder, nextCommand } from "herdr";
-import { diffRows, buildPrompt, splitPatch, selection, nextChange, lineLabel, anchorRow, buildReview, hunksOf, hash, uiLine, reviewRequest, mapReview, triageOf, isSecurity, withThreats } from "./pr.js";
+import { diffRows, buildPrompt, splitPatch, selection, nextChange, lineLabel, anchorRow, buildReview, hunksOf, hash, uiLine, reviewRequest, mapReview, triageOf, isSecurity, withThreats, knownOf } from "./pr.js";
 import { parsePrRef, ghTarget, pruneSources, codeModel, windowActive, pollDue, pollAfter } from "./pr.js";
 import * as C from "./context.js";
 import { tabArgs } from "./threads.js"; // a new Claude tab with the PR's text: no MCP servers
 import { loadDiff, saveDiff } from "./diffcache.js";
 import { setupBanner, renderSetup, loadSetup, runSetup, openUrl, readConfig } from "./setup-view.js";
 import { chip, PRIORITY_TIP } from "./stack.js";
-import { panelState, bodyTab, DONE_DAYS, diffTooLarge, filesToDiff, isOpenPr, byState, listRows, riskSignal, progressText, pendingText, rowMarks, mineGroups, progressRows, removedText, withPick, openSig, panelShown, byRef, fileRisk, leftNow, wrapCode, codeCols, sliceSpans, spaceFolders, headBranch, spaceBranches, branchPrQuery, branchPrs, spaceOrder, focusedPr, spaceEmpty } from "./views.js";
+import { panelState, bodyTab, DONE_DAYS, diffTooLarge, filesToDiff, isOpenPr, byState, listRows, riskSignal, progressText, pendingText, rowMarks, mineGroups, progressRows, removedText, withPick, openSig, panelShown, byRef, fileRisk, leftNow, wrapCode, codeCols, sliceSpans, markLabel, spaceFolders, headBranch, spaceBranches, branchPrQuery, branchPrs, spaceOrder, focusedPr, spaceEmpty } from "./views.js";
 import { keepLast } from "./views.js"; // every cache has a limit
 import { ReviewMode, startReview, startExplore, saveKey, flowCard, modelPills, modelLabel, renderReviews, renderAgentBar, renderKeys, renderCardMenu, renderMini } from "./review.js";
-import { highlightJob, highlightStep, langOf, colors, renderLine, editorSyntax } from "./syntax.js";
+import { highlightJob, highlightStep, langOf, firstLineOf, colors, renderLine, editorSyntax } from "./syntax.js";
 import { TYPE } from "./views.js"; // the text sizes (U34)
 
 // Same mapping as the shipped files panel.
@@ -59,6 +59,7 @@ const SOURCE_MS = 3 * 60 * 1000, SOURCE_KEEP = 20, PICKED_KEEP = 20;
 const GH_FIELDS = "number,title,author,headRefName,headRefOid,baseRefName,updatedAt,isDraft,reviewDecision,additions,deletions,url";
 const REVIEW = { APPROVED: ["approved", "ansi2"], CHANGES_REQUESTED: ["changes requested", "ansi1"], REVIEW_REQUIRED: ["review required", "ansi3"] };
 const BRANCH = "branch"; // shared "pr.selected": the current branch was picked (not a PR)
+const HL_STALE = 2000; // ms a highlight slice may be busy before it counts as stopped (Herdr stops one after ~50 ms)
 const SEC_MARK = "⛨"; // security's own mark in a PR row (a shield), next to the word
 // A PR's head as GitHub last gave it ({at, sha} by url) and the asks under way: one for every copy of the mod (the
 // panel, then the review of the same PR), so opening the review does not ask again what the panel just asked.
@@ -190,6 +191,7 @@ export default class PrReview extends View {
     else if (name === "explore") startExplore(arg || null); // pr-review.explore[:<folder>]: a topic in existing code, no PR
     // For keys and scripted demos: a listed PR's row click (pick:<number>, the shown source's list).
     else if (c === "pick:branch") this.choose(null, cx); // the list's "Current branch" row
+    else if (name === "file" && arg && this.files.some((f) => f.path === arg)) this.pick(arg, cx); // file:<path>, a file row's click in the shown diff
     else if (name === "pick") { const pr = byRef(this.listNow(), arg); if (pr) this.pickTarget(pr, cx); } // pick:<number | owner/repo#number | url>
   }
 
@@ -465,7 +467,7 @@ export default class PrReview extends View {
     const read = (f) => readTextFile(f).then((x) => (x ? JSON.parse(x) : null)).catch(() => null), h = hash(url);
     const [an, fd] = await Promise.all([read(`${cacheDir()}/rv-${h}-${walkModel()}.json`), read(`${appHome()}/pr-data/findings/${h}.json`)]);
     if (this.reviewKey !== url) return;
-    const known = { analysis: an?.answer ? mapReview(an.answer, []) : null, findings: fd?.findings, status: fd?.status };
+    const known = knownOf(an, fd); // with the threats that stand on a finding, as the list's marks and the review have them
     this.fileMarks = fileRisk(known);
     (this.risk ??= new Map()).set(url, riskSignal(known));
   }
@@ -480,7 +482,7 @@ export default class PrReview extends View {
     if (this.mode === "file") await this.showFile(path, context);
     const shown = lines.map((l) => (l.length > 2000 ? l.slice(0, 2000) + "…" : l)), sig = shown.join("\n");
     if (this.rows.sig === sig) return; // the same text as shown: the rows and their syntax colours stay
-    this.rows = Object.assign(diffRows(shown), { sig });
+    this.rows = Object.assign(diffRows(shown), { sig, first: firstLineOf(all) }); // first: line 1 where the diff has it, for a script without an ending
   }
 
   // The whole file as it is now: markdown rendered, code highlighted read-only.
@@ -494,7 +496,8 @@ export default class PrReview extends View {
     if (text === null) { this.fileError = "File not in the working tree (deleted?)"; return; }
     if (text.includes("\0")) { this.fileError = "Binary file"; return; }
     const body = text.length > 400000 ? text.slice(0, 400000) + "\n… (truncated)" : text;
-    const ext = path.includes(".") ? path.split(".").pop().toLowerCase() : "txt";
+    // No ending: the "#!" line says what it is (the Editor knows a language by its usual ending).
+    const ext = path.split("/").pop().includes(".") ? path.split(".").pop().toLowerCase() : { shell: "sh", python: "py", js: "js" }[langOf(path, body.slice(0, 200).split("\n")[0])] ?? "txt";
     if (ext === "md" || ext === "markdown") { this.md = body; return; }
     const t = theme();
     this.code = EditorState.new({ language: LANG[ext] ?? ext, readonly: true, value: body, font_family: settings().font_family, font_size: 12,
@@ -892,10 +895,14 @@ export default class PrReview extends View {
   }
 
   // One slice of the open file's highlighting; the next one after a timer, until the file is done (then a redraw).
+  // hl.at: when the slice was asked for. Herdr stops a slice that takes too long without throwing, so the render gives
+  // a file up whose slice is older than HL_STALE (it stays plain); a tokenizer that throws leaves it plain as well.
   highlightMore(cx, hl) {
+    hl.at = Date.now();
     cx.timer.after(0, (cx) => {
-      if (this.hl !== hl) return; // another file opened meanwhile
-      const out = highlightStep(hl.job, 10);
+      if (this.hl !== hl || hl.spans) return; // another file opened meanwhile, or this one was given up
+      let out;
+      try { out = highlightStep(hl.job, 10); } catch { out = hl.rows.map(() => []); }
       if (out) { hl.spans = out; cx.notify(); } else this.highlightMore(cx, hl);
     });
   }
@@ -922,15 +929,14 @@ export default class PrReview extends View {
       const out = new Map(), risk = new Map();
       await Promise.all([...open, ...rest].map(async (pr) => {
         const h = hash(pr.url), head = pr.headSha ?? hash(`${pr.updatedAt}|${pr.head}`);
-        const [an, fd0] = await Promise.all([read(`${cacheDir()}/rv-${h}-${m}.json`), read(`${appHome()}/pr-data/findings/${h}.json`)]);
-        const fd = fd0 && { ...fd0, findings: withThreats(fd0.findings ?? [], fd0.security) }; // a finding a threat stands on is ⛨ (pr.js isSecurity)
-        const analysis = an?.answer ? mapReview(an.answer, []) : null;
-        risk.set(pr.url, riskSignal({ analysis, findings: fd?.findings, status: fd?.status }));
+        const [an, fd] = await Promise.all([read(`${cacheDir()}/rv-${h}-${m}.json`), read(`${appHome()}/pr-data/findings/${h}.json`)]);
+        const known = knownOf(an, fd), analysis = known.analysis; // a finding a threat stands on is ⛨ (pr.js isSecurity)
+        risk.set(pr.url, riskSignal(known));
         if (!listed.has(pr.url)) return;
         // The diff's size from its cache (in parts, diffcache.js); a missing one leaves the effort to the analysis.
         const [ctx, diff] = await Promise.all([pr.headSha ? read(`${cacheDir()}/ctx-${h}-${pr.headSha}.json`) : null, loadDiff(`${cacheDir()}/diff-${h}-${head}`, pr.url, head, readTextFile)]);
         const files = diff ? splitPatch(diff) : null;
-        const security = (fd?.findings ?? []).filter((f) => isSecurity(f) && !["fixed", "dismissed"].includes(fd.status?.[f.id]?.s)); // as the review's ⛨
+        const security = (known.findings ?? []).filter((f) => isSecurity(f) && !["fixed", "dismissed"].includes(known.status?.[f.id]?.s)); // as the review's ⛨
         out.set(pr.url, triageOf({ pr, analysis, size: files && { files: files.length, lines: files.reduce((n, f) => n + f.add + f.del, 0) },
           security, related: ctx, llm: llm[pr.url] ?? null }));
       }).map((one) => one.catch(() => null))); // a broken cache file costs that row its chips, not the whole list
@@ -956,9 +962,14 @@ export default class PrReview extends View {
   // A PR row's risk signal as chips (views.js riskSignal): the highest severity among its open findings, and
   // security's own mark. Nothing without a cached analysis or findings file.
   riskChips(t, url, id) {
-    // One mark (views.js rowMarks): "⛨ high" in red when an open finding is about security, else the severity in grey.
-    return rowMarks(this.risk?.get(url), null).map((m) => chip(t, m.text, m.security ? t.ansi1 : t.muted, m.security, `${id}-sev`,
-      `The highest severity among this PR's open findings, from the cached analysis and reviews${m.security ? `; ${SEC_MARK}: at least one of them is about security` : ""}`));
+    // One mark (views.js rowMarks): "⛨ high" when an open finding is about security, in the severity's color, on a
+    // filled ground when that is confirmed and in a dashed frame with "?" when it is only assumed (as in the review);
+    // else the severity in grey.
+    // A review in progress has its own mark in the registry (review.js riskOfCounts: with what its probes and checks
+    // confirmed): the row shows that one, so it agrees with the minimized chip.
+    const own = (shared("review.open") ?? []).find((r) => r.url === url)?.risk;
+    return rowMarks(own?.top ? own : this.risk?.get(url), null).map((m) => chip(t, markLabel(div, t, m), t[m.color] ?? t.muted, m.security, `${id}-sev`,
+      `The highest severity among this PR's open findings, from the cached analysis and reviews${m.security ? `; ${SEC_MARK}: at least one of them is about security` : ""}${m.words ? `.\n${m.words}` : ""}`));
   }
 
   // The list of the shown source, one row per PR: the ones under "In progress" are not repeated, open PRs come first
@@ -1230,10 +1241,10 @@ export default class PrReview extends View {
         this.finishQueued = true;
         cx.timer.after(0, (cx) => { this.finishQueued = false; setShared("pr.finish", null); if (this.reviewKey === fin.url && !this.finishOpen) { this.command("finish", cx); cx.notify(); } });
       }
-      // drawing: archL leaves a big map's layout for after the frame (layoutsLater), a frame has about 50 ms.
+      // drawing: archL leaves a big map's layout for after the frame (firstLayouts), a frame has about 50 ms.
       this.drawing = true;
       const el = this.renderReview(cx);
-      this.drawing = false; this.layoutsLater(cx);
+      this.drawing = false; this.firstLayouts(cx); this.layoutSoon(cx);
       return el;
     }
     if (this.view === "walk" && this.walkModel && walkModel() !== this.walkModel && !this.walkBusy) this.openWalk(cx, false); // picker changed: that model's cache
@@ -1265,9 +1276,9 @@ export default class PrReview extends View {
     // New rows (the file changed on disk): until they are coloured, a row whose text stayed keeps its colours.
     if (this.hl?.rows !== this.rows) {
       const old = this.hl?.spans && this.hl.file === this.open ? this.hl : null;
-      this.hl = { rows: this.rows, file: this.open, job: highlightJob(this.rows, langOf(this.open ?? "")), spans: null, kept: old && this.rows.map((r, i) => (old.rows[i]?.text === r.text ? old.spans[i] : null)) };
+      this.hl = { rows: this.rows, file: this.open, job: highlightJob(this.rows, langOf(this.open ?? "", this.rows.first)), spans: null, kept: old && this.rows.map((r, i) => (old.rows[i]?.text === r.text ? old.spans[i] : null)) };
       this.highlightMore(cx, this.hl);
-    }
+    } else if (!this.hl.spans && Date.now() - this.hl.at > HL_STALE) this.hl.spans = this.rows.map((_r, i) => this.hl.kept?.[i] ?? []); // its slice never came back
     this.spans = this.hl.spans ?? this.hl.kept;
     const diffId = `pr-diff-${this.uid}-${this.from}`; // a new id starts scrolled to the top: how j/k bring a change into view
     const state = this.view === "setup" ? "setup" : panelState({ chosen: this.prSel ?? (this.branchPicked || this.restoring), picking: this.picking });
@@ -1326,8 +1337,8 @@ export default class PrReview extends View {
         return h_flex().id(`f-${f.path}`).h(28).flex_none().px(8).gap(8).items_center().rounded(7).cursor_pointer().tooltip(f.path)
           .when(this.open === f.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.fh.focus(); this.askTop = false; this.pick(f.path, cx); })
           .child(h_flex().flex_1().min_w(0).child(div().text_color(t.dim).truncate().child(parts.length ? parts.join("/") + "/" : "")).child(div().min_w(0).truncate().child(name)))
-          .children(rowMarks(this.fileMarks?.get(f.path), null).map((m) => chip(t, m.text, m.security ? t.ansi1 : t.muted, m.security, `f-r-${f.path}`,
-            "The highest severity among this file's unresolved findings, from the cached analysis and reviews. Open the review to see them.")))
+          .children(rowMarks(this.fileMarks?.get(f.path), null).map((m) => chip(t, markLabel(div, t, m), t[m.color] ?? t.muted, m.security, `f-r-${f.path}`,
+            `The highest severity among this file's unresolved findings, from the cached analysis and reviews${m.words ? `: ${m.words}` : ""}. Open the review to see them.`)))
           .when(n > 0, (e) => e.child(div().id(`f-c-${f.path}`).tooltip(`${n} pending ${n === 1 ? "comment" : "comments"} on this file`).text_size(TYPE.micro).text_color(t.accent).child(`● ${n}`)))
           .when(f.add > 0, (e) => e.child(div().id(`f-a-${f.path}`).tooltip("Lines added in this file").text_size(TYPE.panel).text_color(t.ansi2).child(`+${f.add}`)))
           .when(f.del > 0, (e) => e.child(div().id(`f-d-${f.path}`).tooltip("Lines removed in this file").text_size(TYPE.panel).text_color(t.ansi1).child(`−${f.del}`)));

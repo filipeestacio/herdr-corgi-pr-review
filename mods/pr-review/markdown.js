@@ -3,17 +3,21 @@
 // analysis as review.js holds it (pr.js mapReview), the merged findings (pr.js mergeFindings) and their states, and
 // returns text that starts with the PR and commit it is about. Pictures are Mermaid: an agent reads it as text and
 // GitHub draws it. A security finding is in here in full: this is for the person's own use, nothing is posted.
-import { taskList, taskHead, verdictParts, findingCounts, componentLine, CERTAINTY, SEVERITY_SCALE, levels, isGuard } from "./pr.js";
+import { taskList, taskHead, verdictParts, findingCounts, componentLine, CERTAINTY, SEVERITY_SCALE, levels, isGuard, secOldLine } from "./pr.js";
 import { transitionText } from "./arch.js";
+import { langOf } from "./syntax.js";
 import { resPathView, asideOf, threatCited, skipText, guardLine } from "./views.js";
 import { resWord, resToolText, resVerdict, resWatch } from "./views.js"; // wave R2: the page's words, verdict and watch list
 // The pages' own sources, so a page and its Markdown say the same: the crossings and their picture, the scope table,
 // the map as the Architecture page draws it, the paths' order and verdict, a finding's facts.
-import { crossingsOf, crossingChanged, secSentence, wayOf, wayText, secPicture, secBlast, scopeTable, scopeConflicts, AREA_NAME, mapArch, resOrder, resVerdictParts, resCardOf, factRows } from "./views.js";
+import { crossingsOf, crossingChanged, secSentence, wayOf, wayText, secPicture, secBlast, scopeTable, scopeConflicts, AREA_NAME, mapArch, resVerdictParts, resCardOf, factRows } from "./views.js";
 import { archMarks } from "./arch.js";
-import { transitionMarks, surfaceOf, reachLevel, secOrder, EXPOSURE, inProcess, resNoPicture } from "./views.js";
+import { transitionMarks, surfaceOf, reachLevel, secOrder, EXPOSURE, inProcess, resNoPicture, resShown, probeBaseWord, datedByDiff } from "./views.js";
 import { doesList, surfaceLine, countLine, funnelShort, funnel as funnelOf, findingSteps } from "./pr.js";
 import { resDepRows } from "./views.js"; // Resilience: dependencies that fail or are overloaded
+import { timelineOf, timelineMd } from "./timeline.js"; // Resilience: the picture "Timing"
+import { faultTrees, faultFlow, FAULT_NOTE } from "./faulttree.js"; // Resilience: what follows from a dependency's case, as a tree
+import { impactDoc } from "./impact.js"; // the Architecture page's Impact section
 
 const STATE = { open: "Unresolved", progress: "Fix sent", fixed: "Fixed", dismissed: "Dismissed", recheck: "Unresolved, line changed" };
 const SOURCE = { analysis: "Analysis", security: "Security review", claude: "Claude code review", codex: "Codex review", resilience: "Resilience review", ai: "AI note" };
@@ -30,7 +34,11 @@ const doc = (...parts) => `${parts.flat(Infinity).filter((x) => x !== null && x 
 // ---- code context: the lines a place names, as the review holds them (no new fetches)
 
 const LANG = { py: "python", js: "javascript", mjs: "javascript", cjs: "javascript", ts: "typescript", tsx: "tsx", jsx: "jsx", json: "json", yaml: "yaml", yml: "yaml", sh: "bash", rs: "rust", go: "go",
-  java: "java", kt: "kotlin", rb: "ruby", tf: "hcl", toml: "toml", sql: "sql", html: "html", css: "css", md: "markdown" };
+  java: "java", kt: "kotlin", rb: "ruby", tf: "hcl", toml: "toml", sql: "sql", html: "html", css: "css", md: "markdown", ini: "ini", cfg: "ini", editorconfig: "ini" };
+// A fence's language: by the ending, else what the highlighter makes of the name or of the file's first line ("#!/bin/sh"
+// in bin/release, .envrc, a Git hook), so a script without an ending is fenced as bash.
+const FENCE = { shell: "bash", js: "javascript", make: "makefile", workflow: "yaml", spring: "yaml" }; // the highlighter's names that a fence spells otherwise
+export const fenceLang = (file, first = "") => { const name = String(file).split("/").pop(), l = langOf(String(file), first); return LANG[name.split(".").pop()] ?? FENCE[l] ?? l ?? ""; };
 export const CODE_MAX = 12; // lines of one block
 const CODE_PAD = 2; // lines around the place
 // A file's rows by its path, also by the end of it ("mailer.py:14" in a path step): Map(path -> rows) -> rowsOf(file).
@@ -64,7 +72,7 @@ export function codeContext(rowsOf) {
     const gap = (k) => k > 0 && n(part[k]) !== null && n(part[k - 1]) !== null && n(part[k]) - n(part[k - 1]) > 1;
     const diff = part.some((r) => r.kind !== " "), lines = part.flatMap((r, k) => [...(gap(k) ? [diff ? `@@ line ${n(r)} @@` : "…"] : []), (diff ? `${r.kind}${r.text}` : r.text).replace(/\s+$/, "")]), tick = lines.some((l) => l.includes("```")) ? "````" : "```";
     shown.set(file, [...(shown.get(file) ?? []), [a, b]]); stats.blocks++; stats.lines += lines.length;
-    return [`Code \`${file}:${a}-${b}\`:`, "", `${tick}${diff ? "diff" : LANG[String(file).split(".").pop()] ?? ""}`, ...lines, tick, all.length > part.length && `(${all.length - part.length} more ${all.length - part.length === 1 ? "line" : "lines"} of this place not shown.)`, ""];
+    return [`Code \`${file}:${a}-${b}\`:`, "", `${tick}${diff ? "diff" : fenceLang(file, rows.find((r) => r.n === 1)?.text)}`, ...lines, tick, all.length > part.length && `(${all.length - part.length} more ${all.length - part.length === 1 ? "line" : "lines"} of this place not shown.)`, ""];
   };
   const at = (place, pad) => { const m = /^(.+?):(\d+)(?:-(\d+))?$/.exec(String(place ?? "").trim()); return m ? block(m[1], Number(m[2]), Number(m[3] ?? m[2]), pad) : []; };
   return { block, at, stats, on: Boolean(rowsOf) };
@@ -87,10 +95,21 @@ export function mdParts(text) {
     if (tick && (!fence || tick.length >= fence.length)) fence = fence ? null : tick;
     if (!fence && /^## /.test(l)) { cur = { title: l.slice(3).trim(), lines: [l] }; parts.push(cur); } else (cur ? cur.lines : head).push(l);
   }
-  for (const p of parts) p.n = p.lines.filter((l) => l.trim()).length;
+  for (const p of parts) p.n = mdLines(p.lines);
   return { head, parts };
 }
-export const mdJoin = ({ head, parts }, off = new Set()) => `${[...head, ...parts.filter((_p, k) => !off.has(k)).flatMap((p) => p.lines)].join("\n").replace(/\n{3,}/g, "\n\n").trim()}\n`;
+// The preview's one way to count (acceptance, UX 2): the lines with text. A part's size, the head's and the whole
+// text's are counted so, and the sizes of the parts kept add up to the size at the foot.
+export const mdLines = (x) => (Array.isArray(x) ? x : String(x ?? "").split("\n")).filter((l) => l.trim()).length;
+// The head as it is copied. With parts left out, a line under the title names them: the title counts the whole page
+// ("28 unresolved findings: 17 high, 11 medium") and would promise findings the text does not have.
+export function mdHead({ head, parts }, off = new Set()) {
+  const out = parts.filter((_p, k) => off.has(k)).map((p) => p.title);
+  if (!out.length) return head;
+  const k = head.findIndex((l) => /^# /.test(l)), note = `Left out of this text: ${out.join(", ")}.`;
+  return k < 0 ? [...head, "", note] : [...head.slice(0, k + 1), "", note, ...head.slice(k + 1)];
+}
+export const mdJoin = (doc, off = new Set()) => `${[...mdHead(doc, off), ...doc.parts.filter((_p, k) => !off.has(k)).flatMap((p) => p.lines)].join("\n").replace(/\n{3,}/g, "\n\n").trim()}\n`;
 
 // "PR owner/repo#2 "title" at commit abc1234 (url)": the first line of every text, so it stands without context.
 export const prLine = ({ pr = {}, head = "" }) => `PR ${pr.repo ?? ""}#${pr.number ?? ""} "${flat(pr.title)}"${head ? ` at commit ${String(head).slice(0, 7)}` : ""}${pr.url ? ` (${pr.url})` : ""}`;
@@ -269,7 +288,7 @@ const componentsTable = (list) => table(["Component", "Kind", "Status", "Where",
 const ROW_KIND = { security: "Security", criterion: "Criterion", ask: "Criterion", finding: "Finding", conflict: "Merge conflict", ci: "CI check", rule: "Repo rule", verify: "Fix to verify", overlap: "Overlapping PR", resilience: "Resilience" };
 // size: "9 files +178 −10"; funnel: pr.js funnel() of the findings (how many reports became how many findings).
 export function overviewMd({ pr, head, ai = null, findings = [], statusOf = () => "open", checks = [], related = null, verdict: said = null, action = null, rows = null, nc = null, resLine = null, cost = null, flow = null, code = null, size = null, funnel = null }) {
-  const list = taskList(ai?.asks ?? [], findings, ai?.unlinked ?? [], statusOf), verdict = said ?? (ai || findings.length ? verdictParts(list, findingCounts(findings, statusOf), { failed: checks.filter((c) => c.ok === false).length }) : []);
+  const list = taskList(ai?.asks ?? [], findings, ai?.unlinked ?? [], statusOf), verdict = said ?? (ai || findings.length ? verdictParts(list, findingCounts(findings, statusOf), { failed: checks.filter((c) => c.ok === false).length, oldRules: Boolean(ai?.securityFrom?.predates) }) : []);
   const line = (f) => `- ${findingLine(f, statusOf(f))}`, cx = codeContext(code);
   const before = (r) => [`- **${ROW_KIND[r.kind] ?? r.kind}:** ${r.finding ? findingLine(r.finding, statusOf(r.finding)) : `${flat(r.title)}${r.where ? ` (\`${r.where}\`)` : ""}`}${r.ask && !r.finding ? ` (${ASK[r.ask.state] ?? r.ask.state})` : ""}`,
     Boolean(r.why) && `  - ${flat(r.why)}`, (r.asks ?? []).length > 0 && `  - Breaks: ${r.asks.map((x) => flat(x.short || x.text || x)).join("; ")}`, r.finding?.path_certainty && `  - ${{ assumed: "assumed reachable", confirmed: "confirmed reachable", derived: "reachable by the code" }[r.finding.path_certainty] ?? `reach ${r.finding.path_certainty}`}`, (r.also ?? []).length > 0 && `  - Same cause also at ${r.also.join(", ")}`,
@@ -346,7 +365,7 @@ export function layerMd(step, { pr, head, n = null, files = [], findings = [], s
 // card's zone in its text, the unresolved findings at a card or a call as arch.js archMarks counts them).
 // layersOf(n): the titles of the layers that read a card's code; placesIn(path): how many changed places of the PR
 // are in a file (both from the view; without them those lines are left out).
-export function architectureMd({ pr, head, ai, findings = [], statusOf = () => "open", code = null, layersOf = null, placesIn = null }) {
+export function architectureMd({ pr, head, ai, findings = [], statusOf = () => "open", code = null, layersOf = null, placesIn = null, impact = null }) {
   const a = ai?.arch, nodes = a?.nodes ?? [], name = (id) => flat(nodes.find((n) => n.id === id)?.label ?? (id === "internet" ? "Internet" : id));
   const openAll = findings.filter((f) => unresolved(statusOf(f))), marks = a ? archMarks(a, openAll, ai?.access, ai?.threats ?? []) : null, drawn = a ? mapArch(a, ai?.access ?? [], ai?.bypasses ?? []) : null, cx = codeContext(code);
   const call = (e, k) => [`${k + 1}`, `${name(e.from)} → ${name(e.to)}`, transitionText(e), [cardStatus(e) ?? (e.status && e.status !== "unchanged" ? e.status : ""), e.source === "spec" && "spec only", e.crosses && !e.in_process && "crosses a trust boundary", e.in_process && "same process"].filter(Boolean).join(", "),
@@ -383,9 +402,13 @@ export function architectureMd({ pr, head, ai, findings = [], statusOf = () => "
       (a.edges ?? []).length > 0 && [`## Calls (${a.edges.length})`, "", "Every call with its whole text, numbered as on the map.", "", ...table(["#", "Call", "What", "Status", "Unresolved findings"], a.edges.map(call))]],
     breaks.length > 0 && [`## Where the flow breaks (${breaks.length})`, "", ...breaks.map((f) => `- ${f.breaks.node ? `Card ${name(f.breaks.node)}` : `Call ${name(f.breaks.from)} → ${name(f.breaks.to)}`}: ${findingLine(f, statusOf(f))}`), ""],
     ai?.components?.length > 0 && [`## Components this PR adds or changes (${ai.components.length})`, "", ai.componentCounts?.codeowners === false && "This repository has no CODEOWNERS file, so no owner can be named.", "", ...componentsTable(ai.components)],
+    impact && impactSection(impactDoc(impact, openAll)),
     ai?.visuals?.length > 0 && [`## Other pictures (${ai.visuals.length})`, "", ...ai.visuals.map((v) => visualMd(v))],
     cx.on && breaks.length > 0 && [`## Code where the flow breaks`, "", ...breaks.flatMap((f) => cx.block(f.file, f.line, f.end))]);
 }
+
+// The Impact section (impact.js impactDoc): its lines, every caller as a table row, and the picture as a flowchart.
+const impactSection = (d) => ["", `## ${d.title}`, "", ...d.lines, ...(d.rows.length ? ["Callers and tests as a list:", "", ...table(d.head, d.rows)] : []), ...(d.flow.nodes.length ? [...mermaidFlow(d.flow), ""] : [])];
 
 // ---- the Security page
 
@@ -472,7 +495,7 @@ export function securityMd({ pr, head, ai = null, findings = [], statusOf = () =
     // As the page counts: ⛨ findings once per cause, the findings behind a threat, the guards this PR loosens.
     rows.length > 0 && [secSentence(rows, secN, cited.length, guards.filter((g) => g.loosened).length), ""],
     // pr.js secNote: a run from before the current rules of the security view.
-    Boolean(ai?.securityFrom?.predates) && ["This security review is older than the current rules for guards, operators and taken-over roles, so a crossing it calls not assessed may only be left open by the old prompt. Re-run it for the current view.", ""],
+    Boolean(ai?.securityFrom?.predates) && [secOldLine(ai, taskList(ai?.asks ?? [], findings, ai?.unlinked ?? [], statusOf).security), ""],
     [`## Trust boundary crossings (${changed.length}${rest.length ? `, and ${rest.length} unchanged` : ""})`, "",
       "The ways in, the rights and the calls this PR opens or changes across a trust boundary, each in full.", "",
       !rows.length && "The data names no crossing: no zones, no way in and no right into another zone. The security review names them.",
@@ -662,7 +685,7 @@ export function resilienceMd({ pr, head, res = null, names = new Map(), arch = n
   if (!res) return doc(prLine({ pr, head }), "", "# Resilience", "", "The resilience review has not run on this PR.");
   const cx = codeContext(code), nm = (id) => flat(names.get(id) ?? arch?.nodes?.find((n) => n.id === id)?.label ?? id);
   const byId = (id) => findings.find((f) => (f.ids ?? [f.id]).includes(id)), titles = (ids) => [...new Set((ids ?? []).map(byId).filter(Boolean))];
-  const order = resOrder((res.paths ?? []).map((p) => resPathView(p, res))), num = (id) => order.findIndex((p) => p.id === id) + 1;
+  const listed = resShown(res), order = listed.paths, num = (id) => listed.nums.get(id) ?? 0, say = listed.say; // the run's ids as the numbers shown
   const probeOf = (p) => (probes ?? res.probes ?? []).find((x) => x.id === p.probe || x.of === p.id);
   // The cards a path passes, in the order of its steps: a card, a call (both ends), a place (the card of its file).
   const edgeAt = (s) => { const e = /^e(\d+)$/.exec(String(s)); return e ? arch?.edges?.[Number(e[1])] ?? null : null; };
@@ -680,8 +703,9 @@ export function resilienceMd({ pr, head, res = null, names = new Map(), arch = n
     : p.same_cause ? `same cause as path ${num(p.same_cause)}`
     : p.result === "mitigated" ? (p.limited_by ? `limited at \`${p.limited_by}\`` : "limited, no guard named")
     : p.result === "finding" ? (p.pre_existing === true ? "finding, already on the base" : "finding") : String(p.result ?? "").replace(/_/g, " "));
-  const probeMd = (x) => { if (!x) return ["- **Probe:** none proposed for this path."];
-    const done = x.status === "done", base = x.base && typeof x.base === "object" ? `${BASE[x.base.verdict] ?? String(x.base.status ?? "").replace(/_/g, " ")}${x.base.line ? ` (${flat(x.base.line)})` : ""}` : x.base ? flat(x.base) : null;
+  // Old or new is said once: by the path where the diff dates it, else by the probe's run on the base (views.js probeBaseWord).
+  const probeMd = (x, byDiff = false) => { if (!x) return ["- **Probe:** none proposed for this path."];
+    const done = x.status === "done", bw = probeBaseWord(x, byDiff, BASE), base = bw ? `${bw.word}${x.base.line ? ` (${flat(x.base.line)})` : ""}` : x.base ? flat(x.base) : null;
     return [`- **Probe:** ${flat(x.claim ?? x.kind ?? "a script")} (${[x.kind && resWord(x.kind), STRENGTH[x.strength] ?? x.strength].filter(Boolean).join(", ")})`,
       `  - State: ${done ? `${String(x.result ?? "").replace(/_/g, " ")}${x.number ? `, ${flat(x.number)}` : ""}${x.head ? ` at ${String(x.head).slice(0, 7)}` : ""}${x.ms ? `, ${(x.ms / 1000).toFixed(1)} s` : ""}` : x.status === "running" ? "running" : "proposed, not run yet"}`,
       done && base && `  - On the base: ${base}`, done && Boolean(x.reason) && `  - ${flat(x.reason)}`,
@@ -714,14 +738,14 @@ export function resilienceMd({ pr, head, res = null, names = new Map(), arch = n
         ...table(["", "Who", "Where", "Guard", ""], p.writers.map((w) => [w.kind === "R" ? "reads" : "writes", nm(w.node), w.at ? `\`${w.at}\`` : "", w.guard ?? "", w.breaks ? "breaks the rule" : ""]))],
       !p.ladder?.length && !p.budget && !p.race?.steps?.length && !p.writers?.length && [`(${resNoPicture(p)}.)`, ""],
       "",
-      ...probeMd(probeOf(p)), "",
+      ...probeMd(probeOf(p), datedByDiff(p)), "",
       ...places.flatMap((s) => cx.at(s)), ""];
   };
   const parts = resVerdictParts(order), paths = res.paths ?? [], checks = res.checks ?? [], clean = checks.filter((c) => c.result === "clean"), ncheck = checks.filter((c) => c.result === "not_checkable");
   const other = checks.filter((c) => c.result !== "clean" && c.result !== "not_checkable");
-  const check = (c) => `- ${flat(resWord(c.check))}${c.result !== "clean" && c.result !== "not_checkable" ? ` (${resWord(c.result)})` : ""}: ${flat(c.why ?? "")}${c.at ? ` (\`${c.at}\`)` : ""}${titles(c.findings).length ? `. Findings: ${titles(c.findings).map((f) => flat(f.title)).join("; ")}` : ""}`;
+  const check = (c) => `- ${flat(resWord(c.check))}${c.result !== "clean" && c.result !== "not_checkable" ? ` (${resWord(c.result)})` : ""}: ${flat(say(c.why) ?? "")}${c.at ? ` (\`${c.at}\`)` : ""}${titles(c.findings).length ? `. Findings: ${titles(c.findings).map((f) => flat(f.title)).join("; ")}` : ""}`;
   const w = resWatch(res, arch), watch = w.watch.length || w.before.length || (res.blind_spots ?? []).length ? w.watch.map((x) => `${flat(x.text)}${x.at ? ` (\`${x.at}\`)` : ""}`) : (res.watch ?? []).map(flat);
-  const nc = [...ncheck.map((c) => `${flat(resWord(c.check))}: ${flat(c.why ?? "")}`), ...(res.not_checked ?? []).filter((x) => !resToolText(x)).map(flat)];
+  const nc = [...ncheck.map((c) => `${flat(resWord(c.check))}: ${flat(say(c.why) ?? "")}`), ...(res.not_checked ?? []).filter((x) => !resToolText(x)).map((x) => flat(say(x)))];
   const adds = res.additions ?? [];
   const add = (x) => [`- **${flat(x.what)}**${x.kind ? ` (${flat(x.kind)})` : ""}${x.at ? ` at \`${x.at}\`` : ""}: ${ADD_RESULT[x.result] ?? flat(x.result)}`,
     Boolean(x.purpose) && `  - For: ${flat(x.purpose)}`, Boolean(x.solves) && `  - Solves: ${dot(x.solves)}${x.likelihood ? ` (${resWord(x.likelihood)})` : ""}.`,
@@ -740,6 +764,7 @@ export function resilienceMd({ pr, head, res = null, names = new Map(), arch = n
   const depRows = resDepRows(res, order), down = depRows.flatMap((d) => [`- ${flat(d.dep)} (${[d.what, d.entry && `from ${flat(d.entry)}`, d.at].filter(Boolean).join(", ")})`,
     ...d.cases.map((c) => `  - ${flat(c.text)}${c.number ? `, path ${c.number}` : c.at ? ` (${c.at})` : ""}${c.effect ? `. ${flat(c.effect)}` : ""}`),
     ...(d.open.length ? [`  - The code cannot tell: ${d.open.join(", ")}.`] : [])]);
+  const trees = faultTrees(res, order, num);
   return doc(prLine({ pr, head }), "", "# Resilience", "",
     parts ? [parts.head, parts.counts.length > 0 && parts.counts.join(" · ")] : flat(res.summary ?? (paths.length ? "No path grows without limit or doubles an effect." : "")),
     [`${count(paths.length, "path")}`, `${count(clean.length, "check")} clean`, `${ncheck.length + (res.not_checked ?? []).length} not checkable`, res.head && `analysis of ${String(res.head).slice(0, 7)}`, cost !== null && cost !== undefined && `$${Number(cost).toFixed(2)}`].filter(Boolean).join(" · "),
@@ -751,6 +776,8 @@ export function resilienceMd({ pr, head, res = null, names = new Map(), arch = n
     (res.deps ?? []).length > 0 && [`## Calls and their limits (${res.deps.length})`, "", "What the map marks at a call: its timeout, retries and how a queue redelivers.", "",
       ...table(["Call", "Where", "Mode", "Limits"], res.deps.map((d) => [callOf(d), d.at ? `\`${d.at}\`` : "", d.mode ?? "", lim(d)]))],
     down.length > 0 && [`## When a dependency fails (${depRows.length})`, "", ...down, ""],
+    trees.length > 0 && [`## When a dependency fails, step by step (${trees.length})`, "", FAULT_NOTE, "", ...trees.flatMap(({ tree }) => [`### ${flat(tree.title)}`, "", ...mermaidFlow(faultFlow(tree)), ""])],
+    timelineMd(timelineOf(res, arch), num),
     other.length > 0 && [`## Other checks (${other.length})`, "", ...other.map(check), ""],
     clean.length > 0 && [`## Checked, clean (${clean.length})`, "", ...clean.map(check), ""],
     nc.length > 0 && [`## Not checkable (${nc.length})`, "", ...nc.map((x) => `- ${x}`), ""],

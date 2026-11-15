@@ -110,19 +110,28 @@ export function frame(v, rows = 60) {
   if (S.errs.length) throw new Error(S.errs.join("\n"));
   return { ms: performance.now() - t0, el: S.n.el - n0.el, call: S.n.call - n0.call, items };
 }
-// What the frames left for after them, run now: a big map's layout (layoutsLater), the syntax colours, a focus.
+// What the frames left for after them, run now: a big map's layout (firstLayouts), the syntax colours, a focus.
 export function later() { for (const f of timers.splice(0)) f(cx); }
 // Frames until none leaves anything for later: the state as it stands once the window is quiet.
 export function settled(v) { for (let k = 0; k < 8; k++) { frame(v); if (!timers.length) return; later(); } timers.length = 0; }
+// The same with the tasks the timers start (a map's layout search runs in slices of a task): until nothing is left.
+export async function quiet(v, ms = 60000) {
+  for (const t0 = performance.now(); ;) {
+    frame(v); await settle();
+    if (!timers.length) return;
+    later(); await settle();
+    if (performance.now() - t0 > ms) throw new Error("the view did not come to rest");
+  }
+}
 const median = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
 
 // A state measured: the first frame (cold), then `k` more that change nothing (warm: the median, and the functions
 // that ran in one of them). calls: name -> times run in one warm frame.
-export function measure(v, k = 7) {
+export async function measure(v, k = 7) {
   for (const key of Object.keys(N)) N[key] = 0;
   timers.length = 0;
   const cold = frame(v), n1 = { ...N };
-  settled(v); // what the first frame left for later is done, the caches are filled
+  await quiet(v); // what the first frame left for later is done, the caches are filled
   for (const key of Object.keys(N)) N[key] = 0;
   P.stat.clear(); P.on = true; const one = frame(v); P.on = false;
   const stat = new Map([...P.stat].map(([name, s]) => [name, { ...s }])), asked = { ...N };
@@ -164,7 +173,7 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split("/").pop()
     console.log(`${"state".padEnd(24)} ${"cold ms".padStart(7)} ${"warm ms".padStart(7)} ${"elem".padStart(7)} ${"calls".padStart(7)} ${"items".padStart(7)}  per warm frame: layout / functions run / notify, timers, shared writes`);
     for (const [state, go] of Object.entries(STATES)) {
       go(v); await settle();
-      const m = measure(v), fns = [...m.stat.values()].reduce((n, s) => n + s.n, 0);
+      const m = await measure(v), fns = [...m.stat.values()].reduce((n, s) => n + s.n, 0);
       console.log(`${state.padEnd(24)} ${f1(m.cold.ms)} ${f1(m.warm.ms)} ${i(m.warm.el)} ${i(m.warm.call)} ${i(m.warm.items)}  ${m.calls("arch.archLayout")} / ${fns} / ${m.asked.notify}, ${m.asked.after}, ${m.asked.shared}`);
       if (top) for (const [fn, s] of [...m.stat].sort((a, b) => b[1].self - a[1].self).slice(0, 8)) console.log(`    ${fn.padEnd(34)} ${i(s.n, 6)}× self ${f1(s.self)} ms  incl ${f1(s.incl)} ms`);
       if (v.mdPrev) v.command("md-close", cx);
@@ -172,10 +181,10 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split("/").pop()
     // The panel beside the chat.
     const { v: p, prs } = await openPanel(data);
     const rows = [];
-    p.picking = true; rows.push(["Panel, the list", measure(p)]);
+    p.picking = true; rows.push(["Panel, the list", await measure(p)]);
     p.memo.clear(); p.context = null; N.exec = 0; p.choose(prs[0], cx); await settle(); const execs = N.exec;
-    rows.push(["Panel, a PR chosen", measure(p)]);
-    if (p.files[1]) { p.pick(p.files[Math.min(12, p.files.length - 1)].path, cx); await settle(); rows.push(["Panel, another file", measure(p)]); }
+    rows.push(["Panel, a PR chosen", await measure(p)]);
+    if (p.files[1]) { p.pick(p.files[Math.min(12, p.files.length - 1)].path, cx); await settle(); rows.push(["Panel, another file", await measure(p)]); }
     for (const [state, m] of rows) {
       console.log(`${state.padEnd(24)} ${f1(m.cold.ms)} ${f1(m.warm.ms)} ${i(m.warm.el)} ${i(m.warm.call)} ${i(m.warm.items)}  ${m.calls("arch.archLayout")} / ${[...m.stat.values()].reduce((n, s) => n + s.n, 0)} / ${m.asked.notify}, ${m.asked.after}, ${m.asked.shared}`);
       if (top) for (const [fn, s] of [...m.stat].sort((a, b) => b[1].self - a[1].self).slice(0, 8)) console.log(`    ${fn.padEnd(34)} ${i(s.n, 6)}× self ${f1(s.self)} ms  incl ${f1(s.incl)} ms`);

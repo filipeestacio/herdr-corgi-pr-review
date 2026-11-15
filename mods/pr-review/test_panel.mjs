@@ -166,7 +166,7 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   assert.deepEqual([c.picking, c.prSel?.url], [false, y.url], "back from it: the PR, not the list");
   // The registry entry's risk mark for the minimized chip: the review's own counts.
   const { riskOfCounts, rowMarks } = await import("./views.js");
-  assert.deepEqual(rowMarks(riskOfCounts({ unresolved: 5, high: 2, medium: 3, low: 0, security: 1 }), null), [{ text: "⛨ high", security: true, kind: "risk" }]);
+  assert.deepEqual(rowMarks(riskOfCounts({ unresolved: 5, high: 2, medium: 3, low: 0, security: 1 }), null).map(({ text, security, kind }) => ({ text, security, kind })), [{ text: "⛨ high", security: true, kind: "risk" }]);
   assert.deepEqual([rowMarks(riskOfCounts({ unresolved: 1, high: 0, medium: 1, security: 0 }), null)[0].text, rowMarks(riskOfCounts({}), null)], ["medium", []]);
 }
 
@@ -315,5 +315,18 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   assert.deepEqual([calls.filter((c) => c.startsWith("gh")).length, w.srcLists.space.why], [0, "Every checkout in this space is on its default branch, so there is no branch to look up a PR for."]);
   w.loadSource(cx); await flush(); assert.equal(w.sourceNow(), "repo", "no PR on a branch here: the source it was");
   S.exec = null; S.panes = null; S.terminals = null; S.focused = null; S.spaces = [{ id: "s1", active: true, folder: "/repo", tabs: [] }];
+}
+// ---- the diff's colors: a file whose slice never came back is given up and stays plain, and so is one whose scanner throws
+{
+  const v = new PrReview(); v.init({}, cx); await flush();
+  const rows = Object.assign([{ kind: "+", number: 1, n: 1, text: "import os" }], { sig: "a" });
+  v.rows = rows; v.open = "a.py"; v.render(cx);
+  assert.ok(v.hl.rows === rows && v.hl.spans === null, "queued, not colored inside the render");
+  await flush(); assert.ok(v.hl.spans[0].some((x) => x.kind === "keyword"), "colored by its slice");
+  // Herdr stopped the slice: nothing was thrown, the job is where it was, and the slice was asked for long ago.
+  const stuck = (at) => ({ rows, file: "a.py", job: { rows, lang: "python", i: 0, olds: null, news: null, out: [] }, spans: null, kept: null, at });
+  v.hl = stuck(Date.now() - 500); v.render(cx); assert.equal(v.hl.spans, null, "a slice that may still run is left alone");
+  v.hl = stuck(Date.now() - 5000); v.render(cx); assert.deepEqual(v.hl.spans, [[]], "given up: the file stays plain");
+  v.hl = { ...stuck(0), job: null }; v.highlightMore(cx, v.hl); await flush(); assert.deepEqual(v.hl.spans, [[]], "a scanner that throws leaves the file plain");
 }
 console.log("panel ok");

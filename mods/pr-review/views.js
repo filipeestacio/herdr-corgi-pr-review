@@ -39,7 +39,9 @@ export function riskSignal({ analysis = null, findings = null, status = null } =
   if (!analysis && !findings) return null;
   const open = [...(findings ?? []), ...(analysis?.steps ?? []).flatMap((s) => s.findings ?? [])].filter((f) => !["fixed", "dismissed"].includes(status?.[f.id]?.s));
   return { top: SEVERITIES.find((s) => open.some((f) => f.severity === s)) ?? null, open: open.length,
-    security: open.some(isSecurity) }; // as the review's ⛨ (pr.js isSecurity): what it does, not who found it
+    security: open.some(isSecurity), // as the review's ⛨ (pr.js isSecurity): what it does, not who found it
+    // The mark's form: how sure the security findings are while there is one (the ⛨ speaks of them), else all of them.
+    form: signOf(open.some(isSecurity) ? open.filter(isSecurity) : open).form, words: signWords(open) };
 }
 
 // "0/6 layers · 2/9 files · 1 comment · 11 unresolved findings" for a review in progress (open-reviews.json `progress`,
@@ -179,7 +181,8 @@ export function worst(findings) {
   for (const f of findings) n[f.severity] = (n[f.severity] ?? 0) + 1;
   const order = [...SEVERITIES, ...Object.keys(n).filter((k) => !SEVERITIES.includes(k))].filter((k) => n[k]);
   return { severity: order[0], count: n[order[0]], total: findings.length, label: `${n[order[0]]} ${order[0]}`,
-    words: order.map((k) => `${n[k]} ${k}`).join(", "), security: findings.filter((f) => f.security).length };
+    words: order.map((k) => `${n[k]} ${k}`).join(", "), security: findings.filter((f) => f.security).length,
+    sign: signOf(findings.filter((f) => f.security)), signWords: signWords(findings.filter((f) => f.security)) }; // the ⛨ of a layer's or a file's row
 }
 
 // Merge blockers for "Needs your attention": by severity, security first within one severity, else in their order.
@@ -523,7 +526,9 @@ export function solidOver(base, over) {
 // finding is about security (one mark, the only red one), then the priority, then the type. Effort is left out: the
 // review itself has no "Review effort" either.
 export function rowMarks(risk, tri) {
-  return [risk?.top && { text: `${risk.security ? "⛨ " : ""}${risk.top}`, security: Boolean(risk.security), kind: "risk" },
+  // The risk mark carries its sign: glyph and word apart, the severity's color and the certainty's form (signEl).
+  return [risk?.top && { text: `${risk.security ? "⛨ " : ""}${risk.top}`, security: Boolean(risk.security), kind: "risk", glyph: risk.security ? "⛨" : "", word: risk.top,
+    color: risk.security ? SIGN_COLOR[risk.top] ?? "ansi1" : "muted", form: risk.form ?? "plain", words: risk.words ?? "" },
     tri && { text: `P${tri.priority}`, kind: "priority" }, tri?.type && { text: tri.type, kind: "type" }].filter(Boolean).slice(0, 3);
 }
 
@@ -1296,23 +1301,32 @@ export const certaintyText = (f) => `${f?.certainty ?? ""}${f?.certainty === "co
 // Which probe confirmed a finding, as a sentence after its certainty (" Probe r1 reproduced it, with the platform modeled.").
 export const probedText = (f) => (f?.certainty === "confirmed" && f?.probed ? ` Probe ${f.probed.id} reproduced it${f.probed.strength === "models_env" ? ", with the platform modeled" : ""}.` : "");
 
-// "Before merge" counted by what decides it, one number per group, in the rows' order: "⛨ 2 security", "5 criteria"
-// (the criteria not met that its rows break or stand for, each once), "5 resilience blockers", "14 high" (the other
-// findings by severity), "2 checks", "1 fix to verify", "1 overlapping PR". rows: review.js mergeRows (pr.js
-// beforeMerge and the Resilience run's rows); seen: rows already shown, whose criteria are not counted again. -> [{key, n, text}]
+// "Before merge" counted by what decides it, one number per group, in the rows' order: "⛨ 2 security", "9 findings on
+// 3 criteria" (the rows that break a criterion and how many criteria they break; a criterion nothing stands for is
+// "1 criterion without a finding"), "5 resilience blockers", "14 high" (the other findings by severity), "2 checks",
+// "1 fix to verify", "1 overlapping PR". Every number counts rows, so the numbers of a line add up to the rows it
+// speaks of ("16 more: …"). rows: review.js mergeRows (pr.js beforeMerge and the Resilience run's rows). -> [{key, n, text}]
 const mergeKey = (r) => (r.kind === "security" ? "security" : r.kind === "criterion" || r.kind === "ask" ? "criteria" : r.kind === "resilience" ? (r.path ? "resilience" : "blind")
   : r.kind === "finding" ? `sev-${r.finding?.severity ?? "high"}` : r.kind === "verify" || r.kind === "overlap" ? r.kind : "checks");
-export function mergeGroups(rows, seen = []) {
-  const say = { security: (n) => `⛨ ${n} security`, criteria: (n) => `${n} ${n === 1 ? "criterion" : "criteria"}`, resilience: (n) => `${n} resilience ${n === 1 ? "blocker" : "blockers"}`, // the verdict line's word for the same paths
+export function mergeGroups(rows) {
+  const say = { security: (n) => `⛨ ${n} security`, resilience: (n) => `${n} resilience ${n === 1 ? "blocker" : "blockers"}`, // the verdict line's word for the same paths
     blind: (n) => `${n} not observable`, verify: (n) => `${n} ${n === 1 ? "fix" : "fixes"} to verify`, overlap: (n) => `${n} overlapping ${n === 1 ? "PR" : "PRs"}`, checks: (n) => `${n} ${n === 1 ? "check" : "checks"}` };
-  const groups = new Map(), asks = new Set(seen.flatMap((r) => (r.asks?.length ? r.asks : [r.ask]).filter(Boolean).map((a) => a.id)));
-  for (const r of rows) {
-    const k = mergeKey(r);
-    if (!groups.has(k)) groups.set(k, 0);
-    if (k === "criteria") for (const a of r.asks?.length ? r.asks : [r.ask]) { if (a && !asks.has(a.id)) { asks.add(a.id); groups.set(k, groups.get(k) + 1); } }
-    else groups.set(k, groups.get(k) + 1);
-  }
-  return [...groups].filter(([, n]) => n > 0).map(([key, n]) => ({ key, n, text: say[key] ? say[key](n) : `${n} ${key.slice(4)}` }));
+  const crit = (n) => `${n} ${n === 1 ? "criterion" : "criteria"}`;
+  const criteria = (l) => {
+    const fs = l.filter((r) => r.kind === "criterion"), a = l.length - fs.length, c = new Set(fs.flatMap((r) => (r.asks?.length ? r.asks : [r.ask]).filter(Boolean).map((x) => x.id))).size;
+    return [fs.length > 0 && `${fs.length} ${fs.length === 1 ? "finding" : "findings"}${c ? ` on ${crit(c)}` : ""}`, a > 0 && `${crit(a)} without a finding`].filter(Boolean).join(" and ");
+  };
+  const groups = new Map();
+  for (const r of rows) { const k = mergeKey(r); groups.set(k, [...(groups.get(k) ?? []), r]); }
+  return [...groups].map(([key, l]) => ({ key, n: l.length, text: key === "criteria" ? criteria(l) : say[key] ? say[key](l.length) : `${l.length} ${key.slice(4)}` }));
+}
+// The findings "Before merge" stands for (acceptance, engineer 2): each row's own, and the later open findings of its
+// cause (pr.js same_cause), which byCause puts on that row. They count there, not again under "Other findings".
+// open: the unresolved findings. -> Set of finding ids.
+export function mergeHeld(rows, open = []) {
+  const own = new Set(rows.flatMap((r) => (r.finding ? [r.finding.id] : []))), held = new Set(own);
+  for (const f of open) if (f.same_cause && open.some((g) => g !== f && own.has(g.id) && (g.id === f.same_cause || (g.ids ?? []).includes(f.same_cause)))) held.add(f.id);
+  return held;
 }
 // The rows shown of "Before merge" (and the box over the layers): at most n, every security row first, then the first
 // of each other group before a second of any, in the rows' order, so a criterion is not pushed out by resilience
@@ -1554,7 +1568,9 @@ export function leftNow(before, left) {
 
 // The review's own risk signal from its finding counts (pr.js findingCounts: unresolved ones by severity, security by
 // cause), in riskSignal's shape. It goes into the registry entry, so the minimized chip shows the mark the review shows.
-export const riskOfCounts = (c) => ({ top: c?.high ? "high" : c?.medium ? "medium" : c?.low ? "low" : null, open: c?.unresolved ?? 0, security: Boolean(c?.security) });
+// open: the unresolved findings themselves, for the mark's form and its words (signOf, signWords).
+export const riskOfCounts = (c, open = null) => ({ top: c?.high ? "high" : c?.medium ? "medium" : c?.low ? "low" : null, open: c?.unresolved ?? 0, security: Boolean(c?.security),
+  ...(open ? { form: signOf(open.some((f) => f.security) ? open.filter((f) => f.security) : open).form, words: signWords(open) } : {}) });
 
 // ---- the text sizes (U34): named steps instead of fifteen sizes, in px at 100 % zoom. micro: text inside a picture
 // (a call's text, a chip on a line); small: what is glanced at (meta lines, group headings, chips); body: what is
@@ -1614,3 +1630,104 @@ export function spaceEmpty(checkouts, repos) {
   const names = repos.flatMap((r) => r.branches), shown = names.slice(0, 3).join(", ");
   return `No open PR for ${shown}${names.length > 3 ? ` and ${names.length - 3} more` : ""}. Choose Current branch below to see the diff.`;
 }
+
+// ---- one sign for what stands behind a page, a row or a chip (the nav rows of Analysis, the bar's excerpt, the rows
+// of "Needs your attention" and "Before merge", the panel's PR row, the minimized chip). The color says the highest
+// severity among what is unresolved there, the form how sure that is, and the tip says both in words; the number
+// stays beside the sign, so nothing is said by color alone.
+const SIGN_SEV = ["critical", "high", "medium", "low"], SIGN_COLOR = { critical: "ansi1", high: "ansi1", medium: "ansi3", low: "ansi4" };
+// How sure one finding is, in three steps: confirmed (something that ran shows it, also a probe: withProbes), derived
+// (read from the code; also a finding from before the field existed), assumed (its certainty, or only its reach).
+export const sureOf = (f) => (f?.certainty === "confirmed" ? "confirmed" : f?.certainty === "assumed" || f?.path_certainty === "assumed" ? "assumed" : "derived");
+const sureWords = (f) => (f.certainty === "confirmed" ? `confirmed by a ${f.probed ? "probe" : "run"}${certaintyText(f).includes("modeled") ? ", platform modeled" : ""}`
+  : f.certainty !== "assumed" && f.path_certainty === "assumed" ? "assumed reachable" : certaintyText(f));
+// The sign of a set of unresolved findings: {top: the highest severity or null, color: a theme key, form}. form:
+// "filled" when one of the top severity is confirmed, "plain" when the surest is derived, "open" when all of them
+// are assumed, "quiet" when there is none.
+export function signOf(findings) {
+  const top = SIGN_SEV.find((s) => (findings ?? []).some((f) => f.severity === s)) ?? ((findings ?? []).length ? "low" : null);
+  if (!top) return { top: null, color: "muted", form: "quiet" };
+  const sure = new Set(findings.filter((f) => f.severity === top || !SIGN_SEV.includes(f.severity)).map(sureOf));
+  return { top, color: SIGN_COLOR[top], form: sure.has("confirmed") ? "filled" : sure.has("derived") ? "plain" : "open" };
+}
+// "1 high, confirmed by a probe · 2 medium, assumed reachable": the same findings in words, worst and surest first.
+export function signWords(findings) {
+  const by = new Map();
+  for (const f of findings ?? []) { const k = [f.severity ?? "low", sureWords(f)].filter(Boolean).join(", "); by.set(k, { n: (by.get(k)?.n ?? 0) + 1, sev: SIGN_SEV.indexOf(f.severity), sure: ["confirmed", "derived", "assumed"].indexOf(sureOf(f)) }); }
+  return [...by].sort(([, a], [, b]) => (a.sev < 0 ? 9 : a.sev) - (b.sev < 0 ? 9 : b.sev) || a.sure - b.sure).map(([k, v]) => `${v.n} ${k}`).join(" · ");
+}
+// A page's sign. kind: overview | arch | security | resilience. findings: the unresolved findings behind the page.
+// run: {state: done | running | failed | null (a run that is optional and did not run), n: the page's own number
+// where it counts something else (security: causes, resilience: paths that block) with `unit`, its words ("paths
+// block the merge"), more: a sentence for the tip
+// ("1 path blocks once it is wired."), unsure: what stayed unchecked although the run is done ("1 path not assessed")}.
+// -> {glyph, color (theme key), form (signOf's, or "quiet"), n, tip, state: open | clean | quiet | none | running}.
+// clean: checked and nothing unresolved (a small ✓); quiet: nothing unresolved, yet not all of it checked; none: not run.
+export const PAGE_SIGN = { overview: ["!", "Overview"], arch: ["!", "Architecture impact"], security: ["⛨", "Security"], resilience: ["↯", "Resilience"] };
+export function pageBadge(kind, findings, run = {}) {
+  const [glyph, name] = PAGE_SIGN[kind] ?? ["!", String(kind)], list = findings ?? [], more = run.more ? ` ${run.more}` : "";
+  if (list.length) {
+    const s = signOf(list), n = run.n ?? list.length, own = run.unit ? `${n} ${run.unit}. ` : "";
+    return { glyph, color: s.color, form: s.form, n, state: "open", tip: `${name}: ${own}${signWords(list)}.${run.unsure ? ` ${run.unsure[0].toUpperCase()}${run.unsure.slice(1)}.` : ""}${run.state === "failed" ? ` The last ${name} run failed.` : run.state === null ? ` The ${name} run did not run.` : ""}${more}` };
+  }
+  const quiet = (g, state, tip) => ({ glyph: g, color: "dim", form: "quiet", n: run.n || 0, state, tip: `${name}: ${tip}${more}` });
+  if (run.state === "running") return quiet("⋯", "running", "the run is going.");
+  if (run.state === null || run.state === "failed") return quiet("○", "none", run.state === "failed" ? "the run failed, so nothing is known." : "not run.");
+  if (run.unsure || run.n) return quiet(glyph, "quiet", `no unresolved finding${run.unsure ? `; ${run.unsure}` : ""}.`);
+  return quiet("✓", "clean", "checked, nothing unresolved.");
+}
+// The sign as an element. div: gpui-kit's (passed in, so this module stays pure). Filled: the color is the ground;
+// open: a dashed frame with "?" at reduced strength; else the glyph in its color.
+export function signEl(div, t, sign, glyph = sign.glyph) {
+  const c = t[sign.color] ?? t.muted, e = div().flex_none().px(3).rounded(4);
+  return sign.form === "filled" ? e.bg(c).text_color(t.background).child(glyph) : sign.form === "open" ? e.border_1().border_dashed().border_color(c + "aa").text_color(c + "cc").child(`${glyph}?`) : e.text_color(c).child(glyph);
+}
+// A risk mark's label for a chip (rowMarks): the ⛨ as a sign before the word, or the text alone.
+export const markLabel = (div, t, m) => (m.glyph ? div().flex().items_center().gap(3).child(signEl(div, t, m, m.glyph)).child(m.word) : m.text);
+
+// ---- Resilience: the run's own ids out of its sentences (acceptance, UX 1). A path's id (p5) reads as the number the
+// list shows ("path 6"; the list is sorted, blockers first, so the two differ); a ref the run gave one of its findings
+// (r_f1: it is not stored, so nothing can show which finding it was) goes. nums: Map(path id -> number shown). Pure.
+// ponytail: a word like "p5" in a sentence is read as the path with that id; the run writes its ids no other way.
+export function resRefs(text, nums) {
+  return String(text ?? "").replace(/\s*\((?:see\s+)?r_f\d+(?:(?:,|\s+and)\s*r_f\d+)*\)/g, "").replace(/[;,]?\s*\bsee r_f\d+(?:(?:,|\s+and)\s*r_f\d+)*/g, "")
+    .replace(/\b(?:paths?\s+)?(p\d+)\b/g, (all, id) => (nums?.has(id) ? `path ${nums.get(id)}` : all));
+}
+// The paths as the page and its Markdown list them: in the page's order, each in the page's shape, their sentences
+// (note, why not today, the race's note) with the numbers shown. -> {paths, nums, say}; say(text) does the same for
+// another sentence of the run (a check's reason).
+export function resShown(res) {
+  const paths = resOrder((res?.paths ?? []).map((p) => resPathView(p, res ?? {}))), nums = new Map(paths.map((p, k) => [p.id, k + 1])), say = (s) => (s ? resRefs(s, nums) : s);
+  return { nums, say, paths: paths.map((p) => ({ ...p, note: say(p.note), wired: p.wired && { ...p.wired, today: say(p.wired.today) }, race: p.race && { ...p.race, note: say(p.race.note) } })) };
+}
+
+// ---- Security page: a finding stands in full once among the crossings (acceptance, UX 3), at the first crossing that
+// names it; a later crossing refers to that one by its number. rows: the crossings shown, in their order; num(r): a
+// row's number in the list. -> Map(row key -> {first: [finding], again: [{f, at}]}). Pure.
+export function crossOnce(rows, num = (r) => rows.indexOf(r) + 1) {
+  const seen = new Map(), out = new Map();
+  for (const r of rows ?? []) {
+    const first = [], again = [];
+    for (const f of r.findings ?? []) { if (seen.has(f.id)) again.push({ f, at: seen.get(f.id) }); else { seen.set(f.id, num(r)); first.push(f); } }
+    out.set(r.key, { first, again });
+  }
+  return out;
+}
+
+// ---- Resilience: one statement about old or new (acceptance, UX 4). Where the diff dates a path (pr.js withResilience:
+// pre_existing true or false, from the lines of its findings), that word counts, and its probe says only what the script
+// did on the base ("on base: the script could not run there"); the probe's verdict ("new in this PR", from an ImportError on the base)
+// dates only a path the diff could not date (resByProbe). x: the probe; byDiff: the diff dated its path; words:
+// threads.js BASE_WORDS. -> {dates: the word is a verdict of old or new, word} | null without a base run.
+// What the script did there, by the runner's verdict (an ImportError or AttributeError: the code it needs is not on the
+// base, so it could not run; the runner's status says "not reproduced" for that too), else by its status.
+const BASE_RAN = { already_on_base: "breaks the same way", new_in_pr: "the script could not run there", unknown: "the script failed there", not_on_base: "not reproduced" };
+const BASE_DID = { reproduced: "breaks the same way", not_reproduced: "not reproduced", script_failed: "the script failed there", new_in_pr: "the script could not run there", new: "the script could not run there", unknown: "unknown", not_run: "not run" };
+export function probeBaseWord(x, byDiff, words = {}) {
+  const b = x?.base;
+  if (!b || typeof b !== "object") return null;
+  const verdict = byDiff ? null : words[b.verdict] ?? (b.verdict ? null : { new_in_pr: "new in this PR", new: "new in this PR" }[b.status]);
+  return verdict ? { dates: true, word: verdict } : { dates: false, word: BASE_RAN[b.verdict] ?? BASE_DID[b.status] ?? resWord(b.status ?? "unknown") };
+}
+// The diff dated this path itself: old or new is known without a probe (resByProbe sets byProbe when the probe did).
+export const datedByDiff = (p) => typeof p?.pre_existing === "boolean" && !p.byProbe;

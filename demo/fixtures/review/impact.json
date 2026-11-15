@@ -1,0 +1,74 @@
+{
+ "v": 1,
+ "servers": [
+  "Python"
+ ],
+ "uncovered": [
+  {
+   "ext": "yaml",
+   "files": 1
+  }
+ ],
+ "failed": [],
+ "functions": [
+  {
+   "id": "library/handler.py#12",
+   "path": "library/handler.py",
+   "name": "handler",
+   "kind": "function",
+   "container": "",
+   "line": 12,
+   "end": 26,
+   "nameLine": 12,
+   "character": 4,
+   "isNew": false,
+   "sig": null,
+   "callers": [],
+   "outside": 0,
+   "more": 0
+  },
+  {
+   "id": "library/reminders.py#16",
+   "path": "library/reminders.py",
+   "name": "send_reminders",
+   "kind": "function",
+   "container": "",
+   "line": 16,
+   "end": 25,
+   "nameLine": 16,
+   "character": 4,
+   "isNew": false,
+   "sig": {
+    "old": "def send_reminders(store, mailer, on=None):",
+    "now": "def send_reminders(store, mailer, queue, on=None):"
+   },
+   "callers": [
+    {
+     "id": "library/tests/test_reminders.py#18",
+     "name": "ReminderTest.test_reminds_two_days_before_due_once",
+     "kind": "method",
+     "path": "library/tests/test_reminders.py",
+     "line": 21,
+     "sites": [
+      {
+       "line": 21,
+       "text": "self.assertEqual(send_reminders(self.store, mailer, queue, on), 1)",
+       "mark": "changed"
+      },
+      {
+       "line": 23,
+       "text": "self.assertEqual(send_reminders(self.store, mailer, queue, on), 0)",
+       "mark": "changed"
+      }
+     ],
+     "mark": "changed",
+     "test": true
+    }
+   ],
+   "outside": 0,
+   "more": 0
+  }
+ ],
+ "skipped": 0,
+ "ms": 15524
+}

@@ -153,6 +153,14 @@ for part in ("every public route's request, always", "answers 202 while the mail
     assert part in pr2, part
 for part in ("possible_today (false when the path cannot happen until", "raises (true when the failure ends in an exception", "never result)", "never cannot_happen because of a bug in the part", "for a queue trigger the consumer", "only when a protection stands behind it", "not possible today, see p4", "seen_as (one sentence", "oncall (one sentence", "next (one sentence with a verb"):
     assert part in resilience.ASK, part
+# Seconds for the timing picture (timeline.js): the pauses as a list of numbers and one attempt's own timeout; a word,
+# a negative or a guess-shaped value is left out (not stated), never turned into 0.
+_secs = lambda retry: resilience.view({"deps": [{"at": "x.py:1", "mode": "sync", "node": "handler", "retry": {"attempts": 3, **retry}}]}, [], pic, [])["deps"][0]["retry"]  # noqa: E731
+assert (_secs({"backoff_s": [1, 2, 4], "attempt_s": 0.5})["backoff_s"], _secs({"backoff_s": [1, 2, 4], "attempt_s": 0.5})["attempt_s"]) == ([1, 2, 4], 0.5)
+assert all("backoff_s" not in _secs({"backoff_s": bad}) for bad in ("1, 2, 4", [1, "2"], [1, -2], None, [True])) and _secs({"backoff_s": []})["backoff_s"] == []
+assert all("attempt_s" not in _secs({"attempt_s": bad}) for bad in (0, -1, "3", None, True))
+assert {"attempt_s", "backoff_s"} <= set(sch["properties"]["deps"]["items"]["properties"]["retry"]["properties"])
+assert "backoff_s (the pauses in seconds in their order" in resilience.ASK and "never a guess" in resilience.ASK
 # Dependencies that fail or are overloaded: per dependency a case for each way it fails, once, in the order slow,
 # overloaded, down, bad answer, recovers. A decided case names its line (else it is not checkable); its path is one of
 # this run's, by the id the path got here; unknown nodes, edges, kinds and findings go; no dependency without a case.

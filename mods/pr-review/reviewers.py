@@ -5,7 +5,7 @@ argv[1]: JSON {kind: "claude"|"security"|"codex", url, number, context ({id, env
 model or alias from models.py; haiku runs as sonnet, llm.code_model), codexModel (a Codex slug from models.py; none: Codex's default), worktree (a detached checkout of the PR head, worktree.py), base (the PR's base branch),
 head (sha), level (code-review effort: low|medium|high), file (pr-data/findings/<url hash>.json)}.
 Runs the reviewer read-only in the worktree (Claude: Read/Grep/Glob/Agent and read-only git/gh Bash only, no edits;
-Codex: sandbox_mode=read-only), turns its answer into findings {id, reviewer, file, line, end, severity, title,
+Codex: codex_args()), turns its answer into findings {id, reviewer, file, line, end, severity, title,
 detail, suggestion, code, and when the reviewer gave them: category, impact, effect, preconditions, certainty (see
 review.py: the severity follows from the impact by the fixed scale)} and merges them into `file` under that reviewer
 (other reviewers' findings and every status stay). A review that comes back as text (Codex's, or a slash command that
@@ -50,7 +50,8 @@ def permissions(worktree):
 def allowed(req):
     """What the run is allowed to do, as rules (runs[kind].allowed; the Security page shows it)."""
     if req["kind"] == "codex":
-        return ["codex review: sandbox_mode read-only, approval_policy never"]
+        return ["codex exec review: reads the checkout and its clone's .git only, no writes, no network for its commands, "
+                "no MCP servers, hooks, plugins or apps, no Codex config of the user or the PR, approval_policy never"]
     return review.allowed_rules(permissions(req["worktree"]))
 PLACE = {"file": review.S, "line": {"type": "integer"}, "end": {"type": "integer"}, **review.PROSE}
 # A review turned from text: what its words give, nothing judged on top.
@@ -702,15 +703,60 @@ def claude_review(req, command=None):
     return answer, meta
 
 
+# ---- Codex: what its run may do. Codex's own "read-only" sandbox blocks writes and the network but reads the whole
+# disk (the home folder, Codex's login file), and a session loads the user's MCP servers and hooks and, in a trusted
+# clone, the PR's own .codex/config.toml (an MCP server from it is a command that runs outside every sandbox). So:
+# - a permission profile instead of sandbox_mode: the system's own files (Codex's `:minimal`), the tools' folders,
+#   the checkout and its clone's .git; nothing else is readable, nothing is writable, commands have no network;
+# - --ignore-user-config: no MCP servers and, since the trust of a folder lives there, no config from the PR;
+#   --ignore-rules, hooks, plugins and apps (the account's connectors) off, no web search;
+# - the model's commands get a core environment (no key or token of Codex's own) and git without the user's config;
+# - --strict-config: a Codex that does not know one of these settings fails instead of running without it.
+# Checked against Codex 0.164 without a model run: `codex sandbox` with this profile, and a session start against a
+# provider that does not answer (test_reviewers.py runs the first). The npm layout was only modelled, not installed.
+# ponytail: a Codex set up in config.toml (another provider, the login in the keyring) or installed in a layout not
+# known here fails with Codex's own error; pass those settings as -c overrides when someone needs that.
+CODEX_TOOLS = ("/opt/homebrew", "/usr/local")  # git and rg outside the system folders
+CODEX_SHELL_ENV = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_COUNT": "1",
+                   "GIT_CONFIG_KEY_0": "core.attributesFile", "GIT_CONFIG_VALUE_0": "/dev/null"}
+
+
+def toml(d):
+    """A dict of strings and dicts as a TOML inline table (a JSON string is a TOML string)."""
+    return "{" + ",".join(f"{json.dumps(k)}={json.dumps(v) if isinstance(v, str) else toml(v)}" for k, v in d.items()) + "}"
+
+
+def codex_reads(worktree, codex):
+    """What a Codex run may read besides the system's own files: the checkout, its clone's .git (a worktree keeps its
+    history there), the tools' folders, the codex program itself (installed with npm: its packages' folder) and, on
+    macOS, the cache that tells /usr/bin/git where the real git is (without it every git call takes seconds). Real
+    paths, only those that exist."""
+    common = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=worktree, capture_output=True, text=True).stdout.strip()
+    xcrun = os.path.join(os.confstr(65537), "xcrun_db") if sys.platform == "darwin" else ""  # 65537: _CS_DARWIN_USER_TEMP_DIR
+    parts = pathlib.Path(os.path.realpath(codex)).parts  # installed with npm: the launcher starts a binary of a package beside it
+    npm = str(pathlib.Path(*parts[:parts.index("node_modules") + 2])) if "node_modules" in parts[:-2] else ""
+    return [os.path.realpath(p) for p in (worktree, common, *CODEX_TOOLS, codex, npm, xcrun) if p and os.path.exists(p)]
+
+
+def codex_args(req, codex):
+    """The argv of the Codex run. codex by its real path: its sandbox starts the same program again and could not
+    read a link in the home folder."""
+    codex = os.path.realpath(codex)
+    files = {":minimal": "read", ":slash_tmp": "none", **{p: "read" for p in codex_reads(req["worktree"], codex)}}
+    pick = ["-c", f"model={json.dumps(req['codexModel'])}"] if req.get("codexModel") else []  # else Codex's own default
+    return [codex, "exec", "review", "--base", f"origin/{req['base']}", "--ignore-user-config", "--ignore-rules", "--strict-config",
+            "--disable", "hooks", "--disable", "plugins", "--disable", "apps", "-c", 'approval_policy="never"', "-c", 'web_search="disabled"',
+            "-c", 'default_permissions="review"', "-c", f"permissions.review.filesystem={toml(files)}",
+            "-c", f"shell_environment_policy={toml({'inherit': 'core', 'set': CODEX_SHELL_ENV})}", *pick]
+
+
 def codex_review(req):
     started = time.monotonic()
     codex = shutil.which("codex")
     if not codex:
         raise RuntimeError("codex is not installed (optional): see Setup")
-    pick = ["-c", f"model={json.dumps(req['codexModel'])}"] if req.get("codexModel") else []  # else Codex's own default
-    r = subprocess.run([codex, "review", "--base", f"origin/{req['base']}",
-                        "-c", 'sandbox_mode="read-only"', "-c", 'approval_policy="never"', *pick],
-                       cwd=req["worktree"], capture_output=True, text=True, timeout=TIMEOUT, env=llm.env_for(None))
+    r = subprocess.run(codex_args(req, codex), cwd=req["worktree"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=TIMEOUT,
+                       env=llm.env_for(None, llm.CODEX_LOGIN))
     ms = int((time.monotonic() - started) * 1000)
     text = (r.stdout or "") + ("\n" + r.stderr if r.returncode != 0 else "")
     used = re.search(r"tokens used[:\s]*([\d,.]+)", text, re.I)

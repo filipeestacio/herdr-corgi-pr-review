@@ -4,7 +4,7 @@
 // it so must give what a fresh computation gives after everything that changes their inputs. Counts, not times: the
 // one time check is generous and takes the best of three. perf_bench.mjs prints the numbers.)
 import assert from "node:assert/strict";
-import { hasFixtures, openReview, PR2, BIG, STATES, measure, counted, frame, later, settled, cx, settle } from "./perf_bench.mjs";
+import { hasFixtures, openReview, PR2, BIG, STATES, measure, counted, frame, later, settled, quiet, cx, settle } from "./perf_bench.mjs";
 import { S } from "./render_stub.mjs";
 
 if (!hasFixtures) {
@@ -60,8 +60,8 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   for (const id of ["rv-arch-canvas", "rv-sec-canvas", "rv-res-canvas"]) v.hsOf(id).viewW = 1300; // measured, as in a window: Fit decides from it
   for (const [state, go] of Object.entries(STATES)) {
     go(v); await settle();
-    let m = measure(v, 1), best = m.warm.ms;
-    for (let k = 0; k < 2 && best > 150; k++) best = Math.min(best, measure(v, 1).warm.ms); // a busy machine: the best of three
+    let m = await measure(v, 1), best = m.warm.ms;
+    for (let k = 0; k < 2 && best > 150; k++) best = Math.min(best, (await measure(v, 1)).warm.ms); // a busy machine: the best of three
     const fns = [...m.stat.values()].reduce((n, s) => n + s.n, 0);
     assert.deepEqual(NEVER.filter((f) => m.calls(f) > 0 && !(f === "views.findingAnchor" && m.calls(f) < 200)), [], `${state}: a frame that changes nothing computes none of these again`);
     assert.ok(fns <= BUDGET[state], `${state}: ${fns} function calls in a frame that changes nothing, at most ${BUDGET[state]}`);

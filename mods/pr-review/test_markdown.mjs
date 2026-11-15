@@ -1,7 +1,7 @@
 // Run: node test_markdown.mjs
 import assert from "node:assert/strict";
 import { diffRows } from "./pr.js";
-import { rowsByPath, codeContext, codeStats, mdParts, mdJoin, CODE_MAX } from "./markdown.js";
+import { rowsByPath, codeContext, codeStats, mdParts, mdJoin, mdHead, mdLines, CODE_MAX, fenceLang } from "./markdown.js";
 import { prLine, mermaidFlow, visualMd, findingMd, findingsMd, overviewMd, layerMd, architectureMd, securityMd, cardOf, wayIn, verifyContextMd } from "./markdown.js";
 
 const pr = { repo: "o/r", number: 2, title: "feat: x", url: "https://example.test/pull/2" }, head = "abcdef1234", base = { pr, head };
@@ -351,6 +351,14 @@ const all = [f("m1", "medium", { breaks: { node: "c" } }), sec, f("l1", "low"), 
   assert.match(dep, /## When a dependency fails \(1\)\n\n- Mailer \(external, sync, library\/mailer\.py:14\)\n  - slow: waits up to 7 s ✗, path 1\. The request hangs until its timeout\.\n  - down: fails fast ✓ \(library\/mailer\.py:19\)\n  - The code cannot tell: recovers\.\n/);
 }
 
+// ---- a fence's language: a script without an ending is fenced as bash by its first line
+{
+  for (const [file, first, lang] of [["scripts/a.sh", "", "bash"], ["bin/release", "#!/usr/bin/env bash", "bash"], [".envrc", "", "bash"], ["hooks/pre-commit", "", "bash"], ["bin/tool", "#!/usr/bin/env python3", "python"],
+    ["Makefile", "", "makefile"], ["rules.mk", "", "makefile"], [".github/workflows/ci.yml", "", "yaml"], ["application-prod.yml", "", "yaml"], ["app.properties", "", "properties"], ["tox.ini", "", "ini"], ["Cargo.lock", "", "toml"], ["LICENSE", "", ""], ["a.py", "", "python"], ["x.toml", "", "toml"], ["bin/release", undefined, ""]]) assert.equal(fenceLang(file, first), lang, file);
+  const cx = codeContext(rowsByPath(new Map([["bin/release", diffRows(["@@ -1,3 +1,3 @@", " #!/bin/sh", " set -eu", " echo hi"])]])));
+  assert.equal(cx.block("bin/release", 2)[2], "```bash");
+}
+
 // ---- the code context: the lines a place names, from the rows the review holds
 {
   const rows = diffRows(["@@ -1,4 +1,5 @@", " import os", "-TOKEN = None", "+TOKEN = os.environ.get('T', '')", " ", " def late():", "@@ -20,2 +21,18 @@", ...Array.from({ length: 18 }, (_x, k) => `+line ${21 + k}`)]);
@@ -372,7 +380,13 @@ const all = [f("m1", "medium", { breaks: { node: "c" } }), sec, f("l1", "low"), 
   const text = ["PR x", "", "# Title", "", "Summary.", "", "## One (2)", "", "- a", "", "Code `a.py:1-2`:", "", "```diff", "+x", "## not a heading", "```", "", "## Two", "", "b", ""].join("\n");
   const doc = mdParts(text);
   assert.deepEqual(doc.parts.map((p) => [p.title, p.n]), [["One (2)", 7], ["Two", 2]]); assert.deepEqual(doc.head, ["PR x", "", "# Title", "", "Summary.", ""]);
-  assert.equal(mdJoin(doc), text); assert.equal(mdJoin(doc, new Set([0])), "PR x\n\n# Title\n\nSummary.\n\n## Two\n\nb\n");
+  assert.equal(mdJoin(doc), text);
+  // A part left out is named under the title, which counts the whole page (acceptance, UX 2).
+  assert.equal(mdJoin(doc, new Set([0])), "PR x\n\n# Title\n\nLeft out of this text: One (2).\n\nSummary.\n\n## Two\n\nb\n");
+  // One way to count, the lines with text: the head and the parts kept add up to the whole, with every choice.
+  for (const off of [new Set(), new Set([0]), new Set([1]), new Set([0, 1])])
+    assert.equal(mdLines(mdHead(doc, off)) + doc.parts.filter((_p, k) => !off.has(k)).reduce((n, p) => n + p.n, 0), mdLines(mdJoin(doc, off)), `the sizes add up with ${[...off]} left out`);
+  assert.deepEqual([mdLines(mdHead(doc)), mdLines(text), mdLines(mdHead({ head: ["no title"], parts: doc.parts }, new Set([1])))], [3, 12, 2]);
   assert.deepEqual(codeStats(text), { blocks: 1, lines: 2 }); assert.deepEqual(codeStats(mdJoin(doc, new Set([0]))), { blocks: 0, lines: 0 });
   console.log("ok code context and parts");
 }
