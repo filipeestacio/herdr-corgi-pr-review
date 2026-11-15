@@ -4,7 +4,7 @@
 // it so must give what a fresh computation gives after everything that changes their inputs. Counts, not times: the
 // one time check is generous and takes the best of three. perf_bench.mjs prints the numbers.)
 import assert from "node:assert/strict";
-import { hasFixtures, openReview, PR2, BIG, STATES, measure, counted, cx, settle } from "./perf_bench.mjs";
+import { hasFixtures, openReview, PR2, BIG, STATES, measure, counted, frame, later, settled, cx, settle } from "./perf_bench.mjs";
 import { S } from "./render_stub.mjs";
 
 if (!hasFixtures) {
@@ -69,6 +69,31 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
     assert.ok(best < 150, `${state}: ${best.toFixed(0)} ms for a frame that changes nothing (best of three; a few ms on an idle machine)`);
     if (v.mdPrev) v.command("md-close", cx);
   }
+}
+// ---- a big map is laid out after the frame, a small one in it
+// (In Herdr the layout of 80 cards takes 208 ms and a render is stopped after about 50: laid out in the frame, the
+// page never came.)
+{
+  const drawn = (v) => { S.ids = new Set(); const ran = counted(() => frame(v)); const ids = S.ids; S.ids = null; return { layouts: ran("arch.archLayout"), map: ["rv-arch-canvas", "rv-res-canvas"].filter((id) => ids.has(id)) }; };
+  const big = await openReview(BIG());
+  for (const [state, id] of [["Architecture", "rv-arch-canvas"], ["Resilience", "rv-res-canvas"]]) {
+    STATES[state](big); await settle(); big.fitMemos = null;
+    assert.deepEqual(drawn(big), { layouts: 0, map: [] }, `${state}, 80 cards: the first frame lays nothing out and draws the page without its picture`);
+    later();
+    assert.equal(big.fitMemos && Object.keys(big.fitMemos).length, 1, `${state}: one layout per task`);
+    settled(big);
+    assert.deepEqual(drawn(big), { layouts: 0, map: [id] }, `${state}, 80 cards: the picture is there once its layout is, and the frame still lays nothing out`);
+  }
+  // Marks changed (a finding dismissed): the frame draws the layout from before until the new one is there.
+  STATES.Architecture(big); settled(big);
+  const marked = big.openFindings().find((f) => big.archMarksNow().nodes.size && [...big.archMarksNow().nodes.values()].some((m) => m.findings.includes(f) && m.findings.length === 1));
+  assert.ok(marked, "the fixture has a card marked by one finding");
+  { big.find.status = { ...big.find.status, [marked.id]: { s: "dismissed", at: "2026-11-15T10:00:00Z", ids: marked.ids } };
+    assert.deepEqual(drawn(big), { layouts: 0, map: ["rv-arch-canvas"] }, "new marks on a big map: the picture from before stays for the frame"); settled(big); }
+  const small = await openReview(PR2());
+  STATES.Architecture(small); await settle(); small.fitMemos = null;
+  const first = drawn(small);
+  assert.ok(first.layouts > 0 && first.map.includes("rv-arch-canvas"), "9 cards: laid out and drawn in the first frame, as before");
 }
 await settle();
 console.log("perf ok");

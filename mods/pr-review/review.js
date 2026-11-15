@@ -87,6 +87,7 @@ const jsonOf = (o) => {
 // resilienceStart reads every added line of the diff: once per patch (securityNow asks on every read of a file).
 const resStartMemo = new WeakMap();
 const resStartOfPatch = (patch) => { if (!resStartMemo.has(patch)) resStartMemo.set(patch, resilienceStart(patch)); return resStartMemo.get(patch); };
+const LAYOUT_IN_FRAME = 20; // cards a map may have to be laid out while a frame is drawn (archL)
 const NO_HUNKS = []; // a file outside the diff has no hunks: always this array, so memoRows sees the same input (rowsFor)
 // A patch's file by its path (the first with it, as find gives): a Map per patch array, since rowsFor asks per finding.
 const byPath = new WeakMap();
@@ -583,7 +584,7 @@ export const ReviewMode = {
     this.reviewKey = null; this.ai = null; this.aiError = null; this.aiModel = null; this.cur = 0; this.focusHunk = null; this.fsel = null; this.sug = null;
     this.composing = false; this.editing = null; this.finishOpen = false; this.posted = null; this.gh = []; this.route = null; this.event = null;
     this.full = {}; this.gaps = {}; this.whole = new Set(); this.collapsed = new Set(); this.hunks = null;
-    this.rowsMemo = null; this.ghMemo = null; this.fitMemos = null; // what was computed for the PR before goes with it
+    this.rowsMemo = null; this.ghMemo = null; this.fitMemos = null; this.layQueue = null; // what was computed for the PR before goes with it
     this.ctx = null; this.since = null; this.sinceOn = false; this.lastReviewed = null; this.page = "overview"; this.aiFile = null; this.needClone = null;
     this.resumed = null; this.resumeIn = null; this.pendingScroll = null;
   },
@@ -3242,9 +3243,11 @@ export const ReviewMode = {
     if (!this.doorShown && L && this.hsOf("rv-arch-canvas").viewW && !this.archWrapOn()) { const d = L.nodes.find((n) => n.id === "\0in"); if (d) this.hsOf("rv-arch-canvas").x = Math.max(0, d.x - 40); this.doorShown = true; }
     // The frames are the systems; a card's trust zone is a dot on it, ringed when it is really reachable from further out.
     const opts = { ...this.archOpts("arch"), marks, zoom: settings().zoom || 1, zones: a.zones ?? [], effective: this.effZones(a) }, count = (...st) => L.nodes.filter((n) => st.includes(n.status)).length; // of the cards shown (Before hides the added ones)
+    const head = ["head", h_flex().gap(12).items_center().flex_wrap().child(div().text_size(TYPE.page).font_semibold().child("Architecture impact")).child(this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams"))
+        .when(this.drawerState() !== "open", (e) => e.child(pill("rv-ask-open", t, "Ask", (_e, cx) => this.setDrawer("open", cx, null)).tooltip("Ask one model question about the architecture picture")))];
+    if (!L) return out([head]); // a big map, laid out right after this frame (archL): the page without its picture until then
     return out([
-      ["head", h_flex().gap(12).items_center().flex_wrap().child(div().text_size(TYPE.page).font_semibold().child("Architecture impact")).child(this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams"))
-        .when(this.drawerState() !== "open", (e) => e.child(pill("rv-ask-open", t, "Ask", (_e, cx) => this.setDrawer("open", cx, null)).tooltip("Ask one model question about the architecture picture")))],
+      head,
       ["switches", h_flex().w_full().gap(12).items_center().flex_wrap() // wraps onto two rows when narrow
         .child(div().flex_none().text_size(TYPE.body).text_color(t.muted).child(`${groups} ${groups === 1 ? "system" : "systems"} | ${(a.edges ?? []).length} edges`))
         .child(div().flex_none().child(legend(t, { unchanged: count("unchanged"), changed: count("changed"), added: count("new", "added"), removed: count("removed") })))
@@ -3463,8 +3466,27 @@ export const ReviewMode = {
     // no "‖" on a call in one process.
     const memo = (this.fitMemos ??= {});
     if (!(slot in memo) && Object.keys(memo).length >= 8) delete memo[Object.keys(memo)[0]]; // a layout per kind of map shown, the oldest goes
-    if (memo[slot]?.key !== key) memo[slot] = { key, L: archLayout(mapArch(a, this.ai?.access, this.ai?.bypasses ?? []), this.archMode, (n) => (m.nodes.has(n.id) ? markRoom(m.nodes.get(n.id), (fit ? ARCH_FIT.W : ARCH_SIZE.W) - 20).rows : 0) + (more?.has(n.id) ? resMarkRows(more.get?.(n.id) ?? 1) : 0), fit, { labels: true, labelPx: labelPx ?? undefined, marked: (es) => es.some((i) => m.edges.has(i)) }) };
+    if (memo[slot]?.key !== key) {
+      const make = () => { memo[slot] = { key, L: archLayout(mapArch(a, this.ai?.access, this.ai?.bypasses ?? []), this.archMode, (n) => (m.nodes.has(n.id) ? markRoom(m.nodes.get(n.id), (fit ? ARCH_FIT.W : ARCH_SIZE.W) - 20).rows : 0) + (more?.has(n.id) ? resMarkRows(more.get?.(n.id) ?? 1) : 0), fit, { labels: true, labelPx: labelPx ?? undefined, marked: (es) => es.some((i) => m.edges.has(i)) }) }; };
+      // A map of more cards than LAYOUT_IN_FRAME takes longer to lay out than a frame may take (measured in Herdr: 20
+      // cards 20 ms, 40 cards 49 ms, 80 cards 208 ms; a render is stopped after about 50 ms and starts over the next
+      // time, so the page never came). While a frame is drawn it is only queued (layoutsLater lays it out right after
+      // the frame, then draws again); the frame gets the layout from before, or none: the page without its picture.
+      if (!this.drawing || a.nodes.length <= LAYOUT_IN_FRAME) make();
+      else { (this.layQueue ??= new Map()).set(String(slot), make); return memo[slot]?.L ?? null; }
+    }
     return memo[slot].L;
+  },
+  // The maps the last frame asked for and left for later (archL): one per task, so no task runs longer than one
+  // layout, then a redraw, which finds it in the memo (and may ask for the next: Fit is decided from the first).
+  layoutsLater(cx) {
+    if (!this.layQueue?.size || this.layBusy) return;
+    this.layBusy = true;
+    cx.timer.after(0, (cx) => {
+      const [slot, make] = this.layQueue?.entries().next().value ?? [];
+      if (make) { this.layQueue.delete(slot); make(); }
+      this.layBusy = false; cx.notify();
+    });
   },
   // ---- sideways scrollers inside the scrolling page (the architecture canvas, the flow, state-machine and blast
   // pictures): clipped at their box, the content moved by left(-x); wheel and trackpad through wheelStep (one axis per
@@ -4340,6 +4362,7 @@ export const ReviewMode = {
     const cardW = (this.archFitOn() ? ARCH_FIT.W : ARCH_SIZE.W) - 24, marked = new Map((start ?? []).map((id) => [id, 1]));
     for (const x of this.resNow()?.paths ?? []) for (const [id, text] of resMarksOn(x.marks, a, true)) marked.set(id, Math.max(marked.get(id) ?? 1, resMarkLines(text, cardW).length));
     const L = this.archL(this.archFitOn(), 13, marked), on = new Set(p ? (Array.isArray(p.reach) ? p.reach : (p.steps ?? []).map((s) => resCardOf(s, a)).filter(Boolean)) : start); // pr.js reachOf, else places light the card of their file
+    if (!L) return v_flex().id("rv-res-map"); // a big map, laid out right after this frame (archL)
     for (const id of resTwice(p, this.resNow(), a)) on.add(id); // an effect done twice: every way to it lit (views.js resTwice)
     const fs = p ? this.openFindings().filter((f) => (p.findings ?? []).some((id) => (f.ids ?? [f.id]).includes(id))) : [];
     // R-D marksOf: a call's marks on the call (resEdgeMarks), a queue's at the queue, a place's on the card of its file.

@@ -1225,7 +1225,11 @@ export default class PrReview extends View {
         this.finishQueued = true;
         cx.timer.after(0, (cx) => { this.finishQueued = false; setShared("pr.finish", null); if (this.reviewKey === fin.url && !this.finishOpen) { this.command("finish", cx); cx.notify(); } });
       }
-      return this.renderReview(cx);
+      // drawing: archL leaves a big map's layout for after the frame (layoutsLater), a frame has about 50 ms.
+      this.drawing = true;
+      const el = this.renderReview(cx);
+      this.drawing = false; this.layoutsLater(cx);
+      return el;
     }
     if (this.view === "walk" && this.walkModel && walkModel() !== this.walkModel && !this.walkBusy) this.openWalk(cx, false); // picker changed: that model's cache
     // Go to: a handed-over PR (outside render), and the reviews-in-progress items when that list changes.

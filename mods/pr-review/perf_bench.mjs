@@ -49,7 +49,9 @@ for (const k of Object.getOwnPropertyNames(PrReview.prototype)) {
 // What a frame asked of Herdr besides drawing: redraws, timers, shared-state writes, commands run, files read.
 export const N = { notify: 0, after: 0, every: 0, spawn: 0, exec: 0, read: 0, shared: 0 };
 const late = [];
-export const cx = { ...base, notify() { N.notify++; }, timer: { after(_ms, _f) { N.after++; }, every() { N.every++; } },
+// timers: what was left for after the frame (cx.timer.after), run by later().
+const timers = [];
+export const cx = { ...base, notify() { N.notify++; }, timer: { after(_ms, f) { N.after++; timers.push(f); }, every() { N.every++; } },
   spawn(fn) { N.spawn++; void Promise.resolve().then(() => fn(cx)).catch((e) => { if (e?.message !== "stub") late.push(e?.stack ?? String(e)); }); } };
 export const settle = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
 const set0 = S.store.set.bind(S.store);
@@ -108,14 +110,19 @@ export function frame(v, rows = 60) {
   if (S.errs.length) throw new Error(S.errs.join("\n"));
   return { ms: performance.now() - t0, el: S.n.el - n0.el, call: S.n.call - n0.call, items };
 }
+// What the frames left for after them, run now: a big map's layout (layoutsLater), the syntax colours, a focus.
+export function later() { for (const f of timers.splice(0)) f(cx); }
+// Frames until none leaves anything for later: the state as it stands once the window is quiet.
+export function settled(v) { for (let k = 0; k < 8; k++) { frame(v); if (!timers.length) return; later(); } timers.length = 0; }
 const median = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
 
 // A state measured: the first frame (cold), then `k` more that change nothing (warm: the median, and the functions
 // that ran in one of them). calls: name -> times run in one warm frame.
 export function measure(v, k = 7) {
   for (const key of Object.keys(N)) N[key] = 0;
+  timers.length = 0;
   const cold = frame(v), n1 = { ...N };
-  frame(v); // caches settle on the second
+  settled(v); // what the first frame left for later is done, the caches are filled
   for (const key of Object.keys(N)) N[key] = 0;
   P.stat.clear(); P.on = true; const one = frame(v); P.on = false;
   const stat = new Map([...P.stat].map(([name, s]) => [name, { ...s }])), asked = { ...N };
