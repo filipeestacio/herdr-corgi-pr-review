@@ -147,6 +147,16 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   assert.equal(await wrote(() => { v.comments = [...v.comments, { id: "c9", file: v.patch[0].path, start: 1, end: 1, text: "x" }]; v.publish(); }), 1, "one more pending comment: written once");
   S.writes = false;
 }
+// ---- the panel with a PR chosen does not build the list of PRs behind it
+{
+  const { openPanel } = await import("./perf_bench.mjs");
+  const { v: p, prs } = await openPanel(PR2(), 40);
+  p.picking = true; const list = counted(() => frame(p));
+  p.memo.clear(); p.context = null; p.choose(prs[0], cx); await settle();
+  const chosen = counted(() => frame(p));
+  assert.ok(list("context.ruleContext") >= 40 && chosen("context.ruleContext") === 0 && chosen("view.picker") === 0, "the list's rows are made while the list shows, not behind a chosen PR");
+  S.exec = null; S.props = null; S.spaces = null;
+}
 // ---- the list's triage reads a PR's cached diff once per head, not each time the list opens
 {
   const { hash } = await import("./pr.js"), { openPanel } = await import("./perf_bench.mjs");

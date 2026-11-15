@@ -531,6 +531,10 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   S.store.set("review.minimized", { target: prs[3], at: now });
   S.spaces = [{ id: "sA", active: true, folder: "/h/a" }];
   const v = new PrReview(); v.init({}, cx); await settle();
+  // Not the first-run switch to Setup (nothing is installed here): it covered every frame below until "setup:close",
+  // and the lists and the diff were built behind it only because the panel built them whether they showed or not.
+  // Setup has its own frames further down.
+  v.setupFirst = false;
   v.spaceSlug = { root: "/h/a", slug: "saefty/corgi-demo" };
   assert.deepEqual(v.panelProgress().shown.map((r) => r.number), [2], "In progress: work done and not merged; one only opened is not there");
   assert.deepEqual(v.panelProgress().left.map((r) => [r.number, r.state]), [[1, "merged"]], "the merged one is listed apart, dimmed");

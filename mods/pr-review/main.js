@@ -1409,8 +1409,10 @@ export default class PrReview extends View {
         .child(pill(`mode-${this.uid}`, t, this.mode === "file" ? "Diff view" : "File view", (_e, cx) => this.setMode(this.mode === "file" ? "diff" : "file", cx), false, "Switch between the diff and the whole file"))
         .child(pill(`vscode-${this.uid}`, t, "VS Code ↗", () => exec("code", ["-g", `${this.root}/${this.open}:${(this.sel !== null && this.rows[this.sel]?.number) || 1}`]), false, "Open this file at the selected line in VS Code")));
     // Picking: reviews in progress and the sources' list in one scroll, so nothing stacks over anything.
+    // Built only while it shows: with a PR chosen every frame of the panel made the whole list for nothing (40 PRs:
+    // 448 elements), and beside a working agent the panel draws about once a second.
     const pickId = `pr-pick-${this.uid}`;
-    const pickBody = div().flex_1().min_h(0).relative()
+    const pickBody = () => div().flex_1().min_h(0).relative()
       .child(v_flex().id(pickId).absolute().inset_0().overflow_y_scroll()
         .when((({ shown, left }) => shown.length + left.length > 0 || Boolean(this.undo))(this.panelProgress()), (e) => e.child(this.openReviews(t)))
         .child(this.picker(t)))
@@ -1457,7 +1459,7 @@ export default class PrReview extends View {
       .child(header)
       .when(Boolean(setupBanner(this, t)), (e) => e.child(setupBanner(this, t)))
       .when(state === "setup", (e) => e.child(renderSetup(this, t)))
-      .when(state === "picking", (e) => e.child(pickBody))
+      .when(state === "picking", (e) => e.child(pickBody()))
       .when(state === "selected", (e) => e
         .when(Boolean(this.prSel && !shownIn(this.prSel)), (e) => e.child(h_flex().flex_none().flex_wrap().px(14).py(6).gap(8).items_center().bg(t.ansi3 + "1c").border_b(1).border_color(t.border).text_size(TYPE.small)
           .child(div().flex_1().min_w(0).child(`This PR belongs to ${C.nameOf(ctxDoc(), prCtx(this.prSel))}.`))
