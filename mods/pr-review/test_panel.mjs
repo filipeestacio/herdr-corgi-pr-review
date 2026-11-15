@@ -1,0 +1,104 @@
+// Run: node test_panel.mjs  (the PR panel at rest: Herdr draws every mod again whenever its live data changes (an
+// agent's status, focus, shared state), so a render of the panel must cost nothing but the drawing. Counted here: shared
+// writes, timers, tasks and redraws asked for, over renders with nothing new; then what one real change costs.)
+import assert from "node:assert/strict";
+import { S, cx as base } from "./render_stub.mjs";
+
+const { default: PrReview } = await import("./main.js");
+const { openSig } = await import("./views.js");
+
+const n = { writes: [], notify: 0, spawn: 0 }, timers = [];
+const cx = { ...base, notify() { n.notify++; }, spawn(fn) { n.spawn++; void Promise.resolve().then(() => fn(cx)).catch(() => null); },
+  timer: { after(_ms, fn) { timers.push(fn); }, every() {} } };
+const settle = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
+// Timers until none is left (a timer may start a task that sets another).
+const flush = async () => { for (let k = 0; k < 20 && timers.length; k++) { for (const fn of timers.splice(0)) fn(cx); await settle(); } await settle(); };
+const reset = () => { n.writes.length = 0; n.notify = 0; n.spawn = 0; };
+// As Herdr: shared() gives a new object per call, setShared is counted.
+S.store.get = (k) => structuredClone(Map.prototype.get.call(S.store, k));
+S.store.set = (k, v) => { n.writes.push(k); return Map.prototype.set.call(S.store, k, v); };
+const idle = async (v, what, renders = 20) => {
+  reset();
+  for (let i = 0; i < renders; i++) { v.render(cx); await flush(); }
+  assert.deepEqual({ writes: n.writes, timers: timers.length, notify: n.notify, spawn: n.spawn }, { writes: [], timers: 0, notify: 0, spawn: 0 }, what);
+};
+
+const review = (k, touched) => ({ status: "in-progress", url: `https://github.com/o/r/pull/${k}`, number: k, repo: "o/r", title: `PR ${k}`, lastTouched: touched, progress: { files: 3, filesViewed: 1 } });
+assert.equal(openSig([review(1, 5)]), openSig(structuredClone([review(1, 5)])), "equal lists have one signature");
+assert.notEqual(openSig([review(1, 5)]), openSig([review(1, 6)]), "a touched review changes it");
+assert.notEqual(openSig([review(1, 5), review(2, 5)]), openSig([review(1, 5)]), "a removed review changes it");
+assert.equal(openSig(null), "", "no list is the empty one");
+
+// ---- the list, with reviews in progress
+S.props = {}; S.spaces = [{ id: "s1", active: true, folder: "/repo", tabs: [] }];
+Map.prototype.set.call(S.store, "review.open", [review(1, 5), review(2, 4)]);
+S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOString(), prs: [] }));
+{
+  const v = new PrReview(); v.init({}, cx); await flush(); v.render(cx); await flush();
+  await idle(v, "the list at rest: 20 renders ask for nothing");
+  Map.prototype.set.call(S.store, "review.open", [review(1, 9), review(2, 4)]); // the review layout touched one
+  reset(); v.render(cx); await flush();
+  assert.deepEqual(n.writes, ["goto.items.review"], "a changed list of open reviews writes Go to's items once");
+  await idle(v, "and then nothing again");
+  // prs.json read again with the same PRs (a scan that found nothing new): no redraw.
+  reset(); await v.loadPrs(cx); assert.equal(n.notify, 0, "the same prs.json draws nothing");
+  S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: "x", prs: [{ url: "https://github.com/o/r/pull/7", number: 7, repo: "o/r", state: "open", session: "abcdefgh", at: "2026-01-01" }] }));
+  await v.loadPrs(cx); assert.equal(n.notify, 1, "a new PR in prs.json draws once");
+}
+
+// ---- the current branch, while files of the repo are written (an agent at work)
+{
+  let diff = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1,2 +1,2 @@\n def a():\n-    return 1\n+    return 2\n", diffs = 0;
+  S.exec = async (cmd, args) => {
+    if (cmd === "git" && args.includes("--show-toplevel")) return { code: 0, stdout: "/repo\n/repo/.git\norigin/main\n", stderr: "" };
+    if (cmd === "git" && args.includes("diff")) { diffs++; return { code: 0, stdout: diff, stderr: "" }; }
+    return { code: 1, stdout: "", stderr: "stub" };
+  };
+  Map.prototype.set.call(S.store, "pr.selected", { all: "branch" });
+  const v = new PrReview(); v.init({}, cx); await flush(); v.render(cx); await flush();
+  assert.equal(v.rows.length > 0 && v.files.length, 1, "the branch's diff is shown");
+  await idle(v, "the branch at rest: 20 renders ask for nothing");
+  // A file was written, the diff is the same (an ignored or untracked file, or a save without a change).
+  const rows = v.rows, files = v.files, before = diffs;
+  v.dirty.add("/repo"); reset(); v.render(cx); await flush();
+  assert.equal(diffs, before + 1, "the change is looked at");
+  assert.deepEqual({ notify: n.notify, writes: n.writes, same: v.rows === rows && v.files === files, loading: v.loading }, { notify: 0, writes: [], same: true, loading: false }, "the same diff again: nothing is replaced, nothing is drawn");
+  // Another file changed: the list of files is new, the open file's rows (and their colours) stay.
+  diff += "diff --git a/b.py b/b.py\n--- a/b.py\n+++ b/b.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n";
+  v.dirty.add("/repo"); reset(); v.render(cx); await flush();
+  assert.equal(v.files.length, 2, "the new file is listed");
+  assert.equal(v.rows, rows, "the open file did not change: its rows stay");
+  assert.deepEqual(n.writes, [], "a reload writes no shared state");
+  await idle(v, "and at rest again");
+  // Behind the list nothing is diffed.
+  v.picking = true; v.dirty.add("/repo"); const then = diffs; reset(); v.render(cx); await flush();
+  assert.equal(diffs, then, "no diff while the list is shown");
+  S.exec = null;
+}
+
+// ---- a remount with a PR picked before: the list is not drawn (nor fetched) while the pick comes back
+{
+  Map.prototype.set.call(S.store, "pr.selected", { all: "https://github.com/o/r/pull/7" });
+  const v = new PrReview(); v.init({}, cx);
+  v.render(cx); // before prs.json is read
+  assert.ok(!v.srcAsked, "the list was not asked for");
+  await flush();
+  assert.equal(v.prSel?.number, 7, "the pick is back"); assert.ok(!v.restoring);
+  // A pick that is gone falls back to the list.
+  Map.prototype.set.call(S.store, "pr.selected", { all: "https://github.com/o/r/pull/99" });
+  const w = new PrReview(); w.init({}, cx); await flush(); w.render(cx);
+  assert.ok(!w.restoring && !w.prSel && w.srcAsked, "a pick that is gone: the list");
+}
+
+// ---- a PR's head is asked once for all copies (the panel, then the review of the same PR)
+{
+  let asks = 0;
+  S.exec = async (cmd, args) => { if (cmd === "gh" && args.includes("headRefOid")) { asks++; return { code: 0, stdout: JSON.stringify({ headRefOid: "abc" }), stderr: "" }; } return { code: 1, stdout: "", stderr: "stub" }; };
+  Map.prototype.set.call(S.store, "pr.selected", {});
+  const pr = { url: "https://github.com/o/r/pull/8", number: 8, repo: "o/r", headSha: "abc" };
+  const a = new PrReview(); a.init({}, cx); const b = new PrReview(); b.init({}, cx); await flush();
+  a.checkHead(pr, cx); await flush(); b.checkHead(pr, cx); await flush();
+  assert.equal(asks, 1, "the second copy takes the head the first one asked for");
+  S.exec = null;
+}
+console.log("panel ok");

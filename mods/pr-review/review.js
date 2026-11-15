@@ -5568,13 +5568,15 @@ export const ReviewMode = {
     this.ghBusy = true;
     if (force) this.loadContext(cx, true);
     cx.spawn(async (cx) => {
-      const [gh, sha] = await Promise.all([this.ghComments(), pr.url.startsWith("https://") ? this.headOf(pr.url) : null]);
+      // The head as just asked (the panel, or this review's own load): not asked again within GH_MS, except by ↻.
+      const seen = this.heads.get(pr.url), known = !force && seen?.sha && Date.now() - seen.at < GH_MS ? seen.sha : null;
+      const [gh, sha] = await Promise.all([this.ghComments(), known ?? (pr.url.startsWith("https://") ? this.headOf(pr.url) : null)]);
       this.ghBusy = false;
       this.ghPoll = pollAfter(this.ghPoll, gh !== false && (sha !== null || !pr.url.startsWith("https://")), Date.now());
       if (this.prSel?.url !== pr.url) return;
       if (gh) this.gh = gh;
       await this.loadThreads(cx);
-      if (sha) this.heads.set(pr.url, { at: Date.now(), sha });
+      if (sha && !known) this.heads.set(pr.url, { at: Date.now(), sha });
       if (sha && sha !== this.prSel.headSha) { this.prSel = { ...this.prSel, headSha: sha }; this.refresh(cx, true); }
       cx.notify();
     });

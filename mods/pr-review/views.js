@@ -1270,3 +1270,7 @@ export function fixCostLine(usd, tier, n = 1) {
   const over = usd > 2 * fixTypical(tier).usd * Math.max(1, n);
   return { over, text: `$${usd.toFixed(2)} so far${over ? " · above the usual cost; stop it in its tab" : ""}` };
 }
+
+// What Go to's "Resume review" items are made of, as one string: the open reviews, each with when it was last touched
+// (its progress moves with that) and its status. shared() hands out a new object per call, so the panel compares this.
+export const openSig = (list) => (list ?? []).map((r) => `${r.url}|${r.lastTouched ?? ""}|${r.status ?? ""}`).join("\n");
