@@ -466,11 +466,12 @@ export function sameClaim(a, b) {
   return both > 0 && both / (x.size + y.size - both) >= 0.35;
 }
 // ⛨ only for real security: a source whose effect is access without permission or exposed data (or lost data, when
-// its category says security). A security reviewer's finding about availability or correctness is a finding with its
-// source, without ⛨. A source without an impact (an older cache, an AI suggestion) keeps the rule from before: the
+// its category says security), or one a named threat of the threat model stands on (`threats`: the ids of the threats
+// with result "finding" that cite it; a flood at a public way in is about availability and still an attack). Any other
+// finding of a security reviewer about availability or correctness is a finding with its source, without ⛨. A source without an impact (an older cache, an AI suggestion) keeps the rule from before: the
 // security reviewer found it or its category says security.
 const SEC_IMPACT = new Set(["unauthorized_access", "data_exposure"]);
-export const isSecurity = (x) => (x.impact ? SEC_IMPACT.has(x.impact) || (x.impact === "data_loss" && x.category === "security") : x.reviewer === "security" || x.category === "security");
+export const isSecurity = (x) => (x.threats?.length > 0) || (x.impact ? SEC_IMPACT.has(x.impact) || (x.impact === "data_loss" && x.category === "security") : x.reviewer === "security" || x.category === "security");
 const NEAR = 3; // lines between two findings of one defect at most (PR #2: 19/20, 21/23, 33/35; template.yaml 14-17/18)
 const SPAN = 30; // a finding's own range counts up to this many lines past its first (a model's end can be anything)
 // Lines between two findings' ranges (line..end), 0 when they overlap.
@@ -545,7 +546,7 @@ export function mergeFindings(findings, suspects = [], status = {}, publicFiles 
     return { ...lead, line, id: (held ?? lead).id, ids: g.map((x) => x.id), end: Math.max(line, ...lines, ...g.map((x) => whole(x.end))), step: g.find((x) => x.step)?.step ?? null,
       suggestion: lead.suggestion || g.find((x) => x.suggestion)?.suggestion || "", ...(coded ? { head: coded.head, code: coded.code } : {}),
       ...Object.fromEntries(Object.keys(all[0]).map((k) => [k, fact(k)])), criteria: [...new Set(all.flatMap((x) => x.criteria))],
-      security: g.some(isSecurity),
+      security: g.some(isSecurity), threats: [...new Set(g.flatMap((x) => x.threats ?? []))],
       sources: g.map((x) => ({ id: x.id, reviewer: x.reviewer, severity: x.severity, title: x.title, detail: x.detail ?? "", suggestion: x.suggestion ?? "" })) };
   });
   out.sort((a, b) => rank(a) - rank(b) || a.file.localeCompare(b.file) || a.line - b.line);
@@ -1130,7 +1131,7 @@ export const quickFirst = (list) => { const r = (f) => (EFFORTS.indexOf(f.effort
 // checks: the consumer handler that /remind calls in-process stands where the front desk stands. Returns the cards that
 // stand more exposed than drawn: [{node, drawn, effective, where (the place whose check would have to fail, from the
 // direct entry; null when the drawn zone itself is passed on), via: [edge ids e<k> it was passed along]}]. Pure.
-const TRUSTS = ["public", "authenticated", "internal", "data"];
+const TRUSTS = ["public", "operator", "authenticated", "internal", "data"];
 export function effectiveZonesOf(arch, gates = [], direct = []) {
   const nodes = arch?.nodes ?? [], edges = arch?.edges ?? [], trustOf = new Map((arch?.zones ?? []).map((z) => [z.id, z.trust]));
   const byId = new Map(nodes.map((n) => [n.id, n])), hosts = (n) => (Array.isArray(n?.runs_in) ? n.runs_in : n?.runs_in ? [n.runs_in] : []);
@@ -1166,7 +1167,11 @@ export function withSecurity(ai, security = null, ctx = null, head = null) {
     const had = Boolean(own.arch?.zones?.length || own.access?.length);
     return { ...ai, own, arch: own.arch, access: own.access, threats: [], gates: [], effectiveZones: [], bypasses: [], securityTrigger: trigger, securityFrom: had ? { source: "analysis", head: null, at: null, older: false, why: null } : null };
   }
-  const zones = (security.zones ?? []).filter((z) => z?.id), zoneOf = new Map(zones.flatMap((z) => (z.nodes ?? []).map((n) => [n, z.id])));
+  // A zone that holds only the cards an operator or a pipeline acts through (its scripts) is the operator's zone: a
+  // run from before that trust level called an admin workstation authenticated or public.
+  const scripts = new Set((security.access ?? []).filter((x) => ["operator", "ci"].includes(x?.principal_kind) && x.node).map((x) => x.node));
+  const zones = (security.zones ?? []).filter((z) => z?.id).map((z) => ((z.nodes ?? []).length && z.nodes.every((n) => scripts.has(n)) && z.trust !== "operator" ? { ...z, trust: "operator" } : z));
+  const zoneOf = new Map(zones.flatMap((z) => (z.nodes ?? []).map((n) => [n, z.id])));
   // A crossing call by its ends: the security run may have looked at an older picture, where e<k> is another edge.
   const crosses = new Map((security.crossing ?? []).map((c) => [`${c.from}\u0000${c.to}`, c]));
   const arch = own.arch && { ...own.arch, zones: zones.map(({ id, name, trust, evidence }) => ({ id, name: name ?? id, trust, evidence: evidence ?? "" })),
@@ -1182,7 +1187,8 @@ export function withSecurity(ai, security = null, ctx = null, head = null) {
     effectiveZones: arch ? effectiveZonesOf(arch, security.gates ?? [], security.effective_zones ?? []) : security.effective_zones ?? [],
     bypasses: security.bypasses ?? [],
     securityTrigger: trigger,
-    securityFrom: { source: "security", head: security.head ?? null, at: security.at ?? null, older: Boolean(why), why } };
+    // predates: the run was made under older rules of the security view (SEC_RULES): its words may be the old prompt's.
+    securityFrom: { source: "security", head: security.head ?? null, at: security.at ?? null, older: Boolean(why), why, predates: (security.rules ?? 1) < SEC_RULES } };
 }
 
 // Whether the security review starts by itself after the analysis (review.js securityNow): related.py's trigger says
@@ -1580,3 +1586,22 @@ export const RUN_TYPICAL = { resilience: { sonnet: { usd: 0.25, s: 92, measured:
 // A rule that takes a right away or narrows it (an access row with effect "deny"; a security run from before that
 // field wrote "deny …" as its actions): a guard at its resource, not a grant, a way in or a crossing.
 export const isGuard = (x) => x?.effect === "deny" || ((x?.actions ?? []).length > 0 && x.actions.every((a) => /^\s*(deny|denies|block|blocks)\b/i.test(String(a))));
+
+// The rules a security view is made under (reviewers.py RULES writes them into each view): 2 since guards, the
+// operator's trust level and a taken-over role rated by the width of its grant. An older run stays readable; what it
+// calls "not assessed" may be the older prompt's, so the page says so and offers the re-run (as edgeNote for Resilience).
+export const SEC_RULES = 2;
+export const secNote = (ai) => (ai?.securityFrom?.predates ? "run predates the current security rules: re-run" : null);
+// A threat that only names a defect ("Not an attacker goal") is no assessment of a boundary.
+export const isDefect = (t) => /not an attacker('s)? goal|no attacker|not exploitable|no abuse path|no abuse/i.test(`${t?.goal ?? ""} ${t?.note ?? ""}`);
+// The reviewers' findings with the threats that stand on them (`threats`: ids), for a findings file whose security
+// run did not write them yet: a named threat with result "finding" that cites the finding. The same array when
+// nothing changes.
+export function withThreats(findings, security) {
+  const cites = new Map();
+  for (const t of security?.threats ?? []) if (!t.derived && t.result === "finding" && !isDefect(t)) for (const id of t.findings ?? []) cites.set(id, [...(cites.get(id) ?? []), t.id]);
+  return (findings ?? []).some((f) => !f.threats && cites.has(f.id)) ? findings.map((f) => (!f.threats && cites.has(f.id) ? { ...f, threats: cites.get(f.id) } : f)) : findings ?? [];
+}
+// Security by its own effect (access or data, or the older rule), apart from a threat that stands on it: a finding
+// that is ⛨ only through a threat belongs to that threat's crossing, not to every way in that reaches its line.
+export const secByEffect = (f) => (f?.threats?.length ? isSecurity({ ...f, threats: null }) : Boolean(f?.security ?? isSecurity(f ?? {})));
