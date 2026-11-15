@@ -376,6 +376,9 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   v.spaceSlug = { root: "/h/a", slug: "saefty/corgi-demo" }; v.picking = true; draw(v, "panel: In progress with more behind Show all");
   assert.deepEqual([v.panelProgress().shown.map((r) => r.number), v.panelProgress().more], [[2], 2]);
   v.allOpen = true; draw(v, "panel: In progress, all shown");
+  // A review listed a moment ago whose PR is merged now: the line that says so, once.
+  { const before = S.store.get("review.open"), merged = { ...prs[0], state: "merged" }; v.prs = [merged, ...v.prs.slice(1)]; draw(v, "panel: a review left In progress, said in a line");
+    assert.equal(v.leftNote, "#2 left In progress: its PR was merged."); v.prs = prs; v.leftNote = null; S.store.set("review.open", before); draw(v, "panel: In progress again"); }
   assert.deepEqual(v.panelProgress().shown.map((r) => r.number), [2, 5, 9], "all: this repo's first, then the other repo's");
   v.dropReview(prs[0].url, cx); await settle(); draw(v, "panel: a review removed, Undo offered");
   assert.ok(!S.store.get("review.open").some((r) => r.number === 2) && S.store.get("review.minimized") === null && v.undo?.number === 2, "✕ takes the review and its chip away and keeps it for Undo");
@@ -387,6 +390,7 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   S.exec = async (cmd, args) => (cmd === "gh" && args[1] === "diff" ? { code: 0, stdout: fx("pr2.diff"), stderr: "" } : { code: 1, stdout: "", stderr: "stub" });
   v.memo.clear(); v.context = null; v.choose(prs[0], cx); await settle(); draw(v, "panel: PR #2 with its diff");
   assert.ok(v.files.length > 1 && v.rows.length > 0 && !v.error, "the diff is shown");
+  v.panelCommand("wrap:on", cx); v.panelH = 900; draw(v, "panel: long lines wrapped, the file list up to 40 % high"); v.panelCommand("wrap:off", cx);
   v.sel = v.rows.findIndex((r) => r.kind === "+"); draw(v, "panel: a line picked, the composer under it");
   v.selEnd = v.sel + 2; v.question = "Why this?"; v.addComment(cx); await settle(); draw(v, "panel: a pending comment and the bar");
   assert.equal(v.comments.length, 1, "the comment was added");
@@ -405,7 +409,7 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     for (let k = 0; k <= v.walk.steps.length + 1; k++) { v.step = k; draw(v, `panel: Walkthrough, layer ${k}`); }
     v.walkMore = true; v.walkError = "The model gave no answer"; draw(v, "panel: Walkthrough, its options and an error"); v.walkMore = false; v.walkError = null;
   }
-  v.panelCommand("setup", cx); draw(v, "panel: Setup"); v.panelCommand("setup:close", cx); assert.equal(v.view, "diff", "setup:close leaves Setup like its Close button"); draw(v, "panel: Setup closed");
+  v.panelCommand("setup", cx); draw(v, "panel: Setup"); v.setupOpen = true; draw(v, "panel: Setup, the list of programs unfolded"); v.panelCommand("setup:close", cx); assert.equal(v.view, "diff", "setup:close leaves Setup like its Close button"); draw(v, "panel: Setup closed");
   // The other scripted clicks: the folds, a pick and a removal by owner/repo#number (two repos can share a number).
   for (const c of ["picker", "merged", "other", "progress-all", "progress-all", "merged", "other"]) { v.panelCommand(c, cx); draw(v, `panel: command ${c}`); }
   v.panelCommand(`drop:${prs[0].repo}#${prs[0].number}`, cx); await settle(); assert.equal(v.undo?.url, prs[0].url); v.panelCommand("undrop", cx); await settle(); assert.equal(v.undo, null);
