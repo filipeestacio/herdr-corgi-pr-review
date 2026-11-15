@@ -2,6 +2,7 @@
 // card sizes, focus, orchestrator states)
 import assert from "node:assert/strict";
 import { archLayout, archBands, archFocus, archMarks, pathMark, labelLines, zoneArch, stateLayout, sourceStyle, hasSources, crossings, clampText, wrapLines, bundleChips, markRoom, MARK_CARD_H, ARCH, LABEL } from "./arch.js";
+import { overlapsOf, transitionLabel, SM } from "./arch.js";
 import { blastArch } from "./pr.js";
 
 const inside = (s, r) => (s.y1 === s.y2
@@ -299,10 +300,10 @@ const sync = {
       { from: "map", to: "map", event: "add" }, { from: "map", to: "map", event: "remove" }, { from: "map", to: "map", event: "create", action: "overwrite" }] };
   const L = stateLayout(v);
   assert.equal(L.loops.length, 4);
-  const label = (l) => ({ x: l.x, y: l.y - 1, w: 17 + l.w, h: 14 });
+  const label = (l) => ({ x: l.x, y: l.y - 1, w: SM.LOOP + l.w, h: 14 });
   for (const l of L.loops) for (const n of L.nodes.filter((x) => x.id !== l.id)) assert.ok(!boxOver(label(l), n), `loop ${l.text} on ${n.id}`);
   for (const a of L.loops) for (const b of L.loops) if (a !== b) assert.ok(!boxOver(label(a), label(b)), `loops ${a.text} and ${b.text} overlap`);
-  for (const l of L.loops) assert.ok(l.x + 17 + l.w <= L.width, "the loop text fits in the picture");
+  for (const l of L.loops) assert.ok(l.x + SM.LOOP + l.w <= L.width, "the loop text fits in the picture");
 }
 
 // Step Functions: a choice forks into columns below it, a Parallel's branches sit side by side in its block, Catch and
@@ -365,6 +366,83 @@ assert.deepEqual(clampText("short", 10, 3), { text: "short", lines: 1, cut: fals
     for (const n of L.nodes) assert.ok(!boxOver(box(e), n), `${e.text} on ${n.id}`);
     for (const o of lab) if (o !== e) assert.ok(!boxOver(box(e), box(o)), `${e.text} on ${o.text}`);
   }
+}
+
+// A state diagram's lines, each on its own: the demo PR's Loan (four states in a column, three transitions that skip a
+// state, a self-loop) and an order's lifecycle (8 states, 14 transitions, a fork, a way back, two self-loops).
+{
+  const T = (from, to, event, more = {}) => ({ from, to, event, ...more });
+  const loan = { kind: "state_machine", nodes: ["borrowed", "reminded", "overdue", "returned"].map((id) => ({ id, label: id.toUpperCase() })),
+    transitions: [T("borrowed", "reminded", "loan.reminded", { action: "sets reminded_on" }), T("borrowed", "overdue", "loan.overdue", { guard: "allowed by MOVES" }), T("reminded", "overdue", "loan.overdue"),
+      T("borrowed", "returned", "loan.returned"), T("reminded", "returned", "loan.returned"), T("overdue", "returned", "loan.returned"), T("overdue", "overdue", "publish_overdue", { action: "raises ValueError" })] };
+  const order = { kind: "state_machine", nodes: ["draft", "submitted", "in_review", "approved", "rejected", "shipped", "delivered", "closed"].map((id) => ({ id, label: id })),
+    transitions: [T("draft", "submitted", "submit"), T("submitted", "in_review", "assign reviewer"), T("in_review", "approved", "approve"), T("in_review", "rejected", "reject"), T("approved", "shipped", "ship"),
+      T("shipped", "delivered", "deliver"), T("delivered", "closed", "close after 14 days"), T("rejected", "closed", "archive"), T("rejected", "draft", "reopen for another round of edits"), T("draft", "closed", "cancel"),
+      T("submitted", "closed", "cancel"), T("in_review", "in_review", "request changes"), T("shipped", "shipped", "retry delivery"), T("approved", "delivered", "pick up in store")] };
+  // As stack.js draws it over a layer's code: the number and the trigger as the label, the bare number when there is no room.
+  const numbered = (v, pad = () => 0) => ({ ...v, transitions: v.transitions.map((e, k) => ({ ...e, event: undefined, guard: undefined, action: undefined, label: transitionLabel(e, k), short: String(k + 1), pad: pad(k) })) });
+  assert.deepEqual([loan.transitions[1], { label: "items > 0" }, { event: "reopen for another round of edits" }, {}].map((e, k) => transitionLabel(e, k)), ["1 · loan.overdue", "2 · items > 0", "3 · reopen for…", "4"]);
+  const lines = (L) => [...L.edges, ...L.backs], state = (L) => L.nodes.filter((n) => n.kind === "state");
+  const clean = (L, what) => {
+    assert.equal(crossings(lines(L)).length, 0, `${what}: crossings`);
+    assert.equal(overlapsOf(lines(L)).length, 0, `${what}: two lines on one stretch`);
+    for (const e of lines(L)) for (const sg of e.segments) for (const n of state(L)) assert.ok(!inside(sg, n), `${what}: ${e.key} runs through ${n.id}`);
+    // Every transition has its own port: no two leave or enter one side of a card at the same place.
+    for (const n of L.nodes) for (const [side, own, at] of [["bottom", "from", (e) => e.segments[0].x1], ["top", "to", (e) => e.arrow.x]]) {
+      const xs = L.edges.filter((e) => e[own] === n.id).map(at);
+      assert.equal(new Set(xs).size, xs.length, `${what}: ${n.id} ${side} ports ${xs}`);
+      for (const x of xs) assert.ok(x > n.x && x < n.x + n.w, `${what}: a port off ${n.id}`);
+    }
+    for (const n of state(L)) { const ys = [...L.backs.filter((b) => b.from === n.id).map((b) => b.sy), ...L.backs.filter((b) => b.to === n.id).map((b) => b.ty)]; assert.equal(new Set(ys).size, ys.length, `${what}: ${n.id} side ports`); }
+    // A label lies on no card, no other label and no line but its own (a lane's label sits on its own line where it leaves).
+    const box = (e) => ({ x: e.labelAt.x, y: e.labelAt.y, w: Math.min(e.labelAt.w, e.text.length * 6 + 4), h: 13 }), lab = lines(L).filter((e) => e.text && e.labelAt);
+    for (const e of lab) {
+      for (const n of L.nodes) assert.ok(!boxOver(box(e), n), `${what}: ${e.text} on ${n.id}`);
+      for (const o of lab) if (o !== e) assert.ok(!boxOver(box(e), box(o)), `${what}: ${e.text} on ${o.text}`);
+      for (const o of lines(L)) if (o !== e) for (const g of o.segments) assert.ok(!boxOver(box(e), { x: Math.min(g.x1, g.x2), y: Math.min(g.y1, g.y2), w: Math.abs(g.x2 - g.x1) || 1, h: Math.abs(g.y2 - g.y1) || 1 }), `${what}: ${e.text} on ${o.key}`);
+      assert.ok(box(e).x >= 0 && box(e).x + box(e).w <= L.width, `${what}: ${e.text} off the picture`);
+    }
+    for (const e of lines(L)) for (const sg of e.segments) assert.ok(Math.min(sg.x1, sg.x2) >= 0 && Math.max(sg.x1, sg.x2) <= L.width && Math.max(sg.y1, sg.y2) <= L.height, `${what}: ${e.key} off the picture`);
+  };
+  const A = stateLayout(numbered(loan)), edge = (L, n) => L.edges.find((e) => e.key.startsWith(`f${n - 1}:`));
+  clean(A, "loan");
+  // The three that skip a state run in lanes beside the column: 2 and 4 (4 holds 2) on the right, the shorter inside;
+  // 5, which would cross 2 there, on the left. The others go straight down the middle.
+  assert.deepEqual([1, 2, 3, 4, 5, 6].map((n) => edge(A, n).lane), [0, 1, 0, 1, -1, 0]);
+  const right = Math.max(...state(A).map((n) => n.x + n.w)), left = Math.min(...state(A).map((n) => n.x));
+  assert.ok(right < edge(A, 2).segments[2].x1 && edge(A, 2).segments[2].x1 < edge(A, 4).segments[2].x1 && edge(A, 5).segments[2].x1 < left);
+  for (const n of [1, 3, 6]) assert.equal(edge(A, n).segments.length, 1, `${n} is one straight line`);
+  // The label is in the picture: number and trigger, a lane's on its own level line beside the card it leaves.
+  assert.deepEqual(lines(A).map((e) => e.text).filter(Boolean), ["1 · loan.reminded", "2 · loan.overdue", "3 · loan.overdue", "4 · loan.returned", "5 · loan.returned", "6 · loan.returned"]);
+  for (const n of [2, 4, 5]) { const e = edge(A, n); assert.ok(e.labelAt.on && e.labelAt.y + 7 === e.segments[1].y1, `${n}: the label on its line`); }
+  // The self-loop: an arc right of its card with its text behind it, clear of the lanes.
+  assert.deepEqual(A.loops.map((l) => [l.id, l.text]), [["overdue", "7 · publish_overdue"]]);
+  assert.ok(A.loops[0].x + SM.LOOP + A.loops[0].w < edge(A, 2).segments[2].x1);
+  // As high and wide as what it shows: nothing under the end ring, nothing right of the outer lane.
+  const end = A.nodes.find((n) => n.kind === "end");
+  assert.equal(A.height, end.y + end.h);
+  assert.ok(A.width - edge(A, 4).segments[2].x1 <= 8);
+  // A finding's chip gets room after its label (pad): the lanes start right of it.
+  const P = stateLayout(numbered(loan, (k) => (k === 1 ? 90 : 0)));
+  clean(P, "loan with a chip");
+  assert.ok(edge(A, 2).labelAt.x + edge(A, 2).labelAt.w + 90 > edge(A, 2).segments[2].x1 && edge(P, 2).labelAt.x + edge(P, 2).labelAt.w + 90 < edge(P, 2).segments[2].x1);
+  // No room for the texts: the numbers alone, as before, on the same lines.
+  const N = stateLayout(numbered(loan), 0, A.width - 1);
+  clean(N, "loan, numbers");
+  assert.deepEqual([lines(N).map((e) => e.text).filter(Boolean), N.loops[0].text, N.height], [["1", "2", "3", "4", "5", "6"], "7", A.height]);
+  assert.ok(N.width < A.width - 150);
+  assert.equal(stateLayout(numbered(loan), 0, A.width).width, A.width, "it fits: the texts stay");
+  // With the whole texts (no numbers) it is as clean.
+  clean(stateLayout(loan), "loan, whole texts");
+
+  const B = stateLayout(numbered(order));
+  clean(B, "order");
+  assert.deepEqual([state(B).length, B.edges.filter((e) => e.text).length + B.backs.length + B.loops.length, B.loops.length, B.backs.length], [8, 14, 2, 1]);
+  // The way back (9) on the left; the skipping ones on the right, but 8 on the left, where its source stands in the fork.
+  assert.deepEqual([8, 10, 11, 14].map((n) => edge(B, n).lane), [-1, 1, 1, 1]);
+  assert.ok(B.backs[0].laneX < Math.min(...state(B).map((n) => n.x)) && B.backs[0].laneX < edge(B, 8).segments[2].x1, "the longer one outside");
+  assert.ok(B.width <= 700 && B.height <= 640, `${B.width} x ${B.height}`);
+  clean(stateLayout(numbered(order), 0, 300), "order, numbers");
 }
 
 // Bands: a picture wider than the view is cut between cards into bands that each fit; one band when it fits.

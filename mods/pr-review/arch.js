@@ -667,24 +667,48 @@ export function archBands(L, viewW) {
 
 // ---- state diagrams (a layer's state_machine picture): top to bottom
 
-export const SM = { W: 300, NODE: 150, H: 28, NOTE_H: 48, DOT: 14, DUMMY: 14, GAP_X: 18, GAP_Y: 40, BACK: 10, CHILD_W: 108, CHILD_H: 24, STUB: 10, CHIP: 96 };
+// LANE: between two lanes beside the states; PORT: between two lane ports on a card; LEVEL: a level line in a gap;
+// ROW: a level that carries a label; BAND: the label row of a gap; HEAD: room for an arrowhead; LOOP: a self-loop's arc
+// and the gap to its text; TEXT: the widest label.
+export const SM = { NODE: 150, H: 28, NOTE_H: 48, DOT: 14, GAP_X: 18, GAP_Y: 28, LANE: 12, PORT: 12, LEVEL: 6, ROW: 14, BAND: 16, HEAD: 12, LOOP: 20, CHILD_W: 108, CHILD_H: 24, STUB: 10, CHIP: 96, TEXT: 160 };
+// A label's width in the picture, 6 px a character.
+export const stateTextW = (s) => Math.min(SM.TEXT, String(s ?? "").length * 6 + 4);
 
 // A transition's text: "event [guard] / action" when given, else its label.
 export const transitionText = (e) => (`${e.event ?? ""}${e.guard ? ` [${e.guard}]` : ""}${e.action ? ` / ${e.action}` : ""}`.trim() || String(e.label ?? "").trim());
+// What a numbered transition carries in the picture: its number and what triggers it (the event, else the guard, else
+// the label), cut at a word's end ("2 · due date passed"); the whole text is in the list under the picture.
+export function transitionLabel(e, k, max = 18) {
+  const word = clampText(e.event || e.guard || e.label || "", max, 1).text;
+  return word ? `${k + 1} · ${word}` : `${k + 1}`;
+}
 const isError = (e) => e.error === "catch" || e.error === "retry" || (!e.event && /^(catch|retry)\b/i.test(String(e.label ?? "")));
 
 // A state machine (Step Functions) or state diagram (an entity's lifecycle) laid out top to bottom: a start dot, the
 // states by their longest path from it, an end ring under the last ones. States in one layer sit side by side (a
 // choice forks into columns); Parallel and Map states are blocks with their branches side by side (children: nodes
-// with `parent`, grouped by `branch`). Forward transitions run down (fork and merge in the gap between layers, long
-// ones through spacers); transitions back up (a lifecycle going back) run in return lanes on the left; self-loops (a
-// small loop on the card's right edge with its text) and Catch/Retry stubs ("Catch → Fail", "Retry ×3") each get a
-// row beside the card, with room kept free to its right, so several never stack and none runs into the next card.
+// with `parent`, grouped by `branch`).
+// A transition to the next layer runs down through the gap between them. One that skips layers leaves the bottom of
+// its card, runs in a lane of its own beside the states and enters its target from above; one back up leaves and
+// enters the cards' left side through a lane on the left. Lanes: the shorter inside, the longer outside; a skipping
+// transition takes the right side unless it would cross another one there (two that overlap without one holding the
+// other), then the left. Every transition has its own port on a card (lane ports towards the corner of their side, the
+// others spread between them by where they lead) and its own level in a gap, so no two share a stretch of line.
+// A gap from top to bottom: the ways out to the lanes, each with its label on its own line beside the card; the bends
+// of the transitions to the next layer; one row for their labels; the ways in from the lanes; the arrowheads.
+// Self-loops (an arc on the card's right edge with its text) and Catch/Retry stubs ("Catch → Fail", "Retry ×3") each
+// get a row beside the card, with room kept free to its right, so several never stack and none runs into a lane.
 // v: {nodes: [{id, label, type, changed, note, at, parent, branch}], edges | transitions: [{from, to, label | event,
-// guard, action, changed, error: "catch" | "retry"}]}. Returns {nodes, edges, backs, loops, stubs, width, height}.
-export function stateLayout(v, width = SM.W) {
+// guard, action, changed, error: "catch" | "retry", short: the text when the picture is wider than `room`, pad: px
+// kept free after the label (a finding's chip)}]}. width: the least width; room: the width the picture has.
+// Returns {nodes, edges, backs, loops, stubs, width, height}.
+export function stateLayout(v, width = 0, room = Infinity) {
+  const L = stateLay(v, width, false);
+  return L.width > room && L.shorter ? stateLay(v, width, true) : L;
+}
+function stateLay(v, width, brief) {
   const nodes0 = (v?.nodes ?? []).filter((n) => n?.id), byId = new Map(nodes0.map((n) => [n.id, { ...n, at: n.at ?? (n.source === "implemented" ? n.evidence : undefined) }]));
-  const all = [...(v?.edges ?? []), ...(v?.transitions ?? [])].filter((e) => byId.has(e.from) && byId.has(e.to)).map((e, i) => ({ ...e, i, text: transitionText(e) }));
+  const all = [...(v?.edges ?? []), ...(v?.transitions ?? [])].filter((e) => byId.has(e.from) && byId.has(e.to)).map((e, i) => ({ ...e, i, text: brief && e.short != null ? String(e.short) : transitionText(e), pad: e.pad ?? 0 }));
   const blockOf = (id) => { const p = byId.get(id)?.parent; return byId.has(p) && p !== id ? p : null; };
   const top = (id) => blockOf(id) ?? id;
   const errors = all.filter(isError), plain = all.filter((e) => !isError(e));
@@ -702,24 +726,18 @@ export function stateLayout(v, width = SM.W) {
   const roots = ids.filter((id) => !fwd.some((e) => e.b === id)), sinks = ids.filter((id) => !flow.some((e) => e.a === id));
   const last = Math.max(0, ...layer.values());
   layer.set("\0start", 0);
-  const links = [...roots.map((id) => ({ a: "\0start", b: id, text: "", i: -1 })), ...fwd];
-  if (sinks.length) { layer.set("\0end", last + 1); links.push(...sinks.map((id) => ({ a: id, b: "\0end", text: "", i: -2 }))); }
-  // Spacers where a transition skips layers.
-  const chain = new Map(); // link -> [ids through layers]
-  for (const e of links) {
-    const ids2 = [e.a];
-    for (let l = layer.get(e.a) + 1; l < layer.get(e.b); l++) { const d = `\0d${e.i}:${e.a}>${e.b}:${l}`; layer.set(d, l); ids2.push(d); }
-    chain.set(e, [...ids2, e.b]);
-  }
+  const links = [...roots.map((id) => ({ a: "\0start", b: id, text: "", pad: 0, i: -1 })), ...fwd];
+  if (sinks.length) { layer.set("\0end", last + 1); links.push(...sinks.map((id) => ({ a: id, b: "\0end", text: "", pad: 0, i: -2 }))); }
+  const span = (e) => layer.get(e.b) - layer.get(e.a), hops = links.filter((e) => span(e) === 1), skips = links.filter((e) => span(e) > 1);
   // Order inside layers: barycentre sweeps down and up; states with a transition back lean left (their return lane
-  // is on the left), spacers lean right; ties keep the given order.
+  // is on the left); ties keep the given order.
   const nl = Math.max(...layer.values()) + 1, rows = Array.from({ length: nl }, () => []);
   const given = (id) => (byId.has(id) ? nodes0.findIndex((n) => n.id === id) : 1e3);
   for (const [id, l] of layer) rows[l].push(id);
   rows.forEach((r) => r.sort((a, b) => given(a) - given(b)));
-  const up = new Map(), down = new Map();
-  for (const c of chain.values()) for (let k = 0; k + 1 < c.length; k++) { (down.get(c[k]) ?? down.set(c[k], []).get(c[k])).push(c[k + 1]); (up.get(c[k + 1]) ?? up.set(c[k + 1], []).get(c[k + 1])).push(c[k]); }
-  const lean = (id) => (back.some((e) => e.a === id || e.b === id) ? -0.5 : id.startsWith("\0d") ? 0.25 : 0);
+  const up = new Map(), down = new Map(), put = (m, k, x) => (m.get(k) ?? m.set(k, []).get(k)).push(x);
+  for (const e of links) { put(down, e.a, e.b); put(up, e.b, e.a); }
+  const lean = (id) => (back.some((e) => e.a === id || e.b === id) ? -0.5 : 0);
   for (let sweep = 0; sweep < 4; sweep++) {
     const pos = new Map(rows.flatMap((r) => r.map((id, k) => [id, r.length > 1 ? k / (r.length - 1) : 0.5])));
     const range = sweep % 2 ? [...rows.keys()].reverse() : [...rows.keys()];
@@ -729,9 +747,10 @@ export function stateLayout(v, width = SM.W) {
       rows[l] = rows[l].map((id, k) => [id, bc(id), k]).sort((a, b) => a[1] - b[1] || a[2] - b[2]).map((x) => x[0]);
     }
   }
-  // Sizes: a card (taller with a note or several stubs), a block with its branches, a dot, a spacer.
+  // Sizes: a card (taller with a note or several side rows), a block with its branches, a dot.
   const stubsOf = (id) => errors.filter((e) => top(e.from) === id), loopsOf = (id) => loopsE.filter((e) => e.a === id);
-  const side = (id) => loopsOf(id).length + stubsOf(id).length, sideW = (id) => (side(id) ? SM.STUB + 4 + SM.CHIP : 0);
+  const side = (id) => loopsOf(id).length + stubsOf(id).length;
+  const sideW = (id) => Math.max(0, stubsOf(id).length ? SM.STUB + 4 + SM.CHIP : 0, ...loopsOf(id).map((e) => SM.LOOP + (e.text ? stateTextW(e.text) + e.pad : 0)));
   const branchesOf = (id) => {
     const kids = nodes0.filter((n) => blockOf(n.id) === id), keyOf = new Map();
     for (const k of kids) keyOf.set(k.id, k.branch ?? null);
@@ -746,100 +765,121 @@ export function stateLayout(v, width = SM.W) {
   const box = new Map();
   for (const [id] of layer) {
     if (id === "\0start" || id === "\0end") box.set(id, { w: SM.DOT, h: SM.DOT });
-    else if (id.startsWith("\0d")) box.set(id, { w: SM.DUMMY, h: 0 });
     else {
       const n = byId.get(id), br = branchesOf(id);
       if (br.length) box.set(id, { w: Math.max(SM.NODE, br.length * SM.CHILD_W + (br.length - 1) * 8 + 16), h: 26 + Math.max(...br.map((b) => b.length)) * (SM.CHILD_H + 10) + 4, br });
       else box.set(id, { w: SM.NODE, h: Math.max(n.note ? SM.NOTE_H : SM.H, side(id) * 20 + 8) });
     }
   }
-  const lanesLeft = back.length ? 10 + back.length * SM.BACK : 6;
+  // Lanes. What a transition spans beside the states, in layers: a skipping one from under its source to over its
+  // target, one back from its target's side to its source's. Two on one side cross when their spans overlap without
+  // one holding the other. The transitions back stay on the left; each skipping one takes the side where it crosses
+  // fewer (and passes fewer states of its own rows), the right first.
+  // ponytail: one pass, those that cross a placed one first: no crossing where two sides can avoid them all, not the
+  // fewest where they cannot. Search the sides (2^n) if such pictures turn up.
+  const iv = (e) => (back.includes(e) ? [layer.get(e.b) * 10 + 1, layer.get(e.a) * 10 - 1] : [layer.get(e.a) * 10 + 3, layer.get(e.b) * 10 - 3]); // in tenths of a layer
+  const len = (e) => iv(e)[1] - iv(e)[0];
+  const stagger = (p, q) => { const [a, b] = [iv(p), iv(q)].sort((x, y) => x[0] - y[0] || x[1] - y[1]); return a[0] < b[0] && b[0] < a[1] && a[1] < b[1]; };
+  const sideOf = new Map(back.map((e) => [e, -1]));
+  const beside = (id, s) => { const r = rows[layer.get(id)], k = r.indexOf(id); return s < 0 ? k : r.length - 1 - k; };
+  const cost = (e, s) => 2 * [...sideOf].filter(([o, os]) => os === s && stagger(e, o)).length + beside(e.a, s) + beside(e.b, s);
+  for (const todo = [...skips].sort((p, q) => len(q) - len(p)); todo.length;) {
+    const [e] = todo.splice(Math.max(0, todo.findIndex((x) => [...sideOf.keys()].some((o) => stagger(x, o)))), 1);
+    sideOf.set(e, cost(e, 1) <= cost(e, -1) ? 1 : -1);
+  }
+  const lanesOn = (s) => [...sideOf].filter(([, os]) => os === s).map(([e]) => e).sort((p, q) => len(p) - len(q));
+  const laneL = lanesOn(-1), laneR = lanesOn(1), lane = new Map([laneL, laneR].flatMap((list) => list.map((e, k) => [e, k]))); // 0: the innermost
+  // Across: the left lanes and the labels of their transitions (right-aligned at the card's left edge), the rows
+  // centred on each other, the right lanes right of every card, side row and label.
+  const labelW = (e) => (e.text ? stateTextW(e.text) + e.pad : 0);
+  const leftPad = Math.max(0, ...laneL.map((e) => (e.text ? labelW(e) + 12 : 0))), lanesLeft = laneL.length ? 6 + laneL.length * SM.LANE + leftPad : 6;
   const stubW = Math.max(0, ...ids.map(sideW));
   const rowW = (r) => r.reduce((s, id) => s + box.get(id).w, 0) + SM.GAP_X * Math.max(0, r.length - 1);
   const inner0 = Math.max(width - lanesLeft - stubW, ...rows.map(rowW));
-  let y = 0;
   const at = new Map();
   rows.forEach((r, l) => {
-    const h = Math.max(SM.DOT, ...r.map((id) => box.get(id).h));
-    // Centred on the states (spacers beside them), so a plain chain stays one straight column.
     const xs = [];
     let x = 0;
     for (const id of r) { xs.push(x); x += box.get(id).w + SM.GAP_X + sideW(id); }
-    const real = r.map((id, k) => [id, k]).filter(([id]) => !id.startsWith("\0d")), lo = real.length ? xs[real[0][1]] : 0;
-    const hi = real.length ? xs[real.at(-1)[1]] + box.get(real.at(-1)[0]).w : x - SM.GAP_X;
-    const shift = Math.max(lanesLeft - (xs[0] ?? 0), lanesLeft + inner0 / 2 - (lo + hi) / 2);
-    r.forEach((id, k) => { const b = box.get(id); at.set(id, { id, x: Math.round(xs[k] + shift), y, w: b.w, h: id.startsWith("\0d") ? h : b.h, layer: l }); });
-    rows[l].bottom = y + h; rows[l].top = y;
-    y += h + SM.GAP_Y;
+    const shift = Math.max(lanesLeft, lanesLeft + inner0 / 2 - (xs.at(-1) + box.get(r.at(-1)).w) / 2); // centred on the cards, so a plain chain stays one straight column
+    r.forEach((id, k) => at.set(id, { id, x: Math.round(xs[k] + shift), y: 0, w: box.get(id).w, h: box.get(id).h, layer: l }));
   });
-  // Forward transitions: out of the source's bottom, down to the source's own line in the gap, across, down into the
-  // target's top. Exits and entries are spread along the card side (ordered by the other end), so every transition
-  // has its own last stretch, where its label goes; a lone exit or entry is in the middle (a chain stays straight).
-  const hops = []; // [{e, k, a, b}]
-  for (const [e, c] of chain) for (let k = 0; k + 1 < c.length; k++) hops.push({ e, k, a: c[k], b: c[k + 1] });
-  const mid0 = (id) => at.get(id).x + at.get(id).w / 2;
-  const spread = (id, list, other) => {
-    const n = at.get(id), sorted = [...list].sort((p, q) => mid0(other(p)) - mid0(other(q)) || p.e.i - q.e.i);
-    return new Map(sorted.map((h, j) => [h, Math.round(n.x + (n.w * (j + 1)) / (sorted.length + 1))]));
-  };
+  // Ports on a card's bottom (ways out) and top (ways in): the lane ports from the corner of their side inwards, the
+  // outermost lane at the corner; the transitions to and from the next layer between them, ordered by their other end
+  // (a lone one in the middle: a chain stays straight).
+  const midX = (id) => at.get(id).x + at.get(id).w / 2;
   const exitX = new Map(), entryX = new Map();
-  for (const id of at.keys()) {
-    for (const [h, x] of spread(id, hops.filter((h) => h.a === id), (h) => h.b)) exitX.set(h, x);
-    for (const [h, x] of spread(id, hops.filter((h) => h.b === id), (h) => h.a)) entryX.set(h, x);
-  }
-  const bent = (h) => exitX.get(h) !== entryX.get(h);
-  const forkIdx = new Map(rows.map((r) => r.filter((id) => hops.some((h) => h.a === id && bent(h)))).flatMap((list) => list.map((id, k) => [id, k])));
-  const edges = [];
-  for (const [e, c] of chain) {
-    const segs = [];
-    let labelAt = null;
-    for (const h of hops.filter((x) => x.e === e)) {
-      const s = at.get(h.a), t = at.get(h.b), sx = exitX.get(h), tx = entryX.get(h);
-      const mid = rows[s.layer].bottom + 10 + Math.min(4, forkIdx.get(h.a) ?? 0) * 5;
-      const sy = h.a.startsWith("\0d") ? s.y : s.y + s.h; // a spacer is no card: the line goes on from its top, through its row
-      if (sx === tx) segs.push({ x1: sx, y1: sy, x2: sx, y2: t.y });
-      else segs.push({ x1: sx, y1: sy, x2: sx, y2: mid }, { x1: sx, y1: mid, x2: tx, y2: mid }, { x1: tx, y1: mid, x2: tx, y2: t.y });
-      if (h.k === 0) {
-        // The label: beside the first hop's last stretch, as wide as the room up to the next entry into that card.
-        const next = [...entryX].filter(([o, x]) => o.b === h.b && x > tx).map(([, x]) => x);
-        const room = Math.min(next.length ? Math.min(...next) : at.get(h.b).x + at.get(h.b).w + 60, at.get(h.b).x + Math.max(at.get(h.b).w, 120) + 80) - tx - 8;
-        labelAt = { x: tx + 5, y: sx === tx ? s.y + s.h + (t.y - s.y - s.h - 13) / 2 : mid + 2, w: Math.max(40, Math.round(room)) };
-      }
+  const spread = (id, mine, other, out) => {
+    const n = at.get(id), direct = hops.filter((e) => mine(e) === id).sort((p, q) => midX(other(p)) - midX(other(q)) || p.i - q.i);
+    const [L, R] = [-1, 1].map((s) => skips.filter((e) => mine(e) === id && sideOf.get(e) === s).sort((p, q) => lane.get(q) - lane.get(p)));
+    const m = Math.max(L.length, R.length), P = Math.min(SM.PORT, n.w / (2 * m + 2));
+    L.forEach((e, j) => out.set(e, Math.round(n.x + P * (j + 1))));
+    R.forEach((e, j) => out.set(e, Math.round(n.x + n.w - P * (j + 1))));
+    direct.forEach((e, j) => out.set(e, Math.round(n.x + P * m + ((n.w - 2 * P * m) * (j + 1)) / (direct.length + 1))));
+  };
+  for (const id of at.keys()) { spread(id, (e) => e.a, (e) => e.b, exitX); spread(id, (e) => e.b, (e) => e.a, entryX); }
+  const rightBase = 10 + Math.max(...[...at.values()].map((n) => n.x + n.w + sideW(n.id)), ...hops.filter((e) => e.text).map((e) => entryX.get(e) + 5 + labelW(e)),
+    ...laneR.filter((e) => e.text).map((e) => at.get(e.a).x + at.get(e.a).w + 6 + labelW(e)));
+  const laneX = (e) => (sideOf.get(e) > 0 ? rightBase + lane.get(e) * SM.LANE : lanesLeft - leftPad - 8 - lane.get(e) * SM.LANE);
+  // Down: each row, then its gap with a level per line. The outer lane leaves above the inner one and arrives below
+  // it, and of two bends the one whose way out lies further in its direction is the upper: none of them cross.
+  const levelY = new Map(), arriveY = new Map(), dir = (e) => Math.sign(entryX.get(e) - exitX.get(e));
+  let y = 0, height = 0;
+  rows.forEach((r, l) => {
+    const h = Math.max(SM.DOT, ...r.map((id) => box.get(id).h)), out = hops.filter((e) => layer.get(e.a) === l);
+    for (const id of r) at.get(id).y = y;
+    height = y + h;
+    let c = y + h + 8;
+    for (const e of skips.filter((x) => layer.get(x.a) === l).sort((p, q) => lane.get(q) - lane.get(p))) { const row = e.text ? SM.ROW : SM.LEVEL; levelY.set(e, c + row / 2); c += row; }
+    for (const e of out.filter((x) => dir(x)).sort((p, q) => dir(q) - dir(p) || dir(p) * (exitX.get(q) - exitX.get(p)))) { levelY.set(e, c + SM.LEVEL / 2); c += SM.LEVEL; }
+    if (out.some((e) => e.text)) { r.band = c + 1; c += SM.BAND; }
+    for (const e of skips.filter((x) => layer.get(x.b) === l + 1).sort((p, q) => lane.get(p) - lane.get(q))) { arriveY.set(e, c + SM.LEVEL / 2); c += SM.LEVEL; }
+    y += h + Math.max(SM.GAP_Y, c + SM.HEAD - y - h);
+  });
+  const flags = (e) => ({ text: e.text, changed: Boolean(e.changed) || e.status === "new" || e.status === "changed", source: e.source ?? null, dashed: e.source === "spec", evidence: e.evidence ?? null, pad: e.pad });
+  const edges = links.map((e) => {
+    const s = at.get(e.a), t = at.get(e.b), sx = exitX.get(e), tx = entryX.get(e), y0 = s.y + s.h, mid = levelY.get(e), w = stateTextW(e.text);
+    let segments, labelAt = null;
+    if (!sideOf.has(e)) {
+      segments = sx === tx ? [{ x1: sx, y1: y0, x2: sx, y2: t.y }] : [{ x1: sx, y1: y0, x2: sx, y2: mid }, { x1: sx, y1: mid, x2: tx, y2: mid }, { x1: tx, y1: mid, x2: tx, y2: t.y }];
+      if (e.text) labelAt = { x: tx + 5, y: rows[s.layer].band, w: 40 }; // beside its last stretch, in the gap's label row
+    } else {
+      const X = laneX(e), end = arriveY.get(e);
+      segments = [{ x1: sx, y1: y0, x2: sx, y2: mid }, { x1: sx, y1: mid, x2: X, y2: mid }, { x1: X, y1: mid, x2: X, y2: end }, { x1: X, y1: end, x2: tx, y2: end }, { x1: tx, y1: end, x2: tx, y2: t.y }];
+      // On its own line where it leaves, beside the card: nothing else runs at that level.
+      if (e.text) labelAt = sideOf.get(e) > 0 ? { x: s.x + s.w + 6, y: mid - 7, w, on: true } : { x: s.x - 6 - w, y: mid - 7, w, left: true, on: true };
     }
-    const end = segs.at(-1);
-    edges.push({ key: `f${e.i}:${e.a}>${e.b}`, from: e.a, to: e.b, text: e.a === "\0start" ? "" : e.text, changed: Boolean(e.changed) || e.status === "new" || e.status === "changed",
-      source: e.source ?? null, dashed: e.source === "spec", evidence: e.evidence ?? null,
-      segments: segs.filter((x) => x.y1 !== x.y2 || x.x1 !== x.x2), arrow: { x: end.x2, y: end.y2 }, labelAt });
-  }
-  // Each label as wide as the room up to the nearest other line or card beside it (at most 160 px): right of its line,
-  // or left of it (right-aligned) when its text doesn't fit on the right and the left has more room.
-  const cards = [...at.values()].filter((n) => !n.id.startsWith("\0d"));
+    return { key: `f${e.i}:${e.a}>${e.b}`, from: e.a, to: e.b, ...flags(e), lane: sideOf.get(e) ?? 0, segments, arrow: { x: tx, y: t.y }, labelAt };
+  });
+  // A label in the gap's row is as wide as the room up to the nearest other line beside it (at most TEXT): right of
+  // its line, or left of it (right-aligned) when its text doesn't fit on the right and the left has more room.
   for (const e of edges) {
     const l = e.labelAt;
-    if (!l) continue;
+    if (!l || l.on) continue;
     const line = l.x - 5, inBand = (y1, y2) => Math.max(y1, y2) > l.y && Math.min(y1, y2) < l.y + 13;
-    const segs = edges.filter((o) => o !== e).flatMap((o) => o.segments);
-    // Walls: other lines' upright stretches and the near ends of their level ones in the label's band, cards.
-    const xs = [...segs.filter((x) => x.x1 === x.x2 && inBand(x.y1, x.y2)).map((x) => x.x1),
-      ...segs.filter((x) => x.y1 === x.y2 && inBand(x.y1, x.y1)).flatMap((x) => [Math.min(x.x1, x.x2), Math.max(x.x1, x.x2)]),
-      ...cards.filter((n) => n.y < l.y + 13 && n.y + n.h > l.y).flatMap((n) => [n.x, n.x + n.w])];
-    const right = Math.min(160, ...xs.filter((x) => x > line).map((x) => x - l.x - 4));
-    const left = Math.min(160, line - 5 - lanesLeft, ...xs.filter((x) => x < line).map((x) => line - 5 - x - 4));
-    const need = e.text.length * 6 + 4;
+    const xs = edges.filter((o) => o !== e).flatMap((o) => o.segments).filter((x) => x.x1 === x.x2 && inBand(x.y1, x.y2)).map((x) => x.x1);
+    const right = Math.min(SM.TEXT, ...xs.filter((x) => x > line).map((x) => x - l.x - 4));
+    const left = Math.min(SM.TEXT, line - 5 - lanesLeft, ...xs.filter((x) => x < line).map((x) => line - 5 - x - 4));
+    const need = stateTextW(e.text) + e.pad;
     if (right < need && left > right) Object.assign(l, { x: line - 5 - Math.max(24, Math.min(left, need)), w: Math.max(24, Math.min(left, need)), left: true });
     else l.w = Math.max(24, right);
   }
-  // Back: from the source's left side out to its lane, up, and into the target's left side (outermost lane: the longest).
-  const backs = [...back].sort((a, b) => (layer.get(a.a) - layer.get(a.b)) - (layer.get(b.a) - layer.get(b.b))).map((e, k) => {
-    const s = at.get(e.a), t = at.get(e.b), laneX = lanesLeft - 8 - k * SM.BACK, sy = s.y + s.h / 2 + 4, ty = t.y + t.h / 2 - 4;
-    return { key: `b${e.i}`, from: e.a, to: e.b, text: e.text, changed: Boolean(e.changed) || e.status === "new" || e.status === "changed", laneX, sx: s.x, sy, tx: t.x, ty,
-      source: e.source ?? null, dashed: e.source === "spec",
-      segments: [{ x1: s.x, y1: sy, x2: laneX, y2: sy }, { x1: laneX, y1: ty, x2: laneX, y2: sy }, { x1: laneX, y1: ty, x2: t.x, y2: ty }] };
+  // Back: out of the source's left side to its lane, up, and into the target's left side. On a card's side the ways
+  // out sit above the ways in, the longer way out lower and the longer way in higher, so the lanes nest.
+  const leaveY = new Map(), enterY = new Map();
+  for (const id of ids) {
+    const outs = back.filter((e) => e.a === id).sort((p, q) => len(p) - len(q)), ins = back.filter((e) => e.b === id).sort((p, q) => len(q) - len(p)), n = at.get(id);
+    [...outs, ...ins].forEach((e, j, list) => (j < outs.length ? leaveY : enterY).set(e, Math.round(n.y + (n.h * (j + 1)) / (list.length + 1))));
+  }
+  const backs = back.map((e) => {
+    const s = at.get(e.a), t = at.get(e.b), X = laneX(e), sy = leaveY.get(e), ty = enterY.get(e), w = stateTextW(e.text);
+    return { key: `b${e.i}`, from: e.a, to: e.b, ...flags(e), laneX: X, sx: s.x, sy, tx: t.x, ty,
+      segments: [{ x1: s.x, y1: sy, x2: X, y2: sy }, { x1: X, y1: ty, x2: X, y2: sy }, { x1: X, y1: ty, x2: t.x, y2: ty }],
+      labelAt: e.text ? { x: s.x - 6 - w, y: sy - 7, w, left: true, on: true } : null };
   });
-  // Side rows, centred on the card: its self-loops first, then its stubs.
+  // Side rows, centred on the card: its self-loops first (x: the card's edge, the text LOOP further), then its stubs.
   const rowY = (id, k) => { const n = at.get(id); return Math.round(n.y + n.h / 2 + (k - (side(id) - 1) / 2) * 20); };
-  const loops = ids.filter((id) => at.has(id)).flatMap((id) => loopsOf(id).map((e, k) => ({ key: `l${e.i}`, id, text: e.text, changed: Boolean(e.changed) || e.status === "new" || e.status === "changed",
-    source: e.source ?? null, dashed: e.source === "spec", x: at.get(id).x + at.get(id).w - 7, y: rowY(id, k) - 6, w: SM.STUB + 4 + SM.CHIP - 10 })));
+  const loops = ids.flatMap((id) => loopsOf(id).map((e, k) => ({ key: `l${e.i}`, id, ...flags(e), x: at.get(id).x + at.get(id).w - 1, y: rowY(id, k) - 6, w: stateTextW(e.text) })));
   const stubs = ids.flatMap((id) => stubsOf(id).map((e, k) => {
     const n = at.get(id), y0 = rowY(id, loopsOf(id).length + k), retry = e.error === "retry" || /^retry/i.test(String(e.label ?? ""));
     const name = byId.get(e.to)?.label ?? e.to;
@@ -847,12 +887,12 @@ export function stateLayout(v, width = SM.W) {
     return { key: `s${e.i}`, from: id, to: e.to, text, changed: Boolean(e.changed) || e.status === "new" || e.status === "changed", source: e.source ?? null, dashed: e.source === "spec", x1: n.x + n.w, x2: n.x + n.w + SM.STUB, y: Math.round(y0), chip: { x: n.x + n.w + SM.STUB + 4, y: Math.round(y0) - 9, w: SM.CHIP, h: 18 } };
   }));
   const kids = (id) => (box.get(id)?.br ?? []).flatMap((b, j) => b.map((cid, k) => ({ ...byId.get(cid), x: at.get(id).x + 8 + j * (SM.CHILD_W + 8), y: at.get(id).y + 26 + k * (SM.CHILD_H + 10), w: SM.CHILD_W, h: SM.CHILD_H, branch: j, step: k })));
-  const out = [...at.values()].filter((n) => !n.id.startsWith("\0d")).map((n) => (n.id.startsWith("\0") ? { ...n, kind: n.id === "\0start" ? "start" : "end" }
+  const out = [...at.values()].map((n) => (n.id.startsWith("\0") ? { ...n, kind: n.id === "\0start" ? "start" : "end" }
     : { ...byId.get(n.id), ...n, kind: box.get(n.id).br ? "block" : "state", children: kids(n.id), changed: Boolean(byId.get(n.id).changed) }));
-  // As wide as everything drawn: the cards, the side rows, and the lines and their labels right of the cards.
-  const right = Math.max(width, ...out.map((n) => n.x + n.w), ...stubs.map((s) => s.chip.x + s.chip.w), ...loops.map((l) => l.x + 17 + l.w),
-    ...edges.flatMap((e) => [...e.segments.map((g) => Math.max(g.x1, g.x2)), ...(e.text && e.labelAt && !e.labelAt.left ? [e.labelAt.x + Math.min(e.labelAt.w, e.text.length * 6 + 4)] : [])]));
-  return { nodes: out, edges, backs, loops, stubs, width: Math.ceil(right + 2), height: Math.max(0, y - SM.GAP_Y) };
+  // As wide and as high as what is drawn: the cards, the side rows, the lanes and the labels right of the cards.
+  const right = Math.max(width, ...out.map((n) => n.x + n.w), ...stubs.map((s) => s.chip.x + s.chip.w), ...loops.map((l) => l.x + SM.LOOP + (l.text ? l.w + l.pad : 0)),
+    ...edges.flatMap((e) => [...e.segments.map((g) => Math.max(g.x1, g.x2) + 4), ...(e.text && e.labelAt && !e.labelAt.left ? [e.labelAt.x + Math.min(e.labelAt.w, stateTextW(e.text) + e.pad)] : [])]));
+  return { nodes: out, edges, backs, loops, stubs, width: Math.ceil(right + 2), height, shorter: !brief && all.some((e) => e.short != null) };
 }
 
 // What a mark on a card or call says next to its chip: the finding itself, its title cut to about five words, and how
