@@ -4,8 +4,16 @@
 // analysis, without findings, while runs are going, after they failed, and for someone else's PR. Any exception,
 // sync or in a spawned task, and any null or non-finite value handed to an element fails it.)
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { S, cx as base } from "./render_stub.mjs";
+
+// The fixtures live in the repository, not in the mod folder: a copy of mods/pr-review alone (an installed mod, a
+// bundle) cannot run this test, and says so instead of failing on a missing file or passing on nothing.
+const FIXTURES = new URL("../../demo/fixtures/review/", import.meta.url);
+if (!existsSync(FIXTURES)) {
+  console.error(`test_smoke: no fixtures at ${FIXTURES.pathname}. This test needs demo/fixtures/review of the mod's repository; run it in a checkout of the repository, not in a copy of the mod folder.`);
+  process.exit(1);
+}
 
 const { default: PrReview } = await import("./main.js");
 const { splitPatch, hunksOf, diffRows, hash, mapReview } = await import("./pr.js");
@@ -13,7 +21,7 @@ const { foldOnOpen, resWatch } = await import("./views.js");
 const R = await import("./review.js");
 const { withThreadState, addThreads, addFollowup } = await import("./threads.js");
 const { mapAnswer, threadAdd, pinAdd } = await import("./explore.js");
-const fx = (name) => readFileSync(new URL(`../../demo/fixtures/review/${name}`, import.meta.url), "utf8");
+const fx = (name) => readFileSync(new URL(name, FIXTURES), "utf8");
 
 // cx.spawn runs the task (as Herdr does) and keeps it, to wait for; a task that throws is a failure, except for the
 // stand-ins' own "stub" (no exec, no files) that the real code meets as a failed command.
