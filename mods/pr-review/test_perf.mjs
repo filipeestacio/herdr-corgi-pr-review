@@ -404,6 +404,20 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   assert.deepEqual(big.asked, { notify: 0, after: 0, every: 0, spawn: 0, exec: 0, read: 0, shared: 0 }, "and the list asks for no redraw, timer, task, command or shared write");
   v.infraFocus = null;
 }
+// ---- Impact with many callers (impact.js isDense): rows, made once, nothing laid out
+// The picture of 141 callers was 35 cards and 128 calls, more than a frame lays out and draws: the rows need no layout.
+{
+  const { readFileSync } = await import("node:fs");
+  const v = await openReview(PR2()); STATES.Architecture(v); await quiet(v);
+  v.impactSt = { key: v.impactKey(), state: "ok", model: JSON.parse(readFileSync(new URL("../../demo/fixtures/review/impact-dense.json", import.meta.url), "utf8")) };
+  const drawn = () => { S.ids = new Set(); const ran = counted(() => frame(v)); const ids = S.ids; S.ids = null; return { layouts: ran("arch.archLayout") + ran("arch.archQuick"), dense: ran("impact.impactDense"), arch: ran("impact.impactArch"), rows: ids.has("rv-impact-dense"), picture: ids.has("rv-impact-canvas") }; };
+  assert.deepEqual(drawn(), { layouts: 0, dense: 1, arch: 0, rows: true, picture: false }, "16 changed symbols, 141 callers: the rows in the first frame, nothing laid out");
+  assert.deepEqual(drawn(), { layouts: 0, dense: 0, arch: 0, rows: true, picture: false }, "the next frame makes nothing again");
+  v.impactFocus = v.impactSt.dense.symbols[0].groups.outside.files[0].path;
+  assert.deepEqual(drawn(), { layouts: 0, dense: 0, arch: 0, rows: true, picture: false }, "nor does a chosen file");
+  const m = await measure(v, 1);
+  assert.deepEqual(m.asked, { notify: 0, after: 0, every: 0, spawn: 0, exec: 0, read: 0, shared: 0 }, "and the rows ask for no redraw, timer, task, command or shared write");
+}
 // ---- "Open in <Editor>": the installed editors are found by reading files, with no process; the frames that draw
 // the links (a file head's zones in the big diff, the cards' monogram) start none either, however many follow; a
 // click is one.

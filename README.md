@@ -55,6 +55,9 @@ Elements that only the PR description or ticket mentions, and that the diff does
 Below the map, **Impact** shows the functions and classes the PR changes and who calls them, from the language
 servers and without a model: each caller is marked as changed in this PR, in the diff with its call untouched, or
 not in this PR, and a caller that still calls a changed signature the old way stands out. Tests are counted apart.
+With more than 12 changed symbols, 12 callers or 15 calls there is no picture with lines: each changed symbol is a
+row with its callers by file, a changed signature whose callers did not change first, and a file you point at or
+click shows every changed symbol it calls.
 
 ![Impact: two changed functions, their tests and no caller outside the diff](docs/screenshots/impact.png)
 
@@ -185,6 +188,8 @@ whether it can happen today.
 - Fix: one comment, the selected ones, or a finding go to a sub-agent (default) in its own worktree on a fix branch,
   or to the main agent. The sub-agent never pushes: the PR's agent gets a note when it starts and, when it is done,
   its commit to cherry-pick, test and push. Apply to PR (secondary) cherry-picks onto a clean checkout without pushing.
+- In the Findings tab, each finding under "No fix sent" has a box: tick several and "Fix selected (n)…" opens the
+  fix preview with exactly those; a security finding about access or data is fixed one at a time, so its box is off.
 - Ask about this, pinned notes and Show details (a card or a layer from the inside), as described above.
 - Explore a topic in existing code without a PR (the panel, the review's ⋯ menu, or `pr-review.explore`).
 - Big PRs: the analysis gets every hunk, inlines what fits, reads the rest itself and splits into passes when it has

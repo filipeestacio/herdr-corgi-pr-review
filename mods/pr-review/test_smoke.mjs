@@ -806,7 +806,8 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   const NOT_COPIED = [/recommended because/, /^Re-run \(/, /^Run probe/, /^last run .* ago/, /^A click shows the way\.$/, /^Verify (all \d+ )?with an agent/, /^Derived from the code that was read;$/, /^It needs nothing else:$/, /^it holds as the code stands\.$/, /lit on the map, the rest dimmed/, /^Open a path to light it on the map\.$/,
     /^in a sandbox, without network, at most 30 s$/, /^\d+ more: /, /^\d+ [^.]*(criteria|high|medium|low|observable|blockers?|paths?) ▸$/, /^GitHub read .* ago/, /^call over a trust boundary$/, /^Look inside/, /Ask names it/, /^This analysis has no further details for this card\.$/, /^“Look inside” reads/, /^“↻ Refresh diagrams”/,
     /^and \d+ more in the Findings tab$/, /^\d+ (more|findings?) at this place ▸$/, /^shown at crossing \d+:$/, /^Ask about this layer$/, /^A finding sent to Fix stays unresolved and shows here/, /^not counted as findings$/, /^Each call has its own scale\.$/, /^Scroll sideways for the whole picture →$/, /^References without their text in the picture$/, /^Analyze in the left column\.$/,
-    /^Point at a card to see what it refers to and what refers to it\.$/, /^A click keeps the card chosen\.$/];
+    /^Point at a card to see what it refers to and what refers to it\.$/, /^A click keeps the card chosen\.$/,
+    /^Point at a file to see every changed symbol it calls\.$/, /^A click keeps the file chosen\.$/];
   const norm = (x) => String(x).toLowerCase().replace(/,? \d+ (s|min|h|d|days?) ago/g, "").replace(/#\d+;|#quot;|#lt;|#gt;/g, " ").replace(/[^a-z0-9äöüß]+/g, " ").trim();
   const drawn = (states, part, w = v) => { const all = new Set(); for (const st of states) { st(); S.texts = null; S.lists.length = 0; w.render(cx); S.lists.length = 0; S.texts = all; part(); } S.texts = null; return [...all]; };
   const missing = (texts, md) => { const text = norm(md), segs = [...new Set(texts.flatMap((x) => x.split(/(?<=[.;:])\s+|\s·\s|\n+/)).map((x) => x.replace(/^\*\*Suggested:\*\*\s*/, "").replace(/ and \d+(?: m(?:o(?:re?)?)?)?…?$/, "")))].filter((x) => x.trim().length >= 20 && x.trim().split(/\s+/).length >= 4);
@@ -903,6 +904,25 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     click(`rv-infra-d0-${k}-at`, "the card's line"); assert.ok(w.page === null && w.fsel?.path === "infra/stacks/notifications/functions.tf", "its line leads to the diff");
     act(w, "infra-card:aws_sqs_queue.inbox", "Infrastructure changes: a card chosen by its address"); assert.equal(w.infraMemo.dense.names.get(w.infraFocus), "aws_sqs_queue.inbox");
     act(w, "infra-card:", "Infrastructure changes: no card chosen"); assert.equal(w.infraFocus, null);
+  }
+  // A large PR's Impact (demo/fixtures/review/impact-dense.json, invented: 16 changed symbols, 141 callers): no picture
+  // with lines, a row per changed symbol with its callers by file. A click on a file keeps it chosen and names the
+  // symbols it calls; the page and its Markdown agree.
+  {
+    const w = await open({ ...PR2, impact: null, analysis: fx("analysis-s.json"), findings: fx("findings-s.json") });
+    act(w, "page:arch", "Impact, many callers: the page"); w.impactSt = { key: w.impactKey(), state: "ok", model: JSON.parse(fx("impact-dense.json")) };
+    S.ids = new Set(); draw(w, "Impact: many callers"); const ids = S.ids; S.ids = null;
+    assert.ok(w.pageParts.includes("impact") && ids.has("rv-impact-dense") && ids.has("rv-impact-rest") && !ids.has("rv-impact-canvas") && ids.has("rv-impact-d10") && !ids.has("rv-impact-d11") && w.impactSt.dense && !w.impactSt.L, "eleven rows and the rest in one line, nothing laid out");
+    const text = check("Impact (many callers)", drawn([() => {}], () => w.pageView(tt), w), {}, w);
+    assert.ok(/## Impact \(16 changed symbols, 141 callers, 19 tests\)[\s\S]*- `useCheckoutSession` \(`web\/src\/features\/checkout\/CheckoutSessionContext\.ts:24`\): signature changed, 5 callers keep the old call;[\s\S]*5 changed symbols have no caller outside this PR: lineItemKey \(3 in the PR\)/.test(text), "the text has the rows in the page's order");
+    assert.ok(!/```mermaid\nflowchart LR\n {2}subgraph group0\["Callers not in this PR/.test(text), "and no flowchart of 141 callers");
+    const file = w.impactSt.dense.symbols[1].groups.outside.files[0].path;
+    click("rv-impact-d1-o0", "a caller file of a row"); const said = drawn([() => {}], () => w.pageView(tt), w);
+    assert.ok(w.impactFocus === file && said.some((x) => x.startsWith(`${file.split("/").pop()} calls `) && x.includes(" of the changed symbols: ")), "a click keeps the file and the strip names the symbols it calls");
+    click("rv-impact-d1-o0", "the same file again"); assert.equal(w.impactFocus, null, "a second click lets it go");
+    act(w, `impact:file:${file}`, "Impact: a caller file chosen by its path"); assert.equal(w.impactFocus, file);
+    act(w, "impact:file:", "Impact: no file chosen"); assert.equal(w.impactFocus, null);
+    click("rv-impact-d0-name", "a changed symbol's name"); await settle(); draw(w, "Impact, many callers: a symbol's place");
   }
   // Back to this review: opening the other ones above put their PR in the stand-in's shared state, and the next
   // frame of `v` would take it for a new target and start over (then the layer checked below was "All changes"
@@ -1048,6 +1068,35 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     assert.equal(/older rules, re-run/.test(v.mdText(false)), false, "the Security page's Markdown has the sentence, not the bar's note");
     assert.equal(/Re-run it for the current view\. (\d+ of the|None of the)/.test(v.mdText(false)), old, `rules ${rules}: the Markdown's sentence counts`);
   }
+}
+// The Findings tab's boxes: a row under "No fix sent" is ticked in the list, as a comment is; the button then hands
+// exactly the ticked findings to the fix preview. A security finding about access or data keeps its box, switched off.
+{
+  const { secByEffect } = await import("./pr.js"), TH = await import("./threads.js");
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json") });
+  const open_ = v.findings().filter((f) => ["open", "recheck"].includes(v.fstatus(f))), plain = open_.filter((f) => !secByEffect(f)), alone = open_.filter((f) => secByEffect(f));
+  assert.ok(plain.length >= 2 && alone.length >= 1, `the fixture has findings to tick and one that goes alone (${plain.length}, ${alone.length})`);
+  const tab = (what) => { S.ids = new Set(); S.texts = new Set(); act(v, "findings", `Findings: ${what}`); const got = { ids: [...S.ids], texts: [...S.texts] }; S.ids = S.texts = null; return got; };
+  let got = tab("nothing ticked");
+  assert.ok(open_.every((f) => got.ids.includes(`rv-fbox-${f.id}`)) && got.ids.filter((id) => id.startsWith("rv-fbox-")).length === open_.length, "every row under No fix sent has a box, no other row has one");
+  assert.ok(got.texts.includes("Fix several…") && !got.texts.some((x) => x.startsWith("Fix selected")), "nothing ticked: Fix several…, as before");
+  S.clicks.get(`rv-fbox-${plain[1].id}`)(null, cx); v.command(`pick-finding:${plain[0].id}`, cx); // a click on a box, and its command
+  S.clicks.get(`rv-fbox-${alone[0].id}`)(null, cx); v.command(`pick-finding:${alone[0].id}`, cx); // switched off: nothing
+  assert.deepEqual(v.pickedFindings().sort(), [plain[0].id, plain[1].id].sort(), "two ticked; the security finding about access or data cannot be");
+  assert.equal(v.ffocus ?? null, null, "a click on a box does not open the finding");
+  got = tab("two ticked");
+  assert.ok(got.texts.includes("Fix selected (2)…") && !got.texts.includes("Fix several…") && got.texts.filter((x) => x === "✓").length >= 1, "the button names the number");
+  S.clicks.get("rv-fixall")(null, cx); await settle();
+  assert.deepEqual([v.sendP?.fix?.items.map((x) => x.id).sort(), v.sendP.fix.pool.length, v.sendP.fix.alone], [[plain[0].id, plain[1].id].sort(), plain.length, alone.length], "the preview opens with exactly these ticked, in the same list as Fix several…");
+  draw(v, "Findings: the preview of the ticked ones");
+  // Kept per PR with the threads (it comes back with them), and emptied by a send.
+  assert.deepEqual(TH.selectedOf(JSON.parse(JSON.stringify(v.threadDoc)), v.threadKey(), TH.FINDINGS).sort(), [plain[0].id, plain[1].id].sort());
+  assert.deepEqual(TH.selectedOf(v.threadDoc, v.threadKey()), [], "the comments' selection is another list");
+  v.sendP.fix.sent(cx, { route: "agent", agent: "a" }); await settle(); v.sendP = null;
+  assert.deepEqual([v.pickedFindings(), TH.selectedOf(v.threadDoc, v.threadKey(), TH.FINDINGS)], [[], []], "after the send nothing is ticked");
+  got = tab("after the send");
+  assert.ok(!got.texts.some((x) => x.startsWith("Fix selected")) && !got.ids.includes(`rv-fbox-${plain[0].id}`), "a finding with a fix sent has no box");
+  v.command(`pick-finding:${plain[0].id}`, cx); assert.deepEqual(v.pickedFindings(), [], "nor can it be ticked by its command");
 }
 // "Open in <Editor>" with editors installed (their Info.plist files are there; `open` is a stub, no editor starts):
 // the file heads' zones, the cards' monogram, the definition view, the panel's head and its file link, the state

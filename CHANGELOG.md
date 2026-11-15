@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.12.1 (2026-11-15)
+
+### Fixes
+
+- pr-review: Impact with many callers is a row per changed symbol, not a picture with lines
+
+### Other
+
+- chore: merge fix/impact-dense
+
+## 0.12.0 (2026-11-15)
+
+### Features
+
+- pr-review: tick findings in the Findings tab and fix the ticked ones together
+
+### Other
+
+- chore: merge feat/findings-select
+
+## 0.11.2 (2026-11-15)
+
+### Fixes
+
+- pr-review: many infrastructure resources are cards by file, not a picture with lines
+- pr-review: an infrastructure card is titled by its type, then its name
+
 ## 0.11.1 (2026-11-15)
 
 ### Fixes
