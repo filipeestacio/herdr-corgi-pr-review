@@ -233,3 +233,19 @@ console.log("render ok");
   assert.ok(["1", "2", "3", "4", "5", "High · 1"].every((x) => narrow.texts.includes(x)) && !narrow.texts.includes("2 · loan.overdue"));
   console.log("state diagram labels ok");
 }
+
+// Tabs the review opens: named "<repo> <context>"; "Ask an agent" without a live agent starts its tab in the
+// background (the review shows no terminals: the shown space and tab stay), a resumed session takes the focus (the
+// finding is pasted there).
+{
+  const { tabName } = await import("./pr.js");
+  assert.deepEqual([tabName("acme/bookshelf", "PR #7"), tabName("/code/bookshelf", "review"), tabName(null, "ask")], ["bookshelf PR #7", "bookshelf review", "ask"]);
+  const now = { ...cx, spawn(fn) { fn(now); } }, v = review(1);
+  S.runs = [];
+  v.askPlan = () => ({ kind: "new", where: "/h/w" }); v.discussNow("why?", now);
+  v.prSel = { ...v.prSel, session: "s1", cwd: "/h/c" }; v.askPlan = () => ({ kind: "resume", where: "/h/c" }); v.discussNow("why?", now);
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(S.runs.map(([c, a]) => [c, a.name, a.focus]), [["tab.new", "r ask PR #1", false], ["tab.new", "r PR #1", undefined]]);
+  S.runs = null;
+  console.log("tab names and focus ok");
+}

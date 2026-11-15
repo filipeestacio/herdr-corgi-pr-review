@@ -1227,6 +1227,9 @@ export const withProof = (findings, status = {}) => findings.map((f) => {
   return !p ? f : { ...f, proof: p, ...(p.state === "done" && p.result === "reproduced" ? { certainty: "confirmed" } : {}) };
 });
 // The check as [label, text] pairs, for the "Evidence" step's details.
+// A tab the mod opens is named "<repo> <context>" ("bookshelf PR #7"): the repo first, so one repo's tabs read
+// together in a tab bar. repo: "owner/name" or its folder; without one, the context alone.
+export const tabName = (repo, context) => [String(repo ?? "").split("/").filter(Boolean).pop(), context].filter(Boolean).join(" ");
 export const proofFacts = (p) => !p ? [] : p.state === "running" ? [["Agent", `checking it on ${p.branch ?? "its branch"}${p.terminal ? ` (${p.terminal})` : ""}`]] : [
   ["Result", `${PROOF_WORDS[p.result] ?? p.result} by an agent${p.head ? ` at ${String(p.head).slice(0, 7)}` : ""}${p.reason ? `: ${p.reason}` : ""}`],
   p.command && ["Command", p.command], p.output && ["Output", p.output], p.test && ["Test", p.test]].filter(Boolean);

@@ -19,7 +19,7 @@ import { v_flex, h_flex, InputState, Input, Scrollbar, Editor, EditorState, Text
 import { focused, exec, hc, run, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, home, layout, props, watchFolder, nextCommand, checking } from "herdr";
 import { spaces, panes, agents, terminals, feed, whenFed } from "./live.js"; // never straight from Herdr: one read and this copy is drawn on every agent's status change
 import { diffRows, buildPrompt, splitPatch, selection, nextChange, lineLabel, anchorRow, buildReview, hunksOf, hash, uiLine, reviewRequest, mapReview, triageOf, isSecurity, withThreats, knownOf } from "./pr.js";
-import { parsePrRef, ghTarget, pruneSources, codeModel, windowActive, pollDue, pollAfter } from "./pr.js";
+import { parsePrRef, ghTarget, pruneSources, codeModel, windowActive, pollDue, pollAfter, tabName } from "./pr.js";
 import * as C from "./context.js";
 import { tabArgs } from "./threads.js"; // a new Claude tab with the PR's text: no MCP servers
 import { loadDiff, saveDiff } from "./diffcache.js";
@@ -647,7 +647,8 @@ export default class PrReview extends View {
   }
 
   // Sends a prompt: a picked PR goes to its session (live agent, else `claude --resume` in a new tab, else a fresh
-  // Claude when its folder is gone); the branch diff to this space's agent or a new Claude tab.
+  // Claude when its folder is gone); the branch diff to this space's agent or a new Claude tab. Sending goes there:
+  // the agent's tab is selected, and a new tab takes the focus (Herdr's default) the same way.
   deliver(prompt, cx, what, done) {
     const { space } = location(), origin = this.prSel;
     if (!space || this.sending || !(this.root || this.pr)) return;
@@ -662,10 +663,10 @@ export default class PrReview extends View {
           this.note = `${what} sent to ${agent.tab_name || "agent"}`;
         } else if (origin?.session && this.root) {
           // The session lives in the config folder it ran under (sessionContext), which the rules' context may not be.
-          run("tab.new", { space: this.spaceFor(ctx, origin.cwd, this.root), folder: origin.cwd, name: `PR #${origin.number}`, argv: [...this.ctxEnv(origin.sessionContext ?? ctx), "claude", "--resume", origin.session], task: prompt });
+          run("tab.new", { space: this.spaceFor(ctx, origin.cwd, this.root), folder: origin.cwd, name: tabName(origin.repo, `PR #${origin.number}`), argv: [...this.ctxEnv(origin.sessionContext ?? ctx), "claude", "--resume", origin.session], task: prompt });
           this.note = `${what}: resumed the PR's session in a new tab`;
         } else {
-          run("tab.new", { space: this.spaceFor(ctx, this.root), folder: this.root ?? location().cwd, name: "PR-Review", argv: tabArgs({ env: this.ctxEnv(ctx), model: walkModel() }), task: prompt });
+          run("tab.new", { space: this.spaceFor(ctx, this.root), folder: this.root ?? location().cwd, name: tabName(origin?.repo ?? this.root, origin ? `PR #${origin.number}` : "review"), argv: tabArgs({ env: this.ctxEnv(ctx), model: walkModel() }), task: prompt });
           this.note = `${what}: started a new Claude tab`;
         }
         done(cx);

@@ -40,7 +40,7 @@ import { pageBadge, signOf, signEl, markLabel } from "./views.js"; // one sign f
 import { pairRows, pairSide, HALF_GUTTER, diffModeOf, oneSided, stackOf, chipAt, textW } from "./views.js"; // side by side; the bar's stack
 import { mdTarget, secPicture, secBlast, resNoPicture } from "./views.js"; // Copy as Markdown: what it copies on each page; the Security page's picture and lines
 const MD_W = textW("⧉ Copy as Markdown…", TYPE.small) + 22; // the button's width on a layer's head, where clicks are placed by x
-import { plainText } from "./pr.js";
+import { plainText, tabName } from "./pr.js";
 import { pollDue, pollAfter, windowActive } from "./pr.js"; // background fetches (ghTick)
 import { hasSources, archBands, widthAt } from "./arch.js";
 import { archMarks, transitionText, MARK_CARD_ROWS } from "./arch.js";
@@ -1402,14 +1402,18 @@ export const ReviewMode = {
         return cx.notify(); // a question changes nothing about the finding: it stays unresolved
       }
       if (plan.kind === "new" && plan.where) {
-        run("tab.new", { space: this.spaceFor(this.ctxId(), origin?.cwd, this.root), folder: plan.where, name: `Ask · PR #${origin?.number ?? ""}`,
+        // Asked from the review, which shows no terminals: the tab starts in the background (focus: false), so the
+        // space and tab shown before the review are still the ones shown after it. Its name says where to find it.
+        const name = tabName(origin?.repo ?? this.root, origin?.number ? `ask PR #${origin.number}` : "ask");
+        run("tab.new", { space: this.spaceFor(this.ctxId(), origin?.cwd, this.root), folder: plan.where, name, focus: false,
           argv: TH.tabArgs({ env: this.ctxEnv(this.ctxId()), model: model(), ask: true, trusted: this.trustedPr() }), task: text });
-        this.note = "Started a new agent tab with your question. The finding stays as it is.";
+        this.note = `Started the agent tab "${name}" in the background with your question. The finding stays as it is.`;
         return cx.notify();
       }
       await copyText(text);
       if (!agent) {
-        if (plan.kind === "resume") run("tab.new", { space: this.spaceFor(this.ctxId(), origin.cwd), folder: origin.cwd, name: `PR #${origin.number}`,
+        // Resumed to paste the finding there: this tab takes the focus, so leaving the review lands on it.
+        if (plan.kind === "resume") run("tab.new", { space: this.spaceFor(this.ctxId(), origin.cwd), folder: origin.cwd, name: tabName(origin.repo, `PR #${origin.number}`),
           argv: [...this.ctxEnv(origin.sessionContext ?? this.ctxId()), "claude", "--resume", origin.session] });
         this.note = plan.kind === "resume" ? "Resumed the PR's session in a new tab; the finding is on the clipboard (⌘V)" : "No checkout to start an agent in: the finding is on the clipboard";
         return cx.notify();
