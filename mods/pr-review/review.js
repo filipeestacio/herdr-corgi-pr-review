@@ -3445,11 +3445,17 @@ export const ReviewMode = {
   // no model). Without a checkout: what the patch itself holds (added and deleted files). With one: the changed
   // files and, for Terraform, the other .tf files of their folders, read from the checkout. Which of them exist is
   // asked through safegit.py (ls-files -s: tracked regular files only, so a link out of the checkout is not followed).
+  // The files are the PR's own text, read in a task of its own: a file the reader fails on (or one written to make
+  // it fail) costs this section, never the opening of the PR (onSource goes on to the analysis and the findings).
   loadInfra(cx) {
     const url = this.prSel?.url, patch = this.patch ?? [], w = this.worktree, files = patch.filter((f) => isIac(f.path) && !f.binary);
-    this.infra = files.length ? infraModel(files) : null; this.infraMemo = null;
-    if (!files.length || !w?.path) return;
+    const model = (...a) => { try { return infraModel(...a); } catch { return null; } };
+    this.infra = null; this.infraMemo = null;
+    if (!files.length) return;
     cx.spawn(async (cx) => {
+      if (this.prSel?.url !== url || this.patch !== patch) return;
+      this.infra = model(files); this.infraMemo = null; cx.notify();
+      if (!w?.path) return;
       const tf = [...new Set(files.filter((f) => /\.tf(vars)?$/.test(f.path)).map((f) => dirOf(f.path)))], want = files.filter((f) => f.status !== "added" && f.status !== "deleted").map((f) => f.path);
       if (!tf.length && !want.length) return;
       const r = await exec("python3", [`${appHome()}/mods/pr-review/safegit.py`, w.path, "ls-files", "-s", "--", ...tf.map((d) => `${d ? `${d}/` : ""}*.tf`), ...want], { timeout: 30000 }).catch(() => null);
@@ -3459,7 +3465,7 @@ export const ReviewMode = {
       // for a megabyte of .tf): a module larger than that is read in part; split the parse over timers if it matters.
       for (const p of listed.filter((x) => want.includes(x) || (/\.tf$/.test(x) && tf.includes(dirOf(x)))).sort((x, y) => /\.tf$/.test(y) - /\.tf$/.test(x)).slice(0, 200)) { const text = await readTextFile(`${w.path}/${p}`).catch(() => null); if (typeof text === "string") texts.set(p, text); }
       if (this.prSel?.url !== url || this.patch !== patch) return;
-      this.infra = infraModel(files.map((f) => ({ ...f, head: texts.get(f.path) })), [...texts].filter(([p]) => !files.some((f) => f.path === p)).map(([path, text]) => ({ path, text })));
+      this.infra = model(files.map((f) => ({ ...f, head: texts.get(f.path) })), [...texts].filter(([p]) => !files.some((f) => f.path === p)).map(([path, text]) => ({ path, text })));
       this.infraMemo = null; cx.notify();
     });
   },
