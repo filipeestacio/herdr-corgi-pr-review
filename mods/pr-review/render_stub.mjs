@@ -10,6 +10,7 @@ export const S = (globalThis.__rv = { errs: [], lists: [], store: new Map(), fil
 const where = () => new Error().stack.split("\n").slice(3, 6).map((s) => s.trim()).join(" | ");
 const bad = (v) => v === null || v === undefined || (typeof v === "number" && !Number.isFinite(v));
 S.el = () => {
+  S.made = (S.made ?? 0) + 1; // how many elements were built: a test sets S.made = 0 and reads it after a frame
   let id = null, click = null;
   const p = new Proxy(function () {}, {
     get(_, k) {

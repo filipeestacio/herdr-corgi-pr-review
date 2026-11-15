@@ -329,4 +329,61 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   v.hl = stuck(Date.now() - 5000); v.render(cx); assert.deepEqual(v.hl.spans, [[]], "given up: the file stays plain");
   v.hl = { ...stuck(0), job: null }; v.highlightMore(cx, v.hl); await flush(); assert.deepEqual(v.hl.spans, [[]], "a scanner that throws leaves the file plain");
 }
+// ---- the diff as a virtual list: a frame builds the lines on screen, however long the file is
+{
+  const v = new PrReview(); v.init({}, cx); await flush();
+  const file = (n) => Object.assign(Array.from({ length: n }, (_x, i) => (i % 50 === 0 ? { kind: "@", text: `@@ -${i},50 +${i},50 @@` } : { kind: i % 3 ? "+" : " ", number: i, n: i, text: `import os${i}  # line ${i}` })), { sig: `f${n}` });
+  // One frame: the render, then the list asked for the 40 lines the panel shows (as Herdr asks it while laying out).
+  const frame = (range = { start: 100, end: 140 }) => {
+    S.lists.length = 0; S.made = 0; v.render(cx);
+    const list = S.lists.find((l) => String(l.id).startsWith("pr-diff-"));
+    assert.ok(list, "the diff is a virtual list");
+    S.texts = new Set(); list.render(range, cx); const texts = S.texts; S.texts = null;
+    return { made: S.made, n: list.n, texts };
+  };
+  const made = {};
+  for (const n of [200, 1500, 5000]) { v.rows = file(n); v.open = "a.py"; v.sel = null; frame(); await flush(); made[n] = frame(); assert.equal(made[n].n, n + 1, `${n} lines and the line to comment on the file`); }
+  assert.equal(made[200].made, made[1500].made, `a frame builds as much for 1500 lines as for 200: ${JSON.stringify([made[200].made, made[1500].made])}`);
+  assert.equal(made[1500].made, made[5000].made, `and as much for 5000: ${made[5000].made}`);
+  console.log(`panel diff: elements per frame for 200 / 1500 / 5000 lines: ${made[200].made} / ${made[1500].made} / ${made[5000].made}`);
+  // The lines on screen have their colors once the file is colored: the keyword is a run of its own.
+  v.rows = file(300); v.hl = null; const plain = frame({ start: 1, end: 41 }); assert.ok(plain.texts.has("import os1  # line 1") && !plain.texts.has("import"), "plain until the file is colored");
+  await flush(); const colored = frame({ start: 1, end: 41 }); assert.ok(colored.texts.has("import") && colored.texts.has("# line 1"), "then the shown lines are drawn in their colors");
+  // The items: the line for the whole file, each visual line, a comment under its line (head and text), the composer under the selection.
+  const at = new Map([[2, [{ id: "c1", file: "a.py", text: "Why?", start: 2, end: 2 }]]]), kinds = (x) => x.items.slice(0, 9).map((it) => it.k);
+  v.comments = at.get(2); v.rows = file(60);
+  assert.deepEqual(kinds(v.diffItems({ composeAt: null, at, loose: [], lo: -1 })), ["ask", "r0", "r1", "r2", "bhc1", "bbc1", "r3", "r4", "r5"]);
+  assert.deepEqual(kinds(v.diffItems({ composeAt: 1, at, loose: [], lo: 1 })), ["ask", "r0", "r1", "ch", "ci", "ca", "r2", "bhc1", "bbc1"]);
+  assert.deepEqual(kinds(v.diffItems({ composeAt: "top", at: new Map(), loose: at.get(2), lo: -1 })), ["ch", "ci", "ca", "bhc1", "bbc1", "r0", "r1", "r2", "r3"]);
+  assert.deepEqual(v.diffItems({ composeAt: 1, at, loose: [], lo: 1 }).rowAt.slice(0, 4), [1, 2, 6, 9], "where each row starts, for a jump to it");
+  assert.ok(v.diffItems({ composeAt: null, at, loose: [], lo: -1 }).items.every((it) => Number.isFinite(it.h) && it.h > 0 && typeof it.k === "string"));
+  // Wrap: a long line is one item per visual line; the number stands at the first.
+  Map.prototype.set.call(S.store, "review.wrap", true); v.panelW = 380;
+  v.rows = Object.assign([{ kind: "+", number: 1, n: 1, text: "x = " + "abcdefgh ".repeat(30) }, { kind: "+", number: 2, n: 2, text: "y = 1" }], { sig: "w" });
+  const wrapped = v.diffItems({ composeAt: null, at: new Map(), loose: [], lo: -1 });
+  assert.ok(wrapped.items.length > 4 && wrapped.items[1].k === "r0" && wrapped.items[2].k === "r0.1" && wrapped.items.at(-1).k === "r1", `one item per visual line: ${wrapped.items.map((it) => it.k)}`);
+  Map.prototype.set.call(S.store, "review.wrap", false);
+  assert.deepEqual(v.diffItems({ composeAt: null, at: new Map(), loose: [], lo: -1 }).items.map((it) => it.k), ["ask", "r0", "r1"]);
+  // More lines than the list holds: the rest is said in one line.
+  v.rows = file(12000); const cut = v.diffItems({ composeAt: null, at: new Map(), loose: [], lo: -1 }).items;
+  assert.deepEqual([cut.length, cut.at(-1).t, cut.at(-1).n], [9990, "more", 12001 - 9989]);
+  // Presses: a line is selected (again: no longer), shift makes a range, "ask" opens the composer for the file; the
+  // cards' buttons are found by where the press went down, from the right edge.
+  v.rows = file(60); v.sel = null; v.selEnd = null; v.focusInput = () => {};
+  v.press = { x: 100, w: 380, shift: false }; v.onDiffItem("r5", cx); assert.deepEqual([v.sel, v.selEnd], [5, null]);
+  v.press = { x: 100, w: 380, shift: true }; v.onDiffItem("r8", cx); assert.deepEqual([v.sel, v.selEnd], [5, 8]);
+  v.press = { x: 100, w: 380, shift: false }; v.onDiffItem("r8", cx); assert.deepEqual([v.sel, v.selEnd], [8, null]); v.onDiffItem("r8", cx); assert.equal(v.sel, null);
+  v.onDiffItem("r0", cx); assert.equal(v.sel, null, "a hunk's head is no line to select");
+  v.onDiffItem("ask", cx); assert.equal(v.askTop, true);
+  const did = []; for (const m of ["closeAsk", "addComment", "ask", "editComment", "dropComment"]) v[m] = (...a) => did.push([m, a[0]?.id ?? (typeof a[1] === "string" ? "preset" : null)]);
+  const right = 380 - 21, press = (key, x) => { v.press = { x, w: 380, shift: false }; v.onDiffItem(key, cx); };
+  press("ca", right - 10); press("ca", right - 46 - 6 - 10); press("ca", right - 46 - 6 - 78 - 6 - 10); press("ca", 40); // Ask, Comment, Cancel, the card's empty part
+  press("bhc1", right - 10); press("bhc1", right - 46 - 8 - 10); press("bhc1", 40); // Delete, Edit, the label
+  press("ch", right - 10); // the last preset
+  assert.deepEqual(did, [["ask", null], ["addComment", null], ["closeAsk", null], ["dropComment", "c1"], ["editComment", "c1"], ["ask", "preset"]]);
+  // A line to bring into view: j goes to the next change and asks the list for it; a new file starts at the top.
+  const asked = []; v.diffList = { scroll_to_item: (i, how) => asked.push([i, how]) };
+  v.comments = []; v.scrollRow = 30; v.sel = null; v.askTop = false; v.render(cx); v.scrollRow = "top"; v.render(cx);
+  assert.deepEqual([asked, v.scrollRow], [[[31, "center"], [0, "top"]], null]);
+}
 console.log("panel ok");
