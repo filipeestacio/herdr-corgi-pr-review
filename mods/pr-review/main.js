@@ -16,7 +16,7 @@
 // follows its rules; a picked one is kept in shared "pr.picked" so the selection survives remounts.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, Editor, EditorState, TextView, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
-import { focused, exec, hc, run, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, home, layout, props, watchFolder, nextCommand } from "herdr";
+import { focused, exec, hc, run, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, home, layout, props, watchFolder, nextCommand, checking } from "herdr";
 import { spaces, panes, agents, terminals, feed, whenFed } from "./live.js"; // never straight from Herdr: one read and this copy is drawn on every agent's status change
 import { diffRows, buildPrompt, splitPatch, selection, nextChange, lineLabel, anchorRow, buildReview, hunksOf, hash, uiLine, reviewRequest, mapReview, triageOf, isSecurity, withThreats, knownOf } from "./pr.js";
 import { parsePrRef, ghTarget, pruneSources, codeModel, windowActive, pollDue, pollAfter } from "./pr.js";
@@ -160,6 +160,9 @@ export default class PrReview extends View {
     // Speed: every spawn costs 0.3-0.5 s here. Repos and PR info are remembered; memo keeps the last MEMO contexts
     // (diff, open file, selection) so going back to one shows it with no exec; watchFolder marks a repo dirty.
     this.repos = REPOS; this.prInfo = new Map(); this.memo = new Map(); this.dirty = new Set(); this.watching = new Map(); this.heads = HEADS;
+    // `herdr-app check` runs init for real (always the panel: a check has no props). What is set above is enough for
+    // its one frame: no command loop, no task (setup check, prs.py, prs.lock) and no timer starts there.
+    if (checking()) return;
     if (this.part === "review") return this.initReview(cx);
     // The pick from before (shared "pr.selected") is known at once: the list is not drawn (nor fetched) while prs.json
     // is read, and the branch's diff is only made when the branch is what the panel shows.

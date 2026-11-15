@@ -56,7 +56,7 @@ const STUBS = {
     const live = (k, v) => { S.live[k] = (S.live[k] ?? 0) + 1; return v; }; // how often a frame reads Herdr's live data (a mod is drawn again when what it read changes)
     export const spaces = () => live("spaces", S.spaces ?? []), panes = () => live("panes", S.panes ?? []), agents = () => live("agents", []), terminals = () => live("terminals", S.terminals ?? []), focused = () => live("focused", S.focused ?? null), layout = () => live("layout", S.layout === undefined ? { id: "root", type: "row", children: [] } : S.layout); // null: as in a copy's init, before Herdr has a layout
     export const theme = () => S.theme, settings = () => ({}), props = () => S.props ?? { part: "review" };
-    export const shared = (k) => S.store.get(k), setShared = (k, v) => S.store.set(k, v), appHome = () => "/h", home = () => "/h";
+    export const shared = (k) => S.store.get(k), setShared = (k, v) => S.store.set(k, v), appHome = () => "/h", home = () => "/h", checking = () => Boolean(S.checking);
     export const nextCommand = () => (S.nextCommand ? S.nextCommand() : never()), watchFolder = never, openOverlay = (o) => { S.overlays.push(o); }, closeOverlay = () => {}, notify = (n) => { (S.toasts ??= []).push(n); return "n"; };`,
 };
 registerHooks({

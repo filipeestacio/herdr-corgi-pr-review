@@ -598,4 +598,16 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   assert.deepEqual([EV.editorFor({ root: "/co/r" }, cx), EV.editorLink(v, S.theme, "k", { root: "/co/r" }, cx).length], [null, 0]);
   EV.forgetEditors(); S.exec = null; timers.length = 0;
 }
+// `herdr-app check` runs init for real: there it starts no task and no timer (so no helper process, no file written),
+// and its one frame still draws; a live window does start them.
+{ const made = { spawn: 0, timer: 0, exec: 0 }, quiet = { ...base, spawn() { made.spawn++; }, timer: { after() { made.timer++; }, every() { made.timer++; } } };
+  S.props = {}; S.exec = async () => { made.exec++; throw new Error("stub"); }; // the stand-in's null is the review; a check has no part
+  try {
+    S.checking = true; const v = new PrReview(); v.init({}, quiet); await settle();
+    assert.deepEqual(made, { spawn: 0, timer: 0, exec: 0 }, "a check: init starts nothing");
+    S.errs.length = 0; v.render(base); assert.deepEqual(S.errs, [], "a check: the frame draws");
+    S.checking = false; new PrReview().init({}, quiet);
+    assert.ok(made.spawn > 0 && made.timer > 0, "a live window: init starts its tasks and its timer");
+  } finally { S.checking = false; S.exec = null; }
+}
 console.log("panel ok");
