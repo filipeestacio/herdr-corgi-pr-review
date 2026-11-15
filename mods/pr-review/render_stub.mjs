@@ -7,7 +7,7 @@ import { registerHooks } from "node:module";
 // files: what readTextFile finds (and, with S.writes set, what writeTextFile wrote); clicks: an element's id → its on_click handler (from the last frame drawn);
 // overlays: what openOverlay was asked to show.
 // n: how much a frame builds (el: elements made, call: builder calls on them), for the performance checks.
-export const S = (globalThis.__rv = { errs: [], lists: [], store: new Map(), files: new Map(), props: null, clicks: new Map(), overlays: [], n: { el: 0, call: 0 } });
+export const S = (globalThis.__rv = { errs: [], lists: [], store: new Map(), files: new Map(), props: null, clicks: new Map(), overlays: [], n: { el: 0, call: 0 }, live: {} });
 const where = () => new Error().stack.split("\n").slice(3, 6).map((s) => s.trim()).join(" | ");
 const bad = (v) => v === null || v === undefined || (typeof v === "number" && !Number.isFinite(v));
 S.el = () => {
@@ -53,7 +53,8 @@ const STUBS = {
     export const VirtualListScrollHandle = n, ScrollHandle = n, TextareaState = n, InputState = n, EditorState = n;`,
   herdr: `const S = globalThis.__rv, no = async () => { throw new Error("stub"); }, never = () => new Promise(() => {});
     export const exec = (...a) => (S.exec ? S.exec(...a) : no()), hc = no, readTextFile = async (p) => { if (S.files.has(p)) return S.files.get(p); throw new Error("stub"); }, pickFolder = no, writeTextFile = async (p, text) => { if (S.writes) S.files.set(p, text); }, run = () => null;
-    export const spaces = () => S.spaces ?? [], panes = () => S.panes ?? [], agents = () => [], terminals = () => S.terminals ?? [], focused = () => S.focused ?? null, layout = () => null;
+    const live = (k, v) => { S.live[k] = (S.live[k] ?? 0) + 1; return v; }; // how often a frame reads Herdr's live data (a mod is drawn again when what it read changes)
+    export const spaces = () => live("spaces", S.spaces ?? []), panes = () => live("panes", S.panes ?? []), agents = () => live("agents", []), terminals = () => live("terminals", S.terminals ?? []), focused = () => live("focused", S.focused ?? null), layout = () => live("layout", S.layout === undefined ? { id: "root", type: "row", children: [] } : S.layout); // null: as in a copy's init, before Herdr has a layout
     export const theme = () => S.theme, settings = () => ({}), props = () => S.props ?? { part: "review" };
     export const shared = (k) => S.store.get(k), setShared = (k, v) => S.store.set(k, v), appHome = () => "/h", home = () => "/h";
     export const nextCommand = () => (S.nextCommand ? S.nextCommand() : never()), watchFolder = never, openOverlay = (o) => { S.overlays.push(o); }, closeOverlay = () => {}, notify = (n) => { (S.toasts ??= []).push(n); return "n"; };`,

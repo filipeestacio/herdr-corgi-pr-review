@@ -95,6 +95,7 @@ export async function openPanel({ diff }, prsN = 40) {
   S.spaces = [{ id: "sA", active: true, folder: "/h/a" }];
   S.exec = async (cmd, args) => { N.exec++; return cmd === "gh" && args[1] === "diff" ? { code: 0, stdout: diff, stderr: "" } : { code: 1, stdout: "", stderr: "stub" }; };
   const v = new PrReview(); v.init({}, cx); await settle();
+  v.setupFirst = false; // not the first-run Setup page (nothing is installed in the stand-ins): it would cover the list and the diff
   v.spaceSlug = { root: "/h/a", slug: "saefty/corgi-demo" };
   return { v, prs };
 }

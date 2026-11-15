@@ -16,7 +16,8 @@
 // follows its rules; a picked one is kept in shared "pr.picked" so the selection survives remounts.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, Editor, EditorState, TextView, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
-import { spaces, panes, terminals, focused, agents, exec, hc, run, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, home, layout, props, watchFolder, nextCommand } from "herdr";
+import { focused, exec, hc, run, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, home, layout, props, watchFolder, nextCommand } from "herdr";
+import { spaces, panes, agents, terminals, feed, whenFed } from "./live.js"; // never straight from Herdr: one read and this copy is drawn on every agent's status change
 import { diffRows, buildPrompt, splitPatch, selection, nextChange, lineLabel, anchorRow, buildReview, hunksOf, hash, uiLine, reviewRequest, mapReview, triageOf, isSecurity, withThreats, knownOf } from "./pr.js";
 import { parsePrRef, ghTarget, pruneSources, codeModel, windowActive, pollDue, pollAfter } from "./pr.js";
 import * as C from "./context.js";
@@ -82,10 +83,14 @@ const REPOS = new Map();
 const SIZES = new Map(); // a cached diff's size ({files, lines}) by PR and head, for the list's triage (loadTriage)
 const age = (iso) => { const m = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000)); return !Number.isFinite(m) ? "" : m < 60 ? `${m}m` : m < 2880 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`; };
 
+// Where the person is: the active space and the folder of the focused pane. From focused() alone when it says both
+// (it carries the pane's space and folder, and does not change with an agent's status); else from the spaces and
+// panes as live.js has them.
 function location() {
-  const space = spaces().find((s) => s.active), f = focused();
-  const pane = f?.pane ? panes().find((p) => p.pane === f.pane) : null;
-  return { cwd: pane?.cwd || f?.cwd || space?.folder, space: space?.id ?? null };
+  const f = focused();
+  if (f?.space && f.cwd) return { cwd: f.cwd, space: f.space };
+  const space = spaces().find((s) => s.active), pane = f?.pane ? panes().find((p) => p.pane === f.pane) : null;
+  return { cwd: pane?.cwd || f?.cwd || space?.folder, space: f?.space ?? space?.id ?? null };
 }
 
 // Contexts (optional, a plug-in's shared "pr-review.contexts"; context.js): a space's, a PR's, whether the view shows it.
@@ -838,6 +843,7 @@ export default class PrReview extends View {
     let key, fetch, why = null;
     if (now === "space") {
       // Local only: the folders of the space's panes and agents, their repos (remembered) and HEAD files.
+      await whenFed(cx); // right after a start the chip may not have read the spaces yet (live.js)
       const found = (await Promise.all(spaceFolders(space, spaces(), panes(), terminals()).map((cwd) => this.checkout(cwd)))).filter(Boolean), repos = spaceBranches(found);
       if (stale()) return;
       this.spaceHeads = new Map(found.map((c) => [c.cwd, c]));
@@ -1403,6 +1409,9 @@ export default class PrReview extends View {
       this.announceQueued = true;
       cx.timer.after(0, () => { this.announceQueued = false; this.publishGoto(); });
     }
+    // The small copies read Herdr's live data for the big ones (live.js). A terminal the review shows the state of
+    // changed: one shared write makes the review draw.
+    if ((this.part === "mini" || this.part === "bar") && feed() && !this.liveQueued) { this.liveQueued = true; cx.timer.after(0, () => { this.liveQueued = false; setShared("review.watched", Date.now()); }); }
     if (this.part === "bar") return this.renderBar(cx);
     if (this.part === "reviews") return renderReviews();
     if (this.part === "agentbar") return renderAgentBar();
