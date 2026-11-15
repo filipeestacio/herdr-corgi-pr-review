@@ -74,6 +74,19 @@ const ONE_LINE = [0]; // a code line that fits: one visual line from its start (
 // TextView's between paragraphs, MD.GAP).
 const CODE_SIZE = 12.5, CODE_LH = 19, CODE_PAD_X = 10, CODE_PAD_Y = 7, GH_GAP = 10;
 const NO_WRAP = 1e9; // the columns of a line that does not wrap (rowLayout)
+// An object's JSON, made once per object: for a memo key on a part of the analysis (the map, the ways in), which is
+// replaced, never changed in place. securityNow makes a new map with the same content, so identity alone would lay
+// the map out again each time; the text is compared, and written once per object, not on every frame.
+const jsonMemo = new WeakMap();
+const jsonOf = (o) => {
+  if (!o || typeof o !== "object") return JSON.stringify(o ?? null);
+  let x = jsonMemo.get(o);
+  if (x === undefined) jsonMemo.set(o, (x = JSON.stringify(o)));
+  return x;
+};
+// resilienceStart reads every added line of the diff: once per patch (securityNow asks on every read of a file).
+const resStartMemo = new WeakMap();
+const resStartOfPatch = (patch) => { if (!resStartMemo.has(patch)) resStartMemo.set(patch, resilienceStart(patch)); return resStartMemo.get(patch); };
 const NO_HUNKS = []; // a file outside the diff has no hunks: always this array, so memoRows sees the same input (rowsFor)
 // A patch's file by its path (the first with it, as find gives): a Map per patch array, since rowsFor asks per finding.
 const byPath = new WeakMap();
@@ -1156,7 +1169,7 @@ export const ReviewMode = {
     if (this.exMode || !this.ai) return;
     this.ai = withSecurity(this.ai, mine ? this.find.security : null, this.ctx, head);
     // The Resilience run's block with its derived parts (pr.js withResilience), and where it would start (resilienceStart).
-    this.ai = { ...withResilience(this.ai, mine ? this.find.resilience : null, head, this.ai ? this.findings() : this.find.list ?? []), resilienceStart: resilienceStart(this.patch ?? []) };
+    this.ai = { ...withResilience(this.ai, mine ? this.find.resilience : null, head, this.ai ? this.findings() : this.find.list ?? []), resilienceStart: this.patch ? resStartOfPatch(this.patch) : resilienceStart([]) };
     if (this.secStart.start) this.runReviewer("security", cx, this.secStart.reasons.slice(0, 3).join("; "));
   },
   // Why the security review would run, for someone else's PR where it does not start by itself; null otherwise.
@@ -3289,7 +3302,13 @@ export const ReviewMode = {
       }));
   },
   // Where the unresolved findings sit on the picture (arch.js archMarks): on a card, or on a call they break.
-  archMarksNow() { return archMarks(this.ai?.arch, this.exMode ? [] : this.openFindings(), this.ai?.access, this.ai?.threats ?? []); },
+  // Kept until the map, the ways in, the threats or the unresolved findings change: the page, the layout's key and
+  // the card's panel each ask for the marks in one frame.
+  archMarksNow() {
+    const arch = this.ai?.arch, open = this.exMode ? null : this.openFindings(), access = this.ai?.access, threats = this.ai?.threats, m = this.marksMemo;
+    if (m && m.arch === arch && m.open === open && m.access === access && m.threats === threats) return m.marks;
+    return (this.marksMemo = { arch, open, access, threats, marks: archMarks(arch, open ?? [], access, threats ?? []) }).marks;
+  },
   // What a model call for a card's inside costs, from the ones this review already paid for (deep.json).
   // ponytail: the mean of the kept results, whatever model they ran on; no result yet: no figure.
   insidePrice() {
@@ -3439,7 +3458,7 @@ export const ReviewMode = {
     const a = this.ai?.arch;
     if (!a) return null;
     const slot = labelPx || more ? `${fit}|${labelPx}|${[...(more ?? [])]}` : fit; // its own memo
-    const m = this.archMarksNow(), key = `${slot}|${this.archMode}|${[...m.nodes.keys()]}|${[...m.edges.keys()]}|${JSON.stringify(a)}|${JSON.stringify(this.ai?.access ?? [])}`;
+    const m = this.archMarksNow(), key = `${slot}|${this.archMode}|${[...m.nodes.keys()]}|${[...m.edges.keys()]}|${jsonOf(a)}|${jsonOf(this.ai?.access ?? null)}`;
     // The map as the boundary really runs (views.js mapArch): the Internet card at the way in, no zone on shared code,
     // no "‖" on a call in one process.
     const memo = (this.fitMemos ??= {});

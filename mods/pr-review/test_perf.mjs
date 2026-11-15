@@ -13,7 +13,7 @@ if (!hasFixtures) {
 }
 
 // What the views read of the findings, as text; fresh: the same with every memo dropped first.
-const MEMOS = ["findMemo", "fstMemo", "perMemo", "rowsKey", "anchorMemo", "rowsMemo"];
+const MEMOS = ["findMemo", "fstMemo", "perMemo", "marksMemo", "rowsKey", "anchorMemo", "rowsMemo"];
 const snap = (v) => JSON.stringify({ findings: v.findings(), notes: v.merged().notes, status: v.findings().map((f) => v.fstatus(f)), counts: v.counts(), open: v.openFindings().map((f) => f.id),
   marks: [[...v.archMarksNow().nodes.keys()], [...v.archMarksNow().edges.keys()]], rows: v.patch.slice(0, 12).map((f) => v.rowsFor(f.path, true).length) });
 const fresh = (v) => { for (const k of MEMOS) v[k] = null; return snap(v); };
@@ -42,7 +42,7 @@ for (const [name, data] of [["PR #2", PR2()], ["the big review", BIG()]]) {
   v.head = "0000000000000000000000000000000000000000"; same(v, at("a new head"));
   // securityNow puts a new object around the same analysis: nothing is merged again.
   const ran = counted(() => { v.securityNow(cx); v.findings(); });
-  assert.equal(ran("pr.mergeFindings"), 0, at("securityNow on unchanged data merges no findings again"));
+  assert.deepEqual([ran("pr.mergeFindings"), ran("pr.resilienceStart")], [0, 0], at("securityNow on unchanged data merges no findings and does not read the diff again"));
   same(v, at("after securityNow"));
   // A suggestion handled (changed in place, counted by its keys) and a probe's result.
   v.prog.handled.x = "dropped"; same(v, at("a suggestion handled")); delete v.prog.handled.x;
@@ -54,7 +54,7 @@ for (const [name, data] of [["PR #2", PR2()], ["the big review", BIG()]]) {
 // the Overview ran 13 350, a layer 38 900), and none of the expensive ones.
 const BUDGET = { "Files (as opened)": 14000, "Files (all open)": 14000, "Findings": 15000, "Findings, one open": 15000, "Comments": 14000, "Walkthrough, a layer": 17000, "Overview": 3000, "Architecture": 3200,
   "Architecture, a card": 3200, "Security": 2600, "Resilience": 3500, "Markdown preview": 3000 };
-const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.diffRows", "pr.splitPatch", "pr.hunksOf", "views.findingAnchor"];
+const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilienceStart", "pr.diffRows", "pr.splitPatch", "pr.hunksOf", "views.findingAnchor"];
 {
   const v = await openReview(BIG());
   for (const id of ["rv-arch-canvas", "rv-sec-canvas", "rv-res-canvas"]) v.hsOf(id).viewW = 1300; // measured, as in a window: Fit decides from it
