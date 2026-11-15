@@ -292,6 +292,36 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   S.files.set("/h/repo/library/loans.py", FILE); v.openExploreFile("library/loans.py", 9, cx); await settle(); draw(v, "Explore: a cited file open");
   v.defFile = null; S.store.set("review.explore", null); v.leaveExplore(); draw(v, "back to the review");
 }
+// The PR panel (main.js without a part): each source's list with its groups, In progress, a chosen PR, the minimized
+// chip, and a switch of Herdr space (a PR picked in one space is not shown in the next).
+{
+  S.store.clear(); S.files.clear(); S.props = {};
+  const now = Date.now(), iso = (d) => new Date(now - d * 86400000).toISOString();
+  const pr = (n, repo, state, d) => ({ url: `https://github.com/${repo}/pull/${n}`, repo, number: n, title: `PR ${n}`, state, updatedAt: iso(d), at: iso(d),
+    session: "s1234567", sessionTitle: "a session", head: "feat/x", headSha: "abc", base: "main" });
+  const prs = [pr(2, "saefty/corgi-demo", "open", 1), pr(9, "o/else", "open", 1), pr(5, "saefty/corgi-demo", "draft", 40), pr(1, "saefty/corgi-demo", "merged", 2), pr(3, "o/else", "closed", 30)];
+  S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOString(), prs }));
+  const reg = (p, progress, lastTouched = now) => ({ url: p.url, repo: p.repo, number: p.number, title: p.title, status: "in-progress", lastTouched, progress, target: p });
+  S.store.set("review.open", [reg(prs[0], { filesViewed: 2, files: 9 }), reg(prs[1], { files: 3 }), reg(prs[3], { stepsChecked: 1 })]);
+  S.store.set("review.minimized", { target: prs[3], at: now });
+  S.spaces = [{ id: "sA", active: true, folder: "/h/a" }];
+  const v = new PrReview(); v.init({}, cx); await settle();
+  v.spaceSlug = { root: "/h/a", slug: "saefty/corgi-demo" };
+  assert.deepEqual(v.inProgressList().map((r) => r.number), [2], "In progress: work done and not merged; one only opened is not there");
+  assert.equal(S.store.get("review.minimized"), null, "the chip of a merged PR goes");
+  for (const src of ["mine", "repo", "review"]) { S.store.set("pr.source", src); v.picking = true; draw(v, `panel: the ${src} list`); }
+  S.store.set("pr.source", "mine"); v.showOther = v.showDone = true; draw(v, "panel: Mine with the other repos and the merged ones unfolded");
+  v.choose(prs[0], cx); await settle(); draw(v, "panel: PR #2 chosen");
+  assert.equal(S.store.get("pr.selected")["all@sA"], prs[0].url);
+  S.spaces = [{ id: "sB", active: true, folder: "/h/b" }];
+  draw(v, "panel: the frame a space switch starts"); v.onSpace(cx); await settle(); draw(v, "panel: another space");
+  assert.equal(v.prSel, null, "another space shows its own pick (none yet: the list), not the PR from the first one");
+  S.spaces = [{ id: "sA", active: true, folder: "/h/a" }]; v.onSpace(cx);
+  assert.equal(v.prSel?.url, prs[0].url, "back in the first space: its pick again");
+  S.props = { part: "mini" }; S.store.set("review.minimized", { target: prs[0], at: now });
+  const mini = new PrReview(); mini.init({}, cx); draw(mini, "the minimized review's chip");
+  S.spaces = null; S.props = null;
+}
 await settle();
 assert.deepEqual(late, [], "a spawned task threw");
 console.log(`smoke ok: ${shown} frames`);

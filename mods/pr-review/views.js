@@ -1212,6 +1212,28 @@ export function runLabel(run, price = null, age = "", short = false) {
   return `${run?.state === "failed" ? "Run again" : "Run"}${p}`;
 }
 
+// ---- what the panel lists as relevant (PRs that stuck around: every session PR of every repo, every review opened once)
+export const STALE_DAYS = 30, DONE_DAYS = 14;
+const daysSince = (iso, now) => (now - Date.parse(iso ?? "")) / 86400000; // NaN (no date) counts as recent
+// "Mine" in a space: the open PRs of its repo (slug, owner/name; outside a GitHub repo every repo) that changed within
+// STALE_DAYS; the other open ones behind a fold; merged and closed ones of that repo and the last DONE_DAYS only.
+export function mineGroups(list, slug, now = Date.now()) {
+  const repo = (p) => !slug || p.repo === slug, within = (p, days) => !(daysSince(p.updatedAt ?? p.at, now) > days);
+  const here = (p) => repo(p) && within(p, STALE_DAYS), open = list.filter(isOpenPr);
+  return { here: open.filter(here), other: open.filter((p) => !here(p)), done: list.filter((p) => !isOpenPr(p) && repo(p) && within(p, DONE_DAYS)) };
+}
+// "In progress": reviews with something done in them (a file viewed, a layer checked, a comment, a reply, a fixed
+// thread, or sent), not merged or closed as far as known (states: url → state), touched within DONE_DAYS; the space's
+// repo first, then the most recently touched. A review only opened and left is not in progress.
+const WORK = ["stepsChecked", "filesViewed", "comments", "replies", "fixedThreads"];
+export function inProgressNow(list, { states = new Map(), slug = null, now = Date.now() } = {}) {
+  const worked = (r) => r.status === "sent" || WORK.some((k) => (r.progress?.[k] ?? 0) > 0);
+  return (list ?? []).filter((r) => r.status !== "done" && worked(r) && !["merged", "closed"].includes(states.get(r.url)) && !(now - (r.lastTouched ?? 0) > DONE_DAYS * 86400000))
+    .sort((a, b) => Number(b.repo === slug) - Number(a.repo === slug) || (b.lastTouched ?? 0) - (a.lastTouched ?? 0));
+}
+// The panel's pick per view and space (shared "pr.selected"): this one set, the newest `max` kept.
+export const withPick = (sel, key, url, max = 30) => Object.fromEntries([...Object.entries(sel ?? {}).filter(([k]) => k !== key), [key, url]].slice(-max));
+
 // "Before merge" by cause: a row whose finding is a later finding of one cause (pr.js same_cause) while that cause's
 // first finding is still open goes; the first row gets its place in `also` ("same cause at template.yaml:14").
 // open: the unresolved findings.
