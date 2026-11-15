@@ -153,6 +153,8 @@ whether it can happen today.
 - Fix: one comment, the selected ones, or a finding go to a sub-agent (default) in its own worktree on a fix branch,
   or to the main agent. The sub-agent never pushes: the PR's agent gets a note when it starts and, when it is done,
   its commit to cherry-pick, test and push. Apply to PR (secondary) cherry-picks onto a clean checkout without pushing.
+- In the Findings tab, each finding under "No fix sent" has a box: tick several and "Fix selected (n)…" opens the
+  fix preview with exactly those; a security finding about access or data is fixed one at a time, so its box is off.
 - Ask about this, pinned notes and Show details (a card or a layer from the inside), as described above.
 - Explore a topic in existing code without a PR (the panel, the review's ⋯ menu, or `pr-review.explore`).
 - Big PRs: the analysis gets every hunk, inlines what fits, reads the rest itself and splits into passes when it has

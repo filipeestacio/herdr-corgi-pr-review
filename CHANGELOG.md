@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- review: tick findings in the Findings tab and hand the ticked ones to one fix agent with "Fix selected (n)…"
+
 ## 0.11.1 (2026-11-15)
 
 ### Fixes

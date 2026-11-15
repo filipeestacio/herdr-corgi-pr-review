@@ -128,13 +128,15 @@ export const postedItems = (payload) => [...(payload.body ? [`Review body: ${pay
 // ---- Fix: comments (and findings) to a sub-agent in its own worktree, or to the main agent; the selection
 
 export const MAX_FIXES = 30;
-export const selectedOf = (doc, key) => doc?.[key]?.selected ?? [];
-// The selection for "Fix selected": comment ids, kept per PR.
-export const toggleSelected = (doc, key, id, now = Date.now()) => {
-  const sel = selectedOf(doc, key);
-  return bound(doc, key, threadsOf(doc, key), now, { selected: sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id] });
+// The selection for "Fix selected", kept per PR: comment ids (field "selected", the Comments tab and the cards), and
+// the ids of the findings ticked in the Findings tab (FINDINGS), each a list of its own.
+export const FINDINGS = "selectedFindings";
+export const selectedOf = (doc, key, field = "selected") => doc?.[key]?.[field] ?? [];
+export const toggleSelected = (doc, key, id, now = Date.now(), field = "selected") => {
+  const sel = selectedOf(doc, key, field);
+  return bound(doc, key, threadsOf(doc, key), now, { [field]: sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id] });
 };
-export const clearSelected = (doc, key, now = Date.now()) => bound(doc, key, threadsOf(doc, key), now, { selected: [] });
+export const clearSelected = (doc, key, now = Date.now(), field = "selected") => bound(doc, key, threadsOf(doc, key), now, { [field]: [] });
 
 // Fix jobs: {id, branch, path (its worktree), base (the PR's checkout), head (where the branch starts), items: [{kind:
 // "comment" | "finding", id}], terminal, target: "sub" | "main", at, state: "running" | "applied" | "discarded"}.
