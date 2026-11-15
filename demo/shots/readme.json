@@ -1,0 +1,262 @@
+{
+ "out": "../../docs/screenshots",
+ "window": [
+  0,
+  33,
+  1728,
+  985
+ ],
+ "zoom_out": 0,
+ "scale": 1728,
+ "settle": 6,
+ "setup": [
+  [
+   "layout.switch",
+   {
+    "name": "corgi"
+   }
+  ],
+  [
+   "layout.show",
+   {
+    "id": "review"
+   }
+  ],
+  ":source:repo",
+  ":pick:2",
+  ":review",
+  ":back"
+ ],
+ "shots": [
+  {
+   "name": "panel-pr-sources",
+   "do": [
+    ":back",
+    ":source:repo"
+   ],
+   "crop": [
+    2680,
+    84,
+    776,
+    1840
+   ],
+   "wait": 5
+  },
+  {
+   "name": "panel-this-space",
+   "do": [
+    ":back",
+    ":source:space"
+   ],
+   "crop": [
+    2680,
+    84,
+    776,
+    1840
+   ],
+   "wait": 5
+  },
+  {
+   "name": "panel-pr",
+   "do": [
+    ":back",
+    ":source:repo",
+    ":pick:2"
+   ],
+   "crop": [
+    2680,
+    84,
+    776,
+    1840
+   ]
+  },
+  {
+   "name": "panel-setup",
+   "do": [
+    ":back",
+    ":setup"
+   ],
+   "crop": [
+    2680,
+    84,
+    776,
+    1840
+   ]
+  },
+  {
+   "name": "overview",
+   "do": [
+    ":review",
+    ":page:overview"
+   ],
+   "also": [
+    "../../preview.png"
+   ]
+  },
+  {
+   "name": "layers",
+   "do": [
+    ":review",
+    ":order:reading",
+    ":step:1"
+   ]
+  },
+  {
+   "name": "architecture-impact",
+   "do": [
+    ":review",
+    ":page:arch",
+    ":card:"
+   ]
+  },
+  {
+   "name": "impact",
+   "do": [
+    ":review",
+    ":page:arch",
+    ":card:",
+    ":page-part:impact"
+   ]
+  },
+  {
+   "name": "security",
+   "do": [
+    ":review",
+    ":page:blast"
+   ]
+  },
+  {
+   "name": "security-boundary",
+   "do": [
+    ":review",
+    ":page:blast",
+    ":page-part:scope",
+    ":page-part:map",
+    ":sec-card:handler"
+   ]
+  },
+  {
+   "name": "security-data",
+   "do": [
+    ":review",
+    ":page:blast",
+    ":sec-card:",
+    ":sec-data",
+    ":sec-rights",
+    ":page-part:data"
+   ]
+  },
+  {
+   "name": "resilience",
+   "do": [
+    ":review",
+    ":page:res",
+    ":res-path:"
+   ]
+  },
+  {
+   "name": "resilience-path",
+   "do": [
+    ":back",
+    ":review",
+    ":page:res",
+    ":res-more",
+    ":res-path:p4",
+    ":page-part:p:p4"
+   ],
+   "wait": 3
+  },
+  {
+   "name": "resilience-fault-tree",
+   "do": [
+    ":review",
+    ":page:res",
+    ":res-path:",
+    ":res-tree:0:slow",
+    ":page-part:deps"
+   ]
+  },
+  {
+   "name": "resilience-timing",
+   "do": [
+    ":review",
+    ":page:res",
+    ":res-tree:",
+    ":page-part:rest",
+    ":page-part:timing"
+   ]
+  },
+  {
+   "name": "resilience-probe",
+   "do": [
+    ":back",
+    ":review",
+    ":page:res",
+    ":res-more",
+    ":res-path:p4",
+    ":res-probe-open:r1",
+    ":page-part:p:p4"
+   ],
+   "wait": 3
+  },
+  {
+   "name": "findings",
+   "do": [
+    ":review",
+    ":findings",
+    ":finding:29c173706fda"
+   ]
+  },
+  {
+   "name": "diff-inline-values",
+   "do": [
+    ":review",
+    ":file:library/reminders.py"
+   ]
+  },
+  {
+   "name": "go-to-definition",
+   "do": [
+    ":review",
+    ":file:library/consumer.py",
+    ":def:library/consumer.py:14:handle"
+   ],
+   "wait": 6
+  },
+  {
+   "name": "open-in-editor",
+   "do": [
+    ":review",
+    ":file:library/handler.py"
+   ],
+   "wait": 2,
+   "then": [
+    ":editor:library/handler.py:1"
+   ]
+  },
+  {
+   "name": "commenting",
+   "do": [
+    ":review",
+    ":comment:library/reminders.py:23",
+    ":draft:Why is this mailed here and again in the consumer?",
+    ":add",
+    ":finish"
+   ],
+   "wait": 4
+  },
+  {
+   "name": "explore",
+   "do": [
+    ":finish",
+    ":explore:{home}/work/corgi-demo"
+   ]
+  },
+  {
+   "name": "explore-minimized",
+   "do": [
+    ":explore-min"
+   ]
+  }
+ ]
+}

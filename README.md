@@ -1,8 +1,8 @@
 # Corgi · PR review for Herdr
 
-<h3 align="center">AI-guided pull request review for Herdr: the change as a story, risk first, with an architecture map, a blast radius and debugger-style sample values in the diff.</h3>
+<h3 align="center">AI-guided pull request review for Herdr: the change as a story, risk first, with an architecture map, a security boundary map, resilience paths and debugger-style sample values in the diff.</h3>
 
-<p align="center"><img src="preview.png" width="88%" alt="The review layout's overview of a demo PR" /></p>
+<p align="center"><img src="preview.png" width="88%" alt="The review's overview of a demo PR: the verdict, what to settle before the merge and what the PR does" /></p>
 
 <p align="center"><sub>✓&nbsp;Free,&nbsp;MIT &nbsp;·&nbsp; ✓&nbsp;Runs&nbsp;locally &nbsp;·&nbsp; ✓&nbsp;herdr-app&nbsp;0.1.16+</sub></p>
 
@@ -12,7 +12,8 @@ A Herdr mod for reviewing pull requests next to your agents. A side panel shows 
 PR), lets you comment on lines and send the comments to the agent that wrote the code. A full-window review
 layout adds an AI analysis that walks you through the PR by risk and layer, reviewers (Claude code review,
 security review, optionally Codex) whose findings you can send to the agent to fix and then verify, an
-architecture picture, a security blast radius, CI checks, related PRs, and go-to-definition in the diff. You comment
+architecture picture, a security page with the trust boundaries the PR crosses, a resilience page with the paths a
+failure spreads along, CI checks, related PRs, and go-to-definition in the diff. You comment
 as on GitHub: a comment box under the line, pending comments as threads, and "Finish your review" posts one GitHub
 review (Comment, Approve or Request changes) or sends it to the agent session.
 
@@ -20,13 +21,22 @@ review (Comment, Approve or Request changes) or sends it to the agent session.
 
 | | |
 |---|---|
-| ![Layers: the AI's walkthrough by layer, with a picture per layer](docs/screenshots/layers.png) | ![Architecture impact: every connection on its own lane, numbered, with a legend](docs/screenshots/architecture-impact.png) |
-| ![Security blast radius: related context and how it links to the changes](docs/screenshots/security-blast-radius.png) | ![Findings from the reviewers, with Fix and Discuss](docs/screenshots/findings.png) |
-| ![The diff with example values inline, an AI suggestion and a finding](docs/screenshots/diff-inline-values.png) | ![Go to definition in the diff through a language server](docs/screenshots/go-to-definition.png) |
-| ![The panel's PR sources with triage](docs/screenshots/panel-pr-sources.png) | ![Setup: which programs are there and how to install the rest](docs/screenshots/panel-setup.png) |
-| ![Commenting: the comment box under a line, a pending comment and Finish your review](docs/screenshots/commenting.png) | |
+| ![Overview: the verdict, what to settle before the merge, the acceptance criteria and what the PR does](docs/screenshots/overview.png) | ![Analysis: the AI's walkthrough by layer, with a picture per layer](docs/screenshots/layers.png) |
+| ![Architecture impact: every connection on its own lane, numbered, with a legend](docs/screenshots/architecture-impact.png) | ![Security: the trust boundaries the PR crosses, each with who calls, what is checked and when the check holds](docs/screenshots/security.png) |
+| ![Security: the boundary map with trust zones, a card lit and its finding below](docs/screenshots/security-boundary.png) | ![Resilience: how many paths block the merge, and the map a failure spreads on](docs/screenshots/resilience.png) |
+| ![Resilience: one path with its retries added up and the findings on it](docs/screenshots/resilience-path.png) | ![Resilience: a probe that reproduced the failure, with its script and output](docs/screenshots/resilience-probe.png) |
+| ![Findings from the reviewers, one per cause, with Fix and Discuss](docs/screenshots/findings.png) | ![The diff with example values inline, an AI suggestion and a finding](docs/screenshots/diff-inline-values.png) |
+| ![Go to definition in the diff through a language server](docs/screenshots/go-to-definition.png) | ![Commenting: the comment box under a line, a pending comment and Finish your review](docs/screenshots/commenting.png) |
+| ![The panel's PR sources with triage and the reviews in progress](docs/screenshots/panel-pr-sources.png) | ![The panel with a PR open: its files and the diff next to your agents](docs/screenshots/panel-pr.png) |
+| ![Setup: which programs are there and how to install the rest](docs/screenshots/panel-setup.png) | ![The panel's This space list: the PR of the branch the focused pane is on](docs/screenshots/panel-this-space.png) |
+| ![Impact: the changed functions and who calls them outside the diff](docs/screenshots/impact.png) | ![Infrastructure changes: resources added, changed, removed or possibly replaced, with what they depend on](docs/screenshots/infrastructure-changes.png) |
+| ![Schema changes: the tables a migration touches, column by column](docs/screenshots/schema-changes.png) | ![Security: where sensitive data goes, and who may do what](docs/screenshots/security-data.png) |
+| ![Resilience: the fault tree of a dependency that is slow](docs/screenshots/resilience-fault-tree.png) | ![Resilience: timeouts, retries and pauses on one axis](docs/screenshots/resilience-timing.png) |
+| ![Open in your editor: the link in a file's head after its click](docs/screenshots/open-in-editor.png) | ![Explore a topic in a repo, without a PR](docs/screenshots/explore.png) |
 
-The screenshots show an invented demo project (`demo/`), not a real repository.
+The screenshots show a small public demo repository made for them ([saefty/corgi-demo](https://github.com/saefty/corgi-demo), PR #2), not a real project.
+That PR has no Terraform and no migration, so "Infrastructure changes" and "Schema changes" are shown with the
+fixtures in `demo/fixtures/infra` and `demo/fixtures/schema` added to its diff.
 
 ## Highlights
 
@@ -47,12 +57,22 @@ Below the map, **Impact** shows the functions and classes the PR changes and who
 servers and without a model: each caller is marked as changed in this PR, in the diff with its call untouched, or
 not in this PR, and a caller that still calls a changed signature the old way stands out. Tests are counted apart.
 
+![Impact: two changed functions, their tests and no caller outside the diff](docs/screenshots/impact.png)
+
+When the PR changes Terraform, CloudFormation or SAM, **Infrastructure changes** draws the resources it adds,
+changes or removes and what they depend on, read from the diff without a model. No plan is run and no change set is
+created, so a replacement is marked as possible ("may be replaced") and not as certain.
+
+![Infrastructure changes: a SAM template and a Terraform stack, with a removed queue that is still referenced](docs/screenshots/infrastructure-changes.png)
+
 When the PR changes a database schema, **Schema changes** shows the tables before and after as cards with their
 changed columns, keys and relations, and lists what may be risky for data that is in use, such as a dropped column,
 `NOT NULL` without a default or an index built without `CONCURRENTLY`. It is read from the SQL migrations, Alembic
 revisions and Prisma schema in the diff, without a model and without asking a database. Django and Rails
 migrations, Liquibase changelogs in XML or YAML and JPA entities are not read yet; the section names them when it
 shows.
+
+![Schema changes: five tables with added, changed, renamed and removed columns and what may be risky](docs/screenshots/schema-changes.png)
 
 ![Architecture impact: components as cards with New, Changed and Unchanged, numbered connections and a legend](docs/screenshots/architecture-impact.png)
 
@@ -70,16 +90,47 @@ breadcrumb to go deeper or back.
 **Explore code you don't know.** No PR needed: pick a repo, type a topic ("How does the reminder job get scheduled
 and sent?") and get the same walkthrough as for a PR: the question, how it works, layers in reading order, the
 architecture and sample values, each with file:line, and the cited files in a read-only view with go-to-definition.
+Minimize puts Explore away as one entry at the top of the window, with the topic you typed and a run that is going;
+Resume brings it back.
+
+![Explore: the repository, the topic and the model](docs/screenshots/explore.png)
+
+![Explore minimized to one entry above the terminals](docs/screenshots/explore-minimized.png)
 
 **Comments that keep going.** Sent and posted comments stay under their lines as threads. The agent answers each one
 in place, GitHub replies show up there too, and Fix hands one comment, or all selected ones, to a sub-agent that works
 in its own worktree. When done it hands its commit to the PR's agent, which cherry-picks it, runs the tests and
 pushes; Apply to PR brings it over yourself when there is no live PR agent.
 
-**Security blast radius.** The changed parts in the middle, the existing code that calls into them on the left and
-what they call on the right, each with the reason it matters.
+**Security: the boundaries the PR crosses.** One sentence says what the PR opens and to whom. Below it, each trust
+boundary crossing is a row: who calls, what the code checks, and the condition under which the check holds. The
+boundary map draws only those crossings between their trust zones (public, authenticated, internal, data). A
+finding names where it can be reached from and how certain that is: derived from the code, or confirmed by a run.
 
-![Security blast radius: callers, changed parts and callees, with numbered relations](docs/screenshots/security-blast-radius.png)
+![Security: the boundary map with trust zones and the finding of the lit card](docs/screenshots/security-boundary.png)
+
+Under the map, **Where sensitive data goes** follows each kind of sensitive data the security run named (a token, a
+mail address, a secret) from where it starts over the crossings it takes to where it ends, and marks a step that
+writes it to a log or keeps it without a retention rule. **Who may do what** is a table of callers and resources
+with the rights this PR adds, removes or leaves as they are; a right that is granted and not used says so.
+
+![Security: a member's mail address followed into a log, and the rights the PR adds](docs/screenshots/security-data.png)
+
+**Resilience: where a failure goes.** A separate run follows each way the change can fail: a timeout, a retry, a
+lost message, a mail sent twice. Every path names its effect, whether anyone would see it, and whether it blocks the
+merge. Retries are added up against the timeout around them. A probe runs a small script in a sandbox without
+network and shows its output as evidence, for the PR's head and for the base.
+
+![Resilience: a path with a probe that reproduced it, the script and its output](docs/screenshots/resilience-probe.png)
+
+**When a dependency fails** lists, for each dependency, what the code does when it is slow, overloaded, down, gives
+a bad answer or comes back. A case opens as a tree: what repeats, where it ends, what the caller gets and what
+on-call would see. **Timing** puts the timeouts, retries and pauses the run read in the code on one axis per call,
+so a retry that runs past the timeout around it shows; a length the code does not state is drawn dashed.
+
+![Resilience: the fault tree of a slow mail server](docs/screenshots/resilience-fault-tree.png)
+
+![Resilience: a batch that runs 60 s over the function timeout](docs/screenshots/resilience-timing.png)
 
 ## Use cases
 
@@ -88,8 +139,8 @@ what they call on the right, each with the reason it matters.
 - **A colleague asked you for a review.** Pick it under *Review requested*, open it full size, and let the AI walk
   you through it: what the PR wants, how behaviour changes, which layer to read first and why. Comment on lines
   and post all comments as one GitHub review with Comment, Approve or Request changes.
-- **A big PR lands on a Friday.** The overview gives you merge risk, review effort, blockers and failed checks
-  before you open a file. The layers group 40 files into five steps you can tick off.
+- **A big PR lands on a Friday.** The overview gives you the verdict, what to settle before the merge and the
+  acceptance criteria before you open a file. The layers group 40 files into five steps you can tick off.
 - **The author pushed again.** You see only what changed since your last review, and one click re-analyses just
   that part.
 - **You want a second opinion.** Run a Claude code review, a security review or Codex. Findings land on their lines,
@@ -101,8 +152,10 @@ what they call on the right, each with the reason it matters.
 ## Features
 
 - Panel: PRs from your sessions, the repo you're in, or review requests, with a one-line triage per PR.
-- Review layout: overview (intent, behaviour, risk, effort, blockers, pre-merge checks), layers in risk or reading
-  order with check questions, an architecture impact diagram, a security blast radius, and related PRs.
+- Review layout: overview (the verdict, what to settle before the merge, acceptance criteria, what the PR does),
+  layers in risk or reading order with check questions, an architecture impact diagram, a Security page (trust
+  boundary crossings, a boundary map, what each run checked), a Resilience page (failure paths, retries against
+  timeouts, probes, what nobody would see), and related PRs.
 - Diff: syntax highlighting, go-to-definition through real language servers, inline example values, collapsed
   context you can open.
 - Comments as on GitHub: click a line number (shift-click for a range) or press `c` for a comment box under the
@@ -179,6 +232,8 @@ lies in `.vscode/`, `.idea/` or `.devcontainer/`) is not opened either, and no o
 `.groovy`) goes to IntelliJ IDEA, because an editor can run a project's code when it opens those. More editors: `"editors": [{"id", "name", "folder": [argv…], "file": [argv…]}]` in
 `pr-review.config.json`, with `{dir}`, `{file}` and `{line}`. With `"dryRun": true`, or with a file `editor.dry-run` in the
 Herdr home, no editor is started: the click says what it would have run.
+
+![Open in your editor: the link in a file's head says "Opening VS Code …" after its click; the demo home makes it a dry run](docs/screenshots/open-in-editor.png)
 
 **Drag a file onto a terminal.** A file's name in the big diff's file head and a file's row in the panel can be
 dragged onto a terminal: Herdr types the file's path in the local checkout there, quoted and without Enter. A click
@@ -297,7 +352,11 @@ local stand-in for its GitHub remote, and a separate Herdr home in `demo/home` w
 `demo/fixtures/` (the analysis, two findings, related PRs and checks, PR lists, triage). Open a second Herdr window
 on it with `HERDR_APP_HOME="$PWD/demo/home"`, add a space in `demo/bookshelf` there, and switch it to the `review`
 (or `demo-panel`) layout: everything shows without LLM calls, and GitHub is only asked when a seeded PR list is
-older than 3 minutes (↻). The commands `pr-review.page:arch`, `pr-review.step:1`,
+older than 3 minutes (↻). The seeded analysis predates the Security and Resilience pages; the screenshots above
+come from `demo/shots/shoot.py` with `demo/shots/readme.json` (and `readme-fixtures.json` for the two pictures
+that need the Terraform and migration fixtures), which drives a demo home through `herdr-app do` and writes
+`docs/screenshots/` and `preview.png` in one run. That window has a home, a herdr-core and a `HOME` of its own, and
+stand-ins for `gh`, `claude`, the editors and `open` first on its `PATH`, so it posts nothing and starts no editor. The commands `pr-review.page:arch`, `pr-review.step:1`,
 `pr-review.def:<path>:<line>:<name>`, `pr-review.source:repo` and `pr-review.setup` drive it from
 `herdr-app do`, and `pr-review.comment:<path>:<line>` and `pr-review.finish` open the comment box and the
 Finish-your-review popover. The demo config sets `"dryRun": true`, so Submit review posts nothing.
