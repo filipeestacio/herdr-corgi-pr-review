@@ -585,15 +585,16 @@ export function areaFindings(area, k, findings) {
 // (`evidence` or `at`: "file:line" or "file:line-end"; a finding's own range counts). Returns Map(index in edges then
 // transitions -> {findings, severity: the highest}); a transition without a place has none.
 const RANK = { critical: 0, high: 1, medium: 2, low: 3 };
-// Wave C2 V4: a finding marks only the transition it names, not every transition in its lines: by breaks {from, to}
-// with the states' names, else the transition(s) whose line is nearest its own, within NEAR_T lines (ties: all).
+// Wave C2 V4: a finding marks only the transition it names, not every transition in its lines: by breaks.transition
+// {from, to} with the states' ids (one of them alone: every move out of or into that state), else the transition(s) whose line is nearest its own, within NEAR_T lines (ties: all).
 const NEAR_T = 3;
 export function transitionMarks(v, findings) {
   const out = new Map(), place = (s) => /^(.+?):(\d+)(?:-(\d+))?/.exec(String(s ?? "")), eq = (x, y) => String(x ?? "").toLowerCase() === String(y ?? "").toLowerCase();
   const ts = [...(v?.edges ?? []), ...(v?.transitions ?? [])].map((e, i) => { const m = place(e.evidence) ?? place(e.at); return { e, i, m: m && [m[1], Number(m[2]), Number(m[3] ?? m[2])] }; });
   const add = (i, f) => { const x = out.get(i) ?? { findings: [] }; x.findings.push(f); out.set(i, x); };
   for (const f of findings ?? []) {
-    const named = f.breaks && ts.filter(({ e }) => (f.breaks.from || f.breaks.to) && (!f.breaks.from || eq(f.breaks.from, e.from)) && (!f.breaks.to || eq(f.breaks.to, e.to)));
+    // breaks.transition is the analysis' word for it (review.py place); a plain from and to are an older analysis' or a call on the map.
+    const b = f.breaks?.transition ?? f.breaks, named = b && ts.filter(({ e }) => (b.from || b.to) && (!b.from || eq(b.from, e.from)) && (!b.to || eq(b.to, e.to)));
     if (named?.length) { named.forEach(({ i }) => add(i, f)); continue; }
     const lo = f.line ?? 0, hi = f.end ?? f.line ?? 0, file = (path) => f.file && (f.file === path || f.file.endsWith(`/${path}`) || path.endsWith(`/${f.file}`));
     const near = ts.filter(({ m }) => m && file(m[0]) && Math.max(0, m[1] - hi, lo - m[2]) <= NEAR_T), gap = ({ m }) => (lo >= m[1] && lo <= m[2] ? 0 : Math.abs(lo - m[1]));

@@ -5283,7 +5283,7 @@ export const ReviewMode = {
     // The base is in the title's state; a PR that builds on this one stays here as "on top".
     const related = [...(ctx?.open ?? []).filter((p) => !p.stacked || p.above).map((p) => ({ ...p, state: p.above ? "on top" : "open" })), ...(ctx?.merged ?? []).map((p) => ({ ...p, state: "merged" }))];
     // A flow picture only when a path in it is broken or doubled: an unresolved finding breaks one of its calls.
-    const flow = (ai?.visuals ?? []).find((v) => v.kind === "flow" && this.openFindings().some((f) => f.breaks));
+    const flow = (ai?.visuals ?? []).find((v) => v.kind === "flow" && this.openFindings().some((f) => f.breaks?.node || f.breaks?.from));
     const surface = ai ? surfaceLine(ai.access, [...(ai.scope?.checked ?? []), ...(this.find.runs?.security?.scope?.checked ?? [])]) : null;
     return v_flex().flex_none().gap(2).text_size(13.5)
       .when(Boolean(ai), (e) => e.child(head("What the PR does", true))

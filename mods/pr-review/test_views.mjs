@@ -860,6 +860,10 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.deepEqual(at([f("b", "library/status.py", 45, 45)]), [[1, ["b"]], [2, ["b"]]], "two transitions on the same line both");
   assert.deepEqual(at([f("c", "library/reminders.py", 35, 35), f("d", "library/status.py", 39, 39)]), [[5, ["c"]]], "near enough, or none");
   assert.deepEqual(at([f("e", "library/status.py", 46, 50, { breaks: { from: "reminded", to: "returned" } })]), [[4, ["e"]]], "breaks names it");
+  // The analysis' own word (review.py place): breaks.transition, next to a place on the map whose from and to are cards.
+  assert.deepEqual(at([f("g", "library/status.py", 46, 50, { breaks: { from: "reminders", to: "status", edge: "e2", transition: { from: "borrowed", to: "overdue" } } })]), [[1, ["g"]]], "the move it names, not the call on the map and not the nearest line");
+  assert.deepEqual(at([f("h", "library/api.py", 15, 15, { breaks: { node: "api", transition: { to: "returned" } } })]), [[3, ["h"]], [4, ["h"]]], "one end alone: every move into that state, also from another file");
+  assert.deepEqual(at([f("i", "library/status.py", 46, 50, { breaks: { transition: { from: "lost", to: "found" } } })]), [[0, ["i"]]], "a move this diagram does not draw: the nearest line again");
 }
 
 // ---- wave C2: a reproduced probe confirms its path's findings
