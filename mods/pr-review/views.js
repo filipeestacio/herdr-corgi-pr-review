@@ -1570,6 +1570,58 @@ export const riskOfCounts = (c, open = null) => ({ top: c?.high ? "high" : c?.me
 // sizes: in the diff (the probe that measures a character's width is drawn in it) and in the panel's narrow diff.
 export const TYPE = Object.freeze({ micro: 10.5, panel: 11, small: 12, body: 13.5, title: 15, page: 22, code: 13, codePanel: 11 });
 
+// ---- "This space": the PRs of the branches checked out in the active space (its panes and its agents' terminals)
+
+// The folders a space works in: its panes' (by their tab) and those of the live terminals labelled with it or started
+// by one of them (sub-agents run in the background, in worktrees of their own). Each folder once.
+export function spaceFolders(spaceId, spaces, panes, terminals) {
+  const tabs = new Set(((spaces ?? []).find((s) => s.id === spaceId)?.tabs ?? []).map((x) => x.id));
+  const live = (terminals ?? []).filter((x) => x.state !== "finished"), mine = new Set(live.filter((x) => x.labels?.["herdr.space"] === spaceId).map((x) => x.address));
+  for (let grew = true; grew;) { grew = false; for (const x of live) if (!mine.has(x.address) && x.parent && mine.has(x.parent)) { mine.add(x.address); grew = true; } }
+  return [...new Set([...(panes ?? []).filter((p) => tabs.has(p.tab)).map((p) => p.cwd), ...live.filter((x) => mine.has(x.address)).map((x) => x.cwd)].filter(Boolean))];
+}
+// A checkout's branch from its HEAD file ("ref: refs/heads/feat/x"), null when detached.
+export const headBranch = (text) => /^ref: refs\/heads\/(.+)$/.exec(String(text ?? "").trim())?.[1] ?? null;
+// checkouts: [{cwd, root, slug, branch, base}] (slug: owner/name on GitHub or null; base: "origin/main"). Per GitHub
+// repo the branches to ask about, without its default branch and detached heads: [{slug, branches, roots: {branch:
+// root}}], sorted, so the same checkouts give the same list.
+export function spaceBranches(checkouts) {
+  const by = new Map();
+  for (const c of checkouts ?? []) {
+    if (!c?.slug || !c.branch || c.branch === String(c.base ?? "").replace(/^origin\//, "")) continue;
+    const r = by.get(c.slug) ?? { slug: c.slug, branches: [], roots: {} };
+    if (!r.branches.includes(c.branch)) { r.branches.push(c.branch); r.roots[c.branch] = c.root; }
+    by.set(c.slug, r);
+  }
+  return [...by.values()].map((r) => ({ ...r, branches: [...r.branches].sort() })).sort((a, b) => a.slug.localeCompare(b.slug));
+}
+// One GraphQL query for one repo: the newest PRs of each of its branches (one gh call per repo, however many branches).
+const PR_NODE = "number title url state isDraft headRefName headRefOid baseRefName updatedAt mergedAt isCrossRepository author{login} reviewDecision additions deletions";
+export function branchPrQuery(slug, branches) {
+  const [owner, name] = String(slug).split("/");
+  return `query { repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) { ${branches.map((b, k) =>
+    `b${k}: pullRequests(headRefName: ${JSON.stringify(b)}, first: 5, orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { ${PR_NODE} } }`).join(" ")} } }`;
+}
+// Its answer as gh pr list gives PRs: the open ones and the ones merged within `days` (they keep the word "merged"),
+// not a fork's PR that happens to use the same branch name; per branch the open one first.
+export function branchPrs(answer, now = Date.now(), days = DONE_DAYS) {
+  const recent = (p) => p.state === "MERGED" && now - Date.parse(p.mergedAt ?? 0) < days * 86400000;
+  return Object.values(answer?.data?.repository ?? {}).flatMap((b) => (b?.nodes ?? []).filter((p) => !p.isCrossRepository && (p.state === "OPEN" || recent(p)))
+    .sort((x, y) => Number(y.state === "OPEN") - Number(x.state === "OPEN")));
+}
+// The list in the order shown: open before merged, and in each group the PR of the focused pane's branch first
+// (focus: {slug, branch} or null), the rest as it came. focusedPr tells those rows apart ("focused agent").
+export const focusedPr = (p, focus) => Boolean(focus?.branch && p.repo === focus.slug && p.head === focus.branch);
+export const spaceOrder = (prs, focus) => [...(prs ?? [])].sort((a, b) => Number(isOpenPr(b)) - Number(isOpenPr(a)) || Number(focusedPr(b, focus)) - Number(focusedPr(a, focus)));
+// One sentence for an empty "This space": what is missing. checkouts as for spaceBranches, repos its result.
+export function spaceEmpty(checkouts, repos) {
+  if (!(checkouts ?? []).length) return "No pane or agent of this space is in a git repository.";
+  if (!checkouts.some((c) => c.slug)) return "The repositories of this space have no GitHub remote, so there are no PRs to list.";
+  if (!repos.length) return "Every checkout in this space is on its default branch, so there is no branch to look up a PR for.";
+  const names = repos.flatMap((r) => r.branches), shown = names.slice(0, 3).join(", ");
+  return `No open PR for ${shown}${names.length > 3 ? ` and ${names.length - 3} more` : ""}. Choose Current branch below to see the diff.`;
+}
+
 // ---- one sign for what stands behind a page, a row or a chip (the nav rows of Analysis, the bar's excerpt, the rows
 // of "Needs your attention" and "Before merge", the panel's PR row, the minimized chip). The color says the highest
 // severity among what is unresolved there, the form how sure that is, and the tip says both in words; the number

@@ -1126,6 +1126,35 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   console.log("ok text sizes");
 }
 
+// "This space": the folders of a space's panes and agents, their branches per repo, one query per repo, its PRs.
+{
+  const { spaceFolders, headBranch, spaceBranches, branchPrQuery, branchPrs, spaceOrder, focusedPr, spaceEmpty } = await import("./views.js");
+  const spaces = [{ id: "s1", tabs: [{ id: "t1" }, { id: "t2" }] }, { id: "s2", tabs: [{ id: "t9" }] }];
+  const panes = [{ tab: "t1", cwd: "/a" }, { tab: "t2", cwd: "/a" }, { tab: "t2", cwd: null }, { tab: "t9", cwd: "/z" }];
+  const terms = [{ address: "t3", labels: { "herdr.space": "s1" }, cwd: "/a", state: "live" }, { address: "t4", parent: "t3", cwd: "/w/fix-1", state: "live" },
+    { address: "t5", parent: "t4", cwd: "/w/fix-2", state: "live" }, { address: "t6", parent: "t3", cwd: "/w/gone", state: "finished" }, { address: "t7", labels: { "herdr.space": "s2" }, cwd: "/z", state: "live" }];
+  assert.deepEqual(spaceFolders("s1", spaces, panes, terms), ["/a", "/w/fix-1", "/w/fix-2"], "panes of its tabs, its terminals and what they started; not a finished one, not another space");
+  assert.deepEqual([headBranch("ref: refs/heads/feat/x\n"), headBranch("9e575d6adf38\n"), headBranch(null)], ["feat/x", null, null]);
+  const co = (cwd, slug, branch, base = "origin/main") => ({ cwd, root: cwd, slug, branch, base });
+  const repos = spaceBranches([co("/a", "o/a", "feat/x"), co("/w/fix-1", "o/a", "fix/1"), co("/b", "o/b", "main"), co("/c", null, "feat/y"), co("/d", "o/a", null), co("/e", "o/a", "feat/x"), co("/f", "o/c", "dev", "origin/dev")]);
+  assert.deepEqual(repos, [{ slug: "o/a", branches: ["feat/x", "fix/1"], roots: { "feat/x": "/a", "fix/1": "/w/fix-1" } }], "no default branch, no detached head, no repo without GitHub; a branch once");
+  const q = branchPrQuery("o/a", ['feat/x', 'we"ird']);
+  assert.ok(q.includes('repository(owner: "o", name: "a")') && q.includes('b0: pullRequests(headRefName: "feat/x"') && q.includes('b1: pullRequests(headRefName: "we\\"ird"'), "one alias per branch, names escaped");
+  const now = Date.parse("2026-11-15T12:00:00Z"), node = (number, state, extra = {}) => ({ number, state, headRefName: "feat/x", ...extra });
+  const got = branchPrs({ data: { repository: { b0: { nodes: [node(3, "MERGED", { mergedAt: "2026-11-14T00:00:00Z" }), node(4, "OPEN"), node(5, "CLOSED"), node(6, "OPEN", { isCrossRepository: true })] },
+    b1: { nodes: [node(7, "MERGED", { mergedAt: "2026-09-01T00:00:00Z" })] } } } }, now);
+  assert.deepEqual(got.map((p) => p.number), [4, 3], "open and merged in the last 14 days; not closed, not a fork's, not merged long ago; open first");
+  assert.deepEqual(branchPrs(null), []);
+  const prs = [{ repo: "o/a", head: "fix/1", state: "open", n: 1 }, { repo: "o/a", head: "old", state: "merged", n: 2 }, { repo: "o/a", head: "feat/x", state: "open", n: 3 }];
+  assert.deepEqual(spaceOrder(prs, { slug: "o/a", branch: "feat/x" }).map((p) => p.n), [3, 1, 2], "the focused pane's PR first, merged last");
+  assert.deepEqual([focusedPr(prs[2], { slug: "o/a", branch: "feat/x" }), focusedPr(prs[2], { slug: "o/b", branch: "feat/x" }), focusedPr(prs[2], null)], [true, false, false]);
+  assert.equal(spaceEmpty([], []), "No pane or agent of this space is in a git repository.");
+  assert.equal(spaceEmpty([co("/c", null, "x")], []), "The repositories of this space have no GitHub remote, so there are no PRs to list.");
+  assert.equal(spaceEmpty([co("/b", "o/b", "main")], []), "Every checkout in this space is on its default branch, so there is no branch to look up a PR for.");
+  assert.equal(spaceEmpty([co("/a", "o/a", "feat/x")], repos), "No open PR for feat/x, fix/1. Choose Current branch below to see the diff.");
+  console.log("ok this space");
+}
+
 // ---- one sign for severity and certainty (signOf, signWords, pageBadge, the risk mark)
 {
   const { signOf, signWords, sureOf, pageBadge, riskOfCounts, rowMarks, withProbes, signEl, markLabel } = await import("./views.js");
