@@ -19,6 +19,7 @@ import { taskList, taskHead, verdictParts, reviewState, certaintyLine, severityT
 import { findingSteps, funnel, funnelLine, ownerOf, quickFirst, hasEffort, publicFiles, funnelShort, diffPath } from "./pr.js"; // the Findings tab
 import { withProof, PROOF_WORDS } from "./pr.js"; // Verify with an agent
 import { overviewMd, findingMd, findingsMd, layerMd, architectureMd, securityMd, verifyContextMd, resilienceMd } from "./markdown.js"; // Copy this page as Markdown
+import { mdParts, mdJoin, codeStats } from "./markdown.js"; // its preview: the text in sections, the code context counted
 import { highlightJob, highlightStep, highlightLines, langOf, colors, renderLine, refAt } from "./syntax.js";
 import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js";
 import { recommendModel, tierSteps } from "./pr.js";
@@ -33,8 +34,8 @@ import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCAL
 import { ghMd, mdBlocks } from "./views.js"; // GitHub comments as GitHub shows them
 import { wrapCode, codeCols, sliceSpans } from "./views.js"; // long lines wrap
 import { pairRows, pairSide, HALF_GUTTER, diffModeOf, oneSided, stackOf, chipAt, textW } from "./views.js"; // side by side; the bar's stack
-import { mdTarget } from "./views.js"; // Copy as Markdown: what it copies on each page
-const MD_W = textW("Copy as Markdown", 12.5) + 20; // the button's width on a layer's head, where clicks are placed by x
+import { mdTarget, secPicture, secBlast, resNoPicture } from "./views.js"; // Copy as Markdown: what it copies on each page; the Security page's picture and lines
+const MD_W = textW("⧉ Copy as Markdown…", 12.5) + 22; // the button's width on a layer's head, where clicks are placed by x
 import { plainText } from "./pr.js";
 import { pollDue, pollAfter, windowActive } from "./pr.js"; // background fetches (ghTick)
 import { hasSources, archLayout, archBands } from "./arch.js";
@@ -480,7 +481,12 @@ export const ReviewMode = {
     else if (name === "gh-details") { const id = Number(arg) || arg; if (!(this.ghOpen ??= new Set()).delete(id)) this.ghOpen.add(id); } // gh-details:<comment id>: a click on that GitHub comment
     else if (name === "copy-link") copyText(this.prSel?.url ?? "");
     else if (name === "copy-state") this.copyState();
-    else if (name === "copy-md") this.copyMd(arg); // copy-md: this page; copy-md:verify: the context for an agent that checks the open finding, or the unresolved security findings
+    else if (name === "copy-md") this.copyMd(arg);
+    // The preview of Copy as Markdown: md-part:<n> ticks a section, md-code the code context, md-copy copies, md-close closes.
+    else if (name === "md-part" && this.mdPrev) { const x = this.mdShown().parts[Number(arg)]; if (x && !this.mdPrev.off.delete(x.title)) this.mdPrev.off.add(x.title); }
+    else if (name === "md-code" && this.mdPrev) this.mdPrev.code = !this.mdPrev.code;
+    else if (name === "md-copy") this.mdCopy();
+    else if (name === "md-close") this.mdPrev = null; // copy-md: this page; copy-md:verify: the context for an agent that checks the open finding, or the unresolved security findings
     else if (name === "criterion") this.toggleAsk(arg); // criterion:<ask id> | other: a click on a row of the Overview's task check
     else if (name === "open-gh") { if (this.prSel?.url) openUrl(this.prSel.url); }
     else if (name === "model") { if (arg) setShared("review.model", codeModel(arg)); }
@@ -2417,7 +2423,7 @@ export const ReviewMode = {
     else if (k === "shift-/" || e.key === "?") this.command("keys", cx);
     else if (k === "a" || k === "x") { const s = this.openSugs().find((x) => x.key === this.sug); if (s) (k === "a" ? this.takeSug(s, cx) : this.dropSug(s, cx)); } // only the note that is open: its line says so
     else if (k === "s" || k === "f") this.tab = k === "s" ? "steps" : "files";
-    else if (k === "escape") { if (this.sendP) this.sendP = null; else if (this.replyTo) this.replyTo = null; else if (this.selected().length) this.clearSel(cx); else if (this.finishOpen) this.finishOpen = false; else if (this.composing) this.closeComposer(cx); else if (this.defFile) this.defFile = null; else if (this.defAt) this.defAt = null; else if (this.drawerState() === "open") this.setDrawer(null, cx); else if (this.archFocus || this.blastFocus || this.askHl) this.archFocus = this.blastFocus = this.askHl = null; else leave(); }
+    else if (k === "escape") { if (this.mdPrev) this.mdPrev = null; else if (this.sendP) this.sendP = null; else if (this.replyTo) this.replyTo = null; else if (this.selected().length) this.clearSel(cx); else if (this.finishOpen) this.finishOpen = false; else if (this.composing) this.closeComposer(cx); else if (this.defFile) this.defFile = null; else if (this.defAt) this.defAt = null; else if (this.drawerState() === "open") this.setDrawer(null, cx); else if (this.archFocus || this.blastFocus || this.askHl) this.archFocus = this.blastFocus = this.askHl = null; else leave(); }
     else return;
     cx.stop_propagation(); cx.notify();
   },
@@ -3932,27 +3938,7 @@ export const ReviewMode = {
     const marksAll = ctx.marks, eff = this.effZones(a), num = (r) => ctx.crossings.indexOf(r) + 1;
     const key = `${JSON.stringify(rows.map((r) => [r.key, r.result, r.check, num(r)]))}|${[...marksAll.nodes.keys()]}|${[...eff.keys()]}`;
     if (this.secMemo?.key !== key) {
-      const nodes = new Map(), edges = [], card = (id) => a.nodes.find((n) => n.id === id);
-      // A frame per zone (two zones of one trust level, e.g. in two cloud accounts, stay apart); whoever arrives from
-      // outside stands outside every zone, an operator's script with the operators.
-      const lane = (r, side) => { const z = side === "from" ? r.from : r.to; return side === "from" && r.kind === "operator" && !z.trust ? "operator" : side === "from" && r.kind === "entry" ? "outside" : z.trust ? `z:${z.name}` : "unknown"; };
-      const put = (id, label, type, trust) => { if (!nodes.has(id)) nodes.set(id, { id, label, type, group: `t:${trust}`, status: undefined, description: "" }); return id; };
-      for (const r of rows) {
-        const from = r.ends.from ? put(r.ends.from, card(r.ends.from)?.label ?? r.ends.from, card(r.ends.from)?.type, lane(r, "from")) : put(`\0who:${r.kind}:${r.identity}`, r.kind === "operator" ? r.from.name : r.identity ?? "unnamed", r.kind === "entry" ? "external" : "component", lane(r, "from"));
-        const to = r.ends.to ? put(r.ends.to, card(r.ends.to)?.label ?? r.ends.to, card(r.ends.to)?.type, lane(r, "to")) : null;
-        // The line says what goes over it (what an attacker controls, else the call or right); a check by its kind; a
-        // crossing assessed and still unchecked "no check"; one not assessed only its dashes. The rest is the tooltip.
-        const over = r.carries?.length ? [].concat(r.carries).slice(0, 2).join(", ") : r.kind === "right" ? (r.actions ?? []).slice(0, 1).join("") || r.what : r.what;
-        const check = r.kind === "bypass" ? "bypasses the boundary" : r.check ? `‖ ${r.check.replace(/, in the (code|config)$/, "")}` : r.result !== "not_assessed" ? "no check" : null;
-        const tip = [`${num(r)}. ${r.what || over}`, r.kind === "bypass" ? "A call in one process: it bypasses the boundary of the code it reaches." : r.check ? `Checked by ${r.check}${r.expects ? `, expects ${r.expects}` : ""}${r.holds_if ? `; holds only if ${r.holds_if}` : ""}.` : r.result === "not_assessed" ? "Not assessed: no threat names this crossing." : "No check on this crossing.", r.result !== "not_assessed" ? `Result: ${r.result}.` : null].filter(Boolean).join("\n");
-        if (to) edges.push({ from, to, label: `${num(r)}. ${[check, over].filter(Boolean).join(" · ")}`, tip, crosses: r.kind !== "bypass", dashed: r.result === "not_assessed", evidence: r.at ?? undefined });
-      }
-      // The frames from the left: operators (their zones, then whoever deploys), callers from outside, then inwards.
-      const zs = ["operator", ...TRUST_ORDER.filter((x) => x !== "operator")].flatMap((tr) => (a.zones ?? []).filter((z) => z.trust === tr)), zoneNamed = (g) => zs.find((z) => `z:${z.name ?? z.id}` === g);
-      const used = new Set([...nodes.values()].map((n) => n.group)), groups = [...zs.filter((z) => z.trust === "operator").map((z) => `z:${z.name ?? z.id}`), "operator", "outside", ...zs.filter((z) => z.trust !== "operator").map((z) => `z:${z.name ?? z.id}`), "unknown"].filter((g) => used.has(`t:${g}`))
-        // A zone's frame: its name (cut when long, whole on hover) and its level, which always stays (stack.js).
-        .map((g) => (zoneNamed(g) ? { id: `t:${g}`, label: zoneNamed(g).name ?? zoneNamed(g).id, kind: zoneNamed(g).trust, trust: zoneNamed(g).trust }
-          : { id: `t:${g}`, label: g === "operator" ? "Operators and CI" : g === "outside" ? "Outside" : "Zone not named", kind: g === "operator" ? "operator" : g === "outside" ? "public" : "", trust: g === "operator" ? "operator" : g === "outside" ? "public" : undefined }));
+      const { groups, nodes: cards, edges } = secPicture(rows, a, num), nodes = new Map(cards.map((n) => [n.id, n])); // views.js: the same picture as the page's Markdown
       const marks = { nodes: new Map([...marksAll.nodes].filter(([id]) => nodes.has(id))), edges: new Map() };
       // Fit: narrow cards, so the zones fit the page's width more often (the Data column was cut off).
       this.secMemo = { key, marks, L: archLayout({ groups, nodes: [...nodes.values()], edges }, "diff", (n) => (marks.nodes.has(n.id) ? MARK_CARD_ROWS : 0) + (eff.has(n.id) ? 1 : 0), true, { labels: true, lines: () => true }) };
@@ -3992,10 +3978,7 @@ export const ReviewMode = {
     const arch = this.ai?.arch, nodeOf = (id) => arch?.nodes.find((n) => n.id === id), label = (id) => nodeOf(id)?.label ?? (arch?.groups ?? []).find((g) => g.id === id)?.label ?? (id === "internet" ? "Internet" : id);
     // ponytail: an operator's row shares its card with the way in; its "Also here" would repeat that row's.
     const marks = this.archMarksNow(), here = (r) => (r.kind === "operator" ? [] : [...new Set([...(marks.nodes.get(r.ends.to)?.findings ?? []), ...(r.edge !== undefined ? marks.edges.get(r.edge)?.findings ?? [] : [])])].filter((f) => !r.findings.includes(f)));
-    // A way in this PR opens that the task does not ask for (views.js extraWays: an "extra" ask in its files).
-    const fileOf = (at) => (at ? /^(.*?)(:\d+)?$/.exec(String(at))[1] : null);
-    const extra = new Map(extraWays((this.ai?.asks ?? []).map((q) => ({ ...q, files: [...(q.hunks ?? []).map((h) => this.byId.get(h)?.path), ...(q.findings ?? []).map((id) => this.findingById(id)?.file)].filter(Boolean) })),
-      rows.filter((r) => r.kind === "entry").map((r) => ({ ...r.access, k: r.key, files: [fileOf(r.access.at), fileOf(nodeOf(r.ends.to)?.at)].filter(Boolean) }))).map((m) => [m.entry.k, m.ask]));
+    const extra = this.secExtra(rows); // a way in this PR opens that the task does not ask for
     const goTo = (f) => (_e, cx) => { const j = this.pageParts.indexOf(`f:${f.id}`); if (j >= 0) this.pageScrolls.blast.scroll_to_item(j); else { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); } cx.stop_propagation(); cx.notify(); };
     const flist = (k, list, id) => v_flex().gap(2).children(list.slice(0, 3).map((f) => h_flex().id(`rv-sec-cr-${id}-${k}-${f.id}`).gap(4).items_start().cursor_pointer().tooltip(plain(f.title)).on_click(goTo(f))
       .child(badge(t, f.severity, t[SEV[f.severity]] ?? t.accent)).child(div().flex_1().min_w(0).whitespace_normal().child(plain(f.title))))).when(list.length > 3, (e) => e.child(div().text_color(t.muted).child(`and ${list.length - 3} more`)));
@@ -4050,24 +4033,9 @@ export const ReviewMode = {
         .when(also.length > 0, (e) => e.child(v_flex().pl(28).gap(2).child(div().text_size(11.5).text_color(t.muted).child("Also at this place")).child(flist(k, also, "h"))))
         .when(open, (e) => e.child(strip(r)));
     };
-    // If a frame with a way in is compromised: what its principal may do (the rights rows that start there), unused too.
-    // By principal behind a way in (views.js blastOf: a frame can be a whole account with several roles); what such a
-    // frame reaches in one process stays by frame.
-    const groupOf = (id) => nodeOf(id)?.group ?? null, frames = [...new Set(rows.filter((r) => r.kind === "entry").map((r) => groupOf(r.ends.to)).filter(Boolean))];
-    const aside = asideOf({ arch, access: this.ai?.access ?? [], threats: this.ai?.threats ?? [], findings: this.openFindings() }), byPrincipal = blastOf(arch, this.ai?.access ?? []);
-    const tails = new Map(), blast = [...frames.map((g) => {
-      // The rights by frame only for data without a principal's card (an older run); else they stand by principal above.
-      const name = (arch?.groups ?? []).find((x) => x.id === g)?.label ?? g, rights = byPrincipal.length ? [] : rows.filter((r) => r.kind === "right" && r.ends.from && (groupOf(r.ends.from) === g || runsIn(nodeOf(r.ends.from)).includes(g)));
-      // What it reaches in one process: the cards of other frames its cards call without a boundary, and on from there.
-      const reach = [], seen = new Set((arch?.nodes ?? []).filter((n) => n.group === g || runsIn(n).includes(g)).map((n) => n.id));
-      for (const id of [...seen]) for (const e of arch?.edges ?? []) if (e.from === id && inProcess(e) && !seen.has(e.to)) { seen.add(e.to); reach.push(label(e.to)); for (const e2 of arch.edges) if (e2.from === e.to && inProcess(e2) && !seen.has(e2.to)) { seen.add(e2.to); reach.push(label(e2.to)); } }
-      const can = [...rights.map((r) => `${(r.actions ?? []).join(", ") || "act"} on ${r.ends.to ? label(r.ends.to) : r.access?.resource ?? "a resource"}${r.unused ? " (granted, not used)" : ""}`), reach.length && `call ${reach.join(" and ")} in the same process`].filter(Boolean);
-      // One principal in this frame (a function and its role): what it reaches in one process joins that principal's line.
-      const mine = byPrincipal.filter((b) => b.frame === g);
-      if (mine.length === 1 && can.length) { tails.set(mine[0], can.join("; ")); return null; }
-      return can.length ? `If ${name} is compromised, it can ${can.join("; ")}.` : byPrincipal.length ? null : `If ${name} is compromised, it holds no right the data names.`;
-    })].filter(Boolean);
-    blast.unshift(...byPrincipal.map((b) => (tails.has(b) ? `${b.text.replace(/\.$/, "")}; ${tails.get(b)}.` : b.text)));
+    // If a frame with a way in is compromised: what its principal may do (views.js secBlast, by principal behind a way in).
+    const aside = asideOf({ arch, access: this.ai?.access ?? [], threats: this.ai?.threats ?? [], findings: this.openFindings() });
+    const blast = secBlast(rows, arch, this.ai?.access ?? []);
     return v_flex().id("rv-sec-crossings").gap(8).p(12).rounded(10).border_1().border_color(t.border).bg(t.surface)
       .child(h_flex().gap(10).items_center().flex_wrap().child(title("Trust boundary crossings")).child(div().text_size(12.5).text_color(t.muted).child("The ways in, the rights and the calls this PR opens or changes across a trust boundary. A click shows the way.")))
       .child(rows.length ? v_flex().w_full().gap(6).text_size(12.5).line_height(1.45)
@@ -4083,6 +4051,14 @@ export const ReviewMode = {
       .when(aside.rights.length > 0, (e) => e.child(div().id("rv-sec-offmap").text_size(12).text_color(t.muted).whitespace_normal().line_height(1.5)
         .child(`Also granted, on nothing the map shows: ${aside.rights.map((r) => r.text).join(" ")}`)))
       .when(!rows.some((r) => r.kind === "operator"), (e) => e.child(div().text_size(12).text_color(t.dim).child("Operator and CI ways (admin scripts, deploys, guardrails): none named by the data, not assessed.")));
+  },
+  // A way in this PR opens that the task does not ask for (views.js extraWays: an "extra" ask in its files):
+  // Map(crossing key -> ask). For the page's rows and their Markdown.
+  secExtra(rows) {
+    const arch = this.ai?.arch, nodeOf = (id) => arch?.nodes.find((n) => n.id === id);
+    const fileOf = (at) => (at ? /^(.*?)(:\d+)?$/.exec(String(at))[1] : null);
+    return new Map(extraWays((this.ai?.asks ?? []).map((q) => ({ ...q, files: [...(q.hunks ?? []).map((h) => this.byId.get(h)?.path), ...(q.findings ?? []).map((id) => this.findingById(id)?.file)].filter(Boolean) })),
+      rows.filter((r) => r.kind === "entry").map((r) => ({ ...r.access, k: r.key, files: [fileOf(r.access.at), fileOf(nodeOf(r.ends.to)?.at)].filter(Boolean) }))).map((m) => [m.entry.k, m.ask]));
   },
   // A card of the picture lit (null: none), and its first row below brought into view.
   secCard(id, cx) {
@@ -4367,9 +4343,7 @@ export const ReviewMode = {
         .child(div().w(200).text_color(t.muted).whitespace_normal().child(w.kind === "W" ? w.guard || "none" : "")).child(at(w.at, `rv-res-w-${p.id}-${k}`))
         .when(Boolean(w.breaks), (e) => e.child(div().text_color(t.ansi1).child("breaks the rule"))))));
     // No picture of the path's kind: a grey line says which data is missing, never another path's picture.
-    const NONE = { retry: "the run named no retry or redelivery on this path's calls", timeout: "the run named no batch size, time per record and timeout for this path",
-      race: "the run named no steps of this race", state: "the run named no writers for this state" };
-    return div().id(`rv-res-nopic-${p.id}`).text_size(12.5).text_color(t.muted).whitespace_normal().child(`no picture: ${NONE[p.kind] ?? "the run named no call on this path that multiplies or times out"}`);
+    return div().id(`rv-res-nopic-${p.id}`).text_size(12.5).text_color(t.muted).whitespace_normal().child(resNoPicture(p)); // views.js: the same words as the page's Markdown
   },
   // A probe in its path: before its run the claim and Run probe (for someone else's PR the script and the sentence of
   // what it does first); after it the result as symbol and word, strength, the one number, the base, head and time,
@@ -4714,6 +4688,16 @@ export const ReviewMode = {
     return v_flex().flex_none().gap(2).text_size(13.5).children(out);
   },
 
+  // Each source with what it found: a number, "no findings" (it ran), "failed" or "not run" (the Findings tab's line
+  // and its Markdown).
+  findingSources(all = this.findings()) {
+    const runs = this.find.runs, name = (k) => REVIEWERS[k]?.[0] ?? k;
+    const ran = { analysis: Boolean(this.ai), ...Object.fromEntries(Object.keys(ALL_REVIEWERS).map((k) => [k, runs[k]?.state === "done"])) };
+    return [...new Set(["analysis", ...reviewersNow().map(([k]) => k), ...all.flatMap((x) => x.sources.map((y) => y.reviewer))])].map((k) => {
+      const n = all.filter((x) => x.sources.some((y) => y.reviewer === k)).length;
+      return { k, n, text: runs[k]?.state === "running" ? `${name(k)}: running` : n ? `${name(k)} ${n}` : runs[k]?.state === "failed" ? `${name(k)}: failed` : ran[k] ? `${name(k)}: no findings` : `${name(k)}: not run` };
+    }).filter((x) => x.k !== "ai" || x.n);
+  },
   // The Findings tab: every finding once, one line each, in sections by state (pr.js findingStatus): the unresolved
   // ones with a fix sent (what is known about each fix, and Verify) and without, Fixed, Dismissed, then the AI notes. A click opens a finding in
   // place and shows its line in the diff. It has no filters of its own: the bar's Show switch is the one filter.
@@ -4722,12 +4706,8 @@ export const ReviewMode = {
     const by = (...st) => all.filter((x) => st.includes(this.fstatus(x)));
     const unresolved = by("open", "recheck"), sent = by("progress");
     const name = (k) => REVIEWERS[k]?.[0] ?? k, fun = funnel(all, (f) => this.fstatus(f));
-    // Each source with what it found: a number, "no findings" (it ran), "failed" or "not run".
     const ran = { analysis: Boolean(this.ai), ...Object.fromEntries(Object.keys(ALL_REVIEWERS).map((k) => [k, runs[k]?.state === "done"])) };
-    const sources = [...new Set(["analysis", ...reviewersNow().map(([k]) => k), ...all.flatMap((x) => x.sources.map((y) => y.reviewer))])].map((k) => {
-      const n = all.filter((x) => x.sources.some((y) => y.reviewer === k)).length;
-      return { k, n, text: runs[k]?.state === "running" ? `${name(k)}: running` : n ? `${name(k)} ${n}` : runs[k]?.state === "failed" ? `${name(k)}: failed` : ran[k] ? `${name(k)}: no findings` : `${name(k)}: not run` };
-    }).filter((x) => x.k !== "ai" || x.n);
+    const sources = this.findingSources(all);
     // The order "Quickest fix" is offered once a finding says how much work its fix is; it reorders every section.
     const efforts = hasEffort(all), order = (list) => (efforts && this.fsort ? quickFirst(list) : list);
     const row = (x) => {
@@ -5034,8 +5014,8 @@ export const ReviewMode = {
             .children(this.stepDeps(s).map(([d, w]) => div().w(w).h(22).flex_none().px(6).flex().items_center().rounded(6).border_1().border_color(t.border).text_size(12.5).text_color(t.accent)
               .truncate().child(plain(d.title)))))
           // Copy as Markdown, on the open layer's head (it copies that one): the last chip of the row (onItem, chipAt).
-          .when(on && !s.pseudo, (e) => e.child(div().id("rv-md-l").tooltip(this.mdNow().tip).accessibility_label("Copy this layer as Markdown").w(MD_W).h(22).flex_none().flex().items_center().justify_center().rounded(6).border_1().border_color(t.border)
-            .text_size(12.5).text_color(t.muted).hover((h) => h.text_color(t.foreground)).child("Copy as Markdown"))))
+          .when(on && !s.pseudo, (e) => e.child(div().id("rv-md-l").tooltip(this.mdNow().tip).accessibility_label("Copy this layer as Markdown").w(MD_W).h(22).flex_none().flex().items_center().justify_center().rounded(6).border_1().border_color(this.mdPrev ? t.accent : t.border).bg(t.raised)
+            .text_size(12.5).text_color(t.foreground).child("⧉ Copy as Markdown…"))))
         .child(div().flex_none().max_w(LAYER_TEXT).line_height(1.55).text_size(13.5).text_color(t.foreground).child(TextView.markdown(`rv-lwhy-${it.i}`, s.why)))
         .when(s.questions.length > 0, (e) => e.child(div().id(`rv-lq-${it.i}`).tooltip("Questions to check while you read this layer's code").h(18).flex_none().mt(4).text_size(11.5).font_semibold().text_color(t.muted).child("CHECK"))
           .children(s.questions.map((q, k) => h_flex().flex_none().max_w(LAYER_TEXT).gap(8).items_start().text_size(13.5).line_height(1.55)
@@ -5293,6 +5273,7 @@ export const ReviewMode = {
             .child(pill("rv-handover-x", t, "Later", (_e, cx) => { this.applyBlocked = null; cx.notify(); }).tooltip("Dismiss this notice"))))
           .when(this.finishOpen && !this.sendP, (e) => e.child(this.finishPopover(t)))
           .when(Boolean(this.sendP), (e) => e.child(this.sendPopover(t)))
+          .when(Boolean(this.mdPrev) && !this.sendP, (e) => e.child(this.mdPopover(t)))
           .when(!this.drawerSqueezes() && this.drawerState() === "open", (e) => e.child(div().absolute().top(0).right(0).bottom(0).child(this.askDrawer(t))))
           .when(this.drawerState() === "collapsed", (e) => e.child(div().absolute().top(0).right(0).bottom(0).child(this.drawerStrip(t)))))
         .when(this.drawerSqueezes(), (e) => e.child(this.askDrawer(t))));
@@ -5451,16 +5432,76 @@ export const ReviewMode = {
       this.note = `The context to check ${list.length === 1 ? "the open finding" : `${list.length} unresolved security findings`} is on the clipboard as Markdown (${text.trim().split("\n").length} lines), nothing was posted.`;
       return;
     }
+    this.mdPrev = this.mdPrev ? null : { off: new Set(), code: true, texts: {} }; // the preview first: what goes into the text, and how much
+  },
+  // The Markdown of what the person looks at (views.js mdTarget), whole and unfolded, as the page's own sources give
+  // it; code: with the code blocks of the places it names (from the diff and the files this review has loaded).
+  mdText(code = true) {
+    const ai = this.ai, findings = this.findings(), statusOf = (f) => this.fstatus(f), asks = ai?.asks ?? [];
+    const base = { pr: this.prSel, head: this.headNow() ?? "", code: code ? this.mdCode() : null, moreOf: (f) => this.mdMore(f) };
     const m = this.mdNow(), layer = this.steps()[this.cur], one = this.findingById(this.ffocus);
-    const text = { finding: () => findingMd(one, { ...base, status: statusOf(one), asks }),
-      findings: () => findingsMd(findings, { ...base, statusOf, asks }),
-      layer: () => layerMd(layer, { ...base, n: this.cur + 1, files: this.filesOf(layer), findings: this.layerFindings(layer), statusOf }),
-      arch: () => architectureMd({ ...base, ai, findings, statusOf }),
-      blast: () => securityMd({ ...base, ai, findings, statusOf, runs: this.find.runs }),
-      res: () => resilienceMd({ ...base, res: this.resNow(), arch: ai?.arch ?? null, names: new Map((ai?.arch?.nodes ?? []).map((n) => [n.id, n.label ?? n.id])) }),
-      overview: () => overviewMd({ ...base, ai, findings, statusOf, checks: this.checksNow(), related: this.ctx }) }[m.kind]();
+    const rows = this.mergeRows();
+    return { finding: () => findingMd(one, { ...base, status: statusOf(one), asks, stepsOf: (f) => findingSteps(f, this.find.status[f.id], { report: this.find.reports[f.id], facts: this.fixFacts(f) }) }),
+      findings: () => findingsMd(findings, { ...base, statusOf, asks, notes: this.openSugs(), sources: this.findingSources().map((x) => x.text) }),
+      layer: () => layerMd(layer, { ...base, n: this.cur + 1, files: this.filesOf(layer), findings: this.layerFindings(layer), statusOf, open: this.openFindings(), deps: this.stepDeps(layer).map(([d]) => plain(d.title)),
+        access: layerAccess(ai?.access, this.filesOf(layer))?.text ?? null, hunks: this.present(layer).map((id) => this.byId.get(id)).filter(Boolean).map((h) => ({ path: h.path, rows: h.rows })) }),
+      arch: () => architectureMd({ ...base, ai, findings, statusOf, layersOf: (n) => this.cardLayerList(n).map((s) => plain(s.title)),
+        placesIn: (path) => [...(this.fileHunks ?? new Map())].filter(([p]) => p === path || p.endsWith(`/${path}`) || path.endsWith(`/${p}`)).flatMap(([, h]) => h).length }),
+      blast: () => securityMd({ ...base, ai, findings, statusOf, runs: this.find.runs, eff: ai?.arch ? this.effZones(ai.arch) : null, extra: this.secExtra(crossingsOf({ arch: ai?.arch ?? null, access: ai?.access ?? [], threats: ai?.threats ?? [], gates: ai?.gates ?? [], bypasses: ai?.bypasses ?? [], findings: this.openFindings() })) }),
+      res: () => resilienceMd({ ...base, res: this.resNow(), arch: ai?.arch ?? null, names: new Map((ai?.arch?.nodes ?? []).map((n) => [n.id, n.label ?? n.id])), findings, statusOf, probes: this.resNow() ? this.probesNow() : null,
+        cost: this.resNow()?.cost ?? this.find.runs?.resilience?.cost ?? null }),
+      overview: () => overviewMd({ ...base, ai, findings, statusOf, checks: this.checksNow(), related: this.ctx, verdict: this.prSel ? this.verdictNow() : null, action: verdictAction(rows), rows,
+        nc: notChecked({ ai, runs: this.find.runs, open: this.openFindings() }), resLine: this.resLine(), cost: this.costNow() || null, funnel: funnel(findings, statusOf),
+        size: (this.patch ?? []).length ? `${this.patch.length} ${this.patch.length === 1 ? "file" : "files"} +${this.patch.reduce((n, f) => n + (f.add ?? 0), 0)} −${this.patch.reduce((n, f) => n + (f.del ?? 0), 0)}` : null,
+        flow: (ai?.visuals ?? []).find((v) => v.kind === "flow" && this.openFindings().some((f) => f.breaks?.node || f.breaks?.from)) ?? null }) }[m.kind]();
+  },
+  // The code of a file as the review holds it: its diff rows, with the whole file where it is loaded; by the end of a
+  // path too ("mailer.py:14"). Nothing is fetched for it.
+  mdCode() {
+    const paths = (this.patch ?? []).map((f) => f.path), known = [...new Set([...paths, ...Object.keys(this.full ?? {}).filter((k) => Array.isArray(this.full[k]))])];
+    return (file) => { const hit = known.includes(file) ? file : known.filter((p) => p.endsWith(`/${file}`)); const path = Array.isArray(hit) ? (hit.length === 1 ? hit[0] : null) : hit; return path ? { path, rows: this.rowsFor(path, true) } : null; };
+  },
+  // What the view knows about a finding beyond its own fields: its layer, and what is known about its fix.
+  mdMore(f) { const li = this.layerOf(f); return [li >= 0 && ["Layer", `${li + 1}. ${plain(this.steps()[li]?.title)}`], ...this.fixFacts(f)].filter(Boolean); },
+  // The preview's text: whole, or without the code blocks; built once per choice while the preview is open.
+  // A part left out is remembered by its title (the code context adds parts of its own).
+  mdShown(code = this.mdPrev.code) {
+    const p = this.mdPrev, at = `${this.mdNow().kind}|${this.cur}|${this.ffocus}`, k = code ? "code" : "plain";
+    if (p.at !== at) { p.at = at; p.texts = {}; p.off = new Set(); }
+    return (p.texts[k] ??= mdParts(this.mdText(code)));
+  },
+  mdOff(doc = this.mdShown()) { return new Set(doc.parts.map((x, k) => (this.mdPrev.off.has(x.title) ? k : -1)).filter((k) => k >= 0)); },
+  // "Copy" in the preview: the chosen parts go to the clipboard, the footer says what and how much.
+  mdCopy() {
+    if (!this.mdPrev) return;
+    const m = this.mdNow(), doc = this.mdShown(), off = this.mdOff(doc), text = mdJoin(doc, off), left = off.size, cs = codeStats(text);
     copyText(text);
-    this.note = `Copied ${m.name} as Markdown (${text.trim().split("\n").length} lines) to the clipboard. Nothing was posted.`;
+    this.note = `Copied ${m.name} as Markdown (${text.trim().split("\n").length} lines${left ? `, ${doc.parts.length - left} of ${doc.parts.length} sections` : ""}${cs.blocks ? `, ${cs.blocks} code ${cs.blocks === 1 ? "block" : "blocks"}` : ""}) to the clipboard. Nothing was posted.`;
+    this.mdPrev = null;
+  },
+  // The preview before copying: every section of the text with its size and a tick to leave it out, the code context
+  // as one choice of its own, the size of what is chosen, the first lines as they will be copied, then Copy.
+  mdPopover(t) {
+    const m = this.mdNow(), p = this.mdPrev, doc = this.mdShown(), off = this.mdOff(doc), text = mdJoin(doc, off), lines = text.trim().split("\n");
+    const cs = codeStats(mdJoin(this.mdShown(true))), box = (on) => div().w(16).flex_none().text_color(on ? t.accent : t.muted).child(on ? "☑" : "☐");
+    const row = (id, on, label, size, click, tip) => h_flex().id(id).tooltip(tip).gap(8).px(6).h(24).items_center().rounded(6).cursor_pointer().hover((s) => s.bg(t.hover)).on_click(click)
+      .child(box(on)).child(div().flex_1().min_w(0).truncate().text_color(on ? t.foreground : t.muted).child(label)).child(div().flex_none().text_size(12).text_color(t.muted).child(size));
+    return v_flex().id("rv-mdprev").absolute().top(8).right(12).w(640).max_h_full().overflow_y_scroll().p(14).gap(10).rounded(10).border_1().border_color(t.border).bg(t.popover).shadow_lg()
+      .text_size(13).text_color(t.foreground).on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .child(h_flex().gap(8).items_center().child(div().flex_1().font_semibold().text_size(14).child(`Copy ${m.name} as Markdown`))
+        .child(pill("rv-mdprev-x", t, "✕", (_e, cx) => { this.mdPrev = null; cx.notify(); }).tooltip("Close without copying").accessibility_label("Close")))
+      .child(div().text_size(12.5).line_height(1.5).text_color(t.muted).whitespace_normal().child("Everything the page shows, also what is folded there, with every picture as Mermaid. It goes to the clipboard only; nothing is posted. Untick a section to leave it out."))
+      .child(v_flex().gap(1)
+        .child(row("rv-mdprev-head", true, "Title and summary", `${doc.head.filter((l) => l.trim()).length} lines`, () => {}, "The PR, the commit and the page's first lines: always in the text"))
+        .children(doc.parts.map((x, k) => row(`rv-mdprev-p${k}`, !off.has(k), x.title, `${x.n} ${x.n === 1 ? "line" : "lines"}`, (_e, cx) => { if (!p.off.delete(x.title)) p.off.add(x.title); cx.notify(); }, off.has(k) ? "Left out. Click to put it back in" : "In the text. Click to leave it out")))
+        .when(cs.blocks > 0, (e) => e.child(row("rv-mdprev-code", p.code, `Code context (${cs.blocks} ${cs.blocks === 1 ? "block" : "blocks"}, ${cs.lines} lines)`, "inside the sections above",
+          (_e, cx) => { p.code = !p.code; cx.notify(); }, "The lines each place names, from the diff with + and − marks, at most 12 lines a place, each place once. Click to leave the code out or put it in"))))
+      .child(div().id("rv-mdprev-first").p(8).rounded(6).border_1().border_color(t.border).bg(t.background).font_family(settings().font_family ?? "JetBrains Mono").text_size(11.5).line_height(1.5).text_color(t.muted)
+        .children(lines.slice(0, 14).map((l) => div().truncate().child(l || " "))).when(lines.length > 14, (e) => e.child(div().text_color(t.dim).child(`… ${lines.length - 14} more lines`))))
+      .child(h_flex().gap(8).items_center()
+        .child(div().flex_1().text_size(12.5).text_color(t.muted).child(`${lines.length} lines · ${doc.parts.length - off.size} of ${doc.parts.length} sections${p.code && cs.blocks ? ` · ${codeStats(text).blocks} code blocks` : ""}`))
+        .child(pill("rv-mdprev-cancel", t, "Cancel", (_e, cx) => { this.mdPrev = null; cx.notify(); }).tooltip("Close without copying"))
+        .child(pill("rv-mdprev-copy", t, "Copy", (_e, cx) => { this.mdCopy(); cx.notify(); }, true, t.foreground).tooltip("Copy the chosen sections to the clipboard as Markdown")));
   },
   // What Copy as Markdown copies where the person is (views.js mdTarget): the open finding or the unresolved ones on
   // the Findings tab, the open layer of the analysis, the page shown, else the Overview.
@@ -5468,9 +5509,9 @@ export const ReviewMode = {
     const layer = this.tab === "steps" && !this.page ? this.steps()[this.cur] : null;
     return mdTarget({ tab: this.tab, page: this.page, layer: layer && !layer.pseudo ? plain(layer.title) : null, finding: Boolean(this.tab === "findings" && this.ffocus && this.findingById(this.ffocus)) });
   },
-  // The button for it, at the right end of the head of every page it can copy: quiet (a frame, muted text until the
-  // pointer is on it); its help says what it copies here.
-  mdButton(t, id = "rv-md") { return pill(id, t, "Copy as Markdown", (_e, cx) => { this.copyMd(); cx.notify(); }).tooltip(this.mdNow().tip).accessibility_label("Copy this page as Markdown"); },
+  // The button for it, at the right end of the head of every page it can copy: a button to see (raised, its text in
+  // the foreground). It opens the preview (what goes into the text and how much), which has Copy.
+  mdButton(t, id = "rv-md") { return pill(id, t, "⧉ Copy as Markdown…", (_e, cx) => { this.copyMd(); cx.notify(); }, Boolean(this.mdPrev), t.foreground).bg(t.raised).tooltip(this.mdNow().tip).accessibility_label("Copy this page as Markdown"); },
   // What "Copy context to check findings" is about: the finding open in the Findings tab, else on the Security page
   // the unresolved security findings; [] elsewhere (the menu leaves the entry out).
   checkList() {
