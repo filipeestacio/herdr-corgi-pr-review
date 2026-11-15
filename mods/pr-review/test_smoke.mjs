@@ -87,11 +87,12 @@ async function deep(v, at) {
   v.defFile = null; v.worktree = wt;
 }
 
-async function open({ diff, analysis = null, findings = null, ctx = null, pr = 2, title = "feat(events): loan events", trusted = true }) {
+async function open({ diff, analysis = null, findings = null, ctx = null, pr = 2, title = "feat(events): loan events", trusted = true, impact = null }) {
   const url = `https://github.com/saefty/corgi-demo/pull/${pr}`, target = { url, repo: "saefty/corgi-demo", number: pr, title, base: "main", ...(trusted ? {} : { source: "repo", author: "someone" }) };
   S.store.clear(); S.files.clear(); S.props = null;
   S.store.set("review.target", target);
   if (findings) S.files.set(`/h/pr-data/findings/${hash(url)}.json`, findings);
+  if (impact && ctx) S.files.set(`/h/pr-data/cache/impact-${hash(url)}-${JSON.parse(ctx).head}.json`, impact); // the Impact section's cached result for this head
   const v = new PrReview(); v.init({}, cx);
   v.prSel = target; v.patch = splitPatch(diff);
   await v.applyResume(cx); assert.equal(v.resumed, url, "where you were is read: frames are no longer held");
@@ -220,7 +221,7 @@ async function tour(v, name) {
   await settle();
 }
 
-const PR2 = { diff: fx("pr2.diff"), ctx: fx("ctx.json") };
+const PR2 = { diff: fx("pr2.diff"), ctx: fx("ctx.json"), impact: fx("impact.json") };
 const pairs = [["analysis.json", "findings.json"], ["analysis-split.json", "findings-split.json"], ["analysis-zones.json", "findings.json"], ["analysis-md.json", "findings-md.json"],
   ["analysis-s.json", "findings-s.json"], ["analysis-w4.json", "findings-w4.json"]];
 for (const [a, f] of pairs) await tour(await open({ ...PR2, analysis: fx(a), findings: fx(f) }), `PR #2 ${a} + ${f}`);
@@ -497,6 +498,50 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   const empty = await open({ ...PR2 });
   for (const c of ["page:overview", "copy-md", "md-close", "page:arch", "copy-md", "md-close", "page:blast", "copy-md", "md-close", "page:res", "copy-md", "md-close", "findings", "copy-md", "md-copy"]) act(empty, c, `nothing analyzed yet: ${c}`);
 }
+// The Impact section of the Architecture page (impact-view.js): the cached result of PR #2 as it is read, then every
+// state it has (asking, a server still loading, failed, not checked out, someone else's PR before the click), a result
+// with all three marks and one summed up by file, its list unfolded, a card's and a row's click, and the run itself
+// against a bridge that answers.
+{
+  const fn = (name, line, callers, more = {}) => ({ id: `shop/price.py#${line}`, path: "shop/price.py", name, kind: "function", container: "", line, end: line + 5, nameLine: line, character: 4, isNew: false, sig: null, callers, outside: 0, more: 0, ...more });
+  const caller = (path, k, mark, more = {}) => ({ id: `${path}#${k}`, name: `use${k}`, kind: "function", path, line: k, sites: [{ line: k, text: `total(${k})`, mark }], mark, test: false, ...more });
+  const rich = { v: 1, servers: ["Python"], uncovered: [{ ext: "yaml", files: 1 }], failed: [], skipped: 2, functions: [
+    fn("total", 4, [caller("shop/report.py", 7, "outside"), caller("shop/checkout.py", 17, "untouched"), caller("shop/checkout.py", 6, "changed"), caller("shop/tests/test_price.py", 6, "changed", { test: true })], { sig: { old: "def total(items):", now: "def total(items, rate):" }, outside: 3 }),
+    fn("discount", 12, [], { error: "Python server did not answer within 20 s" }), fn("net", 33, [caller("shop/report.py", 7, "outside")], { isNew: true })] };
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json") }), key = v.impactKey(), ids = () => { S.ids = new Set(); draw(v, "ids"); const got = S.ids; S.ids = null; return got; };
+  act(v, "steps", "Impact: the Analysis tab"); act(v, "page:arch", "Impact: the cache is being read"); await settle();
+  v.ai = v.mapSaved(JSON.parse(fx("analysis-s.json")), true); // the first frame also looked for a cached analysis (none here)
+  assert.equal(v.impactNow()?.functions.length, 2, "the cached result of this head is read on the Architecture page");
+  draw(v, "Impact: PR #2's result"); assert.ok(v.pageParts.includes("impact") && ids().has("rv-impact-pic"), "the section is a part of the page, with its picture");
+  act(v, "page-part:impact", "Impact: scrolled to");
+  click("rv-impact-list", "Impact: the list"); draw(v, "Impact: the list unfolded"); click("rv-impact-li-0", "Impact: a row"); await settle(); draw(v, "Impact: a row's place"); v.defFile = null; v.command("steps", cx); v.command("page:arch", cx);
+  const state = (st, what) => { v.impactSt = { key, ...st }; draw(v, `Impact: ${what}`); };
+  state({ state: "ok", model: rich }, "all three marks, a changed signature, a search that failed");
+  const card = [...S.clicks.keys()].find((k) => /^rv-impact-pic-n\d+$/.test(k)); assert.ok(card, "a card can be clicked"); click(card, "Impact: a card"); await settle(); draw(v, "Impact: a card's place"); v.defFile = null; v.command("steps", cx); v.command("page:arch", cx);
+  state({ state: "ok", model: { ...rich, functions: [fn("total", 4, Array.from({ length: 60 }, (_x, k) => caller(`pkg/f${k % 3}.py`, k + 1, k % 3 ? "outside" : "untouched")))] } }, "summed up by file");
+  state({ state: "ok", model: { ...rich, servers: [], functions: [] } }, "no language server for the PR's files");
+  state({ state: "busy", done: 2, of: 7 }, "asking"); state({ state: "busy", done: 0, of: 0, message: "Java index is building…" }, "a server still loading");
+  state({ state: "error", message: "pyright-langserver is not installed" }, "failed"); assert.ok(ids().has("rv-impact-run"));
+  state({ state: "idle" }, "not checked out");
+  // The run: the checkout is there and the PR is trusted, so the next frame starts it; the bridge answers over fetch.
+  const realFetch = globalThis.fetch, asked = [];
+  S.exec = async (cmd, args) => (args.at(-1) === "start" ? { code: 0, stdout: JSON.stringify({ port: 1, token: "t" }), stderr: "" } : { code: 1, stdout: "", stderr: "stub" });
+  globalThis.fetch = async (url, o) => { const q = JSON.parse(o.body); asked.push(`${url.split("/").pop()} ${q.path}`);
+    return { status: 200, json: async () => (url.endsWith("/symbols") ? { status: "ok", server: "Python", symbols: q.path === "library/reminders.py" ? [{ name: "send_reminders", kind: "function", container: "", line: 16, end: 25, nameLine: 16, character: 4, sigEnd: 16 }] : [] }
+      : { status: "ok", references: [{ path: "library/api.py", line: 3, character: 0, end: 3, text: "send_reminders(store, mailer)" }], outside: 0, more: 0 }) }; };
+  try {
+    v.worktree = { url: v.prSel.url, head: v.head, path: "/h/w" }; v.impactSt = { key: v.impactKey(), state: "idle" };
+    draw(v, "Impact: about to start"); v.impactRun(cx); draw(v, "Impact: started"); await settle(); await settle(); draw(v, "Impact: its own result");
+    assert.deepEqual(v.impactNow()?.functions.map((f) => [f.name, Boolean(f.sig), f.callers.map((c) => [c.path, c.mark])]), [["send_reminders", true, [["library/api.py", "outside"]]]], "the run asks the bridge and keeps what it finds");
+    assert.ok(asked.includes("references library/reminders.py") && asked.every((x) => !x.includes("template.yaml")), "only files with a language server are asked");
+    // Someone else's PR: nothing starts by itself; the button does.
+    const w = await open({ ...PR2, impact: null, analysis: fx("analysis-s.json"), trusted: false }); w.worktree = { url: w.prSel.url, head: w.head, path: "/h/w" }; asked.length = 0;
+    act(w, "steps", "Impact, untrusted: the Analysis tab"); act(w, "page:arch", "Impact, untrusted: the page"); await settle(); draw(w, "Impact, untrusted: the offer"); draw(w, "Impact, untrusted: still the offer"); await settle();
+    assert.equal(w.impactSt.state, "idle"); assert.deepEqual(asked, [], "no language server is asked for someone else's PR before the click");
+    click("rv-impact-run", "Impact, untrusted: Find callers"); await settle(); await settle(); draw(w, "Impact, untrusted: the result");
+    assert.equal(w.impactSt.state, "ok");
+  } finally { globalThis.fetch = realFetch; S.exec = null; }
+}
 // The Markdown of a page says what the page shows: every text the page draws (each crossing and path opened in turn,
 // the folds open), sentence by sentence, is in its Markdown, except what only serves the page (NOT_COPIED). Every
 // picture is a Mermaid block that reads as one, and the code context has the lines of the places named, no block
@@ -507,7 +552,8 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify(doc) }), tt = S.theme;
   v.deep = { ...v.deep, probes: { [v.probeKey("r1")]: { state: "done", status: "reproduced", line: "handled=1, no mail", ms: 1100, head: "ccddf95", base: { status: "script_failed", verdict: "new_in_pr", line: "ImportError" }, pre_existing: false, network_barrier: true,
     script: "from library.mailer import Mailer\nprint('reproduced handled=1, no mail')\n", output: "reproduced handled=1, no mail\n" } } };
-  // (A mark that ends in "and 2 more" counts what the text lists in full: compared without that end.)
+  // (A mark that ends in "and 2 more" counts what the text lists in full: compared without that end, also where a
+  // narrow card cuts it short: "and 2…".)
   // What a page draws for itself and a text does not need: offers and prices of runs, ages, buttons, hints how to use
   // the page, lines that only fold or count what the text has in full, and the certainty said in the page's own
   // second wording (the text has it as Certainty and Preconditions).
@@ -516,7 +562,7 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     /^and \d+ more in the Findings tab$/, /^Ask about this layer$/, /^A finding sent to Fix stays unresolved and shows here/, /^not counted as findings$/];
   const norm = (x) => String(x).toLowerCase().replace(/,? \d+ (s|min|h|d|days?) ago/g, "").replace(/#\d+;|#quot;|#lt;|#gt;/g, " ").replace(/[^a-z0-9äöüß]+/g, " ").trim();
   const drawn = (states, part) => { const all = new Set(); for (const st of states) { st(); S.texts = null; S.lists.length = 0; v.render(cx); S.lists.length = 0; S.texts = all; part(); } S.texts = null; return [...all]; };
-  const missing = (texts, md) => { const text = norm(md), segs = [...new Set(texts.flatMap((x) => x.split(/(?<=[.;:])\s+|\s·\s|\n+/)).map((x) => x.replace(/^\*\*Suggested:\*\*\s*/, "").replace(/ and \d+ more$/, "")))].filter((x) => x.trim().length >= 20 && x.trim().split(/\s+/).length >= 4);
+  const missing = (texts, md) => { const text = norm(md), segs = [...new Set(texts.flatMap((x) => x.split(/(?<=[.;:])\s+|\s·\s|\n+/)).map((x) => x.replace(/^\*\*Suggested:\*\*\s*/, "").replace(/ and \d+(?: m(?:o(?:re?)?)?)?…?$/, "")))].filter((x) => x.trim().length >= 20 && x.trim().split(/\s+/).length >= 4);
     return segs.filter((x) => !NOT_COPIED.some((re) => re.test(x.trim())) && norm(x.replace(/…$/, "")) && !text.includes(norm(x.replace(/…$/, "")))); };
   // A Mermaid block as Mermaid reads it: a known diagram, every line of a known form, frames closed, no call to a card that is not there.
   const mermaidBad = (lines) => {
@@ -565,8 +611,9 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   }
   v.command("page:overview", cx); v.rulesOpen = true; v.relOpen = true;
   check("Overview", drawn([() => {}, ...[...v.ai.asks.map((x) => x.id), "other"].map((k) => () => v.command(`criterion:${k}`, cx))], page), {});
-  v.command("page:arch", cx);
-  check("Architecture impact", drawn([() => {}, ...a.nodes.map((n) => () => v.command(`card:${n.id}`, cx))], page), { flowchart: 1 });
+  v.command("page:arch", cx); v.impactSt = { key: v.impactKey(), state: "ok", model: JSON.parse(fx("impact.json")) }; // the Impact section with PR #2's result
+  check("Architecture impact", drawn([() => {}, ...a.nodes.map((n) => () => v.command(`card:${n.id}`, cx)), () => { v.fold.impactList = true; }], page), { flowchart: 2 });
+  assert.match(v.mdText(false), /\n## Impact \(2 changed functions, 0 callers, 1 test\)\n/, "the Impact section is a section of its own in the page's Markdown");
   v.command("order:reading", cx); v.command("step:0", cx);
   const st = v.steps()[0];
   check("a layer", drawn([() => {}], () => { v.stepRow(st, 0, tt); v.item({ t: "step", s: st, i: 0 }, tt); }), { stateDiagram: (st.visuals ?? []).filter((x) => x.kind === "state_machine").length });

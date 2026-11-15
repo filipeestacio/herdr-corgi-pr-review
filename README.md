@@ -43,6 +43,10 @@ would skip a column becomes a short chip that names the target. Click a card to 
 Elements that only the PR description or ticket mentions, and that the diff doesn't contain, show as dashed "spec".
 ↻ Refresh diagrams redraws the pictures for today's diff without re-running the whole analysis.
 
+Below the map, **Impact** shows the functions and classes the PR changes and who calls them, from the language
+servers and without a model: each caller is marked as changed in this PR, in the diff with its call untouched, or
+not in this PR, and a caller that still calls a changed signature the old way stands out. Tests are counted apart.
+
 ![Architecture impact: components as cards with New, Changed and Unchanged, numbered connections and a legend](docs/screenshots/architecture-impact.png)
 
 **Sample values in the diff, like a debugger.** Next to the changed lines you see example inputs and results:
@@ -150,8 +154,8 @@ in but not run.
 | `codex` (optional) | the Codex reviewer, offered only when installed | `npm install -g @openai/codex` | same |
 | `acli` (optional) | the Jira ticket a PR names, in the task check | `brew tap atlassian/homebrew-acli && brew install acli` | see Atlassian's docs |
 
-Optional language servers turn on go-to-definition and hover for their language; a missing one only turns it off
-for that language: `typescript-language-server` + `tsc` (TypeScript, JavaScript), `pyright-langserver` (Python),
+Optional language servers turn on go-to-definition, hover and the Impact picture for their language; a missing one
+only turns them off for that language: `typescript-language-server` + `tsc` (TypeScript, JavaScript), `pyright-langserver` (Python),
 `gopls` (Go), `rust-analyzer` (Rust), `jdtls` (Java), `terraform-ls` (Terraform), `clangd` (C, C++).
 
 The reviewers use Claude Code's `/security-review` and a `/code-review` command; without the command in your

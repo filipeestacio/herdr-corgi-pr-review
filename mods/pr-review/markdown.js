@@ -14,6 +14,7 @@ import { archMarks } from "./arch.js";
 import { transitionMarks, surfaceOf, reachLevel, secOrder, EXPOSURE, inProcess, resNoPicture } from "./views.js";
 import { doesList, surfaceLine, countLine, funnelShort, funnel as funnelOf, findingSteps } from "./pr.js";
 import { resDepRows } from "./views.js"; // Resilience: dependencies that fail or are overloaded
+import { impactDoc } from "./impact.js"; // the Architecture page's Impact section
 
 const STATE = { open: "Unresolved", progress: "Fix sent", fixed: "Fixed", dismissed: "Dismissed", recheck: "Unresolved, line changed" };
 const SOURCE = { analysis: "Analysis", security: "Security review", claude: "Claude code review", codex: "Codex review", resilience: "Resilience review", ai: "AI note" };
@@ -346,7 +347,7 @@ export function layerMd(step, { pr, head, n = null, files = [], findings = [], s
 // card's zone in its text, the unresolved findings at a card or a call as arch.js archMarks counts them).
 // layersOf(n): the titles of the layers that read a card's code; placesIn(path): how many changed places of the PR
 // are in a file (both from the view; without them those lines are left out).
-export function architectureMd({ pr, head, ai, findings = [], statusOf = () => "open", code = null, layersOf = null, placesIn = null }) {
+export function architectureMd({ pr, head, ai, findings = [], statusOf = () => "open", code = null, layersOf = null, placesIn = null, impact = null }) {
   const a = ai?.arch, nodes = a?.nodes ?? [], name = (id) => flat(nodes.find((n) => n.id === id)?.label ?? (id === "internet" ? "Internet" : id));
   const openAll = findings.filter((f) => unresolved(statusOf(f))), marks = a ? archMarks(a, openAll, ai?.access, ai?.threats ?? []) : null, drawn = a ? mapArch(a, ai?.access ?? [], ai?.bypasses ?? []) : null, cx = codeContext(code);
   const call = (e, k) => [`${k + 1}`, `${name(e.from)} → ${name(e.to)}`, transitionText(e), [cardStatus(e) ?? (e.status && e.status !== "unchanged" ? e.status : ""), e.source === "spec" && "spec only", e.crosses && !e.in_process && "crosses a trust boundary", e.in_process && "same process"].filter(Boolean).join(", "),
@@ -383,9 +384,13 @@ export function architectureMd({ pr, head, ai, findings = [], statusOf = () => "
       (a.edges ?? []).length > 0 && [`## Calls (${a.edges.length})`, "", "Every call with its whole text, numbered as on the map.", "", ...table(["#", "Call", "What", "Status", "Unresolved findings"], a.edges.map(call))]],
     breaks.length > 0 && [`## Where the flow breaks (${breaks.length})`, "", ...breaks.map((f) => `- ${f.breaks.node ? `Card ${name(f.breaks.node)}` : `Call ${name(f.breaks.from)} → ${name(f.breaks.to)}`}: ${findingLine(f, statusOf(f))}`), ""],
     ai?.components?.length > 0 && [`## Components this PR adds or changes (${ai.components.length})`, "", ai.componentCounts?.codeowners === false && "This repository has no CODEOWNERS file, so no owner can be named.", "", ...componentsTable(ai.components)],
+    impact && impactSection(impactDoc(impact, openAll)),
     ai?.visuals?.length > 0 && [`## Other pictures (${ai.visuals.length})`, "", ...ai.visuals.map((v) => visualMd(v))],
     cx.on && breaks.length > 0 && [`## Code where the flow breaks`, "", ...breaks.flatMap((f) => cx.block(f.file, f.line, f.end))]);
 }
+
+// The Impact section (impact.js impactDoc): its lines, every caller as a table row, and the picture as a flowchart.
+const impactSection = (d) => ["", `## ${d.title}`, "", ...d.lines, ...(d.rows.length ? ["Callers and tests as a list:", "", ...table(d.head, d.rows)] : []), ...(d.flow.nodes.length ? [...mermaidFlow(d.flow), ""] : [])];
 
 // ---- the Security page
 

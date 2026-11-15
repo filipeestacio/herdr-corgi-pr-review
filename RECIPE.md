@@ -177,7 +177,8 @@ big PRs into cohort passes and a merge pass under one cap.
   `agentbar` window title), `pr.js` (pure: diff parsing, prompts, registry, triage, pre-merge checks),
   `arch.js` (pure: the diagram layout with lanes, ports, hops and badges), `stack.js` (diagram and card
   drawing), `syntax.js` (highlighting), `defs.js` + `lsp_bridge.py` (go-to-definition through language
-  servers kept warm by one local bridge), `context.js` (optional contexts), `setup.js` + `setup-view.js`
+  servers kept warm by one local bridge), `impact.js` + `impact-view.js` (the Impact picture: changed functions
+  and their callers, from the bridge's `/symbols` and `/references`), `context.js` (optional contexts), `setup.js` + `setup-view.js`
   (Setup), and Python helpers: `prs.py` (PRs from Claude transcripts + `gh pr view`), `worktree.py` (a reusable
   checkout of the PR head), `review.py` (the analysis), `reviewers.py`, `verify.py`, `triage.py`, `related.py`
   (related PRs, CI checks, mergeability), `llm.py` (`claude -p` with a JSON schema and a budget cap, optional
