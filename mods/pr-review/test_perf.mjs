@@ -219,5 +219,31 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   assert.ok(big.el <= 1300 && big.call <= 6500, `the open file's frame: ${big.el} elements and ${big.call} builder calls, at most 1300 and 6500`);
   S.exec = null;
 }
+// ---- "Infrastructure changes" on the Architecture page (infra.js): read and laid out once
+// A frame that changes nothing reads no file, builds no model and lays nothing out (measured on PR #2: 1 238 of the
+// mod's functions with the section, 1 154 without). A picture of more than 20 cards is laid out after the frame.
+{
+  const { infraModel } = await import("./infra.js");
+  const OWN = ["arch.archLayout", "infra.infraModel", "infra.infraPicture", "infra.infraArch", "infra.infraMarks", "infra.cardLines", "infra.readCloudFormation", "infra.readTerraform", "infra.baseText", "view.loadInfra"];
+  const v = await openReview(PR2()); v.loadInfra(cx); // as onSource does
+  STATES.Architecture(v); await quiet(v);
+  assert.ok(v.infra?.cards.length === 3 && v.infraMemo?.pic.L.nodes.length === 3, "PR #2's template: three cards, laid out");
+  const m = await measure(v, 1), fns = [...m.stat.values()].reduce((n, x) => n + x.n, 0);
+  assert.equal(m.calls("view.infraPart"), 1, "the section is drawn in the frame");
+  assert.deepEqual(OWN.filter((f) => m.calls(f) > 0), [], "Architecture with Infrastructure changes: a frame that changes nothing computes none of these again");
+  assert.ok(fns <= 1500, `Architecture with Infrastructure changes: ${fns} function calls in a frame that changes nothing, at most 1500`);
+  assert.deepEqual(m.asked, { notify: 0, after: 0, every: 0, spawn: 0, exec: 0, read: 0, shared: 0 }, "and asks for no redraw, timer, task, command or shared write");
+  // Thirty resources that refer to the first: the frame draws the section without its picture, the layout comes after it.
+  const drawn = () => { S.ids = new Set(); const ran = counted(() => frame(v)); const ids = S.ids; S.ids = null; return { layouts: ran("arch.archLayout"), picture: ids.has("rv-infra-canvas") }; };
+  const lines = Array.from({ length: 30 }, (_x, i) => [`+resource "aws_sqs_queue" "q${i}" {`, i ? "+  redrive = aws_sqs_queue.q0.arn" : '+  name = "first"', "+}"]).flat();
+  v.infra = infraModel([{ path: "queues.tf", status: "added", lines: ["@@ -0,0 +1,90 @@", ...lines] }]); v.infraMemo = null;
+  assert.equal(v.infra.cards.length, 30);
+  assert.deepEqual(drawn(), { layouts: 0, picture: false }, "30 cards: the first frame lays nothing out");
+  later();
+  assert.equal(v.infraMemo?.pic.L.nodes.length, 30, "its layout is made right after the frame");
+  assert.deepEqual(drawn(), { layouts: 0, picture: true }, "and the next frame draws the picture without laying it out again");
+  await quiet(v);
+  assert.deepEqual(drawn(), { layouts: 0, picture: true }, "also once the search for a better layout is through");
+}
 await settle();
 console.log("perf ok");
