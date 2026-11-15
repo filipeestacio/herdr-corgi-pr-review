@@ -12,7 +12,7 @@ import { flowArch, seqLayout, wrapCount, SEQ, solidOver } from "./views.js";
 import { readableFade } from "./views.js"; // wave R2: dimmed text stays readable
 import { TYPE } from "./views.js"; // the text sizes (U34)
 
-export const STATUS_COLOR = { new: "ansi2", added: "ansi2", changed: "accent", unchanged: "muted", removed: "ansi1" };
+export const STATUS_COLOR = { new: "ansi2", added: "ansi2", changed: "accent", unchanged: "muted", removed: "ansi1", replaced: "ansi3" }; // replaced: infra.js, a resource that may be replaced
 export const SEVERITY_COLOR = { critical: "ansi1", high: "ansi1", medium: "ansi3", low: "ansi4", minimal: "ansi2" };
 const GLYPH = { external: "⇢", component: "◧", data: "⛁", service: "⚙", "api·service": "⇄", api: "⇄", context: "</>", queue: "☰", job: "⏱", ui: "▣" };
 
@@ -57,7 +57,7 @@ export function foldCard(t, id, title, right, open, toggle, body) {
 // chip naming the target. A path with `text` (arch.js, the Architecture page) has its label next to its number; the
 // others are listed in archLegend.
 // onNode(node, event, cx) opens a card's place (its "Show in diff ↗" link, for cards with at or file); decorate(node) adds lines
-// to a card (findings); opts {hl: path num to highlight, onHl(num | null, cx), focus: node id, hover: node id,
+// to a card (findings; a node's own `word` replaces its status on the chip and `dashed` its solid border: infra.js); opts {hl: path num to highlight, onHl(num | null, cx), focus: node id, hover: node id,
 // onFocus(id | null, cx), onHover(id | null, cx), marks: arch.js archMarks, zoom, keep: a Set of node ids (with
 // nothing focused or hovered, the other cards and the lines not between two of them are dimmed: the Security page's
 // view), numbers: false (no number on a line unless it carries a mark)}. A focused node (clicked) keeps its paths
@@ -160,7 +160,7 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
     // A caller from outside (type external) is a dashed capsule.
     const ext = n.type === "external";
     return dim(v_flex().id(`${id}-n${i}`).absolute().left(n.x).top(n.y).w(n.w).h(n.h).px(ext ? 16 : 10).py(8).gap(3).rounded(ext ? 28 : 8).border_1()
-      .border_color(lit ? t.accent : live ? c : ext ? t.muted : t.border).when(live && !st.dashed && !ext, (e) => e.border_l(4)).when(lit, (e) => e.border_2()).when(st.dashed || ext, (e) => e.border_dashed())
+      .border_color(lit ? t.accent : live ? c : ext ? t.muted : t.border).when(live && !st.dashed && !ext && !n.dashed, (e) => e.border_l(4)).when(lit, (e) => e.border_2()).when(st.dashed || ext || Boolean(n.dashed), (e) => e.border_dashed())
       .bg(lit ? solidOver(t.background, t.accent + "1a") : ext ? t.background : n.status === "new" ? solidOver(t.background, t.ansi2 + "14") : solidOver(t.background, t.surface))
       .when(Boolean(tip), (e) => e.tooltip(tip))
       .when(Boolean(opts.onFocus), (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => opts.onFocus(opts.focus === n.id ? null : n.id, cx)))
@@ -185,7 +185,7 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
         .child(div().flex_1())
         .when(open && Boolean(opts.onFocus) && n.w >= ARCH.W, (e) => e.child(div().id(`${id}-o${i}`).flex_none().px(4).rounded(4).text_color(t.accent).cursor_pointer().hover((s) => s.bg(t.hover))
           .tooltip("Show this place in the diff").child("Show in diff ↗").on_click((ev, cx) => { onNode(n, ev, cx); cx.stop_propagation(); })))
-        .when(Boolean(n.status) && !(ext && n.status === "unchanged"), (e) => e.child(chip(t, n.status === "new" ? "ADDED" : n.status.toUpperCase(), c, false, `${id}-st${i}`, `Status in this PR: ${n.status === "new" ? "added" : n.status}`)))), dimN(n), cardFade);
+        .when(Boolean(n.status) && !(ext && n.status === "unchanged"), (e) => e.child(chip(t, n.word ?? (n.status === "new" ? "ADDED" : n.status.toUpperCase()), c, false, `${id}-st${i}`, `Status in this PR: ${n.word ? n.word.toLowerCase() : n.status === "new" ? "added" : n.status}`)))), dimN(n), cardFade);
   });
   // An orchestrator's states: a lane down the card, one row each; a state that calls a component ends in "→" where its
   // line leaves the card.

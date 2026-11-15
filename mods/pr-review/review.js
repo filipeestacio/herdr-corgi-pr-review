@@ -56,6 +56,8 @@ import { scopeTable, scopeConflicts, runSummary, AREA_NAME, areaFindings, surfac
 import * as TH from "./threads.js";
 import { leftWidth, rowClick, CHIP_W, ASK_W, keyRoute, scopeLine, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf, rangeLabel, pinAnchor, pinAdd, pinDrop, pinsOf, pinsOn, codePins, drillPush, drillTo, crumbs, drillKey, cachePut, mapDrill, exploreId, exploreIndex, exploreAi, pathOf, lineOf, repoOfRemote, exploreTrust, layersForNode } from "./explore.js";
 import { TYPE } from "./views.js"; // the text sizes (U34)
+import { isIac, dirOf, infraModel, infraPicture } from "./infra.js"; // "Infrastructure changes" on the Architecture page
+import { infraSection } from "./infra-view.js";
 
 const LEVEL = { high: "ansi1", medium: "ansi3", low: "ansi4", skim: "muted" };
 const COVER = { seen: ["done", "ansi2"], partly: ["partly", "ansi3"], absent: ["missing", "ansi1"], extra: ["extra (not asked)", "ansi4"] };
@@ -564,7 +566,7 @@ export const ReviewMode = {
     this.full = {}; this.gaps = {}; this.whole = new Set(); this.collapsed = new Set(); this.hunks = null;
     this.rowsMemo = null; this.ghMemo = null; this.fitMemos = null; // what was computed for the PR before goes with it
     this.ctx = null; this.since = null; this.sinceOn = false; this.lastReviewed = null; this.page = "overview"; this.aiFile = null; this.needClone = null;
-    this.resumed = null; this.resumeIn = null; this.pendingScroll = null;
+    this.resumed = null; this.resumeIn = null; this.pendingScroll = null; this.infra = null; this.infraMemo = null;
   },
 
   // A new diff: its hunks, progress and the cached analysis, if any.
@@ -601,6 +603,7 @@ export const ReviewMode = {
     const reg = JSON.parse(await readTextFile(openFile()).catch(() => null) ?? "[]").find((r) => r.url === url);
     this.lastReviewed = reg?.reviewed ?? null;
     this.makeWorktree(cx);
+    this.loadInfra(cx);
     this.loadAi(cx, "cache"); // never runs by itself: Analyze is a click
     await this.loadFindings(cx);
     this.registerReview(cx); // opened: an open review from now on
@@ -682,7 +685,7 @@ export const ReviewMode = {
       if (!shared("gh.login")) exec("gh", ["api", "user", "--jq", ".login"]).then((r) => { if (r.code === 0) { setShared("gh.login", r.stdout.trim()); this.applyTrust(); } }).catch(() => null);
       this.applyTrust();
       if (this.pendingRun) { this.pendingRun = false; this.loadAi(cx, "run"); }
-      this.loadSince(cx); this.loadContext(cx);
+      this.loadSince(cx); this.loadContext(cx); this.loadInfra(cx);
       cx.notify();
     });
   },
@@ -3178,7 +3181,7 @@ export const ReviewMode = {
     const more = () => visualsCard(this.ai.visuals, t, "rv-arch-vis", (at, cx) => this.jumpTo(at, cx), this.archVisTab ?? 0, (k, cx) => { this.archVisTab = k; cx.notify(); }, this.wrapX());
     const out = (list) => (parts ? list : v_flex().gap(12).children(list.map(([, el]) => el)));
     if (!a) return out([["head", this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams")], ["none", div().text_size(TYPE.body).text_color(t.muted).child(this.ai ? "This analysis has no architecture picture (older analysis, or the PR touches no architecture). Re-analyze for one." : "No analysis yet: Analyze in the left column.")],
-      ...(this.ai?.visuals?.length > 0 ? [["views", div().w_full().child(more())]] : [])]);
+      ...this.infraPart(t), ...(this.ai?.visuals?.length > 0 ? [["views", div().w_full().child(more())]] : [])]);
     const groups = new Set(a.nodes.map((n) => n.group)).size, L = this.archL(), fit = this.archFitOn(), marks = this.archMarksNow();
     // The first time, and after Fit changed the layout, the picture starts at the way in (the Internet card), wherever
     // the layout put it. Not before the view is measured: Fit switches itself on then, and the cards move.
@@ -3212,7 +3215,42 @@ export const ReviewMode = {
           .child(this.fold.archCalls ? "▾" : "▸").child(`Calls without their whole text in the picture · ${L.paths.filter((p) => !p.text || p.text.cut).length}`))
         .when(Boolean(this.fold.archCalls), (e) => e.child(archLegend(L, t, "rv-arch-edges", "Calls without their whole text in the picture", opts)))]] : []),
       ...((this.ai.components ?? []).length ? [["components", this.componentsTable(t, a)]] : []),
+      ...this.infraPart(t),
       ...(this.ai?.visuals?.length > 0 ? [["views", v_flex().gap(12).child(div().pt(6).text_size(TYPE.body).font_semibold().text_color(t.muted).child("More views")).child(div().w_full().child(more()))]] : [])]);
+  },
+
+  // The infrastructure files of the patch with their text at the PR head, for "Infrastructure changes" (infra.js: static,
+  // no model). Without a checkout: what the patch itself holds (added and deleted files). With one: the changed
+  // files and, for Terraform, the other .tf files of their folders, read from the checkout. Which of them exist is
+  // asked through safegit.py (ls-files -s: tracked regular files only, so a link out of the checkout is not followed).
+  loadInfra(cx) {
+    const url = this.prSel?.url, patch = this.patch ?? [], w = this.worktree, files = patch.filter((f) => isIac(f.path) && !f.binary);
+    this.infra = files.length ? infraModel(files) : null; this.infraMemo = null;
+    if (!files.length || !w?.path) return;
+    cx.spawn(async (cx) => {
+      const tf = [...new Set(files.filter((f) => /\.tf(vars)?$/.test(f.path)).map((f) => dirOf(f.path)))], want = files.filter((f) => f.status !== "added" && f.status !== "deleted").map((f) => f.path);
+      if (!tf.length && !want.length) return;
+      const r = await exec("python3", [`${appHome()}/mods/pr-review/safegit.py`, w.path, "ls-files", "-s", "--", ...tf.map((d) => `${d ? `${d}/` : ""}*.tf`), ...want], { timeout: 30000 }).catch(() => null);
+      if (r?.code !== 0 || this.prSel?.url !== url || this.patch !== patch) return;
+      const listed = r.stdout.split("\n").map((l) => /^100\d+ \S+ \d\t(.+)$/.exec(l)?.[1]).filter((p) => p && !p.startsWith('"')), texts = new Map();
+      // ponytail: at most 200 files (Terraform first), one after the other, and one parse in one slice (about 50 ms
+      // for a megabyte of .tf): a module larger than that is read in part; split the parse over timers if it matters.
+      for (const p of listed.filter((x) => want.includes(x) || (/\.tf$/.test(x) && tf.includes(dirOf(x)))).sort((x, y) => /\.tf$/.test(y) - /\.tf$/.test(x)).slice(0, 200)) { const text = await readTextFile(`${w.path}/${p}`).catch(() => null); if (typeof text === "string") texts.set(p, text); }
+      if (this.prSel?.url !== url || this.patch !== patch) return;
+      this.infra = infraModel(files.map((f) => ({ ...f, head: texts.get(f.path) })), [...texts].filter(([p]) => !files.some((f) => f.path === p)).map(([path, text]) => ({ path, text })));
+      this.infraMemo = null; cx.notify();
+    });
+  },
+  // "Infrastructure changes" as a part of the Architecture page, only when the diff has infrastructure code. A click on
+  // a card leads to the resource in the diff (no panel of its own), a finding's mark to the finding.
+  infraPart(t) {
+    const m = this.exMode ? null : this.infra;
+    if (!m) return [];
+    const fs = this.openFindings(), key = fs.map((f) => `${f.id}|${f.severity}`).join();
+    if (m.cards.length && (this.infraMemo?.model !== m || this.infraMemo.key !== key)) this.infraMemo = { model: m, key, pic: infraPicture(m, fs) };
+    const o = this.archOpts("infra");
+    return [["infra", infraSection(t, { model: m, pic: m.cards.length ? this.infraMemo.pic : null, onJump: (at, cx) => this.jumpTo(at, cx), hl: o.hl, onHl: o.onHl,
+      canvas: (L, decorate, marks) => this.archCanvas(t, L, { ...o, onFocus: null, marks, zoom: settings().zoom || 1 }, { id: "rv-infra-canvas", pic: "rv-infra", wrap: false, decorate, notes: false }) })]];
   },
 
   // The picture: wider than the view and Wrap on (archWrapOn, off by default), in bands stacked top to bottom (arch.js
@@ -5504,7 +5542,7 @@ export const ReviewMode = {
       findings: () => findingsMd(findings, { ...base, statusOf, asks, notes: this.openSugs(), sources: this.findingSources().map((x) => x.text) }),
       layer: () => layerMd(layer, { ...base, n: this.cur + 1, files: this.filesOf(layer), findings: this.layerFindings(layer), statusOf, open: this.openFindings(), deps: this.stepDeps(layer).map(([d]) => plain(d.title)),
         access: layerAccess(ai?.access, this.filesOf(layer))?.text ?? null, hunks: this.present(layer).map((id) => this.byId.get(id)).filter(Boolean).map((h) => ({ path: h.path, rows: h.rows })) }),
-      arch: () => architectureMd({ ...base, ai, findings, statusOf, layersOf: (n) => this.cardLayerList(n).map((s) => plain(s.title)),
+      arch: () => architectureMd({ ...base, ai, findings, statusOf, infra: this.exMode ? null : this.infra, layersOf: (n) => this.cardLayerList(n).map((s) => plain(s.title)),
         placesIn: (path) => [...(this.fileHunks ?? new Map())].filter(([p]) => p === path || p.endsWith(`/${path}`) || path.endsWith(`/${p}`)).flatMap(([, h]) => h).length }),
       blast: () => securityMd({ ...base, ai, findings, statusOf, runs: this.find.runs, eff: ai?.arch ? this.effZones(ai.arch) : null, extra: this.secExtra(crossingsOf({ arch: ai?.arch ?? null, access: ai?.access ?? [], threats: ai?.threats ?? [], gates: ai?.gates ?? [], bypasses: ai?.bypasses ?? [], findings: this.openFindings() })) }),
       res: () => resilienceMd({ ...base, res: this.resNow(), arch: ai?.arch ?? null, names: new Map((ai?.arch?.nodes ?? []).map((n) => [n.id, n.label ?? n.id])), findings, statusOf, probes: this.resNow() ? this.probesNow() : null,

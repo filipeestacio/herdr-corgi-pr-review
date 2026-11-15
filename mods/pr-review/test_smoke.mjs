@@ -98,7 +98,7 @@ async function open({ diff, analysis = null, findings = null, ctx = null, pr = 2
   v.hunks = hunksOf(v.patch).map((h) => ({ ...h, rows: diffRows(h.lines) }));
   v.byId = new Map(v.hunks.map((h) => [h.id, h])); v.fileHunks = new Map();
   for (const h of v.hunks) v.fileHunks.set(h.path, [...(v.fileHunks.get(h.path) ?? []), h]);
-  v.collapsed = new Set(foldOnOpen(v.patch));
+  v.collapsed = new Set(foldOnOpen(v.patch)); v.loadInfra(cx); // as onSource does: the infrastructure files of the patch
   v.ctx = ctx ? JSON.parse(ctx) : null; v.head = v.ctx?.head ?? null;
   await v.loadFindings(cx);
   if (analysis) v.ai = v.mapSaved(JSON.parse(analysis), true);
@@ -513,9 +513,9 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   // second wording (the text has it as Certainty and Preconditions).
   const NOT_COPIED = [/recommended because/, /^Re-run \(/, /^Run probe/, /^last run .* ago/, /^A click shows the way\.$/, /^Verify (all \d+ )?with an agent/, /^Derived from the code that was read;$/, /^It needs nothing else:$/, /^it holds as the code stands\.$/, /lit on the map, the rest dimmed/, /^Open a path to light it on the map\.$/,
     /^in a sandbox, without network, at most 30 s$/, /^\d+ more: /, /^\d+ [^.]*(criteria|high|medium|low|observable|blockers?|paths?) ▸$/, /^GitHub read .* ago/, /^call over a trust boundary$/, /^Look inside/, /Ask names it/, /^This analysis has no further details for this card\.$/, /^“Look inside” reads/, /^“↻ Refresh diagrams”/,
-    /^and \d+ more in the Findings tab$/, /^Ask about this layer$/, /^A finding sent to Fix stays unresolved and shows here/, /^not counted as findings$/];
+    /^and \d+ more in the Findings tab$/, /^Ask about this layer$/, /^A finding sent to Fix stays unresolved and shows here/, /^not counted as findings$/, /^References without their text in the picture$/, /^Analyze in the left column\.$/];
   const norm = (x) => String(x).toLowerCase().replace(/,? \d+ (s|min|h|d|days?) ago/g, "").replace(/#\d+;|#quot;|#lt;|#gt;/g, " ").replace(/[^a-z0-9äöüß]+/g, " ").trim();
-  const drawn = (states, part) => { const all = new Set(); for (const st of states) { st(); S.texts = null; S.lists.length = 0; v.render(cx); S.lists.length = 0; S.texts = all; part(); } S.texts = null; return [...all]; };
+  const drawn = (states, part, w = v) => { const all = new Set(); for (const st of states) { st(); S.texts = null; S.lists.length = 0; w.render(cx); S.lists.length = 0; S.texts = all; part(); } S.texts = null; return [...all]; };
   const missing = (texts, md) => { const text = norm(md), segs = [...new Set(texts.flatMap((x) => x.split(/(?<=[.;:])\s+|\s·\s|\n+/)).map((x) => x.replace(/^\*\*Suggested:\*\*\s*/, "").replace(/ and \d+ more$/, "")))].filter((x) => x.trim().length >= 20 && x.trim().split(/\s+/).length >= 4);
     return segs.filter((x) => !NOT_COPIED.some((re) => re.test(x.trim())) && norm(x.replace(/…$/, "")) && !text.includes(norm(x.replace(/…$/, "")))); };
   // A Mermaid block as Mermaid reads it: a known diagram, every line of a known form, frames closed, no call to a card that is not there.
@@ -535,14 +535,14 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     return bad;
   };
   const pictures = (md) => { const out = [], lines = md.split("\n"); for (let i = 0; i < lines.length; i++) if (lines[i] === "```mermaid") { const k = lines.indexOf("```", i + 1); out.push(lines.slice(i + 1, k)); i = k; } return out; };
-  const check = (name, texts, want) => {
-    const md = v.mdText(true), pics = pictures(md), heads = md.split("\n").filter((l) => /^Code `[^`]+:\d+-\d+`:$/.test(l)), cs = codeStats(md);
+  const check = (name, texts, want, w = v) => {
+    const md = w.mdText(true), pics = pictures(md), heads = md.split("\n").filter((l) => /^Code `[^`]+:\d+-\d+`:$/.test(l)), cs = codeStats(md);
     assert.deepEqual(missing(texts, md), [], `${name}: what the page shows and its Markdown does not have`);
     assert.deepEqual(pics.flatMap(mermaidBad), [], `${name}: a Mermaid block does not read as one`);
     for (const [kind, n] of Object.entries(want)) assert.ok(pics.filter((p) => p[0].startsWith(kind)).length >= n, `${name}: ${n} ${kind} pictures as Mermaid, found ${pics.filter((p) => p[0].startsWith(kind)).length}`);
     assert.equal(new Set(heads).size, heads.length, `${name}: a place's code is there once`);
     assert.ok(cs.blocks === heads.length && cs.lines >= cs.blocks && !/```\w*\n```/.test(md), `${name}: no code block is empty`);
-    assert.ok(mdParts(md).parts.length > 0 && mdParts(v.mdText(false)).parts.every((p) => !p.lines.some((l) => /^Code `/.test(l))), `${name}: sections for the preview, and none of the code without the code context`);
+    assert.ok(mdParts(md).parts.length > 0 && mdParts(w.mdText(false)).parts.every((p) => !p.lines.some((l) => /^Code `/.test(l))), `${name}: sections for the preview, and none of the code without the code context`);
     return md;
   };
   const a = v.ai.arch, paths = v.resNow().paths, page = () => v.pageView(tt);
@@ -566,7 +566,26 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   v.command("page:overview", cx); v.rulesOpen = true; v.relOpen = true;
   check("Overview", drawn([() => {}, ...[...v.ai.asks.map((x) => x.id), "other"].map((k) => () => v.command(`criterion:${k}`, cx))], page), {});
   v.command("page:arch", cx);
-  check("Architecture impact", drawn([() => {}, ...a.nodes.map((n) => () => v.command(`card:${n.id}`, cx))], page), { flowchart: 1 });
+  const archMd = check("Architecture impact", drawn([() => {}, ...a.nodes.map((n) => () => v.command(`card:${n.id}`, cx))], page), { flowchart: 2 });
+  // "Infrastructure changes" (infra.js): PR #2 adds template.yaml, so the page has the part and the text its section, from the diff alone.
+  assert.ok(v.infra?.cards.length === 3 && v.infra.edges.length === 2 && v.pageParts.includes("infra") && S.clicks.has("rv-infra-n0"), "PR #2's template is the Infrastructure changes part, its cards drawn");
+  assert.match(archMd, /## Infrastructure changes \(3\)\n\nDerived from the diff; no change set was created, so replacements and computed values are estimates\.\n\n3 resources: 3 added\./, "the section's text says where it comes from and what it counts");
+  assert.ok(mdParts(archMd).parts.some((p) => /^Infrastructure changes \(3\)$/.test(p.title)), "it is a part of its own in the preview");
+  // A Terraform PR without an analysis (demo/fixtures/infra): first only what the patch holds, then, with the files of
+  // the checkout, every state of a card, the notice above the picture, the rows under it; the page and its text agree.
+  {
+    const { infraModel } = await import("./infra.js"), { readdirSync } = await import("node:fs"), IF = new URL("../../demo/fixtures/infra/", import.meta.url), ifx = (p) => readFileSync(new URL(p, IF), "utf8");
+    const w = await open({ diff: ifx("pr.diff"), pr: 7, title: "feat(orders): drop the dead-letter queue" }), dir = "stacks/orders";
+    assert.deepEqual([w.infra.cards.length, w.infra.unread.length], [0, 5], "without a checkout the changed files are named as not read");
+    act(w, "page:arch", "Infrastructure changes: the files are not read yet");
+    w.infra = infraModel(w.patch.map((f) => ({ ...f, head: ifx(`head/${f.path}`) })), readdirSync(new URL(`head/${dir}/`, IF)).filter((n) => !w.patch.some((f) => f.path === `${dir}/${n}`)).map((n) => ({ path: `${dir}/${n}`, text: ifx(`head/${dir}/${n}`) })));
+    act(w, "page:arch", "Infrastructure changes: the Terraform fixture");
+    assert.ok(w.pageParts.includes("infra") && S.clicks.has("rv-infra-note0") && S.clicks.has("rv-infra-row0") && S.clicks.has("rv-infra-n12"), "the notice, the rows and thirteen cards are drawn");
+    const text = check("Infrastructure changes (Terraform)", drawn([() => {}], () => w.pageView(tt), w), { flowchart: 1 }, w);
+    assert.match(text, /The analysis has no architecture picture for this PR\.\n\n## Infrastructure changes \(10\)/, "the section needs no analysis");
+    click(`rv-infra-n${w.infraMemo.pic.L.nodes.findIndex((n) => n.at === "stacks/orders/queue.tf:2")}`, "a card of the infrastructure picture"); draw(w, "Infrastructure changes: a card clicked");
+    assert.ok(w.page === null && !w.note, "a click on a changed resource's card leads to it in the diff");
+  }
   v.command("order:reading", cx); v.command("step:0", cx);
   const st = v.steps()[0];
   check("a layer", drawn([() => {}], () => { v.stepRow(st, 0, tt); v.item({ t: "step", s: st, i: 0 }, tt); }), { stateDiagram: (st.visuals ?? []).filter((x) => x.kind === "state_machine").length });
