@@ -345,7 +345,8 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   assert.equal(S.store.get("worktrees.prs.review"), null, "without the Worktrees mod nothing is written");
   Map.prototype.set.call(S.store, "worktrees.api", { version: 1 }); reset(); v.render(cx); await flush();
   assert.deepEqual([n.writes, S.store.get("worktrees.providers"), S.store.get("worktrees.prs.review").prs.map((x) => `${x.repo}#${x.number} ${x.branch} ${x.state}`), S.store.get("worktrees.prs.review").run],
-    [["worktrees.providers", "worktrees.prs.review"], ["review"], ["o/r#7 feat/7 open"], [["pr-review.pick:{repo}#{number}", {}]]], "the mod appears: the provider and its list, once");
+    [["worktrees.providers", "worktrees.prs.review"], ["review"], ["o/r#7 feat/7 open"], [["pr-review.want:{repo}#{number}", {}]]], "the mod appears: the provider and its list, once");
+  assert.deepEqual([S.store.get("worktrees.prs.review").view, typeof S.store.get("worktrees.prs.review").at], ["all", "number"], "with the view it was made for and when");
   await idle(v, "the same list: renders write nothing");
   reset(); await v.loadPrs(cx); v.publishWorktrees(); assert.deepEqual(n.writes, [], "prs.json read again with the same PRs: nothing written");
   file([mine(7, "merged"), mine(8)]); reset(); await v.loadPrs(cx);
@@ -354,5 +355,23 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   Map.prototype.set.call(S.store, "pr.source", "review"); v.srcLists.review = { key: "review", prs: [] };
   v.panelCommand("pick:o/r#8", cx); await flush();
   assert.deepEqual([v.prSel?.number, v.sourceNow()], [8, "review"], "the PR is picked, the source stays");
+  // The click itself is a wish ("want:<ref>", shared "pr.pick"): kept by whichever copy gets it, also the chip's while
+  // no panel is there, and taken once by the panel: at once when it is there, else when it appears within a minute.
+  v.choose(null, cx); await flush(); reset(); v.panelCommand("want:o/r#7", cx); v.render(cx); await flush();
+  assert.deepEqual([v.prSel?.number, S.store.get("pr.pick"), n.writes.filter((k) => k === "pr.pick").length], [7, null, 2], "with the panel there: picked at once, the wish cleared (one write, one clear)");
+  S.props = { part: "mini" }; const chip = new PrReview(); chip.init({}, cx); reset();
+  chip.wantPick("o/r#8"); chip.wantPick("o/r#8");
+  assert.deepEqual([S.store.get("pr.pick")?.ref, n.writes], ["o/r#8", ["pr.pick"]], "no panel: the chip's copy keeps the wish; the same wish twice is one write");
+  // (late starts with the Worktrees mod there: init announces before its lists exist, which once threw.)
+  S.props = {}; const late = new PrReview(); late.init({}, cx); await flush(); late.render(cx); await flush();
+  assert.deepEqual([late.prSel?.number, S.store.get("pr.pick")], [8, null], "the panel appears: it picks that PR and clears the wish");
+  Map.prototype.set.call(S.store, "pr.pick", { ref: "o/r#7", at: Date.now() - 120000 }); late.render(cx); await flush();
+  assert.deepEqual([late.prSel?.number, S.store.get("pr.pick")], [8, null], "a wish older than a minute is dropped, not carried out");
+  // The view shows other contexts and no panel is there: the chip's copy empties the list (as of now), once.
+  Map.prototype.set.call(S.store, "worktrees.prs.review", { at: 1, view: "work", run: [], prs: [{ repo: "o/r", branch: "x", number: 1, state: "open" }] });
+  S.props = { part: "mini" }; reset(); chip.render(cx); await flush(); chip.render(cx); await flush();
+  const wl = S.store.get("worktrees.prs.review");
+  assert.deepEqual([n.writes, wl.prs, wl.view, wl.at > 1], [["worktrees.prs.review"], [], "all", true], "a list of another view is emptied with a new time, once");
+  S.props = {};
 }
 console.log("panel ok");
