@@ -6,6 +6,7 @@ import { v_flex, h_flex } from "gpui-base";
 import { levels } from "./pr.js";
 import { markLine } from "./arch.js";
 import { archLayout, archFocus, stateLayout, transitionText, sourceStyle, hasSources, pathMark, SPEC_TIP, ARCH, LABEL } from "./arch.js";
+import { clampText, MARK_CARD_H } from "./arch.js"; // wave C2: a mark's finding in two lines
 import { flowArch, seqLayout, wrapCount, SEQ, solidOver } from "./views.js";
 import { readableFade } from "./views.js"; // wave R2: dimmed text stays readable
 
@@ -21,8 +22,9 @@ export const sourceLegend = (t) => h_flex().gap(10).text_size(11.5).text_color(t
   .map(([label, c, dashed]) => h_flex().gap(4).items_center().child(div().w(16).h(0).border_t(2).border_color(c).when(dashed, (e) => e.border_dashed())).child(label)));
 
 // id + tip (optional): a hover explanation; the id must be unique on the page.
-export const chip = (t, label, color, solid = false, id = null, tip = null) => div().flex_none().px(6).py(1).rounded(5).border_1().border_color(color)
-  .when(Boolean(id && tip), (e) => e.id(id).tooltip(tip)).when(solid, (e) => e.bg(color + "26")).text_size(11).font_semibold().text_color(color).child(label);
+// A state, not a button: tinted (solid: stronger), without the frame that buttons have.
+export const chip = (t, label, color, solid = false, id = null, tip = null) => div().flex_none().px(6).py(1).rounded(5).bg(color + (solid ? "33" : "1a"))
+  .when(Boolean(id && tip), (e) => e.id(id).tooltip(tip)).text_size(11).font_semibold().text_color(color).child(label);
 
 // What a triage chip (pr.js triageOf) means, for its tooltip.
 const TRIAGE_TIP = { "High security risk": "Unresolved high-severity security findings, or a high merge risk", "Security risk": "Unresolved security findings on this PR",
@@ -72,15 +74,19 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
   const markChip = (m, cid) => chip(t, `${cap(m.severity)} · ${m.n}`, sevOf(m), true, cid, markTip(m));
   // A mark's row: the chip and the finding it is about (arch.js markLine); a click opens that finding (opts.onFinding).
   // stacked: the finding on a line of its own under the chip (above a call's text, where the row is narrow).
-  const markRow = (m, cid, h, stacked = false) => { const ml = markLine(m); return (stacked ? v_flex().items_start() : h_flex().items_center()).id(`${cid}-r`).flex_none().h(h).gap(stacked ? 1 : 4).tooltip(markTip(m))
+  // Wave C2 V1: the finding in up to two lines, cut at a word (arch.js clampText); w: the room for its text in px.
+  const markRow = (m, cid, h, stacked = false, w = 160) => { const ml = markLine(m, 40), text = clampText(ml.text, Math.max(8, Math.floor(w / 6)), 2).text;
+    return (stacked ? v_flex().items_start() : h_flex().items_start()).id(`${cid}-r`).flex_none().h(h).gap(stacked ? 1 : 4).tooltip(markTip(m))
     .when(Boolean(opts.onFinding && ml.top), (e) => e.cursor_pointer().on_click((_e, cx) => { opts.onFinding(ml.top, cx); cx.stop_propagation(); }))
-    .child(markChip(m, cid)).child(div().when(!stacked, (e) => e.flex_1()).when(stacked, (e) => e.flex_none().h(14).line_height(1.3)).w_full().min_w(0).truncate().text_size(10.5).text_color(t.foreground).child(ml.text)); };
+    .child(markChip(m, cid)).child(div().when(!stacked, (e) => e.flex_1()).when(stacked, (e) => e.flex_none()).w_full().min_w(0).h(28).overflow_hidden().whitespace_normal().line_height(1.3).text_size(10.5).text_color(t.foreground).child(text)); };
   // opts.zoom (the person's zoom): a line is at least one device pixel wide, or it is not drawn when zoomed far out.
   const thin = Math.max(1.5, 1 / (opts.zoom || 1)), W = (p) => (opts.hl === p.num ? thin + 1 : thin);
   const dim = (el, on, by = fade) => (on ? el.opacity(by) : el);
   // Dimmed text (a call's text, its number, a chip, a card) stays at 4.5:1 against the background; lines go to `fade`.
   // L.label: the text's size from the layout (the Resilience map's is larger).
   const textFade = readableFade(t.foreground, t.background, fade), LB = L.label ?? { ...LABEL, px: 10.5 };
+  // A dimmed card's second colour (its description, a call's text in grey) stays at 4.5:1 too (wave C2 V5).
+  const cardFade = Math.max(0.6, readableFade(t.muted, t.background, 0.6));
   // A call's own tooltip (tip: the Security picture's, what the check is and holds on) says more than its label again.
   const tipOf = (p) => [p.tip ?? p.label, sourceStyle(p.source).tip, p.evidence].filter(Boolean).join("\n");
   const hop = ARCH.HOP, els = [];
@@ -121,7 +127,7 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
     .text_size(LB.px).text_color(t.foreground).tooltip(tipOf(p))
     .when(Boolean(opts.onHl), (e) => e.on_hover((on, cx) => opts.onHl(on ? p.num : null, cx)))
     .when(Boolean(p.evidence && opts.onJump), (e) => e.cursor_pointer().on_click((_e, cx) => { opts.onJump(p.evidence, cx); cx.stop_propagation(); }))
-    .when(Boolean(p.text.mark && pathMark(marks, p)), (e) => e.child(markRow(pathMark(marks, p), `${id}-tm${i}`, LABEL.MARK, true)))
+    .when(Boolean(p.text.mark && pathMark(marks, p)), (e) => e.child(markRow(pathMark(marks, p), `${id}-tm${i}`, LABEL.MARK, true, p.text.w - 6)))
     .children(p.text.lines.map((l) => div().flex_none().h(LB.LH).line_height(LB.LH / LB.px).whitespace_nowrap().child(l))), dimP(p), textFade)] : []));
   const chips = L.paths.flatMap((p, i) => (p.chip ? [dim(div().id(`${id}-c${i}`).absolute().left(p.chip.x).top(p.chip.y).w(p.chip.w).h(p.chip.h).px(5)
     .flex().items_center().gap(6).rounded(6).border_1().border_color(bare(p) ? sevOf(bare(p)) : color(p)).when(p.dashed, (e) => e.border_dashed()).bg(opts.hl === p.num ? t.accent + "33" : t.background)
@@ -169,7 +175,7 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
         .when(Boolean(st.chip), (e) => e.child(specTag(t, `${id}-sp${i}`))))
       .when(n.descLines > 0, (e) => e.child(div().flex_none().h(n.descLines * 15).overflow_hidden().text_size(11).line_height(1.35).whitespace_normal().text_color(t.muted).child(n.desc)))
       .children(decorate ? decorate(n) : [])
-      .when(Boolean(marks?.nodes?.get(n.id)), (e) => e.child(markRow(marks.nodes.get(n.id), `${id}-m${i}`, 15)))
+      .when(Boolean(marks?.nodes?.get(n.id)), (e) => e.child(markRow(marks.nodes.get(n.id), `${id}-m${i}`, MARK_CARD_H, true, n.w - 20)))
       .child(div().flex_1())
       // No type word here: it was cut off in most cards (the glyph's tooltip and the card's panel name the type). A
       // narrow card (Fit, a layer's flow) has no room for the link either: its panel has it.
@@ -177,7 +183,7 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
         .child(div().flex_1())
         .when(open && Boolean(opts.onFocus) && n.w >= ARCH.W, (e) => e.child(div().id(`${id}-o${i}`).flex_none().px(4).rounded(4).text_color(t.accent).cursor_pointer().hover((s) => s.bg(t.hover))
           .tooltip("Show this place in the diff").child("Show in diff ↗").on_click((ev, cx) => { onNode(n, ev, cx); cx.stop_propagation(); })))
-        .when(Boolean(n.status) && !(ext && n.status === "unchanged"), (e) => e.child(chip(t, n.status === "new" ? "ADDED" : n.status.toUpperCase(), c, false, `${id}-st${i}`, `Status in this PR: ${n.status === "new" ? "added" : n.status}`)))), dimN(n), Math.max(textFade, 0.6));
+        .when(Boolean(n.status) && !(ext && n.status === "unchanged"), (e) => e.child(chip(t, n.status === "new" ? "ADDED" : n.status.toUpperCase(), c, false, `${id}-st${i}`, `Status in this PR: ${n.status === "new" ? "added" : n.status}`)))), dimN(n), cardFade);
   });
   // An orchestrator's states: a lane down the card, one row each; a state that calls a component ends in "→" where its
   // line leaves the card.
@@ -186,7 +192,7 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
       .child(div().flex_none().w(14).text_color(s.source !== "existing" && (s.status === "new" || s.status === "changed") ? t.accent : t.muted).child(STATE_GLYPH[s.type] ?? "▭"))
       .child(div().flex_1().min_w(0).truncate().text_color(s.source === "spec" || s.source === "existing" ? t.muted : t.foreground).child(s.name))
       .when(s.source === "spec", (e) => e.child(specTag(t, `${id}-s${i}-${k}-sp`)))
-      .when(Boolean(s.calls), (e) => e.child(div().flex_none().text_color(t.muted).child("→"))))), dimN(n), Math.max(textFade, 0.6))]));
+      .when(Boolean(s.calls), (e) => e.child(div().flex_none().text_color(t.muted).child("→"))))), dimN(n), cardFade)]));
   // opts.edgeNotes: Map(edge index -> text), a path's marks on a call itself (the Resilience map: ⏱ 10 s, ↻ no limit),
   // just above the call's text, else above its number.
   const notes = !opts.edgeNotes ? [] : L.paths.flatMap((p, i) => {
