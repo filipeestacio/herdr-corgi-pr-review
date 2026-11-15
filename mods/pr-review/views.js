@@ -1299,12 +1299,56 @@ export function fixCostLine(usd, tier, n = 1) {
 // analysis (not "All changes"); finding: one is open in the Findings tab. Files and Comments have no page of their
 // own to copy: the ⋯ menu's entry copies the Overview there.
 export function mdTarget({ tab, page = null, layer = null, finding = false } = {}) {
-  const tip = (what) => `Copies ${what} as Markdown to the clipboard, to hand to an agent or a person. Nothing is posted.`;
-  if (tab === "findings") return finding ? { kind: "finding", name: "the open finding", tip: tip("the open finding: where it is, who found it, how sure it is, its effect, detail and suggestion") }
+  const tip = (what) => `Copies ${what} as Markdown to the clipboard, to hand to an agent or a person. A preview first: you see every section with its size and can leave some out. Nothing is posted.`;
+  if (tab === "findings") return finding ? { kind: "finding", name: "the open finding", tip: tip("the open finding: where it is, who found it, how sure it is, its code, effect, detail, suggestion and what is known about its fix") }
     : { kind: "findings", name: "the unresolved findings", tip: tip("every unresolved finding in full, most severe first. With a finding open: only that one") };
-  if (tab === "steps" && !page && layer) return { kind: "layer", name: `the layer "${layer}"`, tip: tip("this layer: what it is for, its files, the questions to check, its findings and pictures") };
-  if (tab === "steps" && page === "arch") return { kind: "arch", name: "the architecture", tip: tip("this page: the map as a Mermaid diagram, the cards, where a finding breaks the flow, the components and the other pictures") };
-  if (tab === "steps" && page === "blast") return { kind: "blast", name: "the Security page", tip: tip("this page: the unresolved security findings in full, the ways in, the rights granted and what was checked") };
-  if (tab === "steps" && page === "res") return { kind: "res", name: "the Resilience page", tip: tip("this page: the paths with their retries, time budget and action, the other checks and what to watch after the merge") };
-  return { kind: "overview", name: "the Overview", tip: tip("the Overview: the verdict, the criteria with their findings, what changed, the behavior and the repo's rules and checks") };
+  if (tab === "steps" && !page && layer) return { kind: "layer", name: `the layer "${layer}"`, tip: tip("this layer: what it is for, its files, the questions to check, its findings with their code, its pictures as Mermaid, the functions with example values and the first lines of each hunk") };
+  if (tab === "steps" && page === "arch") return { kind: "arch", name: "the architecture", tip: tip("this page: the map as a Mermaid diagram with its systems, zones and finding marks, every card and call, where a finding breaks the flow, the components and the other pictures") };
+  if (tab === "steps" && page === "blast") return { kind: "blast", name: "the Security page", tip: tip("this page, nothing folded: every trust boundary crossing with its check, way and threats, the boundary picture as Mermaid, the security findings in full with their code, the rights granted and what each run checked") };
+  if (tab === "steps" && page === "res") return { kind: "res", name: "the Resilience page", tip: tip("this page, nothing folded: the parts this PR adds, every path with its way as Mermaid, retries, time budget, race, state, action and probe, the calls with their limits, all checks and what to watch after the merge") };
+  return { kind: "overview", name: "the Overview", tip: tip("the Overview: the verdict, everything before the merge with its code, the criteria with their findings, what was not checked, what the PR does, the new parts, the repo's rules and checks and the related PRs") };
 }
+
+// ---- the Security page's picture and its "if … is compromised" lines, for the page and for its Markdown alike
+// The crossings as a picture: {groups, nodes, edges} for archLayout or a Mermaid flowchart. The trust zones are the
+// frames (operators before public → authenticated → internal → data), only the cards at a crossing; whoever arrives
+// from outside is a card of its own. Each line is numbered as its row in the table (num(r)) and says its check and
+// what goes over it; `dashed`: not assessed; `tip`: the same in sentences. Pure.
+export function secPicture(rows, arch, num = (r) => rows.indexOf(r) + 1) {
+  const nodes = new Map(), edges = [], card = (id) => (arch?.nodes ?? []).find((n) => n.id === id);
+  const lane = (r, side) => (side === "from" && r.kind === "operator" ? "operator" : (side === "from" ? r.from.trust : r.to.trust) ?? "unknown");
+  const put = (id, label, type, trust) => { if (!nodes.has(id)) nodes.set(id, { id, label, type, group: `t:${trust}`, status: undefined, description: "" }); return id; };
+  for (const r of rows) {
+    const from = r.ends.from ? put(r.ends.from, card(r.ends.from)?.label ?? r.ends.from, card(r.ends.from)?.type, lane(r, "from")) : put(`\0who:${r.kind}:${r.identity}`, r.kind === "operator" ? r.from.name : r.identity ?? "unnamed", r.kind === "entry" ? "external" : "component", lane(r, "from"));
+    const to = r.ends.to ? put(r.ends.to, card(r.ends.to)?.label ?? r.ends.to, card(r.ends.to)?.type, lane(r, "to")) : null;
+    // The line says what goes over it (what an attacker controls, else the call or right); a check by its kind; a
+    // crossing assessed and still unchecked "no check"; one not assessed only its dashes. The rest is the tooltip.
+    const over = r.carries?.length ? [].concat(r.carries).slice(0, 2).join(", ") : r.kind === "right" ? (r.actions ?? []).slice(0, 1).join("") || r.what : r.what;
+    const check = r.kind === "bypass" ? "bypasses the boundary" : r.check ? `‖ ${r.check.replace(/, in the (code|config)$/, "")}` : r.result !== "not_assessed" ? "no check" : null;
+    const tip = [`${num(r)}. ${r.what || over}`, r.kind === "bypass" ? "A call in one process: it bypasses the boundary of the code it reaches." : r.check ? `Checked by ${r.check}${r.expects ? `, expects ${r.expects}` : ""}${r.holds_if ? `; holds only if ${r.holds_if}` : ""}.` : r.result === "not_assessed" ? "Not assessed: no threat names this crossing." : "No check on this crossing.", r.result !== "not_assessed" ? `Result: ${r.result}.` : null].filter(Boolean).join("\n");
+    if (to) edges.push({ from, to, label: `${num(r)}. ${[check, over].filter(Boolean).join(" · ")}`, tip, crosses: r.kind !== "bypass", dashed: r.result === "not_assessed", evidence: r.at ?? undefined });
+  }
+  const used = new Set([...nodes.values()].map((n) => n.group)), groups = ["operator", ...TRUST_ORDER, "unknown"].filter((g) => used.has(`t:${g}`))
+    .map((g) => ({ id: `t:${g}`, label: g === "operator" ? "Operators and CI" : g === "unknown" ? "Zone not named" : g[0].toUpperCase() + g.slice(1),
+      kind: (arch?.zones ?? []).filter((z) => z.trust === g).map((z) => z.name).join(", "), trust: TRUST_ORDER.includes(g) ? g : undefined }));
+  return { groups, nodes: [...nodes.values()], edges };
+}
+// "If Front desk Lambda is compromised, it can …": for each frame with a way in, what its principal may do (the rights
+// rows that start there, unused ones too) and the cards of other frames it calls in the same process. Pure.
+export function secBlast(rows, arch) {
+  const nodeOf = (id) => (arch?.nodes ?? []).find((n) => n.id === id), label = (id) => nodeOf(id)?.label ?? (arch?.groups ?? []).find((g) => g.id === id)?.label ?? (id === "internet" ? "Internet" : id);
+  const groupOf = (id) => nodeOf(id)?.group ?? null, frames = [...new Set(rows.filter((r) => r.kind === "entry").map((r) => groupOf(r.ends.to)).filter(Boolean))];
+  return frames.map((g) => {
+    const name = (arch?.groups ?? []).find((x) => x.id === g)?.label ?? g, rights = rows.filter((r) => r.kind === "right" && r.ends.from && (groupOf(r.ends.from) === g || runsIn(nodeOf(r.ends.from)).includes(g)));
+    // What it reaches in one process: the cards of other frames its cards call without a boundary, and on from there.
+    const reach = [], seen = new Set((arch?.nodes ?? []).filter((n) => n.group === g || runsIn(n).includes(g)).map((n) => n.id));
+    for (const id of [...seen]) for (const e of arch?.edges ?? []) if (e.from === id && inProcess(e) && !seen.has(e.to)) { seen.add(e.to); reach.push(label(e.to)); for (const e2 of arch.edges) if (e2.from === e.to && inProcess(e2) && !seen.has(e2.to)) { seen.add(e2.to); reach.push(label(e2.to)); } }
+    const can = [...rights.map((r) => `${(r.actions ?? []).join(", ") || "act"} on ${label(r.ends.to)}${r.unused ? " (granted, not used)" : ""}`), reach.length && `call ${reach.join(" and ")} in the same process`].filter(Boolean);
+    return can.length ? `If ${name} is compromised, it can ${can.join("; ")}.` : `If ${name} is compromised, it holds no right the data names.`;
+  });
+}
+
+// Why an open path of the Resilience page has no picture, by its kind (the page's line and its Markdown).
+export const RES_NO_PICTURE = { retry: "the run named no retry or redelivery on this path's calls", timeout: "the run named no batch size, time per record and timeout for this path",
+  race: "the run named no steps of this race", state: "the run named no writers for this state" };
+export const resNoPicture = (p) => `no picture: ${RES_NO_PICTURE[p?.kind] ?? "the run named no call on this path that multiplies or times out"}`;

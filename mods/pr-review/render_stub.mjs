@@ -21,6 +21,7 @@ S.el = () => {
         if (k === "when") return a[0] ? a[1](p) : p;
         if (k === "map") return a[0](p);
         if (k === "id") S.ids?.add(String(a[0])); // a test that asks what was drawn sets S.ids = new Set()
+        if (k === "child" && typeof a[0] === "string") S.texts?.add(a[0]); // … and S.texts = new Set() for the texts drawn
         if (k === "children") { for (const c of a[0]) if (bad(c)) S.errs.push(`children: ${c} at ${where()}`); return p; }
         a.forEach((v, i) => { if (bad(v)) S.errs.push(`${String(k)}(arg ${i} = ${v}) at ${where()}`); });
         return p;
@@ -44,7 +45,7 @@ S.vlist = (id, n, sizes, key, render) => {
 const STUBS = {
   "gpui-kit": "const S = globalThis.__rv, B = new Proxy({}, { get: () => () => B }); globalThis.window ??= { paint_path: () => S.el() }; export class View {} export const div = S.el, svg = S.el, image = S.el, PathBuilder = { stroke: () => B, fill: () => B }, Background = { pattern_slash: () => B, solid: () => B, checkerboard: () => B };",
   "gpui-base": `const S = globalThis.__rv, f = () => S.el(), n = { new: () => S.handle() };
-    export const v_flex = f, h_flex = f, v_virtual_list = S.vlist, Scrollbar = { vertical: f, horizontal: f }, TextView = { markdown: f };
+    export const v_flex = f, h_flex = f, v_virtual_list = S.vlist, Scrollbar = { vertical: f, horizontal: f }, TextView = { markdown: (_id, text) => { S.texts?.add(String(text ?? "")); return S.el(); } };
     export const Input = Object.assign(f, { new: f }), Textarea = Object.assign(() => S.el(), { new: f }), Editor = Object.assign(() => S.el(), { new: f });
     export const HoverCard = { new: f };
     export const VirtualListScrollHandle = n, ScrollHandle = n, TextareaState = n, InputState = n, EditorState = n;`,
