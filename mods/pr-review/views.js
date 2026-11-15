@@ -1731,3 +1731,18 @@ export function probeBaseWord(x, byDiff, words = {}) {
 }
 // The diff dated this path itself: old or new is known without a probe (resByProbe sets byProbe when the probe did).
 export const datedByDiff = (p) => typeof p?.pre_existing === "boolean" && !p.byProbe;
+
+// ---- what pr-review tells the Worktrees mod (its PROVIDERS.md: shared "worktrees.prs.review")
+// The PRs pr-review knows, one per URL, as that mod takes them: {repo, branch (the head branch), number, state, url,
+// base, headSha, updatedAt}. Open and draft ones, and the ones merged or closed within `weeks`; without a head branch
+// a PR says nothing about a checkout and is left out. Sorted, so equal lists give equal text; at most `max`.
+export function worktreePrs(lists, now = Date.now(), weeks = 4, max = 200) {
+  const seen = new Map();
+  for (const p of (lists ?? []).flat()) {
+    if (!p?.url || !p.repo || !p.head || seen.has(p.url)) continue;
+    const state = ["open", "draft", "merged", "closed"].includes(p.state) ? p.state : "open";
+    if (state !== "open" && state !== "draft" && now - Date.parse(p.updatedAt ?? 0) > weeks * 7 * 86400000) continue;
+    seen.set(p.url, { repo: p.repo, branch: p.head, number: p.number, state, url: p.url, ...(p.base ? { base: p.base } : {}), ...(p.headSha ? { headSha: p.headSha } : {}), ...(p.updatedAt ? { updatedAt: p.updatedAt } : {}) });
+  }
+  return [...seen.values()].sort((a, b) => a.repo.localeCompare(b.repo) || a.number - b.number).slice(0, max);
+}
