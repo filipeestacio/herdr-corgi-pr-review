@@ -16,7 +16,8 @@ if (!existsSync(FIXTURES)) {
 }
 
 const { default: PrReview } = await import("./main.js");
-const { splitPatch, hunksOf, diffRows, hash, mapReview } = await import("./pr.js");
+const { splitPatch, hunksOf, diffRows, hash, mapReview, lineKey } = await import("./pr.js");
+const { langOf } = await import("./syntax.js");
 const { foldOnOpen, resWatch } = await import("./views.js");
 const R = await import("./review.js");
 const { withThreadState, addThreads, addFollowup } = await import("./threads.js");
@@ -111,6 +112,40 @@ async function open({ diff, analysis = null, findings = null, ctx = null, pr = 2
 async function tour(v, name) {
   const at = (x) => `${name}: ${x}`;
   for (const tab of ["files", "steps", "comments", "findings"]) act(v, tab, at(`tab ${tab}`));
+  // Syntax colors: once the queue is drained, a line of code that starts with a keyword has spans. It keeps them with a
+  // line selected (the row arrays stay the same ones), with line wrap on, and gets them again with the whole file
+  // shown (new rows). A job that throws and one whose slice was stopped leave the queue; the others get their colors.
+  {
+    const drain = () => { for (let k = 0; k < 5000 && v.hlQueue?.size; k++) v.drainHighlight(cx); };
+    const keyword = (x) => x.t === "row" && langOf(x.path) && /^\s*(def|class|import|from|return|if|for) /.test(x.src[x.ri].text ?? "");
+    const colored = (what) => {
+      draw(v, at(what)); drain(); draw(v, at(what));
+      assert.ok(!v.hlQueue?.size && !v.hlBusy, at(`${what}: nothing waits for its colors`));
+      const it = v.items.find(keyword);
+      if (it) assert.ok(v.spanMap.get(it.src)?.spans[it.ri]?.some((s) => s.kind === "keyword"), at(`${what}: "${it.src[it.ri].text.trim()}" of ${it.path} is colored`));
+      return it;
+    };
+    v.command("files", cx);
+    const it = colored("colors");
+    if (name.startsWith("PR #2")) assert.ok(it, at("a line of code with a keyword is shown"));
+    if (it) {
+      const row = it.src[it.ri], before = it.src;
+      v.fsel = { path: it.path, a: lineKey(row), b: lineKey(row) };
+      assert.equal(colored("colors with a line selected")?.src, before, at("a selection keeps the file's rows, and with them their colors"));
+      S.store.set("review.wrap", true); assert.equal(colored("colors with line wrap")?.src, before, at("line wrap keeps the file's rows")); S.store.set("review.wrap", false);
+      v.fsel = null;
+      v.full[it.path] = before.filter((r) => r.number !== undefined && r.kind !== "-").map((r) => r.text); v.whole.add(it.path);
+      assert.notEqual(colored("colors of the whole file")?.src, before, at("the whole file has rows of its own, colored too"));
+      v.whole.delete(it.path); delete v.full[it.path];
+      // The queue with a job that throws, one left running by a stopped slice, and a good one behind them.
+      const good = { shown: [{ kind: "+", text: "import os" }], spans: [] }, bad = (extra) => ({ shown: null, lang: "python", inf: { spans: [] }, ...extra });
+      v.hlQueue = new Map([["throws", bad({})], ["stopped", bad({ running: true, shown: [] })], [good, { shown: good.shown, lang: "python", inf: good }]]);
+      v.hlBusy = true; v.hlAt = Date.now() - 5000; // a slice that never came back
+      draw(v, at("colors after a stopped slice")); assert.ok(Date.now() - v.hlAt < 1000, at("the render starts the queue again"));
+      drain();
+      assert.ok(!v.hlQueue.size && !v.hlBusy && good.spans[0]?.length > 0, at("a job that throws or hangs does not keep the others plain"));
+    }
+  }
   // A comment written at a line: the composer, then a pending comment in the diff, the Comments tab and Finish.
   const line = v.hunks[0] && `${v.hunks[0].path}:${v.hunks[0].rows.find((r) => r.kind === "+")?.n ?? 1}`;
   // GitHub's comments on that line: Markdown, a suggestion, a reply, a bot, an outdated one, a resolved thread.
