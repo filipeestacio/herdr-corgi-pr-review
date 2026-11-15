@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.11.2 (2026-11-15)
+
+### Fixes
+
+- pr-review: many infrastructure resources are cards by file, not a picture with lines
+- pr-review: an infrastructure card is titled by its type, then its name
+
 ## 0.11.1 (2026-11-15)
 
 ### Fixes
