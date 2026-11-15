@@ -1037,7 +1037,11 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   const EV = await import("./editor-view.js"); EV.forgetEditors();
   const started = [];
   for (const app of ["/Applications/Visual Studio Code.app", "/Applications/IntelliJ IDEA.app"]) S.files.set(`${app}/Contents/Info.plist`, "<plist/>");
-  S.exec = async (cmd, args = []) => { if (cmd === "open") { started.push(args); return { code: 0, stdout: "", stderr: "" }; } throw new Error("stub"); };
+  // git's index as safegit.py gives it for a PR that is not trusted: `is` says what the asked path is there.
+  let is = "100644", asked = 0;
+  S.exec = async (cmd, args = []) => { if (cmd === "open") { started.push(args); return { code: 0, stdout: "", stderr: "" }; }
+    if (cmd === "python3" && args[0].endsWith("/safegit.py") && args[2] === "ls-files") { asked++; return { code: 0, stdout: is === "folder" ? `100644 a 0\t${args.at(-1)}/x.py\x00100644 b 0\t${args.at(-1)}/y.py\x00` : `${is} a 0\t${args.at(-1)}\x00`, stderr: "" }; }
+    throw new Error("stub"); };
   for (const trusted of [true, false]) {
     const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json"), trusted }), who = trusted ? "your PR" : "someone else's PR";
     EV.forgetEditors(); // also the first round's "Opening …"
@@ -1056,6 +1060,13 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     act(v, "files", `editor, ${who}: the link says Opening`); assert.equal(v.fileEditMark(v.patch[0]) && EV.isOpening({ root: "/h/w", file: v.patch[0].path, line: 3 }), true);
     started.length = 0; v.command("editor:", cx); await settle();
     assert.equal(started.length, trusted ? 1 : 0, `${who}: its folder ${trusted ? "opens" : "does not open"}`);
+    // What the path is in the checkout decides for a PR that is not trusted, whatever its text: a symlink the PR
+    // added, a submodule and a folder named like a file start nothing and say why. Your own PR is not asked about.
+    if (!trusted) for (const [kind, path] of [["120000", "docs/link"], ["160000", "vendor/lib"], ["folder", "src/"], ["folder", "library"]]) {
+      is = kind; started.length = 0; S.toasts = []; v.command(`editor:${path}`, cx); await settle();
+      assert.deepEqual([started, S.toasts.map((x) => /not a regular file of its checkout/.test(x.body))], [[], [true]], `${who}: ${path} (${kind}) is not opened`);
+    }
+    is = "100644"; S.toasts = null; assert.equal(asked > 0, !trusted, `${who}: git is ${trusted ? "not " : ""}asked what the path is`); asked = 0;
     EV.openEditorMenu(v, v.fileEditTarget(v.patch[0])); v.command("editor-use:idea", cx); await settle(); draw(v, `editor, ${who}: another editor picked for the project`);
     assert.equal(S.store.get("editor.choice")?.repos?.["/h/w/.git"]?.main, "idea");
     S.props = {}; const panel = new PrReview(); panel.init({}, cx); await settle(); panel.prSel = v.prSel; panel.context = panel.key(); panel.patch = v.patch; panel.files = v.patch; panel.open = v.patch[0].path; draw(panel, `editor, ${who}: the panel's head and its file link`);

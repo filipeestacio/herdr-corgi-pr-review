@@ -2,6 +2,7 @@
 // editor a place gets, what may be opened, and the one program a click starts. No editor is started here: only the
 // program and its arguments are looked at.)
 import assert from "node:assert/strict";
+import { trackedFile, buildScript } from "./editor.js";
 import { EDITORS, LINE_BASE, PROJECT_MARKS, candidates, foundFrom, installed, gitLink, editorOf, withChoice, safeFile, foreignBlocked, openArgv, extraEditors, linkLabel, shortLabel, openingLabel, linkTip, menuItems } from "./editor.js";
 
 // Installed editors are found by reading files: each app's Info.plist in both Applications folders (macOS), the
@@ -46,6 +47,28 @@ assert.equal(withChoice(null, null, false, "idea").changed, false);
 assert.equal(safeFile("/co", "src/./a/../b.py"), "/co/src/b.py");
 assert.deepEqual(["../x", "a/../../x", "/etc/passwd", "", "a\0b", "."].map((f) => safeFile("/co", f)), [null, null, null, null, null, null], "nothing that leaves the checkout");
 assert.deepEqual(["x.code-workspace", ".vscode/tasks.json", ".idea/workspace.xml", "pom.xml", "sub/build.gradle.kts", "Makefile", "package.json", "src/a.py", "docs/pom.md"].map(foreignBlocked), [true, true, true, true, true, true, true, false, false]);
+// … by pattern and whatever the case, not by a list of exact names: any Gradle script, IntelliJ's project and module
+// files, Ant's build file, a dev container, and the same names written in another case.
+assert.deepEqual(["ci/deps.gradle", "x.gradle.kts", "old.ipr", "mod.iml", "build.xml", "POM.XML", "Build.Gradle", ".VSCode/tasks.json", "a.CODE-WORKSPACE", ".devcontainer/devcontainer.json", "sub/.DevContainer/x.sh", "MAKEFILE"].map(foreignBlocked),
+  Array(12).fill(true));
+assert.deepEqual(["src/gradle.py", "docs/build.xml.md", "iml/a.txt", "devcontainer/readme.md"].map(foreignBlocked), [false, false, false, false]);
+// A build script of such a PR never goes to IntelliJ: not by its ending, not by a pick, not as the only editor.
+{
+  const both = { vscode: { app: "/A" }, idea: { app: "/B" } }, picked = { default: "idea", repos: { "/g": { main: "idea" } } };
+  assert.deepEqual(["a.main.kts", "ci/Jenkins.GROOVY", "x/pom.xml", "A.java"].map(buildScript), [true, true, true, false]);
+  assert.equal(editorOf({ file: "a.main.kts", found: both }).id, "idea", "your own: the JVM file's editor");
+  assert.equal(editorOf({ file: "a.main.kts", found: both, foreign: true, choice: picked, key: "/g" }).id, "vscode");
+  assert.equal(editorOf({ file: "a.main.kts", found: { idea: { app: "/B" } }, foreign: true }), null, "only IntelliJ is there: no link");
+  assert.equal(editorOf({ file: "A.java", found: both, foreign: true }).id, "idea", "source is not a build script");
+}
+// What a path is in the checkout, from `git ls-files -s -z -- <path>`: only one regular file at that very path.
+{
+  const row = (mode, path) => `${mode} 1de565933b05f74c75ff9a6520af5f9f8a5a2f1d 0\t${path}\0`;
+  assert.deepEqual([trackedFile(row("100644", "src/a b.py"), "src/a b.py"), trackedFile(row("100755", "bin/run"), "bin/run")], [true, true]);
+  assert.deepEqual([trackedFile(row("120000", "docs/link"), "docs/link"), trackedFile(row("160000", "vendor/lib"), "vendor/lib"), trackedFile("", "gone.py"), trackedFile(null, "x"),
+    trackedFile(row("100644", "src/a.py") + row("100644", "src/b.py"), "src"), trackedFile(row("100644", "src/only.py"), "src"), trackedFile(row("100644", "src/only.py"), "src/"),
+    trackedFile("100644 1de5 1\ta.py\0", "a.py")], Array(8).fill(false), "a symlink, a submodule, nothing, a folder (also one with a single file), a conflict stage");
+}
 
 // What a click starts: ONE program with its arguments, never a shell line. macOS: `open` with the editor's URL for a
 // file (every path segment encoded) and with the app for a folder; Linux: the editor's own tool.

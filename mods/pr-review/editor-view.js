@@ -66,7 +66,7 @@ export function editorFor(target, cx) {
   if (!root) return null;
   const s = stored(), r = rootInfo(root, cx);
   if (!s) { if (!looking && !asked && cx) { asked = true; later(cx, () => lookForEditors().then(() => { asked = false; })); } return null; }
-  return E.editorOf({ file: target.file ?? null, marks: r.marks, linked: r.linked, choice: shared(CHOICE), key: r.common, found: s.found, extra });
+  return E.editorOf({ file: target.file ?? null, marks: r.marks, linked: r.linked, choice: shared(CHOICE), key: r.common, found: s.found, extra, foreign: Boolean(target.foreign) });
 }
 
 // Why a target has no link at all, or null: a PR that is not trusted never opens a folder, nor a file an editor acts
@@ -78,11 +78,24 @@ function refused(target) {
   return null;
 }
 
-// A click: ONE process. target: {root (the checkout), file? (below it), line?, foreign?, where? (words for the
-// tooltip)}. id: another editor than the target's own (the ▾ menu). Gives a sentence when it did not open.
+// A path of a PR that is not trusted, by what it is in the checkout and not by its text: asked of git's index through
+// safegit.py (read-only, follows no file). Only one tracked regular file passes: not a folder ("src/"), not a symlink
+// the PR put there (it may name anything on this machine), not a submodule. Every place that draws a link comes
+// through openIn, also those whose path an analysis wrote.
+async function foreignFile(target) {
+  const rel = E.safeFile("/", target.file)?.slice(1);
+  const r = await exec("python3", [`${appHome()}/mods/pr-review/safegit.py`, target.root, "ls-files", "-s", "-z", "--", rel], { timeout: 20000 }).catch(() => null);
+  return r?.code === 0 && E.trackedFile(r.stdout, rel);
+}
+
+// A click: ONE editor process (for a PR that is not trusted, git is asked what the path is first). target: {root
+// (the checkout), file? (below it), line?, foreign?, where? (words for the tooltip)}. id: another editor than the
+// target's own (the ▾ menu). Gives a sentence when it did not open.
 export async function openIn(target, id = null) {
   const no = refused(target);
   if (no) return no;
+  if (target.foreign && !(await foreignFile(target))) return "This PR is not trusted yet, and this path is not a regular file of its checkout (a folder, a link or a submodule are not opened). Read it here.";
+  if (target.foreign && id === "idea" && E.buildScript(target.file)) return "This PR is not trusted yet, and IntelliJ IDEA evaluates a build script when it opens one. Open it in another editor, or read it here.";
   const found = await lookForEditors();
   await rootRead(target.root); // a folder no link has shown yet: its kind of project and its `.git` first, then the editor
   const use = id ?? editorFor(target, null)?.id;

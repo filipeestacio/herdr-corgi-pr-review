@@ -62,8 +62,10 @@ export function gitLink(text, root) {
 // for its main checkout and for its worktrees); else a file goes by its ending, a folder by the kind of project, and
 // a linked worktree's folder to VS Code (IntelliJ would import the project there and write .idea/ into it); else the
 // general default. One that is not installed is passed over for the first installed one. {id, why} or null.
-export function editorOf({ file = null, marks = [], linked = false, choice = null, key = null, found = {}, extra = [] } = {}) {
-  const have = (id) => Boolean(id) && (Boolean(found?.[id]) || extraEditors(extra).some((e) => e.id === id));
+// foreign: a PR that is not trusted, whose build scripts never get IntelliJ (buildScript).
+export function editorOf({ file = null, marks = [], linked = false, choice = null, key = null, found = {}, extra = [], foreign = false } = {}) {
+  const noIdea = foreign && buildScript(file);
+  const have = (id) => Boolean(id) && !(noIdea && id === "idea") && (Boolean(found?.[id]) || extraEditors(extra).some((e) => e.id === id));
   const picked = choice?.repos?.[key]?.[linked ? "worktree" : "main"];
   const jvm = (marks ?? []).some((m) => PROJECT_MARKS.includes(m));
   const tries = [[picked, linked ? "chosen for worktrees of this repo" : "chosen for this repo"],
@@ -91,10 +93,21 @@ export function safeFile(root, file) {
   for (const s of String(file).split("/")) { if (s === "" || s === ".") continue; if (s === "..") { if (!out.length) return null; out.pop(); } else out.push(s); }
   return out.length ? `${String(root).replace(/\/+$/, "")}/${out.join("/")}` : null;
 }
-// Files of a PR that is not trusted which an editor acts on by opening them or their folder: a workspace file, the
-// editor's own settings, build files. They are read in Herdr only.
-const BUILD_FILES = ["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "gradlew", "gradlew.bat", "Makefile", "package.json", "tasks.json", "launch.json"];
-export const foreignBlocked = (file) => /\.code-workspace$/.test(String(file)) || /(^|\/)\.(vscode|idea)\//.test(String(file)) || BUILD_FILES.includes(String(file).split("/").pop());
+// What a path of a checkout is, as git's index says it (`git ls-files -s -z -- <path>`, asked through safegit.py):
+// true only for exactly one entry, a regular file (mode 100…) at that very path. A folder gives its files, a symlink
+// has mode 120000 and a submodule 160000, an untracked or missing path gives nothing. rel: the path below the root.
+export function trackedFile(out, rel) {
+  const rows = String(out ?? "").split("\0").filter(Boolean), m = rows.length === 1 ? /^100\d{3} [0-9a-f]+ 0\t([^]+)$/.exec(rows[0]) : null;
+  return Boolean(m) && m[1] === rel;
+}
+// Files of a PR that is not trusted which an editor acts on by opening them or their folder: a workspace or project
+// file, the editor's own settings, a dev container, build files. By pattern and whatever the case (a file system that
+// ignores case opens Build.Gradle as build.gradle). They are read in Herdr only.
+const BUILD_FILES = ["pom.xml", "build.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "gradlew", "gradlew.bat", "makefile", "package.json", "tasks.json", "launch.json"];
+export const foreignBlocked = (file) => /\.(gradle(\.kts)?|ipr|iml|code-workspace)$/i.test(String(file)) || /(^|\/)\.(vscode|idea|devcontainer)\//i.test(String(file)) || BUILD_FILES.includes(String(file).split("/").pop().toLowerCase());
+// A build script by its ending: IntelliJ evaluates such a file (and offers to import its project) when it opens it,
+// so one from a PR that is not trusted never goes there, whatever was picked.
+export const buildScript = (file) => /(\.(kts|gradle|groovy)|(^|\/)pom\.xml)$/i.test(String(file ?? ""));
 
 // ---- what a click starts
 // ONE program with its arguments (never a shell line), or null when it cannot be opened. target: {dir} a folder, or
