@@ -65,7 +65,7 @@ SCHEMA = {
         "id": S, "failure": S, "at": AT, "signal": {"enum": SIGNALS}, "alarm": {"enum": ALARMS}, **FINDS}}},
     "paths": {"type": "array", "items": {"type": "object", "required": ["id", "kind", "trigger", "steps", "end", "result", "failing", "raises", "signal", "seen_as"], "properties": {
         "id": S, "kind": {"enum": PATH_KINDS}, "trigger": S, "steps": STRINGS, "end": S, "result": {"enum": RESULTS}, "limited_by": AT,
-        "failing": {"type": "array", "items": {"enum": FAILING}}, "raises": BOOL, "signal": {"enum": SIGNALS}, "seen_as": S, **FINDS, "probe": S, "note": S, "action": S}}},
+        "failing": {"type": "array", "items": {"enum": FAILING}}, "raises": BOOL, "possible_today": BOOL, "signal": {"enum": SIGNALS}, "seen_as": S, **FINDS, "probe": S, "note": S, "action": S}}},
     "checks": {"type": "array", "items": {"type": "object", "required": ["check", "result", "why"], "properties": {
         "check": S, "result": {"enum": CHECK_RESULTS}, "at": AT, "why": S, **FINDS}}},
     "additions": {"type": "array", "items": {"type": "object", "required": ["what", "kind", "at", "solves", "likelihood", "cost", "simpler", "result"], "properties": {
@@ -143,8 +143,9 @@ ASK = (
     "a limit stops (mitigated) or that you could not assess; a change that adds a queue usually has several; p1, p2, …: "
     "kind, trigger, steps (node ids, edge ids e<k> or file:line, in order), end, result (finding: a finding shows it; "
     "mitigated: only when a protection stands behind it (a dead-letter queue, a limit, a guard, a timeout) and limited_by "
-    "names its file:line; not_assessed, also for a path that cannot happen today for another reason, with a note such "
-    "as \"not possible today, see p6\"), failing (what it breaks, from: "
+    "names its file:line; not_assessed), possible_today (false when the path cannot happen until something this PR "
+    "leaves undone is done, e.g. nothing publishes to the queue yet; result stays what the code shows, and note names "
+    "what is missing, e.g. \"not possible today, see p4\"), failing (what it breaks, from: "
     + ", ".join(FAILING) + "), raises (true when the failure ends in an exception or timeout that leaves a function "
     "unhandled: the platform counts it as an error), signal (what shows the failure: alarm, log at warning or above, "
     "metric, dlq, platform_only for the platform's own error metrics of a function that raises, none only when nothing "
@@ -239,7 +240,7 @@ def view(answer, findings, pic, known, changed=None):
                       "limited_by": at(p.get("limited_by")) or None, "failing": [x for x in dict.fromkeys(p.get("failing") or []) if x in FAILING],
                       # signal (what shows the failure) and seen_as; visible is kept for older readers: anything but none
                       **signal_of(p), "findings": found, "probe": p.get("probe") if p.get("probe") in probe_ids else None, "note": str(p.get("note") or ""),
-                      "action": str(p.get("action") or "")})
+                      "action": str(p.get("action") or ""), "possible_today": p.get("possible_today") if isinstance(p.get("possible_today"), bool) else None})
     # The base rule: a new finding is the PR's only when its lines are lines the diff adds; a flaw whose lines stand
     # unchanged in the base was there before (the one-day window in reminders.py on the demo's base); without the diff
     # it is unknown (None: "old or new unclear").
