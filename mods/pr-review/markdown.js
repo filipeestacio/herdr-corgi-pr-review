@@ -15,6 +15,9 @@ import { archMarks } from "./arch.js";
 import { transitionMarks, surfaceOf, reachLevel, secOrder, EXPOSURE, inProcess, resNoPicture, resShown, probeBaseWord, datedByDiff } from "./views.js";
 import { doesList, surfaceLine, countLine, funnelShort, funnel as funnelOf, findingSteps } from "./pr.js";
 import { resDepRows } from "./views.js"; // Resilience: dependencies that fail or are overloaded
+import { timelineOf, timelineMd } from "./timeline.js"; // Resilience: the picture "Timing"
+import { faultTrees, faultFlow, FAULT_NOTE } from "./faulttree.js"; // Resilience: what follows from a dependency's case, as a tree
+import { impactDoc } from "./impact.js"; // the Architecture page's Impact section
 import { infraMd } from "./infra.js"; // the Architecture page's "Infrastructure changes"
 
 const STATE = { open: "Unresolved", progress: "Fix sent", fixed: "Fixed", dismissed: "Dismissed", recheck: "Unresolved, line changed" };
@@ -32,10 +35,11 @@ const doc = (...parts) => `${parts.flat(Infinity).filter((x) => x !== null && x 
 // ---- code context: the lines a place names, as the review holds them (no new fetches)
 
 const LANG = { py: "python", js: "javascript", mjs: "javascript", cjs: "javascript", ts: "typescript", tsx: "tsx", jsx: "jsx", json: "json", yaml: "yaml", yml: "yaml", sh: "bash", rs: "rust", go: "go",
-  java: "java", kt: "kotlin", rb: "ruby", tf: "hcl", toml: "toml", sql: "sql", html: "html", css: "css", md: "markdown" };
+  java: "java", kt: "kotlin", rb: "ruby", tf: "hcl", toml: "toml", sql: "sql", html: "html", css: "css", md: "markdown", ini: "ini", cfg: "ini", editorconfig: "ini" };
 // A fence's language: by the ending, else what the highlighter makes of the name or of the file's first line ("#!/bin/sh"
 // in bin/release, .envrc, a Git hook), so a script without an ending is fenced as bash.
-export const fenceLang = (file, first = "") => { const name = String(file).split("/").pop(), l = langOf(String(file), first); return LANG[name.split(".").pop()] ?? (/^(?:gnu)?makefile$|\.mk$/i.test(name) ? "makefile" : { shell: "bash", js: "javascript" }[l] ?? l ?? ""); };
+const FENCE = { shell: "bash", js: "javascript", make: "makefile", workflow: "yaml", spring: "yaml" }; // the highlighter's names that a fence spells otherwise
+export const fenceLang = (file, first = "") => { const name = String(file).split("/").pop(), l = langOf(String(file), first); return LANG[name.split(".").pop()] ?? FENCE[l] ?? l ?? ""; };
 export const CODE_MAX = 12; // lines of one block
 const CODE_PAD = 2; // lines around the place
 // A file's rows by its path, also by the end of it ("mailer.py:14" in a path step): Map(path -> rows) -> rowsOf(file).
@@ -362,7 +366,7 @@ export function layerMd(step, { pr, head, n = null, files = [], findings = [], s
 // card's zone in its text, the unresolved findings at a card or a call as arch.js archMarks counts them).
 // layersOf(n): the titles of the layers that read a card's code; placesIn(path): how many changed places of the PR
 // are in a file (both from the view; without them those lines are left out).
-export function architectureMd({ pr, head, ai, findings = [], statusOf = () => "open", code = null, layersOf = null, placesIn = null, infra = null }) {
+export function architectureMd({ pr, head, ai, findings = [], statusOf = () => "open", code = null, layersOf = null, placesIn = null, impact = null, infra = null }) {
   const a = ai?.arch, nodes = a?.nodes ?? [], name = (id) => flat(nodes.find((n) => n.id === id)?.label ?? (id === "internet" ? "Internet" : id));
   const openAll = findings.filter((f) => unresolved(statusOf(f))), marks = a ? archMarks(a, openAll, ai?.access, ai?.threats ?? []) : null, drawn = a ? mapArch(a, ai?.access ?? [], ai?.bypasses ?? []) : null, cx = codeContext(code);
   const call = (e, k) => [`${k + 1}`, `${name(e.from)} → ${name(e.to)}`, transitionText(e), [cardStatus(e) ?? (e.status && e.status !== "unchanged" ? e.status : ""), e.source === "spec" && "spec only", e.crosses && !e.in_process && "crosses a trust boundary", e.in_process && "same process"].filter(Boolean).join(", "),
@@ -399,10 +403,14 @@ export function architectureMd({ pr, head, ai, findings = [], statusOf = () => "
       (a.edges ?? []).length > 0 && [`## Calls (${a.edges.length})`, "", "Every call with its whole text, numbered as on the map.", "", ...table(["#", "Call", "What", "Status", "Unresolved findings"], a.edges.map(call))]],
     breaks.length > 0 && [`## Where the flow breaks (${breaks.length})`, "", ...breaks.map((f) => `- ${f.breaks.node ? `Card ${name(f.breaks.node)}` : `Call ${name(f.breaks.from)} → ${name(f.breaks.to)}`}: ${findingLine(f, statusOf(f))}`), ""],
     ai?.components?.length > 0 && [`## Components this PR adds or changes (${ai.components.length})`, "", ai.componentCounts?.codeowners === false && "This repository has no CODEOWNERS file, so no owner can be named.", "", ...componentsTable(ai.components)],
+    impact && impactSection(impactDoc(impact, openAll)),
     infra && ["", ...infraMd(infra, { table, flow: mermaidFlow, findings: openAll })], // "Infrastructure changes" (infra.js): from the diff, also without an analysis
     ai?.visuals?.length > 0 && [`## Other pictures (${ai.visuals.length})`, "", ...ai.visuals.map((v) => visualMd(v))],
     cx.on && breaks.length > 0 && [`## Code where the flow breaks`, "", ...breaks.flatMap((f) => cx.block(f.file, f.line, f.end))]);
 }
+
+// The Impact section (impact.js impactDoc): its lines, every caller as a table row, and the picture as a flowchart.
+const impactSection = (d) => ["", `## ${d.title}`, "", ...d.lines, ...(d.rows.length ? ["Callers and tests as a list:", "", ...table(d.head, d.rows)] : []), ...(d.flow.nodes.length ? [...mermaidFlow(d.flow), ""] : [])];
 
 // ---- the Security page
 
@@ -758,6 +766,7 @@ export function resilienceMd({ pr, head, res = null, names = new Map(), arch = n
   const depRows = resDepRows(res, order), down = depRows.flatMap((d) => [`- ${flat(d.dep)} (${[d.what, d.entry && `from ${flat(d.entry)}`, d.at].filter(Boolean).join(", ")})`,
     ...d.cases.map((c) => `  - ${flat(c.text)}${c.number ? `, path ${c.number}` : c.at ? ` (${c.at})` : ""}${c.effect ? `. ${flat(c.effect)}` : ""}`),
     ...(d.open.length ? [`  - The code cannot tell: ${d.open.join(", ")}.`] : [])]);
+  const trees = faultTrees(res, order, num);
   return doc(prLine({ pr, head }), "", "# Resilience", "",
     parts ? [parts.head, parts.counts.length > 0 && parts.counts.join(" · ")] : flat(res.summary ?? (paths.length ? "No path grows without limit or doubles an effect." : "")),
     [`${count(paths.length, "path")}`, `${count(clean.length, "check")} clean`, `${ncheck.length + (res.not_checked ?? []).length} not checkable`, res.head && `analysis of ${String(res.head).slice(0, 7)}`, cost !== null && cost !== undefined && `$${Number(cost).toFixed(2)}`].filter(Boolean).join(" · "),
@@ -769,6 +778,8 @@ export function resilienceMd({ pr, head, res = null, names = new Map(), arch = n
     (res.deps ?? []).length > 0 && [`## Calls and their limits (${res.deps.length})`, "", "What the map marks at a call: its timeout, retries and how a queue redelivers.", "",
       ...table(["Call", "Where", "Mode", "Limits"], res.deps.map((d) => [callOf(d), d.at ? `\`${d.at}\`` : "", d.mode ?? "", lim(d)]))],
     down.length > 0 && [`## When a dependency fails (${depRows.length})`, "", ...down, ""],
+    trees.length > 0 && [`## When a dependency fails, step by step (${trees.length})`, "", FAULT_NOTE, "", ...trees.flatMap(({ tree }) => [`### ${flat(tree.title)}`, "", ...mermaidFlow(faultFlow(tree)), ""])],
+    timelineMd(timelineOf(res, arch), num),
     other.length > 0 && [`## Other checks (${other.length})`, "", ...other.map(check), ""],
     clean.length > 0 && [`## Checked, clean (${clean.length})`, "", ...clean.map(check), ""],
     nc.length > 0 && [`## Not checkable (${nc.length})`, "", ...nc.map((x) => `- ${x}`), ""],

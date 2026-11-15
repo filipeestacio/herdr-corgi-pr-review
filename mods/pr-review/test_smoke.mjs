@@ -16,7 +16,8 @@ if (!existsSync(FIXTURES)) {
 }
 
 const { default: PrReview } = await import("./main.js");
-const { splitPatch, hunksOf, diffRows, hash, mapReview } = await import("./pr.js");
+const { splitPatch, hunksOf, diffRows, hash, mapReview, lineKey } = await import("./pr.js");
+const { langOf } = await import("./syntax.js");
 const { foldOnOpen, resWatch } = await import("./views.js");
 const R = await import("./review.js");
 const { withThreadState, addThreads, addFollowup } = await import("./threads.js");
@@ -87,11 +88,12 @@ async function deep(v, at) {
   v.defFile = null; v.worktree = wt;
 }
 
-async function open({ diff, analysis = null, findings = null, ctx = null, pr = 2, title = "feat(events): loan events", trusted = true }) {
+async function open({ diff, analysis = null, findings = null, ctx = null, pr = 2, title = "feat(events): loan events", trusted = true, impact = null }) {
   const url = `https://github.com/saefty/corgi-demo/pull/${pr}`, target = { url, repo: "saefty/corgi-demo", number: pr, title, base: "main", ...(trusted ? {} : { source: "repo", author: "someone" }) };
   S.store.clear(); S.files.clear(); S.props = null;
   S.store.set("review.target", target);
   if (findings) S.files.set(`/h/pr-data/findings/${hash(url)}.json`, findings);
+  if (impact && ctx) S.files.set(`/h/pr-data/cache/impact-${hash(url)}-${JSON.parse(ctx).head}.json`, impact); // the Impact section's cached result for this head
   const v = new PrReview(); v.init({}, cx);
   v.prSel = target; v.patch = splitPatch(diff);
   await v.applyResume(cx); assert.equal(v.resumed, url, "where you were is read: frames are no longer held");
@@ -111,6 +113,42 @@ async function open({ diff, analysis = null, findings = null, ctx = null, pr = 2
 async function tour(v, name) {
   const at = (x) => `${name}: ${x}`;
   for (const tab of ["files", "steps", "comments", "findings"]) act(v, tab, at(`tab ${tab}`));
+  // Syntax colors: once the queue is drained, a line of code that starts with a keyword has spans. It keeps them with a
+  // line selected (the row arrays stay the same ones), with line wrap on, and gets them again with the whole file
+  // shown (new rows). A job that throws and one whose slice was stopped leave the queue; the others get their colors.
+  {
+    const drain = () => { for (let k = 0; k < 5000 && v.hlQueue?.size; k++) v.drainHighlight(cx); };
+    const keyword = (x) => x.t === "row" && langOf(x.path) && /^\s*(def|class|import|from|return|if|for) /.test(x.src[x.ri].text ?? "");
+    const colored = (what) => {
+      draw(v, at(what)); drain(); draw(v, at(what));
+      assert.ok(!v.hlQueue?.size && !v.hlBusy, at(`${what}: nothing waits for its colors`));
+      const it = v.items.find(keyword);
+      if (it) assert.ok(v.spanMap.get(it.src)?.spans[it.ri]?.some((s) => s.kind === "keyword"), at(`${what}: "${it.src[it.ri].text.trim()}" of ${it.path} is colored`));
+      return it;
+    };
+    v.command("files", cx);
+    const it = colored("colors");
+    if (name.startsWith("PR #2")) assert.ok(it, at("a line of code with a keyword is shown"));
+    if (it) {
+      const row = it.src[it.ri], before = it.src;
+      v.fsel = { path: it.path, a: lineKey(row), b: lineKey(row) };
+      assert.equal(colored("colors with a line selected")?.src, before, at("a selection keeps the file's rows, and with them their colors"));
+      S.store.set("review.wrap", true); assert.equal(colored("colors with line wrap")?.src, before, at("line wrap keeps the file's rows")); S.store.set("review.wrap", false);
+      v.fsel = null;
+      v.full[it.path] = before.filter((r) => r.number !== undefined && r.kind !== "-").map((r) => r.text); v.whole.add(it.path);
+      assert.notEqual(colored("colors of the whole file")?.src, before, at("the whole file has rows of its own, colored too"));
+      v.whole.delete(it.path); delete v.full[it.path];
+      // The queue with a job that throws, one left running by a stopped slice, and a good one behind them.
+      const good = { shown: [{ kind: "+", text: "import os" }], spans: [] }, bad = (extra) => ({ shown: null, lang: "python", inf: { spans: [] }, ...extra });
+      v.hlQueue = new Map([["throws", bad({})], ["stopped", bad({ running: true, shown: [] })], [good, { shown: good.shown, lang: "python", inf: good }]]);
+      v.hlBusy = Date.now() - 1000; draw(v, at("colors while a slice runs")); assert.ok(Date.now() - v.hlBusy >= 1000, at("a slice that may still run is left alone"));
+      v.hlBusy = Date.now() - 5000; // a slice that never came back: Herdr stopped it, nothing was thrown
+      draw(v, at("colors after a stopped slice")); assert.ok(Date.now() - v.hlBusy < 1000, at("the render starts the queue again"));
+      drain();
+      assert.ok(!v.hlQueue.size && !v.hlBusy && good.spans[0]?.length > 0, at("a job that throws or hangs does not keep the others plain"));
+      draw(v, at("colors after the queue went on")); assert.ok(!v.hlQueue.size && !v.hlBusy, at("the dropped files are not queued again"));
+    }
+  }
   // A comment written at a line: the composer, then a pending comment in the diff, the Comments tab and Finish.
   const line = v.hunks[0] && `${v.hunks[0].path}:${v.hunks[0].rows.find((r) => r.kind === "+")?.n ?? 1}`;
   // GitHub's comments on that line: Markdown, a suggestion, a reply, a bot, an outdated one, a resolved thread.
@@ -237,7 +275,7 @@ async function tour(v, name) {
   await settle();
 }
 
-const PR2 = { diff: fx("pr2.diff"), ctx: fx("ctx.json") };
+const PR2 = { diff: fx("pr2.diff"), ctx: fx("ctx.json"), impact: fx("impact.json") };
 const pairs = [["analysis.json", "findings.json"], ["analysis-split.json", "findings-split.json"], ["analysis-zones.json", "findings.json"], ["analysis-md.json", "findings-md.json"],
   ["analysis-s.json", "findings-s.json"], ["analysis-w4.json", "findings-w4.json"]];
 for (const [a, f] of pairs) await tour(await open({ ...PR2, analysis: fx(a), findings: fx(f) }), `PR #2 ${a} + ${f}`);
@@ -291,6 +329,21 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   v3.deep = { ...v3.deep, probes: { [v3.probeKey("r1")]: { state: "done", status: "reproduced", line: "handled=1, no mail", ms: 1100, head: "ccddf95", base: { status: "script_failed", verdict: "new_in_pr", line: "ImportError" }, pre_existing: false, network_barrier: true, sandbox: "sandbox-exec" } } };
   assert.ok((v3.resNow()?.unseen ?? []).length > 0 && v3.resNow().paths.some((p) => p.same_cause), "unseen and one cause blocking once come from the data");
   await tour(v3, "PR #2, a real resilience run with the R2 schema");
+  // The picture "Timing": a click on a row's words opens the path that shows it, a click on a row shows its line, its
+  // head folds it; a run from before the pauses came in seconds draws its retries open and offers a new run.
+  {
+    act(v3, "page:res", "Resilience with its timing"); const over = (await import("./timeline.js")).timelineOf(v3.resNow(), v3.ai?.arch).groups[0];
+    assert.equal(over.verdict.kind, "over", "the batch over its function's timeout comes first");
+    click("rv-res-tl-g0-r2-v", "the mark of the batch over its timeout"); assert.equal(v3.resOpen, over.path, "the mark opens the path that shows it");
+    draw(v3, "after the mark"); click("rv-res-tl-g1-r1", "a retry's row"); draw(v3, "after a row of the timing");
+    assert.ok(!S.clicks.has("rv-res-time-rerun"), "a run with the pauses in seconds offers no new run there");
+    act(v3, "res-time", "the timing folded"); assert.ok(v3.pageParts.includes("timing") && !S.clicks.has("rv-res-tl-g0-r2-v"), "folded: its head stays, the picture goes");
+    const old = { ...r3, deps: r3.deps.map((d) => (d.retry ? { ...d, retry: { ...d.retry, backoff_s: undefined } } : d)) };
+    const v5 = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify({ ...doc, resilience: old }) });
+    act(v5, "page:res", "the timing of a run without seconds for its pauses"); assert.ok(S.clicks.has("rv-res-time-rerun"), "the older run offers a new one");
+    const none = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify({ ...doc, resilience: { ...r3, deps: [] } }) });
+    act(none, "page:res", "a run without calls"); assert.ok(!none.pageParts.includes("timing"), "no numbers, no picture");
+  }
   // Dependencies that fail or are overloaded: a row each under the map; a click on a case opens the path that shows
   // how it spreads and marks the dependency on the map; a run without them (the one above) draws no such rows.
   assert.ok(!S.clicks.has("rv-res-dep-0-slow"), "no rows without dependencies");
@@ -305,6 +358,15 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     assert.ok(v4.pageParts.includes(`p:${ps.at(-1)}`), "its path is a part of the page, also one under \"n more\", so the click can scroll to it");
     assert.ok(v4.resNow().paths.find((p) => p.id === ps.at(-1)).marks.some((m) => m.at === "mailer" && m.mark === "✕ when slow"), "and the map marks the dependency");
     for (const id of ["rv-res-dep-0-down", "rv-res-dep-at-0"]) { click(id, "a dependency's line"); draw(v4, `after ${id}`); }
+    // A case's fault tree: "▸" unfolds it under the row, a click on its path's card opens that path; a case with
+    // nothing but its words (down: handled, no effect, no path) has none.
+    assert.ok(!S.clicks.has("rv-res-dep-0-down-t"), "no tree for a case with nothing to follow");
+    v4.resOpen = null; click("rv-res-dep-0-slow-t", "a case's tree"); S.ids = new Set(); draw(v4, "a case's fault tree, open"); const ids = S.ids; S.ids = null;
+    assert.ok(v4.resTreeOpen === "0:slow" && ids.has("rv-res-tree-0"), "the tree stands under its dependency's row");
+    const card = [...S.clicks.keys()].filter((k) => k.startsWith("rv-res-tree-0-slow-av-n")); assert.ok(card.length >= 2, "its cards with a place can be clicked");
+    for (const id of card) click(id, "a card of the tree"); assert.equal(v4.resOpen, ps.at(-1), "the path's card opens the path");
+    draw(v4, "after the tree's cards"); act(v4, "res-tree:0:slow", "the tree folded by its command"); assert.equal(v4.resTreeOpen, null);
+    assert.match((await import("./markdown.js")).resilienceMd({ pr: {}, head: v4.head, res: v4.resNow(), arch: v4.ai?.arch }), /## When a dependency fails, step by step \(1\)\n\n[^\n]+\n\n### Mailer is slow\n\n```mermaid\nflowchart LR\n/, "the export has the tree as a flowchart");
     assert.match((await import("./markdown.js")).resilienceMd({ pr: {}, head: v4.head, res: v4.resNow(), arch: v4.ai?.arch }), /## When a dependency fails \(\d+\)\n\n- Mailer/, "the export has the dependencies");
   }
 }
@@ -338,6 +400,24 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     "one guard and one right off the map under the crossings, and the two same operator rows as one (next to the fixture's own)");
   act(v, "page:blast", "Security with a guard");
   await tour(v, "PR #2 with a guard, a right off the map and an operator's script");
+}
+// The Security page's map shows archLayout's picture at once; its better layout (arch.js archSearch: a full layout per
+// try, too much for a render) comes after the render, in slices (layoutMore): the memo's layout is replaced once, the
+// view is told, and the page draws with it.
+{
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json") });
+  act(v, "page:blast", "Security, the map at once");
+  const { lineStats, archLayout } = await import("./arch.js"), quick = v.secMemo.L, jobs = v.layoutJobs.length;
+  let told = 0;
+  const later = { ...cx, notify() { told++; }, timer: { ...cx.timer, after: (_ms, f) => setImmediate(() => f(later)) }, spawn: (fn) => cx.spawn(() => fn(later)) };
+  v.layoutMore(later); await settle();
+  const s = lineStats(v.secMemo.L), q = lineStats(quick);
+  assert.ok(jobs > 0 && v.secMemo.L !== quick && told >= 1 && !v.layoutBusy && v.layoutJobs.length === 0, "searched after the render");
+  assert.ok(s.crossings <= q.crossings && s.bends < q.bends && s.around < q.around, `${JSON.stringify(s)} was ${JSON.stringify(q)}`);
+  draw(v, "Security, the map after its search");
+  // A memo replaced meanwhile is not searched on: its job ends without a layout.
+  const gone = { key: "x", L: quick }; v.layoutLater(gone, [null], () => null); v.layoutMore(later); await settle();
+  assert.ok(gone.L === quick && !v.layoutBusy && archLayout(null).nodes.length === 0);
 }
 // Someone else's PR with reasons for a security review: the offers instead of a start.
 {
@@ -533,6 +613,57 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   const empty = await open({ ...PR2 });
   for (const c of ["page:overview", "copy-md", "md-close", "page:arch", "copy-md", "md-close", "page:blast", "copy-md", "md-close", "page:res", "copy-md", "md-close", "findings", "copy-md", "md-copy"]) act(empty, c, `nothing analyzed yet: ${c}`);
 }
+// The Impact section of the Architecture page (impact-view.js): the cached result of PR #2 as it is read, then every
+// state it has (asking, a server still loading, failed, not checked out, someone else's PR before the click), a result
+// with all three marks and one summed up by file, its list unfolded, a card's and a row's click, and the run itself
+// against a bridge that answers.
+{
+  const fn = (name, line, callers, more = {}) => ({ id: `shop/price.py#${line}`, path: "shop/price.py", name, kind: "function", container: "", line, end: line + 5, nameLine: line, character: 4, isNew: false, sig: null, callers, outside: 0, more: 0, ...more });
+  const caller = (path, k, mark, more = {}) => ({ id: `${path}#${k}`, name: `use${k}`, kind: "function", path, line: k, sites: [{ line: k, text: `total(${k})`, mark }], mark, test: false, ...more });
+  const rich = { v: 1, servers: ["Python"], uncovered: [{ ext: "yaml", files: 1 }], failed: [], skipped: 2, functions: [
+    fn("total", 4, [caller("shop/report.py", 7, "outside"), caller("shop/checkout.py", 17, "untouched"), caller("shop/checkout.py", 6, "changed"), caller("shop/tests/test_price.py", 6, "changed", { test: true })], { sig: { old: "def total(items):", now: "def total(items, rate):" }, outside: 3 }),
+    fn("discount", 12, [], { error: "Python server did not answer within 20 s" }), fn("net", 33, [caller("shop/report.py", 7, "outside")], { isNew: true })] };
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json") }), key = v.impactKey(), ids = () => { S.ids = new Set(); draw(v, "ids"); const got = S.ids; S.ids = null; return got; };
+  act(v, "steps", "Impact: the Analysis tab"); act(v, "page:arch", "Impact: the cache is being read"); await settle();
+  v.ai = v.mapSaved(JSON.parse(fx("analysis-s.json")), true); // the first frame also looked for a cached analysis (none here)
+  assert.equal(v.impactNow()?.functions.length, 2, "the cached result of this head is read on the Architecture page");
+  draw(v, "Impact: PR #2's result"); assert.ok(v.pageParts.includes("impact") && ids().has("rv-impact-pic"), "the section is a part of the page, with its picture");
+  act(v, "page-part:impact", "Impact: scrolled to");
+  click("rv-impact-list", "Impact: the list"); draw(v, "Impact: the list unfolded"); click("rv-impact-li-0", "Impact: a row"); await settle(); draw(v, "Impact: a row's place"); v.defFile = null; v.command("steps", cx); v.command("page:arch", cx);
+  const state = (st, what) => { v.impactSt = { key, ...st }; draw(v, `Impact: ${what}`); };
+  state({ state: "ok", model: rich }, "all three marks, a changed signature, a search that failed");
+  const card = [...S.clicks.keys()].find((k) => /^rv-impact-pic-n\d+$/.test(k)); assert.ok(card, "a card can be clicked"); click(card, "Impact: a card"); await settle(); draw(v, "Impact: a card's place"); v.defFile = null; v.command("steps", cx); v.command("page:arch", cx);
+  state({ state: "ok", model: { ...rich, functions: [fn("total", 4, Array.from({ length: 60 }, (_x, k) => caller(`pkg/f${k % 3}.py`, k + 1, k % 3 ? "outside" : "untouched")))] } }, "summed up by file");
+  state({ state: "ok", model: { ...rich, servers: [], functions: [] } }, "no language server for the PR's files");
+  state({ state: "busy", done: 2, of: 7 }, "asking"); state({ state: "busy", done: 0, of: 0, message: "Java index is building…" }, "a server still loading");
+  state({ state: "error", message: "pyright-langserver is not installed" }, "failed"); assert.ok(ids().has("rv-impact-run"));
+  { // A language server that is missing: the section names the install command and Setup.
+    const real = globalThis.fetch; S.exec = async (_c, args) => (args.at(-1) === "start" ? { code: 0, stdout: JSON.stringify({ port: 1, token: "t" }), stderr: "" } : { code: 1, stdout: "", stderr: "stub" });
+    globalThis.fetch = async () => ({ status: 200, json: async () => ({ status: "error", message: "pyright-langserver is not installed" }) });
+    try { v.worktree = { url: v.prSel.url, head: v.head, path: "/h/w" }; v.impactSt = null; v.impactRun(cx); await settle(); await settle(); S.texts = new Set(); draw(v, "Impact: the language server is not installed");
+      assert.ok([...S.texts].some((x) => x.includes("Install it with `npm install -g pyright`") && x.includes("Setup")), "the missing server's install command is in the section");
+    } finally { S.texts = null; globalThis.fetch = real; S.exec = null; v.worktree = null; }
+  }
+  state({ state: "idle" }, "not checked out");
+  // The run: the checkout is there and the PR is trusted, so the next frame starts it; the bridge answers over fetch.
+  const realFetch = globalThis.fetch, asked = [];
+  S.exec = async (cmd, args) => (args.at(-1) === "start" ? { code: 0, stdout: JSON.stringify({ port: 1, token: "t" }), stderr: "" } : { code: 1, stdout: "", stderr: "stub" });
+  globalThis.fetch = async (url, o) => { const q = JSON.parse(o.body); asked.push(`${url.split("/").pop()} ${q.path}`);
+    return { status: 200, json: async () => (url.endsWith("/symbols") ? { status: "ok", server: "Python", symbols: q.path === "library/reminders.py" ? [{ name: "send_reminders", kind: "function", container: "", line: 16, end: 25, nameLine: 16, character: 4, sigEnd: 16 }] : [] }
+      : { status: "ok", references: [{ path: "library/api.py", line: 3, character: 0, end: 3, text: "send_reminders(store, mailer)" }], outside: 0, more: 0 }) }; };
+  try {
+    v.worktree = { url: v.prSel.url, head: v.head, path: "/h/w" }; v.impactSt = { key: v.impactKey(), state: "idle" };
+    draw(v, "Impact: about to start"); v.impactRun(cx); draw(v, "Impact: started"); await settle(); await settle(); draw(v, "Impact: its own result");
+    assert.deepEqual(v.impactNow()?.functions.map((f) => [f.name, Boolean(f.sig), f.callers.map((c) => [c.path, c.mark])]), [["send_reminders", true, [["library/api.py", "outside"]]]], "the run asks the bridge and keeps what it finds");
+    assert.ok(asked.includes("references library/reminders.py") && asked.every((x) => !x.includes("template.yaml")), "only files with a language server are asked");
+    // Someone else's PR: nothing starts by itself; the button does.
+    const w = await open({ ...PR2, impact: null, analysis: fx("analysis-s.json"), trusted: false }); w.worktree = { url: w.prSel.url, head: w.head, path: "/h/w" }; asked.length = 0;
+    act(w, "steps", "Impact, untrusted: the Analysis tab"); act(w, "page:arch", "Impact, untrusted: the page"); await settle(); draw(w, "Impact, untrusted: the offer"); draw(w, "Impact, untrusted: still the offer"); await settle();
+    assert.equal(w.impactSt.state, "idle"); assert.deepEqual(asked, [], "no language server is asked for someone else's PR before the click");
+    click("rv-impact-run", "Impact, untrusted: Find callers"); await settle(); await settle(); draw(w, "Impact, untrusted: the result");
+    assert.equal(w.impactSt.state, "ok");
+  } finally { globalThis.fetch = realFetch; S.exec = null; }
+}
 // The Markdown of a page says what the page shows: every text the page draws (each crossing and path opened in turn,
 // the folds open), sentence by sentence, is in its Markdown, except what only serves the page (NOT_COPIED). Every
 // picture is a Mermaid block that reads as one, and the code context has the lines of the places named, no block
@@ -543,16 +674,17 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify(doc) }), tt = S.theme;
   v.deep = { ...v.deep, probes: { [v.probeKey("r1")]: { state: "done", status: "reproduced", line: "handled=1, no mail", ms: 1100, head: "ccddf95", base: { status: "script_failed", verdict: "new_in_pr", line: "ImportError" }, pre_existing: false, network_barrier: true,
     script: "from library.mailer import Mailer\nprint('reproduced handled=1, no mail')\n", output: "reproduced handled=1, no mail\n" } } };
-  // (A mark that ends in "and 2 more" counts what the text lists in full: compared without that end.)
+  // (A mark that ends in "and 2 more" counts what the text lists in full: compared without that end, also where a
+  // narrow card cuts it short: "and 2…".)
   // What a page draws for itself and a text does not need: offers and prices of runs, ages, buttons, hints how to use
   // the page, lines that only fold or count what the text has in full, and the certainty said in the page's own
   // second wording (the text has it as Certainty and Preconditions).
   const NOT_COPIED = [/recommended because/, /^Re-run \(/, /^Run probe/, /^last run .* ago/, /^A click shows the way\.$/, /^Verify (all \d+ )?with an agent/, /^Derived from the code that was read;$/, /^It needs nothing else:$/, /^it holds as the code stands\.$/, /lit on the map, the rest dimmed/, /^Open a path to light it on the map\.$/,
     /^in a sandbox, without network, at most 30 s$/, /^\d+ more: /, /^\d+ [^.]*(criteria|high|medium|low|observable|blockers?|paths?) ▸$/, /^GitHub read .* ago/, /^call over a trust boundary$/, /^Look inside/, /Ask names it/, /^This analysis has no further details for this card\.$/, /^“Look inside” reads/, /^“↻ Refresh diagrams”/,
-    /^and \d+ more in the Findings tab$/, /^\d+ (more|findings?) at this place ▸$/, /^shown at crossing \d+:$/, /^Ask about this layer$/, /^A finding sent to Fix stays unresolved and shows here/, /^not counted as findings$/, /^References without their text in the picture$/, /^Analyze in the left column\.$/];
+    /^and \d+ more in the Findings tab$/, /^\d+ (more|findings?) at this place ▸$/, /^shown at crossing \d+:$/, /^Ask about this layer$/, /^A finding sent to Fix stays unresolved and shows here/, /^not counted as findings$/, /^Each call has its own scale\.$/, /^Scroll sideways for the whole picture →$/, /^References without their text in the picture$/, /^Analyze in the left column\.$/];
   const norm = (x) => String(x).toLowerCase().replace(/,? \d+ (s|min|h|d|days?) ago/g, "").replace(/#\d+;|#quot;|#lt;|#gt;/g, " ").replace(/[^a-z0-9äöüß]+/g, " ").trim();
   const drawn = (states, part, w = v) => { const all = new Set(); for (const st of states) { st(); S.texts = null; S.lists.length = 0; w.render(cx); S.lists.length = 0; S.texts = all; part(); } S.texts = null; return [...all]; };
-  const missing = (texts, md) => { const text = norm(md), segs = [...new Set(texts.flatMap((x) => x.split(/(?<=[.;:])\s+|\s·\s|\n+/)).map((x) => x.replace(/^\*\*Suggested:\*\*\s*/, "").replace(/ and \d+ more$/, "")))].filter((x) => x.trim().length >= 20 && x.trim().split(/\s+/).length >= 4);
+  const missing = (texts, md) => { const text = norm(md), segs = [...new Set(texts.flatMap((x) => x.split(/(?<=[.;:])\s+|\s·\s|\n+/)).map((x) => x.replace(/^\*\*Suggested:\*\*\s*/, "").replace(/ and \d+(?: m(?:o(?:re?)?)?)?…?$/, "")))].filter((x) => x.trim().length >= 20 && x.trim().split(/\s+/).length >= 4);
     return segs.filter((x) => !NOT_COPIED.some((re) => re.test(x.trim())) && norm(x.replace(/…$/, "")) && !text.includes(norm(x.replace(/…$/, "")))); };
   // A Mermaid block as Mermaid reads it: a known diagram, every line of a known form, frames closed, no call to a card that is not there.
   const mermaidBad = (lines) => {
@@ -567,6 +699,7 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
       if (open) bad.push("a frame is not closed");
     } else if (kind === "stateDiagram-v2") { for (const l of rest) if (!/^\s*state "[^"]*" as \w+$/.test(l) && !/^\s*(\[\*\]|\w+) --> (\[\*\]|\w+)( : [^:;]+)?$/.test(l)) bad.push(l); }
     else if (kind === "sequenceDiagram") { for (const l of rest) if (!/^\s*participant \w+ as [^:;]+$/.test(l) && !/^\s*\w+-?->>\w+: [^;]+$/.test(l) && !/^\s*Note over \w+: [^:;]*$/.test(l)) bad.push(l); }
+    else if (kind === "gantt") { for (const l of rest) if (!/^\s*(title [^:;]+|dateFormat X|axisFormat %s|section [^:;]+|[^:;]+ :(done, |crit, )?\d+, \d+)$/.test(l)) bad.push(l); }
     else bad.push(`unknown diagram: ${kind}`);
     return bad;
   };
@@ -589,20 +722,21 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   assert.ok(ranged && new RegExp(`Code \`${ranged.file.replace(/[.]/g, "\\.")}:\\d+-\\d+\`:\\n\\n\`\`\`diff\\n`).test(sec), "a finding's lines stand under it as a diff block");
   v.command("page:res", cx);
   check("Resilience", drawn([...paths.map((p) => () => v.command(`res-path:${p.id}`, cx)), () => { v.command("res-more", cx); v.command("res-clean", cx); v.command("res-add", cx); v.command("res-probe-open:r1", cx); }], page),
-    { flowchart: 1 + paths.filter((p) => (p.via ?? []).length > 0).length, sequenceDiagram: (v.resNow().races ?? []).filter((r) => paths.some((p) => (p.findings ?? []).some((id) => (r.findings ?? []).includes(id)))).length });
+    { flowchart: 1 + paths.filter((p) => (p.via ?? []).length > 0).length, sequenceDiagram: (v.resNow().races ?? []).filter((r) => paths.some((p) => (p.findings ?? []).some((id) => (r.findings ?? []).includes(id)))).length, gantt: 1 });
   // With dependencies that fail: their part is in the text and in the preview's list.
   {
     const dn = [{ dep: "Mailer", kind: "external", mode: "sync", at: "library/mailer.py:14", cases: [{ when: "slow", handled: "no", how: "waits up to 7 s", effect: "The request hangs until its timeout.", path: paths[0].id, findings: [] },
       { when: "down", at: "library/mailer.py:19", handled: "yes", how: "fails fast", effect: "", path: null, findings: [] }, { when: "recovers", at: null, handled: "not_checkable", how: "", effect: "", path: null, findings: [] }] }];
     const keep = v.find.resilience; v.find.resilience = { ...keep, downstream: dn }; if (v.ai.resilience) v.ai.resilience = { ...v.ai.resilience, downstream: dn };
-    const md = check("Resilience with dependencies", drawn([() => v.command("res-path:", cx)], page), {});
+    const md = check("Resilience with dependencies", drawn([() => v.command("res-path:", cx), () => v.command("res-tree:0:slow", cx)], page), { flowchart: 2 });
     assert.ok(mdParts(md).parts.some((p) => /^When a dependency fails \(1\)$/.test(p.title)) && /- Mailer \(/.test(md), "the dependencies are a part of the text and of the preview");
     v.find.resilience = keep; if (v.ai.resilience) delete v.ai.resilience.downstream;
   }
   v.command("page:overview", cx); v.rulesOpen = true; v.relOpen = true;
   check("Overview", drawn([() => {}, ...[...v.ai.asks.map((x) => x.id), "other"].map((k) => () => v.command(`criterion:${k}`, cx))], page), {});
-  v.command("page:arch", cx);
-  const archMd = check("Architecture impact", drawn([() => {}, ...a.nodes.map((n) => () => v.command(`card:${n.id}`, cx))], page), { flowchart: 2 });
+  v.command("page:arch", cx); v.impactSt = { key: v.impactKey(), state: "ok", model: JSON.parse(fx("impact.json")) }; // the Impact section with PR #2's result
+  const archMd = check("Architecture impact", drawn([() => {}, ...a.nodes.map((n) => () => v.command(`card:${n.id}`, cx)), () => { v.fold.impactList = true; }], page), { flowchart: 3 });
+  assert.match(v.mdText(false), /\n## Impact \(2 changed functions, 0 callers, 1 test\)\n/, "the Impact section is a section of its own in the page's Markdown");
   // "Infrastructure changes" (infra.js): PR #2 adds template.yaml, so the page has the part and the text its section, from the diff alone.
   assert.ok(v.infra?.cards.length === 3 && v.infra.edges.length === 2 && v.pageParts.includes("infra") && S.clicks.has("rv-infra-n0"), "PR #2's template is the Infrastructure changes part, its cards drawn");
   assert.match(archMd, /## Infrastructure changes \(3\)\n\nDerived from the diff; no change set was created, so replacements and computed values are estimates\.\n\n3 resources: 3 added\./, "the section's text says where it comes from and what it counts");

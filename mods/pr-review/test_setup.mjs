@@ -1,6 +1,6 @@
 // Run: node test_setup.mjs  (Setup's detection → report mapping, with stubbed PATH lookups; Codex detection)
 import assert from "node:assert/strict";
-import { parseCheck, report, blockers, found, programs, checkScript, pretypeArgv } from "./setup.js";
+import { parseCheck, report, blockers, found, programs, checkScript, pretypeArgv, installHint } from "./setup.js";
 
 const out = (have, auth = "") => programs().map((p) => `${p}=${have.includes(p) ? `/bin/${p}` : ""}`).join("\n") + "\n" + auth;
 const byId = (rows) => Object.fromEntries(rows.map((r) => [r.id, r]));
@@ -17,10 +17,15 @@ const r = byId(report(min, "darwin"));
 assert.equal(r.codex.status, "optional-missing");
 assert.equal(found(min, "codex"), false); // Codex detection: no codex on PATH, no Codex reviewer
 assert.equal(r.jdtls.status, "optional-missing");
-assert.equal(r.jdtls.what, "Go to definition in Java needs jdtls");
+assert.equal(r.jdtls.what, "Go to definition and Impact in Java need jdtls");
 assert.equal(r.jdtls.install, "brew install jdtls");
 assert.equal(report(min, "linux").find((x) => x.id === "jdtls").install, null); // no simple Linux command
-assert.equal(r["typescript-language-server"].what, "Go to definition in TypeScript and JavaScript needs typescript-language-server + tsc");
+assert.equal(r["typescript-language-server"].what, "Go to definition and Impact in TypeScript and JavaScript need typescript-language-server + tsc");
+// A language server the bridge could not start: the message names the language, this system's command and Setup.
+assert.equal(installHint("pyright-langserver is not installed"), "pyright-langserver is not installed (the language server for Python). Install it with `npm install -g pyright`; the panel's Setup (PRs ▾ → Setup) offers the same command.");
+assert.equal(installHint("tsc is not installed", "linux"), "tsc is not installed (the language server for TypeScript and JavaScript). Install it with `npm install -g typescript-language-server typescript`; the panel's Setup (PRs ▾ → Setup) offers the same command.");
+assert.equal(installHint("jdtls is not installed", "linux"), "jdtls is not installed (the language server for Java). The panel's Setup (PRs ▾ → Setup) lists it; there is no one-line install for this system.");
+assert.equal(installHint("Python server did not answer within 20 s"), "Python server did not answer within 20 s");
 assert.deepEqual(blockers(report(min)), []);
 
 // A program for one system only shows there: bwrap is the probes' sandbox on Linux (macOS has sandbox-exec built in).

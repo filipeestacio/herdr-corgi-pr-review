@@ -43,6 +43,10 @@ would skip a column becomes a short chip that names the target. Click a card to 
 Elements that only the PR description or ticket mentions, and that the diff doesn't contain, show as dashed "spec".
 ↻ Refresh diagrams redraws the pictures for today's diff without re-running the whole analysis.
 
+Below the map, **Impact** shows the functions and classes the PR changes and who calls them, from the language
+servers and without a model: each caller is marked as changed in this PR, in the diff with its call untouched, or
+not in this PR, and a caller that still calls a changed signature the old way stands out. Tests are counted apart.
+
 ![Architecture impact: components as cards with New, Changed and Unchanged, numbered connections and a legend](docs/screenshots/architecture-impact.png)
 
 **Sample values in the diff, like a debugger.** Next to the changed lines you see example inputs and results:
@@ -127,6 +131,7 @@ PR review, [Go to](https://github.com/saefty/herdr-corgi-goto) and the [chat bar
 
 - With **Go to** (⌘⇧P), paste a PR link or type `repo#123` and pick "Review PR"; reviews you started are searchable as "Resume review".
 - With the **chat bar**, Discuss opens the agent's chat bubble so you can follow its answer without leaving the review.
+- With **[Worktrees](https://github.com/saefty/herdr-corgi-worktrees)**, each checkout and branch there shows the mark of its PR from the lists this panel already has, and a click on the mark picks that PR here.
 - **Separate setups**, like work and personal: a small mod of your own can give each its accounts, clone folder and environment, and the panel shows each setup's PRs with its own tag.
 
 ## What's in here
@@ -151,9 +156,19 @@ in but not run.
 | `bwrap` (optional, Linux only) | the sandbox a probe's script runs in | built in (`sandbox-exec`) | `sudo apt install bubblewrap` |
 | `acli` (optional) | the Jira ticket a PR names, in the task check | `brew tap atlassian/homebrew-acli && brew install acli` | see Atlassian's docs |
 
-Optional language servers turn on go-to-definition and hover for their language; a missing one only turns it off
-for that language: `typescript-language-server` + `tsc` (TypeScript, JavaScript), `pyright-langserver` (Python),
-`gopls` (Go), `rust-analyzer` (Rust), `jdtls` (Java), `terraform-ls` (Terraform), `clangd` (C, C++).
+Language servers are optional. Each turns on go-to-definition, hover and the Architecture page's Impact picture
+(who calls what the PR changes) for its language. Without one, those three are off for that language and nothing
+else changes; the Impact section then names the missing server and its install command. Setup checks them too.
+
+| Language | Language server | macOS | Linux |
+|---|---|---|---|
+| TypeScript, JavaScript | `typescript-language-server` + `tsc` | `npm install -g typescript-language-server typescript` | same |
+| Python | `pyright-langserver` | `npm install -g pyright` | same |
+| Go | `gopls` | `brew install gopls` | `go install golang.org/x/tools/gopls@latest` |
+| Rust | `rust-analyzer` (only for PRs you trust) | `rustup component add rust-analyzer` | same |
+| Java | `jdtls` | `brew install jdtls` | see the Eclipse JDT LS docs |
+| Terraform | `terraform-ls` | `brew install hashicorp/tap/terraform-ls` | see HashiCorp's docs |
+| C, C++ | `clangd` | `xcode-select --install` | `sudo apt install clangd` |
 
 The reviewers use Claude Code's `/security-review` and a `/code-review` command; without the command in your
 Claude setup the same review runs as a plain prompt.

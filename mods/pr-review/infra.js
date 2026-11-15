@@ -441,14 +441,12 @@ export function infraMarks(model, findings, alias = new Map()) {
   }
   return { nodes, edges: new Map() };
 }
-// → {arch, marks, L}: the layout with a row per line of a card and the room its finding mark takes.
-// One pass (over: an empty Set is what arch.js gives its own tries, so it does not search again): the search at the
-// end of archLayout lays the picture out about fifteen times for two long lines, and Herdr stopped the render of the
-// fixture's thirteen cards ("interrupted"). ponytail: long lines stay under the picture; drop `over` when that
-// search keeps to a time budget.
+// → {arch, marks, args, L}: one layout with a row per line of a card and the room its finding mark takes. args: what
+// archLayout got, for the search for a better layout after the render (review.js layoutLater, arch.js archSearch).
 export function infraPicture(model, findings = [], fit = false) {
   const arch = infraArch(model), marks = infraMarks(model, findings, arch.alias), w = (fit ? FIT : ARCH).W - 20;
-  return { arch, marks, L: archLayout(arch, "diff", (n) => (n.lines ?? []).reduce((k, l) => k + l.rows, 0) + (marks.nodes.has(n.id) ? markRoom(marks.nodes.get(n.id), w).rows : 0), fit, { labels: true, over: new Set() }) };
+  const args = [arch, "diff", (n) => (n.lines ?? []).reduce((k, l) => k + l.rows, 0) + (marks.nodes.has(n.id) ? markRoom(marks.nodes.get(n.id), w).rows : 0), fit, { labels: true }];
+  return { arch, marks, args, L: archLayout(...args) };
 }
 
 // ---- Copy as Markdown: the section's lines. table(head, rows) and flow(picture, opts) are markdown.js's own (its
