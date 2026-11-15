@@ -86,7 +86,7 @@ const all = [f("m1", "medium", { breaks: { node: "c" } }), sec, f("l1", "low"), 
     rules: [{ rule: "Tests for new code", source: "CLAUDE.md", status: "fail", where: "a.py:3", why: "None." }] };
   const text = overviewMd({ ...base, ai, findings: all, statusOf, checks: [{ name: "Conventional Commit title", ok: true, why: "feat: x" }, { name: "CI: unit", ok: false, why: "fail", ci: true }, { name: "Tests for new code", ok: false, rule: true }],
     related: { stacked_on: { number: 1, title: "base", url: "https://example.test/pull/1" } } });
-  assert.ok(text.startsWith(`${first}\n\n# Review overview: feat: x\n\n**Verdict:** 1 security cause, high (reach assumed) · 0 of 2 acceptance criteria met · 2 checks failed\n**Merge risk:** high. No auth.\n`));
+  assert.ok(text.startsWith(`${first}\n\n# Review overview: feat: x\n\n**Verdict:** 1 security cause, high (assumed reachable) · 0 of 2 acceptance criteria met · 2 checks failed\n**Merge risk:** high. No auth.\n`));
   assert.match(text, /\*\*Stacked on:\*\* #1 base \(https:\/\/example\.test\/pull\/1\)\. This PR merges after it\.\n\*\*Components:\*\* 1 new component, 1 without an owner\n/);
   assert.match(text, /## Check against the task: 0 of 2 acceptance criteria met, 1 extra\n\n### Security\n\n- \*\*high\*\* security: T s1 \(`a\.py:3-9`\) · Assumed, not checked\n/);
   assert.match(text, /### Acceptance criteria\n\n- \*\*broken\*\*: Only staff call it\n  - Why: No check\.\n  - \*\*high\*\* security: T s1 [^\n]*\n- \*\*partly\*\*: Mails once\n  - No finding backs this state\.\n/);
@@ -100,7 +100,7 @@ const all = [f("m1", "medium", { breaks: { node: "c" } }), sec, f("l1", "low"), 
   assert.match(full, /\*\*Verdict:\*\* Request changes: 1 security cause/);
   assert.match(full, /## Before merge \(2\)\n\nWhat stands before the merge, most urgent first\.\n\n- \*\*Security:\*\* \*\*high\*\* security: T s1 [^\n]*\n  - Breaks: Staff only\n(  - Reach: [^\n]*\n)?  - Same cause also at t\.yaml:14\n\nCode `a\.py:1-6`:\n\n```diff\n import os\n-TOKEN = None\n\+TOKEN = os\.environ\.get\('T', ''\)\n/);
   assert.match(full, /- \*\*Resilience:\*\* A mail is lost \(`a\.py:4`\)\n  - Blocker: an effect is lost\n\nCode: see `a\.py:1-6` above\.\n/, "a place already shown is not shown twice");
-  assert.match(full, /## Not checked\n\n1 area not checked\n\n- Areas no run checked: dependencies\n- Findings that rest on an assumption \(1\):\n  - \*\*high\*\* security: T s1 [^\n]*\n- Security review: 2 findings\n- Resilience review: 3 paths, 1 blocker\n/);
+  assert.match(full, /## Not checked\n\n1 area not checked\n\n- Areas no run checked: dependencies\n- 1 finding rests on an assumption nobody checked:\n  - \*\*high\*\* security: T s1 [^\n]*\n- Security review: 2 findings\n- Resilience review: 3 paths, 1 blocker\n/);
   // An analysis from before the newer fields: the asks without reason and findings, every ask a criterion.
   const old = overviewMd({ ...base, ai: { asks: asks.map((a) => ({ ...a, why: "", acceptance: null, findings: [] })), unlinked: [], rules: [] }, findings: [], statusOf });
   assert.match(old, /## Check against the task: 0 of 2 criteria met, 1 extra\n\n### Criteria\n\n- \*\*broken\*\*: Only staff call it\n- \*\*partly\*\*: Mails once\n\n### Not in the task\n\n- \*\*extra\*\*: A new route\n$/);
@@ -343,6 +343,12 @@ const all = [f("m1", "medium", { breaks: { node: "c" } }), sec, f("l1", "low"), 
   assert.match(md, /- \*\*Fails by:\*\* no dead-letter queue/); assert.match(md, /- \*\*Seen:\*\* no, silent/); assert.doesNotMatch(md, /Bash/);
   assert.match(md, /\(no picture: the run named no call on this path that multiplies or times out\.\)/, "why a path has no picture, as the page says it");
   assert.match(md, /## Before merge, not observable \(1\)\n\n- Mail loss is not visible/); assert.equal(md.match(/oldest message in LoanEvents/g)?.length, 1);
+  assert.doesNotMatch(md, /When a dependency fails/, "no section without dependencies");
+  // Dependencies that fail or are overloaded: a line each, its cases under it with the number of their path here.
+  const dep = resilienceMd({ pr: {}, head: "h", res: { ...res, downstream: [{ dep: "Mailer", kind: "external", mode: "sync", at: "library/mailer.py:14", cases: [
+    { when: "slow", handled: "no", how: "waits up to 7 s", effect: "The request hangs until its timeout.", path: "p1" }, { when: "down", handled: "yes", how: "fails fast", at: "library/mailer.py:19" },
+    { when: "recovers", handled: "not_checkable" }] }] }, arch });
+  assert.match(dep, /## When a dependency fails \(1\)\n\n- Mailer \(external, sync, library\/mailer\.py:14\)\n  - slow: waits up to 7 s ✗, path 1\. The request hangs until its timeout\.\n  - down: fails fast ✓ \(library\/mailer\.py:19\)\n  - The code cannot tell: recovers\.\n/);
 }
 
 // ---- the code context: the lines a place names, from the rows the review holds

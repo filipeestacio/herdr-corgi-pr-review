@@ -13,6 +13,7 @@ import { crossingsOf, crossingChanged, secSentence, wayOf, wayText, secPicture, 
 import { archMarks } from "./arch.js";
 import { transitionMarks, surfaceOf, reachLevel, secOrder, EXPOSURE, inProcess, resNoPicture } from "./views.js";
 import { doesList, surfaceLine, countLine, funnelShort, funnel as funnelOf, findingSteps } from "./pr.js";
+import { resDepRows } from "./views.js"; // Resilience: dependencies that fail or are overloaded
 
 const STATE = { open: "Unresolved", progress: "Fix sent", fixed: "Fixed", dismissed: "Dismissed", recheck: "Unresolved, line changed" };
 const SOURCE = { analysis: "Analysis", security: "Security review", claude: "Claude code review", codex: "Codex review", resilience: "Resilience review", ai: "AI note" };
@@ -283,7 +284,7 @@ export function overviewMd({ pr, head, ai = null, findings = [], statusOf = () =
     Boolean(cost) && `**Cost of the AI runs:** ${flat(cost)}`,
     Boolean(size) && `**Size:** ${flat(size)}`,
     ai && `**Analysis:** ${ai.exact === false ? "analysis of an earlier head: the PR has new commits since it ran" : `analysis of ${head ? String(head).slice(0, 7) : "this head"}`}${ai.model ? ` (${ai.model})` : ""}`,
-    funnel?.merged > 0 && `**Findings:** ${funnel.reported} reported → ${funnel.merged} merged${rows ? ` → ${rows.length} before merge` : ""}`,
+    funnel?.merged > 0 && `**Findings:** ${funnel.merged} ${funnel.merged === 1 ? "finding" : "findings"}${funnel.reported > funnel.merged ? ` from ${funnel.reported} reports` : ""}${rows ? `; ${rows.length} stand before the merge` : ""}`,
     (ai?.task?.title || ai?.task?.jira || ai?.task?.note) && `**Task:** ${[ai.task.title, ai.task.jira && `linked issue ${ai.task.jira}`, ai.task.note].filter(Boolean).map(flat).join(" · ")}`,
     !ai && "No analysis of this diff yet: the findings below come from the reviewers.", "",
     rows && [`## Before merge (${rows.length})`, "", rows.length ? "What stands before the merge, most urgent first." : "Nothing stands before the merge.", "", ...rows.flatMap(before), ""],
@@ -295,7 +296,7 @@ export function overviewMd({ pr, head, ai = null, findings = [], statusOf = () =
         hasTask && list.other.length > 0 && `- ${count(list.other.length, "unresolved finding")} ${list.other.length === 1 ? "belongs" : "belong"} to no criterion:`, ...list.other.map((f) => `${hasTask ? "  " : ""}${line(f)}${f.introduced_here === false ? " · already there before this PR" : ""}`),
         list.other.some((f) => f.introduced_here === false) && `- ${list.other.filter((f) => f.introduced_here === false).length} already there before this PR.`, ""]],
     nc && ["## Not checked", "", flat(nc.text), "", nc.areas?.length ? `- Areas no run checked: ${nc.areas.join(", ")}` : "- Every area was checked by at least one run.",
-      (nc.assumptions ?? []).length > 0 && [`- Findings that rest on an assumption (${nc.assumptions.length}):`, ...nc.assumptions.map((f) => `  ${line(f)}`)],
+      (nc.assumptions ?? []).length > 0 && [`- ${nc.assumptions.length} ${nc.assumptions.length === 1 ? "finding rests" : "findings rest"} on an assumption nobody checked:`, ...nc.assumptions.map((f) => `  ${line(f)}`)],
       `- Security review: ${nc.security}`, Boolean(resLine) && `- Resilience review: ${flat(resLine)}`, ""],
     Boolean(ai?.summary) && ["## What changed", "", ai.summary.trim(), ""],
     does.length > 0 && ["## What the PR does", "", ...does.flatMap(([label, items]) => [`${label}:`, "", ...items.map((x) => `- ${flat(x.text)}${x.source === "spec" ? " (spec only)" : ""}${x.evidence ? ` (\`${x.evidence}\`)` : ""}`), ""]),
@@ -725,6 +726,11 @@ export function resilienceMd({ pr, head, res = null, names = new Map(), arch = n
     d.throttle && `throttle: ${flat(d.throttle)}`].filter(Boolean).join("; ");
   const callOf = (d) => { const e = /^e(\d+)$/.exec(String(d.edge ?? "")), x = e ? arch?.edges?.[Number(e[1])] : null; return x ? `${nm(x.from)} → ${nm(x.to)}` : d.node ? nm(d.node) : ""; };
   const blockers = order.filter((p) => p.blocker).length;
+  // Dependencies that fail or are overloaded: a line each, its cases under it with the path (by its number here) that
+  // shows how the case spreads, and what happens then.
+  const depRows = resDepRows(res, order), down = depRows.flatMap((d) => [`- ${flat(d.dep)} (${[d.what, d.entry && `from ${flat(d.entry)}`, d.at].filter(Boolean).join(", ")})`,
+    ...d.cases.map((c) => `  - ${flat(c.text)}${c.number ? `, path ${c.number}` : c.at ? ` (${c.at})` : ""}${c.effect ? `. ${flat(c.effect)}` : ""}`),
+    ...(d.open.length ? [`  - The code cannot tell: ${d.open.join(", ")}.`] : [])]);
   return doc(prLine({ pr, head }), "", "# Resilience", "",
     parts ? [parts.head, parts.counts.length > 0 && parts.counts.join(" · ")] : flat(res.summary ?? (paths.length ? "No path grows without limit or doubles an effect." : "")),
     [`${count(paths.length, "path")}`, `${count(clean.length, "check")} clean`, `${ncheck.length + (res.not_checked ?? []).length} not checkable`, res.head && `analysis of ${String(res.head).slice(0, 7)}`, cost !== null && cost !== undefined && `$${Number(cost).toFixed(2)}`].filter(Boolean).join(" · "),
@@ -735,6 +741,7 @@ export function resilienceMd({ pr, head, res = null, names = new Map(), arch = n
       ...arch.nodes.filter((n) => n.description).map((n) => `- **${nm(n.id)}:** ${flat(n.description)}`), ""],
     (res.deps ?? []).length > 0 && [`## Calls and their limits (${res.deps.length})`, "", "What the map marks at a call: its timeout, retries and how a queue redelivers.", "",
       ...table(["Call", "Where", "Mode", "Limits"], res.deps.map((d) => [callOf(d), d.at ? `\`${d.at}\`` : "", d.mode ?? "", lim(d)]))],
+    down.length > 0 && [`## When a dependency fails (${depRows.length})`, "", ...down, ""],
     other.length > 0 && [`## Other checks (${other.length})`, "", ...other.map(check), ""],
     clean.length > 0 && [`## Checked, clean (${clean.length})`, "", ...clean.map(check), ""],
     nc.length > 0 && [`## Not checkable (${nc.length})`, "", ...nc.map((x) => `- ${x}`), ""],

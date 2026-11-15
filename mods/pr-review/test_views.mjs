@@ -244,7 +244,7 @@ assert.equal(pendingText([{ file: "a.py" }, { file: "a.py" }, { file: "b.py" }])
   const bm = [{ kind: "security", finding: F("s1") }, { kind: "security", finding: F("s2") }, { kind: "resilience", path: "p1" }, { kind: "resilience", path: "p2" }, { kind: "resilience", path: "p3" },
     { kind: "resilience", path: null }, { kind: "criterion", finding: F("c1"), asks: [A("a1"), A("a2")] }, { kind: "criterion", finding: F("c2"), asks: [A("a1")] }, { kind: "ask", ask: A("a3"), asks: [A("a3")] },
     { kind: "rule" }, { kind: "finding", finding: F("h1") }, { kind: "finding", finding: F("h2") }, { kind: "verify" }];
-  assert.deepEqual(mergeGroups(bm).map((g) => g.text), ["⛨ 2 security", "3 resilience paths", "1 not observable", "3 criteria", "1 check", "2 high", "1 fix to verify"]);
+  assert.deepEqual(mergeGroups(bm).map((g) => g.text), ["⛨ 2 security", "3 resilience blockers", "1 not observable", "3 criteria", "1 check", "2 high", "1 fix to verify"]);
   assert.deepEqual(mergeFirst(bm, 5).map((r) => bm.indexOf(r)), [0, 1, 2, 5, 6], "every security row, then one of each group in order before a second of any");
   assert.deepEqual(mergeFirst(bm.slice(2), 5).map((r) => bm.slice(2).indexOf(r)), [0, 3, 4, 7, 8]);
   assert.deepEqual(mergeFirst(bm.slice(0, 3), 5).length, 3);
@@ -818,6 +818,22 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.deepEqual([...resMarksOn(marks, arch, true)], [["q", "no DLQ"], ["c", "✕ silent"]]);
   const p = { marks, ladder: [{ name: "batch", factor: "×10", at: "template.yaml:37" }, { name: "until it expires", factor: "no limit", at: "template.yaml:32" }] };
   assert.deepEqual([...resEdgeMarks(p, [{ edge: "e0", at: "template.yaml:32" }])], [[0, "⏱ 10 s · ↻ no limit"]]);
+}
+
+// ---- Resilience: a dependency's row: its decided cases as words with a mark and the path's number on the page, the
+// undecided ones by name; an unknown path is no link
+{
+  const { resDepRows, resWord } = await import("./views.js");
+  const res = { downstream: [{ dep: "Mailer", kind: "external", mode: "sync", entry: "POST /remind", at: "library/mailer.py:14", card: "mailer", cases: [
+    { when: "slow", handled: "no", how: "waits up to 7 s of the 10 s request.", at: "library/mailer.py:16", effect: "The request hangs.", path: "p3" },
+    { when: "overloaded", handled: "partly", how: "", path: "p8" }, { when: "down", handled: "yes", how: "fails fast", at: "library/mailer.py:19" },
+    { when: "bad_answer", handled: "not_checkable", how: "not in the code" }, { when: "recovers", handled: "not_checkable" }] },
+  { dep: "Tokens", kind: "secret_store", mode: "in_process", cases: [] }] };
+  const rows = resDepRows(res, [{ id: "p1" }, { id: "p3", blocker: { reason: "x" } }]);
+  assert.deepEqual(rows[0].cases.map((c) => [c.text, c.path, c.number, c.blocks]), [["slow: waits up to 7 s of the 10 s request ✗", "p3", 2, true], ["overloaded: partly handled ~", null, null, false], ["down: fails fast ✓", null, null, false]]);
+  assert.deepEqual([rows[0].entry, rows[1].entry, rows[0].cases[0].words, rows[0].cases[0].mark], ["POST /remind", null, "slow: waits up to 7 s of the 10 s request", "✗"]);
+  assert.deepEqual([rows[0].what, rows[0].open, rows[0].at, rows[0].card, rows[1].what, rows[1].cases, rows[1].open], ["external, sync", ["bad answer", "recovers"], "library/mailer.py:14", "mailer", "secret store, in one process", [], []]);
+  assert.deepEqual([resDepRows(null), resDepRows({ paths: [] }), resWord("no_backoff")], [[], [], "retries at once, without backoff"]);
 }
 
 // ---- wave R2: the run's own unseen and watch lists, and a probe that dates an unclear blocker

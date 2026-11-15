@@ -130,7 +130,12 @@ async function tour(v, name) {
   for (const p of v.resNow()?.paths ?? []) act(v, `res-path:${p.id}`, at(`Resilience, path ${p.id}`));
   for (const c of ["res-more", "res-clean", "res-add", ...v.probeList().map((p) => `res-probe-open:${p.id}`), "res-path:"]) act(v, c, at(`Resilience, ${c}`));
   v.command("page:overview", cx); v.rulesOpen = true; draw(v, at("Overview, rules open"));
-  for (const a of [...(v.ai?.asks ?? []).map((x) => x.id), "other"]) act(v, `criterion:${a}`, at(`Overview, criterion ${a}`));
+  for (const a of [...(v.ai?.asks ?? []).map((x) => x.id), "other", "crit", "extra", "nc", "bm-all"]) act(v, `criterion:${a}`, at(`Overview, criterion ${a}`));
+  // The bar: the verdict's excerpt stands in for the Overview's verdict line, so not beside it; the diff's switches
+  // (what shows under the lines, one or two columns, line wrap) only beside a diff.
+  act(v, "page:overview", at("Overview, the bar")); assert.ok(!S.clicks.has("rv-mr") && !S.clicks.has("rv-diffmode"), at("no excerpt and no diff switches beside the Overview"));
+  act(v, "page:arch", at("Architecture, the bar")); assert.ok(S.clicks.has("rv-mr") === v.verdictNow().length > 0 && !S.clicks.has("rv-diffmode"), at("the excerpt beside another page, no diff switches"));
+  act(v, "files", at("files, the bar")); assert.ok(S.clicks.has("rv-diffmode") && S.clicks.has("rv-wrap"), at("the diff's switches beside the diff")); v.command("steps", cx);
   v.command("page:blast", cx);
   for (const k of ["quiet", "unchanged", ...(v.ai?.access ?? []).map((x) => `a:${x.id}`), ...(v.ai?.arch?.edges ?? []).map((_e, k) => `e:${k}`)]) act(v, `cross:${k}`, at(`Security, crossing ${k}`));
   for (const n of v.ai?.arch?.nodes ?? []) act(v, `sec-card:${n.id}`, at(`Security, card ${n.id}`));
@@ -154,7 +159,9 @@ async function tour(v, name) {
     for (const k of ["reported", "evidence", "sent", "verified", "in_pr"]) { v.fstep = { id: f.id, key: k }; draw(v, at(`finding ${f.id}, step ${k}`)); }
     v.fstep = null;
   }
-  act(v, "findings-sort:quick", at("findings, quick wins first")); act(v, "findings-sort:", at("findings, usual order"));
+  // The order is a switch of two (Severity | Quickest fix), offered once a finding says how much work its fix is.
+  act(v, "findings-sort:quick", at("findings, quickest fix first")); assert.equal(S.clicks.has("rv-fsort-quick"), v.findings().some((f) => f.effort), at("the order switch is there with efforts only"));
+  act(v, "findings-sort:", at("findings, by severity"));
   v.tab = "files";
   for (const f of v.findings()) act(v, `finding-card:${f.id}`, at(`files, card ${f.id} toggled`));
   v.fopen = null;
@@ -258,6 +265,21 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   v3.deep = { ...v3.deep, probes: { [v3.probeKey("r1")]: { state: "done", status: "reproduced", line: "handled=1, no mail", ms: 1100, head: "ccddf95", base: { status: "script_failed", verdict: "new_in_pr", line: "ImportError" }, pre_existing: false, network_barrier: true, sandbox: "sandbox-exec" } } };
   assert.ok((v3.resNow()?.unseen ?? []).length > 0 && v3.resNow().paths.some((p) => p.same_cause), "unseen and one cause blocking once come from the data");
   await tour(v3, "PR #2, a real resilience run with the R2 schema");
+  // Dependencies that fail or are overloaded: a row each under the map; a click on a case opens the path that shows
+  // how it spreads and marks the dependency on the map; a run without them (the one above) draws no such rows.
+  assert.ok(!S.clicks.has("rv-res-dep-0-slow"), "no rows without dependencies");
+  const ps = r3.paths.map((p) => p.id), dn = [{ dep: "Mailer", kind: "external", node: "mailer", edge: null, at: "library/mailer.py:14", mode: "sync", cases: [
+    { when: "slow", at: "library/mailer.py:16", handled: "no", how: "waits up to 7 s of the 10 s request", effect: "The request hangs.", path: ps.at(-1), findings: [] },
+    { when: "down", at: "library/mailer.py:19", handled: "yes", how: "fails fast", effect: "", path: null, findings: [] }, { when: "overloaded", at: "library/mailer.py:17", handled: "partly", how: "", effect: "", path: "nope", findings: [] },
+    { when: "recovers", at: null, handled: "not_checkable", how: "", effect: "", path: null, findings: [] }] }];
+  for (const head of [r3.head, "0000000aaaa"]) {
+    const v4 = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify({ ...doc, resilience: { ...r3, head, downstream: dn } }) });
+    act(v4, "page:res", "Resilience with dependencies"); click("rv-res-dep-0-slow", "a dependency's case"); draw(v4, "the path of a dependency's case, open");
+    assert.equal(v4.resOpen, ps.at(-1), "the case opens its path");
+    assert.ok(v4.resNow().paths.find((p) => p.id === ps.at(-1)).marks.some((m) => m.at === "mailer" && m.mark === "✕ when slow"), "and the map marks the dependency");
+    for (const id of ["rv-res-dep-0-down", "rv-res-dep-at-0"]) { click(id, "a dependency's line"); draw(v4, `after ${id}`); }
+    assert.match((await import("./markdown.js")).resilienceMd({ pr: {}, head: v4.head, res: v4.resNow(), arch: v4.ai?.arch }), /## When a dependency fails \(\d+\)\n\n- Mailer/, "the export has the dependencies");
+  }
 }
 // The Security page with what a webhook PR adds to it: a deny rule (a guard), a right on something off the map, an
 // operator's script whose row and call are one way, two derived operator ways that say the same, a finding that only
@@ -438,15 +460,16 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify(doc) }), tt = S.theme;
   v.deep = { ...v.deep, probes: { [v.probeKey("r1")]: { state: "done", status: "reproduced", line: "handled=1, no mail", ms: 1100, head: "ccddf95", base: { status: "script_failed", verdict: "new_in_pr", line: "ImportError" }, pre_existing: false, network_barrier: true,
     script: "from library.mailer import Mailer\nprint('reproduced handled=1, no mail')\n", output: "reproduced handled=1, no mail\n" } } };
+  // (A mark that ends in "and 2 more" counts what the text lists in full: compared without that end.)
   // What a page draws for itself and a text does not need: offers and prices of runs, ages, buttons, hints how to use
   // the page, lines that only fold or count what the text has in full, and the certainty said in the page's own
   // second wording (the text has it as Certainty and Preconditions).
   const NOT_COPIED = [/recommended because/, /^Re-run \(/, /^Run probe/, /^last run .* ago/, /^A click shows the way\.$/, /^Verify (all \d+ )?with an agent/, /^Derived from the code that was read;$/, /^It needs nothing else:$/, /^it holds as the code stands\.$/, /lit on the map, the rest dimmed/,
-    /^in a sandbox, without network, at most 30 s$/, /^\d+ more: /, /resilience paths?, .* ▸$/, /^call over a trust boundary$/, /^Look inside/, /Ask names it/, /^This analysis has no further details for this card\.$/, /^“Look inside” reads/, /^“↻ Refresh diagrams”/,
+    /^in a sandbox, without network, at most 30 s$/, /^\d+ more: /, /^\d+ [^.]*(criteria|high|medium|low|observable|blockers?|paths?) ▸$/, /^GitHub read .* ago/, /^call over a trust boundary$/, /^Look inside/, /Ask names it/, /^This analysis has no further details for this card\.$/, /^“Look inside” reads/, /^“↻ Refresh diagrams”/,
     /^and \d+ more in the Findings tab$/, /^Ask about this layer$/, /^A finding sent to Fix stays unresolved and shows here/, /^not counted as findings$/];
   const norm = (x) => String(x).toLowerCase().replace(/,? \d+ (s|min|h|d|days?) ago/g, "").replace(/#\d+;|#quot;|#lt;|#gt;/g, " ").replace(/[^a-z0-9äöüß]+/g, " ").trim();
   const drawn = (states, part) => { const all = new Set(); for (const st of states) { st(); S.texts = null; S.lists.length = 0; v.render(cx); S.lists.length = 0; S.texts = all; part(); } S.texts = null; return [...all]; };
-  const missing = (texts, md) => { const text = norm(md), segs = [...new Set(texts.flatMap((x) => x.split(/(?<=[.;:])\s+|\s·\s|\n+/)).map((x) => x.replace(/^\*\*Suggested:\*\*\s*/, "")))].filter((x) => x.trim().length >= 20 && x.trim().split(/\s+/).length >= 4);
+  const missing = (texts, md) => { const text = norm(md), segs = [...new Set(texts.flatMap((x) => x.split(/(?<=[.;:])\s+|\s·\s|\n+/)).map((x) => x.replace(/^\*\*Suggested:\*\*\s*/, "").replace(/ and \d+ more$/, "")))].filter((x) => x.trim().length >= 20 && x.trim().split(/\s+/).length >= 4);
     return segs.filter((x) => !NOT_COPIED.some((re) => re.test(x.trim())) && norm(x.replace(/…$/, "")) && !text.includes(norm(x.replace(/…$/, "")))); };
   // A Mermaid block as Mermaid reads it: a known diagram, every line of a known form, frames closed, no call to a card that is not there.
   const mermaidBad = (lines) => {
