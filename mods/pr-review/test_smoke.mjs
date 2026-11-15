@@ -1098,6 +1098,89 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   assert.ok(!got.texts.some((x) => x.startsWith("Fix selected")) && !got.ids.includes(`rv-fbox-${plain[0].id}`), "a finding with a fix sent has no box");
   v.command(`pick-finding:${plain[0].id}`, cx); assert.deepEqual(v.pickedFindings(), [], "nor can it be ticked by its command");
 }
+// One selection: a box works on a folded row and on an open one; comments (your own and other people's GitHub
+// comments) and findings are ticked into the same selection, every place says its one number, and "Fix selected"
+// hands all of it to one agent. Nothing is written to GitHub for a GitHub comment.
+{
+  const { secByEffect } = await import("./pr.js"), TH = await import("./threads.js");
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json") });
+  const plain = v.findings().filter((f) => ["open", "recheck"].includes(v.fstatus(f)) && !secByEffect(f)), [f1, f2] = plain;
+  let notified = 0; const seen = { ...cx, notify() { notified++; } };
+  const tab = (name, what) => { S.ids = new Set(); S.texts = new Set(); act(v, name, `selection: ${what}`); const got = { ids: [...S.ids], texts: [...S.texts] }; S.ids = S.texts = null; return got; };
+  // A folded row and an open one: the box ticks, the row neither opens nor folds, and the frame is asked for.
+  for (const open_ of [false, true]) {
+    v.ffocus = open_ ? f1.id : null; tab("findings", `a ${open_ ? "open" : "folded"} row`); notified = 0;
+    S.clicks.get(`rv-fbox-${f1.id}`)(null, seen);
+    assert.deepEqual([v.pickedFindings(), v.ffocus, notified > 0], [[f1.id], open_ ? f1.id : null, true], `${open_ ? "open" : "folded"} row: ticked, the row as it was, drawn again`);
+    tab("findings", "ticked"); S.clicks.get(`rv-fbox-${f1.id}`)(null, seen); assert.deepEqual(v.pickedFindings(), [], "and unticked the same way");
+  }
+  v.ffocus = null;
+  // Two ticks one right after the other, nothing awaited between them: both are there at once, from what the view
+  // keeps (the file follows); each asks for one frame and publishes the number once, and the write afterwards
+  // draws nothing more.
+  { let frames = 0; const writes = [], fast = { ...cx, notify() { frames++; }, spawn(fn) { void Promise.resolve().then(() => fn(fast)).catch(() => null); } }, set = S.store.set;
+    S.store.set = function (k, val) { writes.push(k); return set.call(this, k, val); };
+    try {
+      tab("findings", "before two ticks"); S.clicks.get(`rv-fbox-${f1.id}`)(null, fast); S.clicks.get(`rv-fbox-${f2.id}`)(null, fast);
+      const meta = () => writes.filter((k) => k === "review.meta").length;
+      assert.deepEqual([v.pickedFindings().slice().sort(), frames, meta(), S.store.get("review.meta").selected], [[f1.id, f2.id].sort(), 2, 2, 2], "both ticks at once, one frame and one published number each");
+      await settle();
+      assert.deepEqual([v.pickedFindings().length, frames, meta()], [2, 2, 2], "the file's write draws and publishes nothing more");
+      const got2 = tab("findings", "two ticks drawn"); assert.ok(got2.texts.includes("Fix selected (2)…"));
+      v.command("clear-selection", fast); assert.deepEqual([v.selCount(), S.store.get("review.meta").selected], [0, 0]);
+    } finally { delete S.store.set; }
+  }
+  // A finding's card in the diff has the same box, beside the card, folded or open; one that goes alone has it switched off.
+  { S.ids = new Set(); act(v, "files", "selection: the diff with the findings' cards"); const ids = [...S.ids]; S.ids = null;
+    const cards = [...v.byKey].filter(([, it]) => it.t === "find"), pick = cards.find(([, it]) => plain.some((f) => f.id === it.f.id)), solo = cards.find(([, it]) => secByEffect(it.f) && ["open", "recheck"].includes(v.fstatus(it.f)));
+    assert.ok(pick && ids.includes(`rv-lfbox-${pick[1].f.id}`), `a finding's card in the diff has a box (${cards.length} cards: ${cards.map(([, it]) => it.f.id).join(", ")}; to tick: ${plain.map((f) => f.id).join(", ")})`);
+    const press = (key, x) => { v.press = { x, w: 900, shift: false }; v.onItem(key, cx); };
+    for (const open_ of [false, true]) {
+      (v.fopen ??= new Map()).set(pick[1].f.id, open_); draw(v, `selection: the card ${open_ ? "open" : "folded"}`);
+      press(pick[0], 122 - 20); assert.deepEqual([v.pickedFindings(), v.findOpen(pick[1].f)], [[pick[1].f.id], open_], `${open_ ? "open" : "folded"} card: ticked by its box, the card as it was`);
+      press(pick[0], 122 - 20); assert.deepEqual(v.pickedFindings(), []);
+    }
+    if (solo) { press(solo[0], 122 - 20); assert.deepEqual(v.pickedFindings(), [], "a security finding about access or data is not ticked"); }
+    v.fopen = null;
+  }
+  // A pending comment of your own and someone's GitHub comment on the same line.
+  const h = v.hunks[0], n = h.rows.find((r) => r.kind === "+").n;
+  v.command(`comment:${h.path}:${n}`, cx); v.command("draft:Rename this.", cx); v.command("add", cx); await settle();
+  const mine = TH.withIds(v.comments)[0].id;
+  v.gh = [{ id: 77, path: h.path, line: n, side: "RIGHT", user: "copilot", user_type: "Bot", at: "2026-11-15T10:00:00Z", commit_id: "c1", body: "This loop never ends when `n` is 0.", url: "https://github.com/o/r/pull/2#discussion_r77" }];
+  let got = tab("comments", "the Comments tab");
+  assert.ok(got.ids.includes("rv-crb-gh77") && S.clicks.has("rv-crb-gh77") && S.clicks.has(`rv-crb-${mine}`), "a GitHub comment has a box that takes a click, as your own has");
+  S.clicks.get("rv-crb-gh77")(null, cx); v.command(`pick-comment:${mine}`, cx); v.command(`pick-finding:${f1.id}`, cx); v.command(`pick-finding:${f2.id}`, cx); await settle();
+  assert.deepEqual([v.selCount(), S.store.get("review.meta")?.selected], [4, 4], "one number: two comments and two findings, also for the bar");
+  // The diff: the pill names it, and a GitHub comment's box in the gutter unticks and ticks it.
+  got = tab("files", "the diff with the pill");
+  assert.ok(got.texts.includes("4 selected") && got.texts.includes("✦ Fix selected (4)") && got.ids.includes("rv-ghbox-77"));
+  const ghKey = [...v.byKey].find(([, it]) => it.t === "gh")[0], press = (x) => { v.press = { x, w: 900, shift: false }; v.onItem(ghKey, cx); };
+  press(122 - 20); assert.equal(v.selCount(), 3, "a press on its box unticks it"); press(122 - 20); assert.equal(v.selCount(), 4);
+  press(300); assert.deepEqual([v.selCount(), v.ghOpen.has(77)], [4, true], "a press on the card itself is the card's (its details), not the box");
+  got = tab("findings", "the Findings tab's button");
+  assert.ok(got.texts.includes("Fix selected (4)…") && !got.texts.includes("Fix several…"), "the same number in the Findings tab");
+  // "Fix selected": one preview with the comments and the findings, labelled; the text names the GitHub comment's author.
+  const ran = []; S.exec = async (...a) => { ran.push(a); return { code: 1, stdout: "", stderr: "stub" }; };
+  try {
+    v.command("fix", cx); await settle();
+    const p = v.sendP, text = v.sendText.value();
+    assert.deepEqual([p.fix.items.map((x) => x.kind).sort(), p.fix.items.map((x) => x.id).sort(), Boolean(p.fix.pool)], [["comment", "comment", "finding", "finding"], ["gh77", mine, f1.id, f2.id].sort(), false]);
+    assert.match(p.own, /^COMMENTS · 2\n[^]*@copilot on GitHub · [^]*\n\nFINDINGS · 2\n/);
+    assert.ok(text.includes("a GitHub comment by @copilot") && text.includes("This loop never ends when `n` is 0.") && text.includes("Rename this.") && text.includes(f1.title) && text.includes(f2.title) && text.includes("The same task has a second part"), "the task has both parts");
+    draw(v, "selection: the preview of comments and findings");
+    p.fix.sent(cx, { route: "agent", agent: "a" }); await settle(); v.sendP = null;
+    // After the send: nothing is ticked; the findings have a fix sent; the GitHub comment is a thread here, with its author.
+    const th = v.threads().find((t) => t.id === "gh77");
+    assert.deepEqual([v.selCount(), S.store.get("review.meta")?.selected, [f1, f2].map((f) => v.fstatus(f)), [th?.by, th?.ghId, th?.route], v.comments.length], [0, 0, ["progress", "progress"], ["copilot", 77, "agent"], 0]);
+    assert.deepEqual(v.commentRowsNow().filter((r) => r.id === "gh77").map((r) => [r.kind, r.state]), [["thread", "waiting"]], "its row is the thread now, once");
+    got = tab("comments", "after the send"); tab("files", "the diff after the send");
+    assert.deepEqual(ran.filter(([cmd, args]) => cmd === "gh" && /POST|PATCH|PUT|DELETE|comments|replies|resolve/i.test((args ?? []).join(" "))), [], "nothing is written to GitHub");
+  } finally { S.exec = null; }
+  // A single one of each kind still goes its own way: a finding alone is the list of Fix several… with it ticked.
+  const f3 = plain.find((f) => v.fstatus(f) !== "progress");
+  if (f3) { v.command(`pick-finding:${f3.id}`, cx); v.command("fix-picked", cx); await settle(); assert.deepEqual([v.sendP.fix.items.map((x) => x.id), Boolean(v.sendP.fix.pool)], [[f3.id], true]); v.sendP = null; v.command("clear-selection", cx); assert.equal(v.selCount(), 0); }
+}
 // "Open in <Editor>" with editors installed (their Info.plist files are there; `open` is a stub, no editor starts):
 // the file heads' zones, the cards' monogram, the definition view, the panel's head and its file link, the state
 // "Opening …"; then a PR that is not trusted.
