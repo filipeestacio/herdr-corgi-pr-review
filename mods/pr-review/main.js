@@ -27,7 +27,7 @@ import { chip, PRIORITY_TIP } from "./stack.js";
 import { panelState, bodyTab, DONE_DAYS, diffTooLarge, filesToDiff, isOpenPr, byState, listRows, riskSignal, progressText, pendingText, rowMarks, mineGroups, progressRows, removedText, withPick, openSig, panelShown, byRef, fileRisk, leftNow, wrapCode, codeCols, sliceSpans } from "./views.js";
 import { keepLast } from "./views.js"; // every cache has a limit
 import { ReviewMode, startReview, startExplore, saveKey, flowCard, modelPills, modelLabel, renderReviews, renderAgentBar, renderKeys, renderCardMenu, renderMini } from "./review.js";
-import { highlightJob, highlightStep, langOf, colors, renderLine, editorSyntax } from "./syntax.js";
+import { highlightJob, highlightStep, langOf, firstLineOf, colors, renderLine, editorSyntax } from "./syntax.js";
 import { TYPE } from "./views.js"; // the text sizes (U34)
 
 // Same mapping as the shipped files panel.
@@ -186,6 +186,7 @@ export default class PrReview extends View {
     else if (name === "explore") startExplore(arg || null); // pr-review.explore[:<folder>]: a topic in existing code, no PR
     // For keys and scripted demos: a listed PR's row click (pick:<number>, the shown source's list).
     else if (c === "pick:branch") this.choose(null, cx); // the list's "Current branch" row
+    else if (name === "file" && arg && this.files.some((f) => f.path === arg)) this.pick(arg, cx); // file:<path>, a file row's click in the shown diff
     else if (name === "pick") { const pr = byRef(this.listNow(), arg); if (pr) this.pickTarget(pr, cx); } // pick:<number | owner/repo#number | url>
   }
 
@@ -475,7 +476,7 @@ export default class PrReview extends View {
     if (this.mode === "file") await this.showFile(path, context);
     const shown = lines.map((l) => (l.length > 2000 ? l.slice(0, 2000) + "…" : l)), sig = shown.join("\n");
     if (this.rows.sig === sig) return; // the same text as shown: the rows and their syntax colours stay
-    this.rows = Object.assign(diffRows(shown), { sig });
+    this.rows = Object.assign(diffRows(shown), { sig, first: firstLineOf(all) }); // first: line 1 where the diff has it, for a script without an ending
   }
 
   // The whole file as it is now: markdown rendered, code highlighted read-only.
@@ -489,7 +490,8 @@ export default class PrReview extends View {
     if (text === null) { this.fileError = "File not in the working tree (deleted?)"; return; }
     if (text.includes("\0")) { this.fileError = "Binary file"; return; }
     const body = text.length > 400000 ? text.slice(0, 400000) + "\n… (truncated)" : text;
-    const ext = path.includes(".") ? path.split(".").pop().toLowerCase() : "txt";
+    // No ending: the "#!" line says what it is (the Editor knows a language by its usual ending).
+    const ext = path.split("/").pop().includes(".") ? path.split(".").pop().toLowerCase() : { shell: "sh", python: "py", js: "js" }[langOf(path, body.slice(0, 200).split("\n")[0])] ?? "txt";
     if (ext === "md" || ext === "markdown") { this.md = body; return; }
     const t = theme();
     this.code = EditorState.new({ language: LANG[ext] ?? ext, readonly: true, value: body, font_family: settings().font_family, font_size: 12,
@@ -1206,7 +1208,7 @@ export default class PrReview extends View {
     // New rows (the file changed on disk): until they are coloured, a row whose text stayed keeps its colours.
     if (this.hl?.rows !== this.rows) {
       const old = this.hl?.spans && this.hl.file === this.open ? this.hl : null;
-      this.hl = { rows: this.rows, file: this.open, job: highlightJob(this.rows, langOf(this.open ?? "")), spans: null, kept: old && this.rows.map((r, i) => (old.rows[i]?.text === r.text ? old.spans[i] : null)) };
+      this.hl = { rows: this.rows, file: this.open, job: highlightJob(this.rows, langOf(this.open ?? "", this.rows.first)), spans: null, kept: old && this.rows.map((r, i) => (old.rows[i]?.text === r.text ? old.spans[i] : null)) };
       this.highlightMore(cx, this.hl);
     }
     this.spans = this.hl.spans ?? this.hl.kept;

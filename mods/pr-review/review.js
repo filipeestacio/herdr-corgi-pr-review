@@ -20,7 +20,7 @@ import { findingSteps, funnel, funnelLine, ownerOf, quickFirst, hasEffort, publi
 import { withProof, PROOF_WORDS } from "./pr.js"; // Verify with an agent
 import { overviewMd, findingMd, findingsMd, layerMd, architectureMd, securityMd, verifyContextMd, resilienceMd } from "./markdown.js"; // Copy this page as Markdown
 import { mdParts, mdJoin, codeStats } from "./markdown.js"; // its preview: the text in sections, the code context counted
-import { highlightJob, highlightStep, highlightLines, langOf, colors, renderLine, refAt } from "./syntax.js";
+import { highlightJob, highlightStep, highlightLines, langOf, firstLineOf, colors, renderLine, refAt } from "./syntax.js";
 import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js";
 import { recommendModel, tierSteps } from "./pr.js";
 import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf, codeModel, priceOf, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch, withSecurity, securityStart } from "./pr.js";
@@ -1367,7 +1367,7 @@ export const ReviewMode = {
       if (text === null || text === undefined) { this.note = this.jumpNote = `Could not open ${where(def)}`; return cx.notify(); }
       const all = text.replace(/\n$/, "").split("\n"), from = Math.max(0, def.line - 3000);
       const lines = all.slice(from, from + 6000).map(expandTabs);
-      this.defFile = { path: def.path, line: def.line, from, lines, spans: highlightLines(lines, langOf(def.path), `def:${def.uri ?? def.path}:${from}`) };
+      this.defFile = { path: def.path, line: def.line, from, lines, spans: highlightLines(lines, langOf(def.path, all[0]), `def:${def.uri ?? def.path}:${from}`) };
       this.lists.def.scroll_to_item(Math.max(0, def.line - from - 1), "center"); // "top" only reveals at the near edge: the line would sit under the view's bottom
       cx.notify();
     });
@@ -1385,7 +1385,7 @@ export const ReviewMode = {
     const head = !res ? `Looking up ${d.name}…` : def ? `${d.name} → ${where(def)}${res.definitions.length > 1 ? ` (+${res.definitions.length - 1})` : ""}` : `${d.name}: ${this.defMessage(res)}`;
     // The bridge sends the preview as lines (an array): splitting it as text threw and took the whole review down.
     const raw = Array.isArray(def?.preview) ? def.preview : String(def?.preview ?? "").split("\n");
-    const pre = raw.slice(0, 5).map(expandTabs), spans = def ? highlightLines(pre, langOf(def.path)) : [], first = def?.previewStart ?? def?.line ?? 1;
+    const pre = raw.slice(0, 5).map(expandTabs), first = def?.previewStart ?? def?.line ?? 1, spans = def ? highlightLines(pre, langOf(def.path, first === 1 ? pre[0] : "")) : [];
     return div().w_full().h(this.sizeOf(it)).pl(GUTTER).pr(16).py(6).child(v_flex().size_full().px(12).py(8).gap(6).rounded(8).border_1().border_l(4)
       .border_color(t.accent).bg(t.surface).text_size(TYPE.body)
       .child(h_flex().h(18).gap(8).items_center().child(div().font_semibold().child(head)).when(!res, (e) => e.child(div().child(SPIN[0]).frames(SPIN, 90))))
@@ -3634,7 +3634,7 @@ export const ReviewMode = {
       const text = await readTextFile(`${root}/${path}`).catch(() => null);
       if (text === null) { this.note = `Could not open ${path}`; return cx.notify(); }
       const all = text.replace(/\n$/, "").split("\n"), from = Math.max(0, line - 3000), lines = all.slice(from, from + 6000).map(expandTabs);
-      this.defFile = { path, line, from, lines, spans: highlightLines(lines, langOf(path), `explore:${root}:${path}:${from}`) };
+      this.defFile = { path, line, from, lines, spans: highlightLines(lines, langOf(path, all[0]), `explore:${root}:${path}:${from}`) };
       this.lists.def.scroll_to_item(Math.max(0, line - from - 1), "center"); // as in goDef
       cx.notify();
     });
@@ -5267,7 +5267,9 @@ export const ReviewMode = {
     for (const it of items) {
       if (it.t !== "row" || this.spanMap.has(it.src)) continue;
       const shown = it.src.map((r) => (r.text?.includes("\t") ? { ...r, text: expandTabs(r.text) } : r)); // tabs drawn as spaces: clicks map back
-      const inf = { shown, spans: [] }, lang = langOf(it.path);
+      // A script without an ending is known by its first line: from the whole file where it is loaded, else from the diff.
+      const whole = this.full[it.path], lang = langOf(it.path, Array.isArray(whole) ? whole[0] : firstLineOf((this.patch ?? []).find((f) => f.path === it.path)?.lines ?? []));
+      const inf = { shown, spans: [] };
       this.spanMap.set(it.src, inf);
       if (lang) (this.hlQueue ??= new Map()).set(inf, { shown, lang, hkey: `${head}:${it.path}`, inf });
     }
