@@ -516,6 +516,55 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   v.steps().forEach((_s, k) => act(v, `step:${k}`, `Explore: layer ${k}`));
   v.exBusy = { id: "x2", topic: "Next?", model: "sonnet", started: Date.now() }; draw(v, "Explore: one running"); v.exBusy = null;
   v.exErr = "The model gave no answer"; draw(v, "Explore: one failed"); v.exErr = null;
+  // A run that ended at once without an answer: the sentence with Retry, the model's choice and "Details" (what the
+  // CLI printed stays folded); the red line never holds the result object.
+  {
+    S.store.set("review.explore", { start: true, at: 3, root: "/h/repo" }); draw(v, "Explore: a new start"); v.exRoot = { root: "/h/repo", repo: "o/r" }; // the repo, as found
+    const raw = JSON.stringify({ type: "result", is_error: true, duration_api_ms: 0, stop_reason: "stop_sequence", session_id: "0000", total_cost_usd: 0, usage: { input_tokens: 0 }, result: "Claude AI usage limit reached|1794751200" });
+    v.exErr = "Explore: walkthrough: The run ended at once without an answer: Claude AI usage limit reached. It resets at 15:00. Choose another model or try again later."; v.exDetail = raw; v.exDetailOpen = false;
+    const shown = () => { S.ids = new Set(); S.texts = new Set(); draw(v, "Explore: a run that ended at once"); const got = { ids: S.ids, texts: [...S.texts] }; S.ids = null; S.texts = null; return got; };
+    let got = shown();
+    assert.ok(["rv-ex-err", "rv-ex-retry", "rv-ex-detail"].every((id) => got.ids.has(id)) && !got.ids.has("rv-ex-raw"), "the sentence, Retry and Details; the raw object folded");
+    assert.ok(got.texts.includes("The run ended at once without an answer: Claude AI usage limit reached. It resets at 15:00. Choose another model or try again later.") && !got.texts.some((x) => x.includes("session_id")), "one sentence, without the feature's name and without the object");
+    S.clicks.get("rv-ex-detail")(null, cx); got = shown();
+    assert.ok(got.ids.has("rv-ex-raw") && got.texts.includes(raw), "Details shows what the CLI printed");
+    v.exTopic.set_value("How are reminders sent?"); const before = v.exBusy; S.clicks.get("rv-ex-retry")(null, cx);
+    assert.ok(!before && v.exBusy?.topic === "How are reminders sent?" && v.exErr === null && v.exDetail === null, "Retry starts the run again and takes the error away");
+    v.exBusy = null; v.exTopic.set_value("");
+  }
+  // Minimize in Explore: the bar has it beside Back; the entry keeps the topic typed, the repo and a run that is going;
+  // the chip says what it is and how the run stands; Resume opens the page with all of it, and the run's end is read.
+  {
+    const bar = () => { S.ids = new Set(); frame("Explore: the bar", () => v.renderBar()); const ids = S.ids; S.ids = null; return ids; };
+    assert.ok(bar().has("rv-back") && bar().has("rv-min"), "Explore's bar: Back and Minimize");
+    const busy = { id: "x9", topic: "How are reminders sent?", model: "opus", started: Date.now() - 42000, status: "/h/pr-data/explore/x9.json.status", out: "/h/pr-data/explore/x9.json", ctx: null };
+    v.exTopic.set_value("How are reminders sent?"); v.exBusy = busy; v.exErr = null;
+    v.command("explore-min", cx);
+    const kept = S.store.get("review.minimized");
+    assert.deepEqual([kept.explore.draft, kept.explore.busy.id, kept.explore.exRoot.root, kept.target], ["How are reminders sent?", "x9", "/h/repo", undefined], "the page as it stands is kept");
+    assert.deepEqual(R.miniExploreText(kept.explore, null, busy.started + 42000), { head: "Explore", topic: "How are reminders sent?", repo: "o/r", state: "running", text: "running · 0:42" });
+    assert.equal(R.miniExploreText(kept.explore, { id: "x9", state: "done" }).text, "the walkthrough is ready");
+    assert.deepEqual([R.miniExploreText(kept.explore, { id: "x9", state: "failed" }).state, R.miniExploreText(kept.explore, { id: "other", state: "done" }).state], ["failed", "running"], "another run's end says nothing of this one");
+    assert.deepEqual([R.miniExploreText({ start: true, root: "/h/repo" }).head, R.miniExploreText({ start: true, root: "/h/repo" }).text], ["Explore: repo", ""], "no topic yet: the repo");
+    assert.equal(R.miniExploreText({ id: "x1", topic: "Loans", repo: "o/r", root: "/h/repo" }).state, null, "an exploration that is shown: no run");
+    for (const run of [null, { id: "x9", state: "done" }, { id: "x9", state: "failed" }]) { S.ids = new Set(); frame(`the minimized Explore chip, ${run?.state ?? "running"}`, () => R.renderMini(run)); assert.ok(["rv-mini", "rv-mini-open", "rv-mini-x"].every((id) => S.ids.has(id))); S.ids = null; }
+    // Resume: a view that lost the page's state (a new one) takes it from the entry; the run ended meanwhile with an error.
+    S.files.set("/h/mods/pr-review/review-layout.json", "{}"); // the layout it copies on a first start
+    await R.startExplore("/h/repo", kept.explore);
+    const back = S.store.get("review.explore");
+    assert.ok(S.store.get("review.minimized") === null && back.busy.id === "x9" && back.draft === "How are reminders sent?", "Resume: the entry is gone, the page has its state");
+    S.files.set(busy.status, JSON.stringify({ error: "Explore: walkthrough: The run was stopped before it answered. Try again.", kind: "stopped", detail: "" }));
+    v.exBusy = null; v.exTopic.set_value(""); v.exRoot = null; v.exStart = null;
+    const timers = []; const cx2 = { ...cx, timer: { after: (_ms, f) => timers.push(f), every() {} }, spawn: (f) => { void Promise.resolve().then(() => f(cx2)).catch(() => null); } };
+    v.enterExplore(back, cx2);
+    assert.deepEqual([v.exBusy?.id, v.exTopic.value(), v.exRoot?.root], ["x9", "How are reminders sent?", "/h/repo"], "the topic, the repo and the run are back");
+    for (const f of timers.splice(0)) f(cx2); await settle();
+    assert.deepEqual([v.exBusy, v.exErr], [null, "Explore: walkthrough: The run was stopped before it answered. Try again."], "the run's end is read at once");
+    v.enterExplore({ ...back }, cx2); // the next render reads the same entry as a new object: nothing is taken again
+    assert.deepEqual([v.exBusy, v.exErr === null, timers.length], [null, false, 0], "the entry is taken once: the ended run does not start over");
+    draw(v, "Explore: back from the chip, the run had failed");
+    v.exErr = null; v.exDetail = null; v.exTopic.set_value(""); S.store.set("review.minimized", null);
+  }
   await deep(v, (x) => `Explore: ${x}`);
   S.files.set("/h/repo/library/loans.py", FILE); v.openExploreFile("library/loans.py", 9, cx); await settle(); draw(v, "Explore: a cited file open");
   v.defFile = null; S.store.set("review.explore", null); v.leaveExplore(); draw(v, "back to the review");
@@ -942,6 +991,39 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     assert.equal(/older rules, re-run/.test(v.mdText(false)), false, "the Security page's Markdown has the sentence, not the bar's note");
     assert.equal(/Re-run it for the current view\. (\d+ of the|None of the)/.test(v.mdText(false)), old, `rules ${rules}: the Markdown's sentence counts`);
   }
+}
+// "Open in <Editor>" with editors installed (their Info.plist files are there; `open` is a stub, no editor starts):
+// the file heads' zones, the cards' monogram, the definition view, the panel's head and its file link, the state
+// "Opening …"; then a PR that is not trusted.
+{
+  const EV = await import("./editor-view.js"); EV.forgetEditors();
+  const started = [];
+  for (const app of ["/Applications/Visual Studio Code.app", "/Applications/IntelliJ IDEA.app"]) S.files.set(`${app}/Contents/Info.plist`, "<plist/>");
+  S.exec = async (cmd, args = []) => { if (cmd === "open") { started.push(args); return { code: 0, stdout: "", stderr: "" }; } throw new Error("stub"); };
+  for (const trusted of [true, false]) {
+    const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json"), trusted }), who = trusted ? "your PR" : "someone else's PR";
+    EV.forgetEditors(); // also the first round's "Opening …"
+    for (const app of ["/Applications/Visual Studio Code.app", "/Applications/IntelliJ IDEA.app"]) S.files.set(`${app}/Contents/Info.plist`, "<plist/>"); // open() cleared the files
+    v.worktree = { url: v.prSel.url, head: v.head, path: "/h/w" }; S.store.set("review.worktree", v.worktree);
+    draw(v, `editor, ${who}: the frame that asks for the editors`); EV.editorFor({ root: "/h/w" }, cx); await EV.lookForEditors(true); await settle();
+    for (const tab of ["files", "findings"]) act(v, tab, `editor, ${who}: ${tab} with the links`);
+    assert.equal(v.fileEditMark(v.patch[0])?.text, "VS Code ↗", "the file heads carry the link");
+    assert.deepEqual(["a/b.py:9-14", "a/b.py:9:3", "a/b.py", "a/b.py:9", "../x:1"].map((at) => v.editAt(S.theme, "x", at).length), [1, 1, 1, 1, 0], "a card's place gets its monogram; a path that leaves the checkout gets none");
+    S.files.set("/h/w/library/loans.py", "class Loan:\n    pass\n".repeat(8)); v.tab = "files"; v.goDef({ path: "library/loans.py", line: 9, inRoot: true }, cx); await settle();
+    assert.ok(v.defFile, "a file outside the diff is open"); draw(v, `editor, ${who}: the definition view with its link`); v.defFile = null; v.defAt = null;
+    for (const pg of ["overview", "blast", "arch"]) act(v, `page:${pg}`, `editor, ${who}: page ${pg} with the monogram`);
+    for (const nd of (v.ai?.arch?.nodes ?? []).slice(0, 3)) act(v, `card:${nd.id}`, `editor, ${who}: card ${nd.id}`);
+    started.length = 0; v.command(`editor:${v.patch[0].path}:3`, cx); await settle();
+    assert.deepEqual(started, [[`vscode://file/h/w/${v.patch[0].path}:3`]], `${who}: the file at its line, one process`);
+    act(v, "files", `editor, ${who}: the link says Opening`); assert.equal(v.fileEditMark(v.patch[0]) && EV.isOpening({ root: "/h/w", file: v.patch[0].path, line: 3 }), true);
+    started.length = 0; v.command("editor:", cx); await settle();
+    assert.equal(started.length, trusted ? 1 : 0, `${who}: its folder ${trusted ? "opens" : "does not open"}`);
+    EV.openEditorMenu(v, v.fileEditTarget(v.patch[0])); v.command("editor-use:idea", cx); await settle(); draw(v, `editor, ${who}: another editor picked for the project`);
+    assert.equal(S.store.get("editor.choice")?.repos?.["/h/w/.git"]?.main, "idea");
+    S.props = {}; const panel = new PrReview(); panel.init({}, cx); await settle(); panel.prSel = v.prSel; panel.context = panel.key(); panel.patch = v.patch; panel.files = v.patch; panel.open = v.patch[0].path; draw(panel, `editor, ${who}: the panel's head and its file link`);
+    S.props = null; S.store.set("editor.choice", null);
+  }
+  EV.forgetEditors(); S.exec = null;
 }
 await settle();
 assert.deepEqual(late, [], "a spawned task threw");

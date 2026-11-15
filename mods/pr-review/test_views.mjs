@@ -1290,3 +1290,9 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   console.log("ok panel zones");
 }
 
+
+{ // a card's place, for "↗ editor"
+  const { placeOf } = await import("./views.js");
+  assert.deepEqual(["a/b.py:9-14", "a/b.py:9:3", "a/b.py", "a/b.py:9", "", null].map(placeOf), [{ file: "a/b.py", line: 9 }, { file: "a/b.py", line: 9 }, { file: "a/b.py", line: null }, { file: "a/b.py", line: 9 }, null, null]);
+  console.log("ok place");
+}

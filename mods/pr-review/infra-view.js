@@ -19,7 +19,8 @@ export function infraSection(t, o) {
   // The references whose text is not on their line in the picture (a line that fans out, one that runs under the cards).
   const addr = new Map(m.cards.map((c) => [c.id, c.addr])), nameOf = (id) => addr.get(id) ?? P.L.nodes.find((n) => n.id === id)?.label ?? id, loose = P ? P.L.paths.filter((p) => !p.text || p.text.cut) : [];
   const line = (id, text, at, color = t.muted) => div().id(id).text_size(TYPE.small).line_height(1.5).whitespace_normal().text_color(color)
-    .when(Boolean(at), (e) => e.cursor_pointer().hover((s) => s.text_color(t.foreground)).tooltip("Show this place in the diff").on_click((_e, cx) => o.onJump(at, cx))).child(text);
+    .when(Boolean(at), (e) => e.cursor_pointer().hover((s) => s.text_color(t.foreground)).tooltip("Show this place in the diff").on_click((_e, cx) => o.onJump(at, cx))).child(text)
+    .children(at && o.edit ? o.edit(`${id}-ed`, at) : []); // "↗ editor": the resource's place in the person's editor
   return v_flex().w_full().gap(8).pt(6)
     .child(div().text_size(TYPE.body).font_semibold().text_color(t.muted).child(`Infrastructure changes · ${m.total}`))
     .child(div().text_size(TYPE.small).text_color(t.muted).whitespace_normal().child(infraSource(m)))

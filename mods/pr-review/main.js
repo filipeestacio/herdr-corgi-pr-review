@@ -30,6 +30,8 @@ import { keepLast } from "./views.js"; // every cache has a limit
 import { ReviewMode, startReview, startExplore, saveKey, flowCard, modelPills, modelLabel, renderReviews, renderAgentBar, renderKeys, renderCardMenu, renderMini } from "./review.js";
 import { highlightJob, highlightStep, langOf, firstLineOf, colors, renderLine, editorSyntax } from "./syntax.js";
 import { TYPE } from "./views.js"; // the text sizes (U34)
+import { editorLink, editorCommand, startOpen, setEditors } from "./editor-view.js"; // "Open in <Editor>"
+import { copyText } from "./setup-view.js";
 
 // Same mapping as the shipped files panel.
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html" };
@@ -135,6 +137,8 @@ export default class PrReview extends View {
     // The minimized chip's copy sits in the main layouts also while the panel does not: it keeps a click on a PR mark
     // of the Worktrees mod ("want:<owner/repo#n>") for the panel (wantPick).
     if (this.part === "mini") this.listen(cx, (c) => { if (c.startsWith("want:")) this.wantPick(c.slice(5)); }, false);
+    // A minimized Explore whose run is going: its status file says when it has ended, so the chip can say so.
+    if (this.part === "mini") cx.timer.every(5000, (cx) => this.miniPoll(cx));
     if (this.part === "bar" || this.part === "reviews" || this.part === "agentbar" || this.part === "keys" || this.part === "cmenu" || this.part === "mini") return;
     this.announces = true; // Go to's keys: published while this copy runs, cleared in close()
     this.files = []; this.rows = []; this.sel = null; this.selEnd = null; this.question = "";
@@ -182,7 +186,7 @@ export default class PrReview extends View {
         if (pr) this.choose(pr, cx);
         if (listed) { this.picking = true; this.loadSource(cx); } // opened from the list: the list again, the PR behind "Back to #n →"
       } finally { this.restoring = false; cx.notify(); } // a pick that is gone: the list after all
-      this.cfg = await readConfig();
+      this.cfg = await readConfig(); setEditors(this.cfg.editors);
       await loadSetup(this, cx);
       // The open reviews as the registry file has them (it outlives shared state edits and format changes).
       const reg = JSON.parse(await readTextFile(`${appHome()}/pr-data/open-reviews.json`).catch(() => null) ?? "null");
@@ -195,6 +199,7 @@ export default class PrReview extends View {
   // A key command or scripted click for the panel (pr-review.<c>).
   panelCommand(c, cx) {
     const [name, arg] = [c.split(":")[0], c.split(":").slice(1).join(":")];
+    if (editorCommand(this, c, cx, copyText)) return; // editor:<path>[:<line>], and the ▾ menu's entries
     if (name === "source" && SOURCES.some(([k]) => k === arg)) { this.pickSource(arg); this.picking = true; this.loadSource(cx); }
     else if (c === "picker") { this.picking = !this.picking; if (this.picking) this.loadSource(cx); }
     else if (c === "setup") { this.view = "setup"; runSetup(this, cx, false); }
@@ -977,6 +982,18 @@ export default class PrReview extends View {
     });
   }
 
+  // The minimized Explore's run (review.js minimizeExplore keeps {id, status}): done or failed once its status file
+  // says so; nothing is read while no run is minimized.
+  miniPoll(cx) {
+    const b = shared("review.minimized")?.explore?.busy;
+    if (!b?.status || this.miniRun?.id === b.id) return;
+    cx.spawn(async (cx) => {
+      const st = JSON.parse(await readTextFile(b.status).catch(() => null) ?? "null");
+      if (!st || st.busy) return cx.notify(); // still going: the chip's time moves on
+      this.miniRun = { id: b.id, state: st.error ? "failed" : "done" }; cx.notify();
+    });
+  }
+
   // "Open PR…": a URL or owner/repo#123, opened like a listed PR.
   openRef(cx) {
     const ref = parsePrRef(this.openRefInput.value());
@@ -1317,6 +1334,19 @@ export default class PrReview extends View {
     cx.notify();
   }
 
+  // ---- "Open in <Editor> ↗" (editor-view.js), for every part of the mod
+  // The checkout a link opens: for a PR the one the review uses (shared "review.worktree": the PR's head as files),
+  // for the current branch the repo of the focused pane; null: there is none, and no link.
+  checkoutRoot() {
+    if (this.part === "review") return this.worktree?.path ?? null;
+    const pr = this.part === "mini" ? shared("review.minimized")?.target : this.prSel, w = shared("review.worktree");
+    return pr ? (w?.url === pr.url ? w.path ?? null : null) : !this.part && this.branchPicked ? this.root ?? null : null;
+  }
+  // A PR from a source that is not trusted: a click opens the file alone, never its folder.
+  editorForeign() { const pr = this.part === "mini" ? shared("review.minimized")?.target : this.prSel; return pr ? !this.trustedPr(pr) : false; }
+  // A click: one process; the link says "Opening …" for three seconds, a failure is a toast (editor-view.js startOpen).
+  openEditor(target, cx, id = null) { startOpen(target, cx, id); }
+
   // Into the review from the panel. Whether the list was shown then is kept (shared "pr.listed"): back from a review
   // opened from the list, the list is shown again, with the review's PR as the pick behind "Back to #n →".
   toReview(target) {
@@ -1408,7 +1438,7 @@ export default class PrReview extends View {
           this.toReview(r ? r.target ?? r : { url: ref.url, repo: ref.repo, number: Number(ref.number), source: "open" });
         });
       }
-      return renderMini();
+      return renderMini(this.miniRun ?? null);
     }
     if (this.part === "review") {
       // Go to hands PRs over through "pr.goto"; the panel isn't mounted while the review layout shows, so take it here.
@@ -1477,6 +1507,7 @@ export default class PrReview extends View {
           .hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("All PRs").on_click(back).child("←"))
         .child(div().id(`pr-title-${this.uid}`).tooltip(title).flex_1().min_w(150).max_h(36).overflow_hidden().whitespace_normal().line_height(1.35).font_semibold().child(title)) // two lines, then cut
         .child(pill(`pr-reload-${this.uid}`, t, this.loading && !this.quietLoad ? "…" : "↻", (_e, cx) => { if (this.prSel) this.heads.delete(this.prSel.url); this.refresh(cx, true); }, false, "Reload this PR's diff and details", "Reload PR"))
+        .children(editorLink(this, t, `hd-${this.uid}`, { root: this.checkoutRoot(), foreign: this.editorForeign() }, cx)) // the PR's checkout (a trusted PR), or the branch's repo
         .when(Boolean(named?.url), (e) => e.child(pill("pr-web", t, "GitHub ↗", () => openUrl(named.url), false, "Open this PR on GitHub in the browser")))
         // The way into the review is the header's one filled button; Resume once this PR's review was started.
         .when(Boolean(this.pr?.url), (e) => e.child(div().id(`pr-rv-${this.uid}`).tooltip(resume ? "Continue this review where you left it" : "Open this PR in the review layout").flex_none().px(12).h(26).flex().items_center().rounded(6)
@@ -1502,8 +1533,9 @@ export default class PrReview extends View {
       .when(tab === "diff" && this.files.length > 0, (e) => e.child(pill(`pr-wrap-${this.uid}`, t, shared("review.wrap") === true ? "Wrap on" : "Wrap off", () => setShared("review.wrap", shared("review.wrap") !== true), false,
         "Long lines wrap, or are cut at the panel's edge. The review's Line wrap switch is the same setting.")))
       .when(tab === "diff" && Boolean(this.open && !this.patch), (e) => e
-        .child(pill(`mode-${this.uid}`, t, this.mode === "file" ? "Diff view" : "File view", (_e, cx) => this.setMode(this.mode === "file" ? "diff" : "file", cx), false, "Switch between the diff and the whole file"))
-        .child(pill(`vscode-${this.uid}`, t, "VS Code ↗", () => exec("code", ["-g", `${this.root}/${this.open}:${(this.sel !== null && this.rows[this.sel]?.number) || 1}`]), false, "Open this file at the selected line in VS Code")));
+        .child(pill(`mode-${this.uid}`, t, this.mode === "file" ? "Diff view" : "File view", (_e, cx) => this.setMode(this.mode === "file" ? "diff" : "file", cx), false, "Switch between the diff and the whole file")))
+      // The open file at the picked line, in the person's editor: for a branch, and for a PR whose checkout the review made.
+      .children(tab === "diff" && this.open ? editorLink(this, t, `file-${this.uid}`, { root: this.checkoutRoot(), file: this.open, line: (this.sel !== null && this.rows[this.sel]?.number) || this.rows.find((r) => r.number)?.number || null, foreign: this.editorForeign(), where: this.prSel ? "in the checkout of this PR" : "in this checkout" }, cx) : []);
     // Picking: reviews in progress and the sources' list in one scroll, so nothing stacks over anything.
     // The bodies are built only when they are shown (pickBody, files, diffBody are asked for below): a frame with a
     // PR chosen built the whole list of PRs before, and one with the list shown every file and diff line.

@@ -22,7 +22,7 @@ import { withProof, PROOF_WORDS } from "./pr.js"; // Verify with an agent
 import { overviewMd, findingMd, findingsMd, layerMd, architectureMd, securityMd, verifyContextMd, resilienceMd } from "./markdown.js"; // Copy this page as Markdown
 import { mdParts, mdJoin, mdHead, mdLines, codeStats } from "./markdown.js"; // its preview: the text in sections, the code context counted
 import { highlightJob, highlightStep, highlightLines, langOf, firstLineOf, colors, renderLine, refAt } from "./syntax.js";
-import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js";
+import { lookup, warm, contents, where, setTrusted } from "./defs.js";
 import { recommendModel, tierSteps } from "./pr.js";
 import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf, codeModel, priceOf, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch, withSecurity, securityStart } from "./pr.js";
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
@@ -34,7 +34,8 @@ import { visualPlan, laidOut } from "./stack.js";
 import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCALE } from "./views.js";
 import { ghMd, mdBlocks } from "./views.js"; // GitHub comments as GitHub shows them
 import { wrapCode, codeCols, sliceSpans } from "./views.js"; // long lines wrap
-import { rowMarks, riskOfCounts } from "./views.js"; // the minimized chip's mark, from the registry entry
+import { rowMarks, riskOfCounts, placeOf, patchSymlink } from "./views.js"; // the minimized chip's mark, from the registry entry; a card's place
+import { editorFor, editorMark, editorLink, editorCommand, openEditorMenu, editorFull } from "./editor-view.js"; // "Open in <Editor>"
 import { pageBadge, signOf, signEl, markLabel } from "./views.js"; // one sign for severity and certainty: nav rows, the bar, rows, chips
 import { pairRows, pairSide, HALF_GUTTER, diffModeOf, oneSided, stackOf, chipAt, textW } from "./views.js"; // side by side; the bar's stack
 import { mdTarget, secPicture, secBlast, resNoPicture } from "./views.js"; // Copy as Markdown: what it copies on each page; the Security page's picture and lines
@@ -77,6 +78,7 @@ const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "�
 const FOLD_MARGIN = 1500 * 22; // px: open the files around the view again this close to a folded one
 const SPLIT = 6, ROW = 22, GUTTER = 4 + 48 + 48 + 22, GAP_SEG = 110, BTN = 110, BTN_GAP = 8, ACT = 44;
 const FILE_CHEV = 30, FILE_SEEN = 100, FILE_WHOLE = 124;
+const FILE_EDIT = 124, FILE_EDIT_MORE = 24; // a file head's "IntelliJ ↗" (or "Opening IntelliJ …") and its ▾: zones after "Whole file" (a list row holds no handler)
 const MORE = 20; // lines per ↑/↓ click
 const ONE_LINE = [0]; // a code line that fits: one visual line from its start (wrapsOf)
 // A fenced block in a GitHub comment (codeView): font size, line height, padding; GH_GAP between a comment's blocks (as
@@ -289,7 +291,8 @@ export async function startReview(target) {
 
 // Opens Explore in the review layout (pr-review.explore, the panel's "Explore a topic…", the review's ⋯ menu): a topic
 // walked through in existing code, no PR. root: the repo to explore (default: the active space's repo, chosen there).
-export async function startExplore(root = null) {
+// resume: the page as it was minimized (review.minimized.explore): it opens again with its topic, its run, its result.
+export async function startExplore(root = null, resume = null) {
   const dir = `${appHome()}/layouts`, read = (name) => readTextFile(`${dir}/${name}.json`).catch(() => null);
   const plan = layoutPlan(await read("review"), await read("pr-review"));
   if (plan.write) {
@@ -299,7 +302,8 @@ export async function startExplore(root = null) {
   const back = shared("layout");
   if (back && back !== plan.name) setShared("review.back", back);
   setShared("review.layout", plan.name);
-  setShared("review.explore", { start: true, root, space: focused()?.space ?? null, at: Date.now() });
+  setShared("review.explore", resume ? { ...resume, at: Date.now() } : { start: true, root, space: focused()?.space ?? null, at: Date.now() });
+  if (resume) setShared("review.minimized", null); // back in it: no entry
   run("layout.switch", { name: plan.name });
 }
 // Leaving hands the review's PR to the panel (shared "pr.fromReview"): back there it shows this PR, whichever way the
@@ -308,8 +312,10 @@ const leave = () => { const pr = shared("review.target"); if (pr?.url) setShared
 // Minimize: back to the previous layout with the review kept as one entry (part "mini", a float in the main layout):
 // Open brings it back where it was, ✕ drops it. One at a time: minimizing another review replaces it.
 const minimize = () => { const pr = shared("review.target"); if (pr) setShared("review.minimized", { target: pr, at: Date.now() }); leave(); };
-export function renderMini() {
-  const t = theme(), pr = shared("review.minimized")?.target;
+// run: what became of a minimized Explore run ({id, state: "done" | "failed"}; main.js miniPoll reads its status file).
+export function renderMini(run = null) {
+  const t = theme(), pr = shared("review.minimized")?.target, ex = shared("review.minimized")?.explore;
+  if (ex) return miniExplore(t, ex, run);
   if (!pr) return div();
   const open = (shared("review.open") ?? []).find((r) => r.url === pr.url); // the review's own count, as the panel shows it
   // A small chip, so it covers little of the terminal under it: the PR number, its full title in the tooltip.
@@ -327,6 +333,30 @@ export function renderMini() {
       .tooltip("Back to the review, where you left it").on_click(() => startReview(pr)).child("Resume"))
     .child(div().id("rv-mini-x").w(22).h(22).flex().items_center().justify_center().rounded_full().cursor_pointer().text_color(t.muted).hover((x) => x.bg(t.hover))
       .tooltip("Remove this chip. The review stays in progress with its comments; the panel's In progress resumes it.").accessibility_label("Remove the minimized review's chip").on_click(() => setShared("review.minimized", null)).child("✕"));
+}
+
+// Explore, minimized: what it is about (the topic, else "Explore: <repo>"), a run that is going or has ended meanwhile,
+// Resume (the page again with its topic, its run and its result) and ✕.
+export const miniExploreText = (ex, run = null, now = Date.now()) => {
+  const repo = ex.repo ?? ex.exRoot?.repo ?? (ex.root ?? ex.exRoot?.root ?? "").split("/").pop() ?? "", topic = String(ex.topic ?? ex.busy?.topic ?? ex.draft ?? "").trim();
+  const ended = ex.busy && run?.id === ex.busy.id ? run.state : null;
+  return { head: topic ? "Explore" : `Explore${repo ? `: ${repo}` : ""}`, topic, repo,
+    state: !ex.busy ? (ex.err ? "failed" : null) : ended === "done" ? "done" : ended === "failed" ? "failed" : "running",
+    text: !ex.busy ? (ex.err ? "the run failed" : "") : ended === "done" ? "the walkthrough is ready" : ended === "failed" ? "the run failed" : `running · ${clock(now - ex.busy.started)}` };
+};
+function miniExplore(t, ex, run) {
+  const m = miniExploreText(ex, run);
+  return h_flex().id("rv-mini").h(28).pl(10).pr(3).gap(6).items_center().rounded_full().border_1().border_color(t.border).bg(t.popover)
+    .text_size(TYPE.small).text_color(t.foreground).tooltip([m.topic || "Explore a topic", m.repo, m.state === "running" ? "The run goes on while this is minimized." : null].filter(Boolean).join("\n"))
+    .on_mouse_down("left", (_e, cx) => cx.stop_propagation()) // a press the mod doesn't stop would drag the float
+    .child(div().flex_none().font_semibold().child(m.head))
+    .when(Boolean(m.topic), (e) => e.child(div().flex_none().max_w(260).truncate().text_color(t.muted).child(m.topic)))
+    .when(m.state === "running", (e) => e.child(div().flex_none().text_color(t.muted).child(SPIN[0]).frames(SPIN, 90)))
+    .when(Boolean(m.text), (e) => e.child(div().id("rv-mini-run").flex_none().text_color(m.state === "failed" ? t.ansi1 : m.state === "done" ? t.ansi2 : t.muted).child(m.text)))
+    .child(div().id("rv-mini-open").px(8).h(22).flex().items_center().rounded_full().cursor_pointer().text_color(t.accent).hover((x) => x.bg(t.hover))
+      .tooltip("Back to Explore: the topic, the run and its result as you left them").on_click(() => startExplore(ex.root ?? null, ex)).child("Resume"))
+    .child(div().id("rv-mini-x").w(22).h(22).flex().items_center().justify_center().rounded_full().cursor_pointer().text_color(t.muted).hover((x) => x.bg(t.hover))
+      .tooltip("Remove this chip. A run that is going finishes anyway; its walkthrough is then listed under Explorations.").accessibility_label("Remove the minimized Explore chip").on_click(() => setShared("review.minimized", null)).child("✕"));
 }
 
 const pill = (id, t, label, click, on = false, color) => div().id(id).flex_none().whitespace_nowrap().px(9).h(26).flex().items_center().rounded(6).border_1()
@@ -452,6 +482,7 @@ export const ReviewMode = {
   command(c, cx) {
     const [name, ...rest] = c.split(":"), arg = rest.join(":");
     this.note = null; // the next action ends a note that stays (an error); its own note follows
+    if (editorCommand(this, c, cx, copyText)) return cx.notify(); // editor:<path>[:<line>], and the ▾ menu's entries
     if (name === "steps" || name === "files" || name === "findings" || name === "comments") this.tab = name;
     else if (name === "analysis") this.tab = "steps"; // the tab's name; "steps" stays valid
     else if (name === "def") this.defineAt(arg, cx);
@@ -513,6 +544,7 @@ export const ReviewMode = {
     else if (name === "fix") this.fixComments(arg ? arg.split(",") : this.selected(), cx); // fix:<comment id>[,<id>…], else the selected ones (the preview opens)
     else if (name === "fix-target") this.fixTarget(arg); // sub | main, in the open preview
     else if (name === "explore") startExplore(arg || null);
+    else if (name === "explore-min") this.minimizeExplore(); // the Explore bar's "Minimize"
     else if (name === "explore-open") this.openExploration(arg, cx);
     else if (name === "trust-repo") { // the explored repo, or the folder when it has no github.com remote
       const key = this.ex?.repo ? "pr-review.trustedRepos" : "pr-review.trustedRoots", v = this.ex?.repo ?? this.ex?.root;
@@ -1496,7 +1528,7 @@ export const ReviewMode = {
           .child(div().w(40).flex_none().pr(8).text_right().text_color(t.muted).child(String(first + i))).children(renderLine(div, l, spans[i] ?? [], c)))))
       .child(h_flex().gap(BTN_GAP)
         .child(div().id("rv-di-go").tooltip("Open the file that defines this in the review").w(BTN + 40).h(26).flex().items_center().justify_center().rounded(6).border_1().border_color(def ? t.accent : t.border).text_size(TYPE.small).text_color(def ? t.foreground : t.muted).child("Go to definition"))
-        .child(div().id("rv-di-code").tooltip("Open the defining file in VS Code").w(BTN + 40).h(26).flex().items_center().justify_center().rounded(6).border_1().border_color(t.border).text_size(TYPE.small).text_color(def ? t.foreground : t.muted).child("Open in VS Code"))
+        .child(div().id("rv-di-code").tooltip(this.edOn ? "Open the defining file in your editor" : "No editor was found to open the file in").w(BTN + 40).h(26).flex().items_center().justify_center().rounded(6).border_1().border_color(t.border).text_size(TYPE.small).text_color(def && this.edOn ? t.foreground : t.muted).child(this.edOn ? "Open in editor" : "No editor"))
         .child(div().id("rv-di-x").tooltip("Close this definition preview").px(10).h(26).flex().items_center().text_size(TYPE.small).text_color(t.muted).child("Close"))));
   },
 
@@ -1506,7 +1538,8 @@ export const ReviewMode = {
     return v_flex().flex_1().min_h(0)
       .child(h_flex().flex_none().h(40).px(12).gap(10).items_center().bg(t.raised).border_b(1).border_color(t.border).text_size(TYPE.body)
         .child(pill("rv-def-back", t, this.exMode ? "← Back" : "← Back to the diff", (_e, cx) => { this.defFile = null; this.defAt = null; cx.notify(); }).tooltip("Return to the previous view (Esc)"))
-        .child(div().flex_1().min_w(0).truncate().font_family(mono).font_semibold().child(`${f.path}:${f.line}`)))
+        .child(div().flex_1().min_w(0).truncate().font_family(mono).font_semibold().child(`${f.path}:${f.line}`))
+        .children(editorLink(this, t, "def", { root: this.lspRoot(), file: f.path, line: f.line, foreign: this.editorForeign(), where: "in the checkout this view reads" }, null))) // the same root this view reads from
       .when(Boolean(this.defAt?.inView), (e) => { const d = this.defAt, def = d.res?.definitions?.[0];
         return e.child(h_flex().flex_none().px(12).py(6).gap(8).items_center().border_b(1).border_color(t.border).bg(t.surface).text_size(TYPE.small)
           .child(div().flex_1().min_w(0).truncate().child(!d.res ? `Looking up ${d.name}…` : def ? `${d.name} → ${where(def)}` : `${d.name}: ${this.defMessage(d.res)}`))
@@ -1848,7 +1881,7 @@ export const ReviewMode = {
       const d = it.d.res?.definitions?.[0];
       if (which === 2) this.defAt = null;
       else if (d && which === 0) this.goDef(d, cx);
-      else if (d && which === 1) { const a = vscodeArgs(this.lspRoot(), d); if (a) exec("code", a); else this.note = "Could not open: the definition is not a local file"; }
+      else if (d && which === 1) { if (d.inRoot && this.lspRoot() && this.edOn) this.openEditor({ root: this.lspRoot(), file: d.path, line: d.line, foreign: this.editorForeign() }, cx); else this.note = this.edOn ? "Could not open: the definition is not a file of this checkout" : "No editor was found to open the file in"; }
     } else if (it.t === "fact") {
       const b = x - GUTTER - 12, which = Math.floor(b / (BTN + BTN_GAP)), inside = b >= 0 && b % (BTN + BTN_GAP) < BTN;
       if (inside && which === 0) this.findingComment(it.f, cx);
@@ -1870,6 +1903,8 @@ export const ReviewMode = {
       this.fileFocus = p;
       if (x >= FILE_CHEV && x < FILE_CHEV + FILE_SEEN) this.toggleSeen(p, cx);
       else if (x >= FILE_CHEV + FILE_SEEN && x < FILE_CHEV + FILE_SEEN + FILE_WHOLE && this.shown().fileHunks?.has(p)) this.toggleWhole(p, cx);
+      else if (this.fileEditMark(it.f) && x >= FILE_CHEV + FILE_SEEN + FILE_WHOLE && x < FILE_CHEV + FILE_SEEN + FILE_WHOLE + FILE_EDIT) this.openEditor(this.fileEditTarget(it.f), cx);
+      else if (this.fileEditMark(it.f) && x >= FILE_CHEV + FILE_SEEN + FILE_WHOLE + FILE_EDIT && x < FILE_CHEV + FILE_SEEN + FILE_WHOLE + FILE_EDIT + FILE_EDIT_MORE) openEditorMenu(this, this.fileEditTarget(it.f));
       else if (this.collapsed.has(p) || this.overBudget?.has(p)) this.unfold(p); else this.collapsed.add(p);
     } else if (it.t === "fold") this.unfold(it.path);
     else if (it.t === "step") {
@@ -3431,7 +3466,7 @@ export const ReviewMode = {
       this.infraMemo = { model: m, key, pic: laidOut(pic.args, pic, () => this.infraMemo?.pic, { wait: true, before }) };
     }
     const o = this.archOpts("infra");
-    return [["infra", infraSection(t, { model: m, pic: m.cards.length && this.infraMemo?.model === m && this.infraMemo.pic.L ? this.infraMemo.pic : null, onJump: (at, cx) => this.jumpTo(at, cx), hl: o.hl, onHl: o.onHl,
+    return [["infra", infraSection(t, { model: m, pic: m.cards.length && this.infraMemo?.model === m && this.infraMemo.pic.L ? this.infraMemo.pic : null, onJump: (at, cx) => this.jumpTo(at, cx), edit: (id, at) => this.editAt(t, id, at), hl: o.hl, onHl: o.onHl,
       canvas: (L, decorate, marks) => this.archCanvas(t, L, { ...o, onFocus: null, marks, zoom: settings().zoom || 1 }, { id: "rv-infra-canvas", pic: "rv-infra", wrap: false, decorate, notes: false }) })]];
   },
 
@@ -3495,7 +3530,7 @@ export const ReviewMode = {
         .child(div().text_size(TYPE.title).font_semibold().child(n.label ?? n.id))
         .child(div().text_size(TYPE.small).text_color(t.muted).child([g?.label, n.type, n.status === "new" ? "added" : n.status].filter(Boolean).join(" · ")))
         .child(div().flex_1())
-        .when(Boolean(at), (e) => e.child(pill("rv-arch-card-open", t, "Show in diff ↗", (_e, cx) => this.jumpTo(at, cx)).tooltip(`Show ${at} in the diff`)))
+        .when(Boolean(at), (e) => e.child(pill("rv-arch-card-open", t, "Show in diff ↗", (_e, cx) => this.jumpTo(at, cx)).tooltip(`Show ${at} in the diff`)).children(this.editAt(t, "rv-arch-card-ed", at)))
         .child(pill("rv-arch-card-explain", t, paid ? "Look inside" : `Look inside (${price})`, (_e, cx) => this.showDetails(item, `arch:${n.id}`, cx, false, true), false, n.details ? null : t.foreground)
           .tooltip(paid ? "Show what the model found inside this card (already paid for)" : `One ${modelLabel(model())} call reads the code: what this does overall, what the PR changes in it, and a picture of its inside`))
         .when(this.drawerState() !== "open", (e) => e.child(pill("rv-arch-card-ask", t, "Ask", (_e, cx) => this.setDrawer("open", cx, null)).tooltip("Ask one model question about this card")))
@@ -3829,12 +3864,31 @@ export const ReviewMode = {
     if (!this.exMode) { this.prAiSaved = this.ai; this.exMode = true; }
     this.exStart = ex; this.ai = this.exAi ?? null;
     if (!this.exIndex) { this.exIndex = []; cx.timer.after(0, (cx) => this.loadExploreIndex(cx)); }
+    // Back from the minimized chip: the repo, the topic typed, the last error, and a run that went on meanwhile (its
+    // status file is read at once: it may have ended). Once per entry (its `at`): shared state comes as a new object
+    // with every read, so this runs in every render.
+    if (ex.exRoot && !this.exRoot) this.exRoot = ex.exRoot;
+    if (this.exTaken !== ex.at) {
+      this.exTaken = ex.at;
+      if (typeof ex.draft === "string" && ex.draft && !this.exTopic.value()) this.exTopic.set_value(ex.draft);
+      if (ex.err && !this.exErr && !this.exBusy) { this.exErr = ex.err; this.exDetail = ex.detail ?? null; }
+      if (ex.busy && !this.exBusy) { this.exBusy = ex.busy; this.exErr = null; this.pollExplore(cx, 0); }
+    }
     if (ex.start && !this.exRoot) {
       cx.timer.after(0, (cx) => cx.spawn(async (cx) => {
         const dir = ex.root ?? spaces().find((x) => x.id === ex.space)?.folder ?? spaces().find((x) => x.active)?.folder ?? null;
         this.exRoot = await this.exploreRoot(dir); cx.notify();
       }));
     }
+  },
+  // Minimize in Explore, as in a review: back to the chats with the page kept as one entry at the top. What only this
+  // view holds goes into the entry: the topic typed, the repo, a run that is going (it is its own process and goes
+  // on), the last error. Resume (the chip) opens the page with all of it.
+  minimizeExplore() {
+    const ex = shared("review.explore");
+    if (!ex) return;
+    setShared("review.minimized", { explore: { ...ex, draft: this.exTopic.value(), exRoot: this.exRoot ?? null, busy: this.exBusy ?? null, err: this.exErr ?? null, detail: this.exDetail ?? null }, at: Date.now() });
+    leave();
   },
   leaveExplore() { if (this.exMode) { this.exMode = false; this.ai = this.prAiSaved ?? null; this.defFile = null; this.drills = null; } },
   chooseExploreRepo(cx) {
@@ -3846,7 +3900,7 @@ export const ReviewMode = {
     const id = exploreId(r.root, topic), out = `${exploreDir()}/${id}.json`, status = `${out}.status`;
     const ctx = C.spaceContext(ctxDoc(), this.exStart?.space ?? focused()?.space);
     const req = { root: r.root, repo: r.repo, topic, model: m, context: this.ctxReq(ctx), out, status };
-    this.exBusy = { id, topic, model: m, started: Date.now(), status, out, ctx }; this.exErr = null;
+    this.exBusy = { id, topic, model: m, started: Date.now(), status, out, ctx }; this.exErr = null; this.exDetail = null; this.exDetailOpen = false;
     cx.spawn(async (cx) => {
       await exec("mkdir", ["-p", exploreDir()]).catch(() => null);
       const reqFile = `${out}.req.json`, before = await readTextFile(reqFile).catch(() => null);
@@ -3856,14 +3910,14 @@ export const ReviewMode = {
     });
     cx.notify();
   },
-  pollExplore(cx) {
-    cx.timer.after(5000, (cx) => cx.spawn(async (cx) => {
+  pollExplore(cx, wait = 5000) {
+    cx.timer.after(wait, (cx) => cx.spawn(async (cx) => {
       const b = this.exBusy;
       if (!b) return;
       const st = JSON.parse(await readTextFile(b.status).catch(() => null) ?? "null");
       if (!st || st.busy) { cx.notify(); return this.pollExplore(cx); }
       this.exBusy = null;
-      if (st.error) { this.exErr = st.error; return cx.notify(); }
+      if (st.error) { this.exErr = st.error; this.exDetail = st.detail ?? null; return cx.notify(); } // the sentence (llm.py failure); what the CLI printed behind "Details"
       const entry = { id: b.id, topic: b.topic, root: this.exRoot.root, repo: this.exRoot.repo, model: b.model, ctx: b.ctx, at: Date.now() };
       const before = await readTextFile(`${exploreDir()}/index.json`).catch(() => null), next = exploreIndex(before ? JSON.parse(before) : [], entry);
       await writeTextFile(`${exploreDir()}/index.json`, JSON.stringify(next.list, null, 1), before).catch(() => null);
@@ -3904,6 +3958,8 @@ export const ReviewMode = {
     const t = theme(), title = ex.topic ? `Explore: ${ex.topic}` : "Explore a topic", trusted = this.exploreTrusted(ex);
     return h_flex().id("rv-bar").size_full().pl(84).pr(16).gap(12).items_center().bg(t.chrome).text_color(t.foreground).text_size(TYPE.body)
       .child(pill("rv-back", t, "← Back", () => { setShared("review.explore", null); if (!shared("review.target")) leave(); }).tooltip("Leave Explore and return to the previous layout (Esc)").flex_none())
+      .child(pill("rv-min", t, "▁ Minimize", () => run("pr-review.explore-min")).flex_none()
+        .tooltip("Go back to your chats and keep this page as one entry at the top: the topic, a run that is going and its result stay; open it from there"))
       .child(div().id("rv-title").flex_1().min_w(0).truncate().font_semibold().text_size(TYPE.title).tooltip(title).child(title))
       .when(Boolean(ex.repo), (e) => e.child(div().id("rv-ex-repo").tooltip("The repository being explored").flex_none().text_size(TYPE.small).text_color(t.muted).child(ex.repo)))
       .when(Boolean(ex.id) && !trusted, (e) => e.child(div().id("rv-ex-trust-wrap").flex_none().tooltip("Restricted Mode: language servers run nothing from this code, so go-to-definition may find less. Trust it only if it is yours.")
@@ -4001,7 +4057,17 @@ export const ReviewMode = {
             .cursor_pointer().on_click((_e, cx) => this.runExplore(cx)).child(busy ? "Exploring…" : "Explore")))
         .when(Boolean(busy), (e) => e.child(h_flex().gap(8).items_center().text_size(TYPE.body).text_color(t.muted).child(div().child(SPIN[0]).frames(SPIN, 90))
           .child(`${modelLabel(busy.model)} is reading the code · ${clock(Date.now() - busy.started)} · cap $${CAP[tierOf(busy.model)]}`)))
-        .when(Boolean(this.exErr), (e) => e.child(div().text_size(TYPE.small).text_color(t.ansi1).whitespace_normal().child(this.exErr)))
+        // A run that gave no answer: what happened and what to do, in one sentence (llm.py failure), with Retry and
+        // the model's choice beside it; what the CLI printed only behind "Details".
+        .when(Boolean(this.exErr), (e) => e.child(v_flex().id("rv-ex-err").gap(8).p(12).rounded(8).border_1().border_color(t.ansi1 + "66").bg(t.ansi1 + "10")
+          .child(div().text_size(TYPE.body).text_color(t.foreground).whitespace_normal().line_height(1.45).child(String(this.exErr).replace(/^Explore: walkthrough: /, "")))
+          .child(h_flex().flex_wrap().gap(8).items_center()
+            .child(pill("rv-ex-retry", t, "Retry", (_e, cx) => this.runExplore(cx), false, t.foreground).tooltip("Run it again, with the model chosen here"))
+            .child(modelPills(t, "rv-ex-m2"))
+            .child(div().flex_1())
+            .when(Boolean(this.exDetail), (x) => x.child(pill("rv-ex-detail", t, this.exDetailOpen ? "Hide details" : "Details", (_e, cx) => { this.exDetailOpen = !this.exDetailOpen; cx.notify(); }).tooltip("What the claude command printed"))))
+          .when(Boolean(this.exDetail) && Boolean(this.exDetailOpen), (x) => x.child(div().id("rv-ex-raw").max_h(160).overflow_y_scroll().p(8).rounded(6).bg(t.raised).font_family(settings().font_family ?? "JetBrains Mono")
+            .text_size(TYPE.small).text_color(t.muted).whitespace_normal().child(this.exDetail)))))
         .when((this.exIndex ?? []).length > 0, (e) => e.child(div().pt(10).text_size(TYPE.small).font_semibold().text_color(t.muted).child(`EXPLORATIONS · ${this.exIndex.length}`))
           .children(this.exIndex.map((x) => h_flex().id(`rv-exi-${x.id}`).tooltip("Open this saved exploration").gap(8).px(8).h(32).items_center().rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
             .on_click((_e, cx) => this.openExploration(x.id, cx))
@@ -4427,6 +4493,7 @@ export const ReviewMode = {
         .child(div().flex_1().min_w(0).text_size(TYPE.title).font_semibold().whitespace_normal().line_height(1.4).child(plain(f.title)))
         .when(Boolean(cr), (e) => e.child(div().id(`rv-sec-card-${f.id}`).flex_none().text_size(TYPE.small).text_color(t.accent).cursor_pointer().hover((x) => x.underline()).tooltip("Open its crossing in the table above").on_click((_e, cx) => ctx.show(cr.key, cx)).child(`Crossing ${n} ↑`)))
         .child(div().id(`rv-sec-at-${f.id}`).flex_none().text_size(TYPE.small).text_color(t.accent).cursor_pointer().hover((x) => x.underline()).tooltip("Show this line in the diff").on_click((_e, cx) => this.jumpTo(at, cx)).child(`${f.file.split("/").pop()}:${f.line} ↗`))
+        .children(this.editAt(t, `rv-sec-ed-${f.id}`, at))
         .child(div().flex_none().text_size(TYPE.small).font_semibold().text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(FSTATUS[st]?.[0] ?? st)))
       .child(v_flex().gap(3).children(facts.map(([label, text]) => h_flex().gap(8).items_start().text_size(TYPE.small).line_height(1.5)
         .child(div().w(98).flex_none().text_color(t.muted).child(label)).child(div().flex_1().min_w(0).whitespace_normal().child(text)))))
@@ -4939,6 +5006,7 @@ export const ReviewMode = {
       extra: ["+", "extra", t.ansi4, "The diff does this, but the task did not ask for it"] };
     const place = (id, at) => div().id(id).tooltip("Jump to this line in the diff").flex_none().text_size(TYPE.small).text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.accent))
       .on_click((_e, cx) => { this.jumpTo(at, cx); cx.stop_propagation(); }).child(`${at.split("/").pop()} ↗`);
+    const placeEd = (id, at) => this.editAt(t, `${id}-ed`, at);
     // How sure a finding is, as words: a security finding in two parts (the flaw in the code, the way from outside),
     // another one only when it rests on an assumption.
     // The words of the Findings tab ("derived") and of the verdict line ("assumed reachable"), not a second pair.
@@ -4952,7 +5020,7 @@ export const ReviewMode = {
         .child(f.security ? rowSign(t, "⛨", [f]) : div().w(SIGN_W).flex_none())
         .child(div().flex_1().min_w(0).truncate().text_color(settled ? t.muted : t.foreground).child(f.title))
         .when(Boolean(note), (e) => e.child(div().flex_none().text_size(TYPE.small).text_color(t.muted).child(note)))
-        .child(place(`${id}-at`, `${f.file}:${f.line}`));
+        .child(place(`${id}-at`, `${f.file}:${f.line}`)).children(placeEd(`${id}-at`, `${f.file}:${f.line}`));
     };
     // A criterion: symbol, short name and how many findings break it; one not met has its reason under it. A click
     // unfolds the whole wording, the reason and the findings.
@@ -4990,7 +5058,7 @@ export const ReviewMode = {
         .child(div().flex_1().min_w(0).truncate().child(r.kind === "ask" ? `${r.title}: ${r.ask.state === "not_done" ? "not done" : r.ask.state}` : r.title))
         .when(breaks.length > 0 && r.kind !== "ask", (e) => e.child(div().flex_none().max_w(200).truncate().text_size(TYPE.small).text_color(t.muted).child(`breaks ${breaks[0]}${breaks.length > 1 ? ` +${breaks.length - 1}` : ""}`)))
         .when(Boolean(f && sure(f)), (e) => e.child(div().flex_none().text_size(TYPE.small).text_color(t.muted).child(sure(f))))
-        .when(Boolean(r.where), (e) => e.child(place(`${id}-at`, r.where)));
+        .when(Boolean(r.where), (e) => e.child(place(`${id}-at`, r.where)).children(placeEd(`${id}-at`, r.where)));
     };
     const head = (id, title, tip, right = null) => h_flex().id(id).tooltip(tip).pb(6).gap(8).items_center()
       .child(div().flex_1().min_w(0).text_size(TYPE.body).font_semibold().text_color(t.foreground).child(title)).when(Boolean(right), (e) => e.child(right));
@@ -5356,6 +5424,9 @@ export const ReviewMode = {
         .child(div().id(`rv-fh-seen-${f.path}`).tooltip("Mark this file as viewed; it collapses and counts in your progress").accessibility_label("Viewed").w(FILE_SEEN).flex_none().flex().items_center().text_size(TYPE.small).text_color(seen ? t.ansi2 : t.muted).child(fileAct(t).child(viewedBox(t, seen)).child("Viewed")))
         .child(div().id(`rv-fh-whole-${f.path}`).when(this.shown().fileHunks?.has(f.path), (e) => e.tooltip("Show the whole file instead of only the changed hunks")).w(FILE_WHOLE).flex_none().flex().items_center().text_size(TYPE.small).text_color(whole ? t.foreground : t.muted).children(this.shown().fileHunks?.has(f.path) ? [fileAct(t).child(tickBox(t, whole)).child("Whole file")] : []))
 
+        // "IntelliJ ↗" and its ▾ as zones of fixed width (onItem finds them by x); "Opening IntelliJ …" for three seconds after a click.
+        .children(((m) => (m ? [div().id(`rv-fh-ed-${f.path}`).tooltip(m.tip).accessibility_label(`Open in ${editorFull(m.id)}`).w(FILE_EDIT).flex_none().truncate().text_size(TYPE.small).text_color(m.busy ? t.dim : t.muted).child(m.text),
+          div().id(`rv-fh-edm-${f.path}`).tooltip("Other editors, Copy path, Look again").accessibility_label("Other editors").w(FILE_EDIT_MORE).flex_none().text_size(TYPE.small).text_color(t.muted).child("▾")] : []))(this.fileEditMark(f)))
         .child(div().id(`rv-fh-st-${f.path}`).tooltip(`File ${f.status} (${letter} in the file tree)`).w(70).flex_none().text_size(TYPE.small).font_semibold().text_color(t[col]).child(`${String(f.status ?? "")[0]?.toUpperCase() ?? ""}${String(f.status ?? "").slice(1)}`))
         .child(mono(div()).flex_1().min_w(0).truncate().font_semibold().text_size(TYPE.body).child(f.status === "renamed" ? `${f.from} → ${f.path}` : f.path))
         .when(n > 0, (e) => e.child(div().id(`rv-fh-cm-${f.path}`).tooltip(`${n} pending comments in this file`).px(8).text_size(TYPE.small).text_color(t.accent).child(`● ${n}`)))
@@ -5435,9 +5506,13 @@ export const ReviewMode = {
   // sees a slice busy for more than HL_STALE and starts the queue again. The job that was running then (it never got
   // to clear `running`) is dropped, and so is one that throws: its file stays plain (its spans stay empty and it is
   // not queued again), the files behind it get their colors.
+  // A slice asks for no frame of its own (a frame draws the whole window, and a big review took 13 to 17 of them to
+  // get its colors). The files on screen go first, and a frame is asked for once they are all colored; the files
+  // off screen get theirs without one (the list reads the spans when it scrolls to them). One last frame follows when
+  // the queue is empty, and while a long queue runs there is one every HL_FRAME ms at most.
   drainHighlight(cx) {
-    const start = this.hlBusy = Date.now();
-    for (const [k, job] of this.hlQueue ?? []) {
+    const start = this.hlBusy = Date.now(), queue = this.hlQueue ?? new Map(), seen = this.shownSpans();
+    for (const [k, job] of seen.size ? [...queue].sort(([a], [b]) => (seen.has(b) ? 1 : 0) - (seen.has(a) ? 1 : 0)) : [...queue]) {
       if (job.running) { this.hlQueue.delete(k); continue; }
       let out = null;
       job.running = true;
@@ -5449,11 +5524,19 @@ export const ReviewMode = {
       if (!out) break;
       job.inf.spans = out;
       this.hlQueue.delete(k);
+      if (seen.has(k)) this.hlSeen = true; else this.hlUnseen = true; // colored since the last frame: on screen, off screen
       if (Date.now() - start > 12) break;
     }
     this.hlBusy = 0;
-    if (this.hlQueue?.size) { this.hlBusy = Date.now(); cx.timer.after(0, (cx) => this.drainHighlight(cx)); }
-    cx.notify();
+    if (queue.size) { this.hlBusy = Date.now(); cx.timer.after(0, (cx) => this.drainHighlight(cx)); }
+    const some = this.hlSeen || this.hlUnseen, waiting = [...seen].some((inf) => queue.has(inf)); // a file on screen is still without its colors
+    if ((this.hlSeen && !waiting) || (some && (!queue.size || Date.now() - (this.hlDrawn ?? 0) > HL_FRAME))) { this.hlSeen = this.hlUnseen = false; this.hlDrawn = Date.now(); cx.notify(); }
+  },
+  // The span holders (spanMap's values) of the files whose lines the list drew in its last frame: what a person sees.
+  shownSpans() {
+    const v = this.codeShown ? this.visCode : null, seen = new Set();
+    if (v && this.items) for (let k = v.start; k < v.end && k < this.items.length; k++) { const inf = this.items[k].t === "row" && this.spanMap?.get(this.items[k].src); if (inf) seen.add(inf); }
+    return seen;
   },
   // A row's code, highlighted (syntax.js); spans per row array are computed once per render (spanMap).
   // a, b: one visual line of a wrapped line (its columns a..b of the tab-expanded text, b undefined: to the end).
@@ -5523,6 +5606,7 @@ export const ReviewMode = {
 
   renderReview(cx) {
     const t = theme(), target = shared("review.target") ?? null, ex = shared("review.explore");
+    this.edOn = Boolean(editorFor({ root: this.checkoutRoot() ?? this.lspRoot() }, cx)); // an editor is installed (the first ask looks, by reading files); the links of this frame name theirs
     if (ex) {
       if (this.exStart !== ex) { if (ex.start && this.exStart?.at !== ex.at) this.exRoot = null; this.enterExplore(ex, cx); }
       const root = v_flex().id("rv-root").size_full().bg(t.background).text_color(t.foreground).text_size(TYPE.body)
@@ -5599,9 +5683,10 @@ export const ReviewMode = {
       if (lang) (this.hlQueue ??= new Map()).set(inf, { shown, lang, hkey: `${head}:${it.path}`, inf });
     }
     // A slice busy for longer than HL_STALE was stopped (or its timer never fired): the queue starts again.
-    if (this.hlQueue?.size && (!this.hlBusy || Date.now() - this.hlBusy > HL_STALE)) { this.hlBusy = Date.now(); cx.timer.after(0, (cx) => this.drainHighlight(cx)); }
+    if (this.hlQueue?.size && (!this.hlBusy || Date.now() - this.hlBusy > HL_STALE)) { this.hlBusy = Date.now(); if (!this.hlSeen && !this.hlUnseen) this.hlDrawn = Date.now(); cx.timer.after(0, (cx) => this.drainHighlight(cx)); }
     if (items.length > 9990) items.length = 9990; // the virtual list's hard limit is 10000
     const keys = itemKeys(items), sizes = items.map((it) => this.sizeOf(it)), hcode = this.codeScroll(listShown ? items : []);
+    this.codeShown = listShown; // for drainHighlight: whether lines of code are on screen at all
     if (listShown) { this.items = items; this.at = at; this.byKey = new Map(keys.map((k, i) => [k, items[i]])); }
     if (heads) this.layFiles(items, keys, sizes, heads.filter((h) => h < items.length));
     if (listShown) this.settleTop(this.tab === "steps" ? "steps" : "files", at, sizes, cx);
@@ -6141,6 +6226,24 @@ export const ReviewMode = {
       busy ? null : (_e, cx) => { this.ghTick(cx, true); cx.stop_propagation(); });
   },
 
+  // ---- "Open in <Editor>" in the review (editor-view.js; main.js checkoutRoot, editorForeign, openEditor)
+  // A file head's target: the file in the review's checkout at the topmost line of it the list shows (else its first
+  // changed line). Null without a checkout, for a file the PR deletes and for a symlink the PR adds or changes.
+  fileEditTarget(f) {
+    const root = this.checkoutRoot();
+    if (!root || f.status === "deleted" || patchSymlink(f.lines)) return null;
+    const seen = (this.items ?? []).slice(this.vis?.start ?? 0, this.vis?.end ?? 0).find((it) => it.t === "row" && it.path === f.path && it.src?.[it.ri]?.n);
+    const line = seen?.src[seen.ri].n ?? (this.shown().fileHunks?.get(f.path)?.[0]?.rows ?? []).find((r) => r.kind === "+" && r.n)?.n ?? null;
+    return { root, file: f.path, line, foreign: this.editorForeign(), where: "in the checkout of this PR" };
+  },
+  fileEditMark(f) { const target = this.edOn ? this.fileEditTarget(f) : null; return target ? editorMark(target, null) : null; },
+  // The monogram next to a place that jumps inside the mod ("file:line"): the same line in the person's editor.
+  // Nothing without a checkout or an editor.
+  editAt(t, id, at) {
+    const root = this.checkoutRoot(), place = placeOf(at);
+    return root && this.edOn && place ? editorLink(this, t, id, { root, ...place, foreign: this.editorForeign(), where: "in the checkout of this PR" }, null, true) : [];
+  },
+
   // ---- fix worktrees left on disk (~/.herdr/worktrees/<repo>/fix-…): nothing removes them by age, because one may
   // hold a fix that exists nowhere else. "Fix worktrees…" lists them with what would be lost; a click removes one,
   // and one with commits or changes only there asks for a second click.
@@ -6231,6 +6334,7 @@ function certaintyWord(t, f, id) {
   const reach = f?.certainty === "derived" && f.path_certainty === "assumed";
   return f?.security && CERT_TIP[f.certainty] ? div().id(id).tooltip(`${CERT_TIP[f.certainty]}${reach ? ". That an attacker gets there is assumed" : ""}`).flex_none().text_size(TYPE.small).text_color(t.muted).child(reach ? "assumed reachable" : certaintyText(f)) : null;
 }
+const HL_FRAME = 250; // ms between two frames asked for while the queue of files to color runs
 const HL_STALE = 2000; // ms a highlight slice may be busy before it counts as stopped (Herdr stops one after ~50 ms)
 // A row's sign (views.js signOf, signEl): the kind's glyph in the color of the highest severity behind the row, on
 // a filled ground when that is confirmed, in a dashed frame with "?" when it is only assumed. The column has one

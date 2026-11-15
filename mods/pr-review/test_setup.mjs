@@ -58,4 +58,11 @@ const argv = pretypeArgv("brew install gh");
 assert.equal(argv[0], "sh");
 assert.equal(argv.at(-1), "brew install gh");
 assert.ok(/vared/.test(argv[2]) && /read -e -i/.test(argv[2]));
+// The editors of "Open in <Editor>": optional, and on macOS the app alone counts (the links open through the app).
+{
+  const script = checkScript();
+  assert.ok(script.includes('"Visual Studio Code"') && script.includes('"IntelliJ IDEA Ultimate"') && script.includes("printf '%s=%s\\n' code"), "the check also looks for the apps");
+  const got = parseCheck("git=/usr/bin/git\ncode=\nidea=\ncode=/Applications/Visual Studio Code.app\n"), rows = report(got, "darwin");
+  assert.deepEqual([rows.find((r) => r.id === "code").status, rows.find((r) => r.id === "idea").status, rows.find((r) => r.id === "idea").need], ["ok", "optional-missing", "optional"]);
+}
 console.log("ok");
