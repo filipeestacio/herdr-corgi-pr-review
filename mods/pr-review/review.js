@@ -584,7 +584,7 @@ export const ReviewMode = {
     this.reviewKey = null; this.ai = null; this.aiError = null; this.aiModel = null; this.cur = 0; this.focusHunk = null; this.fsel = null; this.sug = null;
     this.composing = false; this.editing = null; this.finishOpen = false; this.posted = null; this.gh = []; this.route = null; this.event = null;
     this.full = {}; this.gaps = {}; this.whole = new Set(); this.collapsed = new Set(); this.hunks = null;
-    this.rowsMemo = null; this.ghMemo = null; this.fitMemos = null; this.layQueue = null; this.kept = null; // what was computed for the PR before goes with it
+    this.rowsMemo = null; this.ghMemo = null; this.fitMemos = null; this.layQueue = null; this.kept = null; this.openH = null; // what was computed for the PR before goes with it
     this.ctx = null; this.since = null; this.sinceOn = false; this.lastReviewed = null; this.page = "overview"; this.aiFile = null; this.needClone = null;
     this.resumed = null; this.resumeIn = null; this.pendingScroll = null;
   },
@@ -1132,7 +1132,7 @@ export const ReviewMode = {
   // config folder, the newest log there written since the job started (an earlier fix in the same folder has its own).
   fixCostTick(cx) {
     const running = this.prSel ? this.fixes().filter((j) => j.state === "running" && j.target === "sub" && j.path) : [];
-    if (!running.length || this.fixCostBusy) return;
+    if (!running.length || this.fixCostBusy || !windowActive()) return; // nobody reads the cost behind another window; a job left "running" would list and read logs every 20 s for good
     const cfg = String(C.infoOf(ctxDoc(), this.ctxId()).env?.CLAUDE_CONFIG_DIR ?? `${home()}/.claude`).replace(/^~(?=\/|$)/, home());
     this.fixCostBusy = true;
     cx.spawn(async (cx) => {

@@ -80,6 +80,21 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   assert.ok(ran("pr.lineThreads") < 200, `${ran("pr.lineThreads")} lines were asked for their comments while listing ${rows} (before: each of them)`);
 }
 
+// ---- timers ask for nothing while the window is behind another
+{
+  const v = await openReview(PR2()), key = v.threadKey();
+  v.threadDoc = { ...v.threadDoc, [key]: { ...(v.threadDoc?.[key] ?? {}), fixes: [{ id: "j1", state: "running", target: "sub", path: "/h/fix", at: Date.now(), items: [] }] } };
+  let execs = 0; S.exec = async () => { execs++; return { code: 1, stdout: "", stderr: "stub" }; };
+  const active = globalThis.window.is_window_active;
+  globalThis.window.is_window_active = () => false;
+  v.fixCostTick(cx); v.ghTick(cx); await settle();
+  assert.equal(execs, 0, "behind another window neither a running fix's cost nor GitHub is asked for");
+  globalThis.window.is_window_active = () => true;
+  v.fixCostTick(cx); await settle();
+  assert.equal(execs, 1, "in front, a running fix's log is looked for");
+  globalThis.window.is_window_active = active; S.exec = null;
+}
+
 // ---- a big map is laid out after the frame, a small one in it
 // (In Herdr the layout of 80 cards takes 208 ms and a render is stopped after about 50: laid out in the frame, the
 // page never came.)
