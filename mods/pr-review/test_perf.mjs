@@ -311,6 +311,49 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   const first = drawn(small);
   assert.deepEqual([first.layouts, first.map, first.priced > 0], [1, ["rv-arch-canvas"], true], "9 cards: laid out once and drawn in the first frame, with the orders tried (the full layout: nothing crosses, so one pass)");
 }
+// ---- "Schema changes" (schema.js): read once per patch and checkout, after the frame; laid out once per marks
+{
+  const { readFileSync } = await import("node:fs");
+  const v = await openReview({ ...PR2(), diff: PR2().diff + readFileSync(new URL("../../demo/fixtures/schema/pr.diff", import.meta.url), "utf8") });
+  const SCHEMA = ["schema.readSql", "schema.sqlStatements", "schema.schemaModel", "schema.diffSeries", "schema.schemaArch", "schema.cardRows", "schema.schemaMarks", "schema.schemaPicture", "schema.schemaMermaid"];
+  const quietFrame = (what) => { for (const k of Object.keys(N)) N[k] = 0; const ran = counted(() => frame(v));
+    assert.deepEqual([SCHEMA.filter((f) => ran(f) > 0), ran("arch.archLayout"), { ...N }], [[], 0, { notify: 0, after: 0, every: 0, spawn: 0, exec: 0, read: 0, shared: 0 }], `${what}: a frame that changes nothing reads no migration, lays nothing out and asks Herdr for nothing`);
+    return ran; };
+  STATES.Architecture(v); await settle(); await quiet(v); // the map's own layout and its search are through
+  for (const k of Object.keys(N)) N[k] = 0;
+  v.schemaSt = null; // as a new diff: the next frame only asks for a task
+  const first = counted(() => frame(v));
+  assert.deepEqual([SCHEMA.filter((f) => first(f) > 0), N.after, v.schemaNow()], [[], 1, null], "the frame that meets the diff reads nothing itself: one timer for the task that does");
+  later(); await settle();
+  assert.equal(v.schemaNow()?.cards.length, 5, "the task read the three migrations (no checkout: what the patch holds)");
+  const laid = counted(() => frame(v));
+  assert.deepEqual([laid("schema.schemaPicture"), laid("arch.archLayout"), v.pageParts.includes("schema")], [1, 1, true], "five cards: laid out once, in the first frame that shows them");
+  await quiet(v);
+  const ran = quietFrame("Schema changes shown");
+  const own = ["schemaSummary", "schemaSection", "unreadText", "foldText"].reduce((n, f) => n + ran(`schema.${f}`) + ran(`schema-view.${f}`), 0);
+  assert.ok(own <= 12, `${own} calls of the section's own functions in a frame that changes nothing, at most 12`);
+  // A finding dismissed elsewhere changes no mark of a table: the marks are counted once, the picture stays.
+  const f = v.openFindings()[0];
+  v.find.status = { ...v.find.status, [f.id]: { s: "dismissed", at: "2026-11-15T10:00:00Z", ids: f.ids } };
+  const after = counted(() => frame(v));
+  assert.deepEqual([after("schema.schemaMarks"), after("schema.schemaPicture"), after("arch.archLayout")], [1, 0, 0], "other findings changed: the tables' marks are looked at once, nothing is laid out");
+  await quiet(v); quietFrame("after a finding was dismissed");
+  // The page's count with the section (measured on PR #2 with the fixture's three migrations: 1 285 of the mod's functions).
+  const m = await measure(v, 1), fns = [...m.stat.values()].reduce((n, x) => n + x.n, 0);
+  assert.equal(m.calls("view.schemaParts"), 1, "the section is drawn in the frame");
+  assert.ok(fns <= 1600, `Architecture with Schema changes: ${fns} function calls in a frame that changes nothing, at most 1600`);
+  // As the maps (stack.js laidOut): 45 tables that reference the first two, 86 relations, are too many even for a
+  // rough pass in a frame. The frame draws the section without its picture, the first slice after it lays it out.
+  const { schemaModel } = await import("./schema.js"), st = v.schemaSt;
+  const drawn = () => { S.ids = new Set(); const ran = counted(() => frame(v)); const ids = S.ids; S.ids = null; return { layouts: ran("arch.archLayout"), picture: ids.has("rv-schema-canvas"), section: ids.has("rv-schema") }; };
+  st.model = schemaModel([{ path: "db/V1__t.sql", status: "added", lines: ["@@ -0,0 +1,45 @@", ...Array.from({ length: 45 }, (_x, i) => `+CREATE TABLE t${i} (id int PRIMARY KEY${i > 1 ? ", a int REFERENCES t0 (id), b int REFERENCES t1 (id)" : ""});`)] }]); st.pic = st.open = null;
+  assert.deepEqual([st.model.cards.length, st.model.edges.length], [45, 86]);
+  assert.deepEqual(drawn(), { layouts: 0, picture: false, section: true }, "45 tables, 86 relations: the first frame lays nothing out");
+  later();
+  assert.equal(st.pic?.L?.nodes.length, 45, "its layout is made right after the frame");
+  assert.deepEqual(drawn(), { layouts: 0, picture: true, section: true }, "and the next frame draws the picture without laying it out again");
+  await quiet(v); quietFrame("a big schema shown");
+}
 // ---- the panel beside the chat builds what it shows
 // With a PR chosen the list of PRs is not built (it was: 390 elements a frame without a single diff line, now 76), and
 // the open file's diff is a virtual list: a frame builds the 60 lines on screen, for 200 lines as for 5000 (it built

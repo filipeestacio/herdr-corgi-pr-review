@@ -55,6 +55,7 @@ import { resDepRows, resMeta, resFade, resShown, resRefs, probeBaseWord, datedBy
 import { wayOf, wayText, passZones, runsIn } from "./views.js"; // panel round 3: ways through every gate, zones passed on
 import { SecPicsMode } from "./sec-view.js"; // the Security page's sections "Where sensitive data goes" and "Who may do what"
 import { ImpactMode } from "./impact-view.js"; // the Architecture page's Impact section: changed functions and their callers
+import { SchemaMode } from "./schema-view.js"; // the Architecture page's "Schema changes": tables and relations before and after
 import { transitionMarks, effectiveFrom, inProcess, mapArch, crossingsOf, crossingChanged, crossOnce, secSentence, TRUST_ORDER, asideOf, threatCited, blastOf, skipText, guardLine } from "./views.js";
 import { trustLegend, hasTrust } from "./stack.js";
 import { timelineOf, timelineLayout } from "./timeline.js"; // Resilience: the picture "Timing"
@@ -3389,7 +3390,7 @@ export const ReviewMode = {
     const more = () => visualsCard(this.ai.visuals, t, "rv-arch-vis", (at, cx) => this.jumpTo(at, cx), this.archVisTab ?? 0, (k, cx) => { this.archVisTab = k; cx.notify(); }, this.wrapX());
     const out = (list) => (parts ? list : v_flex().gap(12).children(list.map(([, el]) => el)));
     if (!a) return out([["head", this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams")], ["none", div().text_size(TYPE.body).text_color(t.muted).child(this.ai ? "This analysis has no architecture picture (older analysis, or the PR touches no architecture). Re-analyze for one." : "No analysis yet: Analyze in the left column.")],
-      ...this.impactParts(t), ...this.infraPart(t), ...(this.ai?.visuals?.length > 0 ? [["views", div().w_full().child(more())]] : [])]);
+      ...this.impactParts(t), ...this.infraPart(t), ...this.schemaParts(t), ...(this.ai?.visuals?.length > 0 ? [["views", div().w_full().child(more())]] : [])]);
     const groups = new Set(a.nodes.map((n) => n.group)).size, L = this.archL(), fit = this.archFitOn(), marks = this.archMarksNow();
     // The first time, and after Fit changed the layout, the picture starts at the way in (the Internet card), wherever
     // the layout put it. Not before the view is measured: Fit switches itself on then, and the cards move.
@@ -3427,6 +3428,7 @@ export const ReviewMode = {
       ...((this.ai.components ?? []).length ? [["components", this.componentsTable(t, a)]] : []),
       ...this.impactParts(t),
       ...this.infraPart(t),
+      ...this.schemaParts(t),
       ...(this.ai?.visuals?.length > 0 ? [["views", v_flex().gap(12).child(div().pt(6).text_size(TYPE.body).font_semibold().text_color(t.muted).child("More views")).child(div().w_full().child(more()))]] : [])]);
   },
 
@@ -5631,6 +5633,7 @@ export const ReviewMode = {
     if (this.hunks && model() !== this.aiModel && !this.aiBusy) this.loadAi(cx, "cache");
     if (this.prSel) this.loadModels(cx);
     this.impactTick(cx); // the Impact section (impact-view.js): only on the Architecture page
+    this.schemaTick(cx); // "Schema changes" (schema-view.js): the same
     // The diff column's width: card heights wrap to it. on_size_change reports the window in logical px; the column and
     // its rows are laid out in px scaled by the person's zoom (as in settleTop).
     if (this.winW) this.listW = this.winW / (settings().zoom || 1) - this.leftW() - SPLIT - (this.drawerSqueezes() ? 380 : 0);
@@ -5918,7 +5921,7 @@ export const ReviewMode = {
       findings: () => findingsMd(findings, { ...base, statusOf, asks, notes: this.openSugs(), sources: this.findingSources().map((x) => x.text) }),
       layer: () => layerMd(layer, { ...base, n: this.cur + 1, files: this.filesOf(layer), findings: this.layerFindings(layer), statusOf, open: this.openFindings(), deps: this.stepDeps(layer).map(([d]) => plain(d.title)),
         access: layerAccess(ai?.access, this.filesOf(layer))?.text ?? null, hunks: this.present(layer).map((id) => this.byId.get(id)).filter(Boolean).map((h) => ({ path: h.path, rows: h.rows })) }),
-      arch: () => architectureMd({ ...base, ai, findings, statusOf, impact: this.impactNow(), infra: this.exMode ? null : this.infra, layersOf: (n) => this.cardLayerList(n).map((s) => plain(s.title)),
+      arch: () => architectureMd({ ...base, ai, findings, statusOf, impact: this.impactNow(), infra: this.exMode ? null : this.infra, schema: this.schemaNow(), layersOf: (n) => this.cardLayerList(n).map((s) => plain(s.title)),
         placesIn: (path) => [...(this.fileHunks ?? new Map())].filter(([p]) => p === path || p.endsWith(`/${path}`) || path.endsWith(`/${p}`)).flatMap(([, h]) => h).length }),
       blast: () => securityMd({ ...base, ai, findings, statusOf, runs: this.find.runs, eff: ai?.arch ? this.effZones(ai.arch) : null, extra: this.secExtra(crossingsOf({ arch: ai?.arch ?? null, access: ai?.access ?? [], threats: ai?.threats ?? [], gates: ai?.gates ?? [], bypasses: ai?.bypasses ?? [], findings: this.openFindings() })) }),
       res: () => resilienceMd({ ...base, res: this.resNow(), arch: ai?.arch ?? null, names: new Map((ai?.arch?.nodes ?? []).map((n) => [n.id, n.label ?? n.id])), findings, statusOf, probes: this.resNow() ? this.probesNow() : null,
@@ -6286,6 +6289,7 @@ export const ReviewMode = {
   },
 };
 Object.assign(ReviewMode, ImpactMode);
+Object.assign(ReviewMode, SchemaMode);
 Object.assign(ReviewMode, SecPicsMode);
 
 const LAYER_FILES = 12; // an open layer lists this many of its files in the left column

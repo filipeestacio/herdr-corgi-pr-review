@@ -47,6 +47,13 @@ Below the map, **Impact** shows the functions and classes the PR changes and who
 servers and without a model: each caller is marked as changed in this PR, in the diff with its call untouched, or
 not in this PR, and a caller that still calls a changed signature the old way stands out. Tests are counted apart.
 
+When the PR changes a database schema, **Schema changes** shows the tables before and after as cards with their
+changed columns, keys and relations, and lists what may be risky for data that is in use, such as a dropped column,
+`NOT NULL` without a default or an index built without `CONCURRENTLY`. It is read from the SQL migrations, Alembic
+revisions and Prisma schema in the diff, without a model and without asking a database. Django and Rails
+migrations, Liquibase changelogs in XML or YAML and JPA entities are not read yet; the section names them when it
+shows.
+
 ![Architecture impact: components as cards with New, Changed and Unchanged, numbered connections and a legend](docs/screenshots/architecture-impact.png)
 
 **Sample values in the diff, like a debugger.** Next to the changed lines you see example inputs and results:

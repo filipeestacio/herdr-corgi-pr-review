@@ -104,6 +104,17 @@ title bar (traffic lights at 12, 16):
 - Sources: elements and intent/behavior statements may carry `source` (implemented with `evidence` file:line,
   existing in grey, spec dashed with a "spec" tag: only in the description or ticket). A legend row reads
   "Implemented · Existing · Spec only". "Check against the task" links to the spec-only elements it names.
+- **Schema changes** (Architecture impact, only when the diff changes a database schema; schema.js + schema-view.js,
+  no model, no database, nothing is run): a card per table that is added, changed, renamed or removed, with a row per
+  column that changed (its sign, type and marks PK, FK, UQ, NN, IX, DF), the unchanged columns folded, and a line from
+  a foreign key to the table it references (n to 1, 1 to 1, n to m). An unchanged table shows only when a relation
+  connects it to a changed one. Read from SQL migrations (one folder is one series, in the order of the file names;
+  the files the PR does not touch are the state before it, listed through safegit.py), Alembic revisions and a
+  Prisma schema. Under the picture, "May be risky for live data": fixed rules worded as "may" (a dropped or renamed
+  table or column, NOT NULL without a default on an existing table, a narrowed type, a new unique index, an index
+  without CONCURRENTLY, a foreign key without an index, a migration without a way back). What a reader does not
+  understand is "changed, details not read" or named as not read. In the Markdown: a Mermaid `erDiagram`, a table
+  of the changes, the relations and the risk list.
 - `↻ Refresh diagrams` (the page header) and `Refresh this view` (an expanded layer) run review.py in diagrams
   mode: one call ("Review diagrams") that redraws only the pictures for today's diff and merges them into the
   cached analysis. While it runs the button reads "Refreshing…". When it finishes, the pictures say "updated for
