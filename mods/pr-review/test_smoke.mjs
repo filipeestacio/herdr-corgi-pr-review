@@ -805,7 +805,8 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   // second wording (the text has it as Certainty and Preconditions).
   const NOT_COPIED = [/recommended because/, /^Re-run \(/, /^Run probe/, /^last run .* ago/, /^A click shows the way\.$/, /^Verify (all \d+ )?with an agent/, /^Derived from the code that was read;$/, /^It needs nothing else:$/, /^it holds as the code stands\.$/, /lit on the map, the rest dimmed/, /^Open a path to light it on the map\.$/,
     /^in a sandbox, without network, at most 30 s$/, /^\d+ more: /, /^\d+ [^.]*(criteria|high|medium|low|observable|blockers?|paths?) ▸$/, /^GitHub read .* ago/, /^call over a trust boundary$/, /^Look inside/, /Ask names it/, /^This analysis has no further details for this card\.$/, /^“Look inside” reads/, /^“↻ Refresh diagrams”/,
-    /^and \d+ more in the Findings tab$/, /^\d+ (more|findings?) at this place ▸$/, /^shown at crossing \d+:$/, /^Ask about this layer$/, /^A finding sent to Fix stays unresolved and shows here/, /^not counted as findings$/, /^Each call has its own scale\.$/, /^Scroll sideways for the whole picture →$/, /^References without their text in the picture$/, /^Analyze in the left column\.$/];
+    /^and \d+ more in the Findings tab$/, /^\d+ (more|findings?) at this place ▸$/, /^shown at crossing \d+:$/, /^Ask about this layer$/, /^A finding sent to Fix stays unresolved and shows here/, /^not counted as findings$/, /^Each call has its own scale\.$/, /^Scroll sideways for the whole picture →$/, /^References without their text in the picture$/, /^Analyze in the left column\.$/,
+    /^Point at a card to see what it refers to and what refers to it\.$/, /^A click keeps the card chosen\.$/];
   const norm = (x) => String(x).toLowerCase().replace(/,? \d+ (s|min|h|d|days?) ago/g, "").replace(/#\d+;|#quot;|#lt;|#gt;/g, " ").replace(/[^a-z0-9äöüß]+/g, " ").trim();
   const drawn = (states, part, w = v) => { const all = new Set(); for (const st of states) { st(); S.texts = null; S.lists.length = 0; w.render(cx); S.lists.length = 0; S.texts = all; part(); } S.texts = null; return [...all]; };
   const missing = (texts, md) => { const text = norm(md), segs = [...new Set(texts.flatMap((x) => x.split(/(?<=[.;:])\s+|\s·\s|\n+/)).map((x) => x.replace(/^\*\*Suggested:\*\*\s*/, "").replace(/ and \d+(?: m(?:o(?:re?)?)?)?…?$/, "")))].filter((x) => x.trim().length >= 20 && x.trim().split(/\s+/).length >= 4);
@@ -887,6 +888,21 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     assert.match(text, /The analysis has no architecture picture for this PR\.\n\n## Infrastructure changes \(10\)/, "the section needs no analysis");
     click(`rv-infra-n${w.infraMemo.pic.L.nodes.findIndex((n) => n.at === "stacks/orders/queue.tf:2")}`, "a card of the infrastructure picture"); draw(w, "Infrastructure changes: a card clicked");
     assert.ok(w.page === null && !w.note, "a click on a changed resource's card leads to it in the diff");
+  }
+  // A PR that adds a whole stack (demo/fixtures/infra/dense: 34 resources, 49 references): no picture with lines, the
+  // cards by file. A click on a card keeps it chosen and names its references; a second click lets it go.
+  {
+    const w = await open({ diff: readFileSync(new URL("../../demo/fixtures/infra/dense/pr.diff", import.meta.url), "utf8"), pr: 8, title: "feat(notifications): a stack of its own" });
+    S.ids = new Set(); act(w, "page:arch", "Infrastructure changes: many resources"); const ids = S.ids; S.ids = null;
+    assert.ok(w.pageParts.includes("infra") && ids.has("rv-infra-dense") && !ids.has("rv-infra-canvas") && ids.has("rv-infra-g2") && S.clicks.has("rv-infra-d0-13") && !w.infraMemo.pic, "three files of cards, and no picture laid out");
+    const text = check("Infrastructure changes (many resources)", drawn([() => {}], () => w.pageView(tt), w), {}, w);
+    assert.ok(/## Infrastructure changes \(34\)[\s\S]*34 resources: 34 added\. More than 12 resources or 15 references/.test(text) && !/```mermaid\nflowchart LR\n {2}subgraph group0\["infra/.test(text), "the text says the same and has no flowchart of them");
+    const k = w.infraMemo.dense.groups[0].cards.findIndex((c) => c.name === "router" && c.type === "aws_lambda_function"), id = w.infraMemo.dense.groups[0].cards[k].id;
+    click(`rv-infra-d0-${k}`, "a card of the list by file"); const said = drawn([() => {}], () => w.pageView(tt), w);
+    assert.ok(w.infraFocus === id && w.page === "arch" && said.some((x) => x.startsWith("aws_lambda_function.router refers to 3: aws_iam_role.workers (role)")), "a click keeps the card and the strip names its references");
+    click(`rv-infra-d0-${k}-at`, "the card's line"); assert.ok(w.page === null && w.fsel?.path === "infra/stacks/notifications/functions.tf", "its line leads to the diff");
+    act(w, "infra-card:aws_sqs_queue.inbox", "Infrastructure changes: a card chosen by its address"); assert.equal(w.infraMemo.dense.names.get(w.infraFocus), "aws_sqs_queue.inbox");
+    act(w, "infra-card:", "Infrastructure changes: no card chosen"); assert.equal(w.infraFocus, null);
   }
   // Back to this review: opening the other ones above put their PR in the stand-in's shared state, and the next
   // frame of `v` would take it for a new target and start over (then the layer checked below was "All changes"

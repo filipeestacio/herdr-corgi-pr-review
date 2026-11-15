@@ -1,0 +1,318 @@
+diff --git a/infra/stacks/notifications/functions.tf b/infra/stacks/notifications/functions.tf
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/infra/stacks/notifications/functions.tf
+@@ -0,0 +1,123 @@
++resource "aws_iam_role" "workers" {
++  name               = "${local.prefix}-workers"
++  assume_role_policy = data.aws_iam_policy_document.assume_lambda.json
++}
++
++resource "aws_iam_role" "mailer" {
++  name               = "${local.prefix}-mailer"
++  assume_role_policy = data.aws_iam_policy_document.assume_lambda.json
++}
++
++data "aws_iam_policy_document" "assume_lambda" {
++  statement {
++    actions = ["sts:AssumeRole"]
++    principals {
++      type        = "Service"
++      identifiers = ["lambda.amazonaws.com"]
++    }
++  }
++}
++
++resource "aws_iam_role_policy" "workers_queues" {
++  name = "queues"
++  role = aws_iam_role.workers.id
++  policy = jsonencode({
++    Statement = [{
++      Effect   = "Allow"
++      Action   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes", "kms:Decrypt"]
++      Resource = [aws_sqs_queue.inbox.arn, aws_sqs_queue.digest.arn, aws_kms_key.messages.arn]
++    }]
++  })
++}
++
++resource "aws_iam_role_policy" "mailer_send" {
++  name = "send"
++  role = aws_iam_role.mailer.id
++  policy = jsonencode({
++    Statement = [{
++      Effect   = "Allow"
++      Action   = ["ses:SendEmail", "s3:PutObject"]
++      Resource = ["*", "${aws_s3_bucket.outbox.arn}/*"]
++    }]
++  })
++}
++
++resource "aws_lambda_function" "router" {
++  function_name = "${local.prefix}-router"
++  role          = aws_iam_role.workers.arn
++  handler       = "router.handler"
++  runtime       = "python3.12"
++  timeout       = 30
++  filename      = "build/router.zip"
++  environment {
++    variables = {
++      EVENTS_TOPIC = aws_sns_topic.events.arn
++      MAILER = aws_lambda_function.mailer.arn
++    }
++  }
++}
++
++resource "aws_cloudwatch_log_group" "router" {
++  name              = "/aws/lambda/${local.prefix}-router"
++  retention_in_days = var.log_days
++}
++
++resource "aws_lambda_function" "digest" {
++  function_name = "${local.prefix}-digest"
++  role          = aws_iam_role.workers.arn
++  handler       = "digest.handler"
++  runtime       = "python3.12"
++  timeout       = 30
++  filename      = "build/digest.zip"
++  environment {
++    variables = {
++      OUTBOX = aws_s3_bucket.outbox.bucket
++      MAILER = aws_lambda_function.mailer.arn
++    }
++  }
++}
++
++resource "aws_cloudwatch_log_group" "digest" {
++  name              = "/aws/lambda/${local.prefix}-digest"
++  retention_in_days = var.log_days
++}
++
++resource "aws_lambda_function" "mailer" {
++  function_name = "${local.prefix}-mailer"
++  role          = aws_iam_role.mailer.arn
++  handler       = "mailer.handler"
++  runtime       = "python3.12"
++  timeout       = 30
++  filename      = "build/mailer.zip"
++  environment {
++    variables = {
++      OUTBOX = aws_s3_bucket.outbox.bucket
++      ALERTS_TOPIC = aws_sns_topic.alerts.arn
++    }
++  }
++}
++
++resource "aws_cloudwatch_log_group" "mailer" {
++  name              = "/aws/lambda/${local.prefix}-mailer"
++  retention_in_days = var.log_days
++}
++
++resource "aws_lambda_event_source_mapping" "inbox_to_router" {
++  event_source_arn = aws_sqs_queue.inbox.arn
++  function_name    = aws_lambda_function.router.arn
++  batch_size       = 10
++}
++
++resource "aws_lambda_event_source_mapping" "digest_to_digest" {
++  event_source_arn = aws_sqs_queue.digest.arn
++  function_name    = aws_lambda_function.digest.arn
++  batch_size       = 100
++}
++
++resource "aws_lambda_permission" "router_invokes_mailer" {
++  statement_id  = "AllowRouter"
++  action        = "lambda:InvokeFunction"
++  function_name = aws_lambda_function.mailer.function_name
++  principal     = "lambda.amazonaws.com"
++  source_arn    = aws_lambda_function.router.arn
++}
+diff --git a/infra/stacks/notifications/monitoring.tf b/infra/stacks/notifications/monitoring.tf
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/infra/stacks/notifications/monitoring.tf
+@@ -0,0 +1,100 @@
++resource "aws_s3_bucket" "outbox" {
++  bucket = "${local.prefix}-outbox"
++}
++
++resource "aws_s3_bucket_lifecycle_configuration" "outbox" {
++  bucket = aws_s3_bucket.outbox.id
++  rule {
++    id     = "expire"
++    status = "Enabled"
++    expiration {
++      days = 30
++    }
++  }
++}
++
++resource "aws_cloudwatch_metric_alarm" "inbox_dlq_depth" {
++  alarm_name          = "${local.prefix}-inbox-dlq-depth"
++  namespace           = "AWS/SQS"
++  metric_name         = "ApproximateNumberOfMessagesVisible"
++  comparison_operator = "GreaterThanThreshold"
++  threshold           = 0
++  evaluation_periods  = 1
++  period              = 300
++  statistic           = "Sum"
++  alarm_actions       = [aws_sns_topic.alerts.arn]
++  dimensions = {
++    QueueName = aws_sqs_queue.inbox_dlq.name
++  }
++}
++
++resource "aws_cloudwatch_metric_alarm" "digest_dlq_depth" {
++  alarm_name          = "${local.prefix}-digest-dlq-depth"
++  namespace           = "AWS/SQS"
++  metric_name         = "ApproximateNumberOfMessagesVisible"
++  comparison_operator = "GreaterThanThreshold"
++  threshold           = 0
++  evaluation_periods  = 1
++  period              = 300
++  statistic           = "Sum"
++  alarm_actions       = [aws_sns_topic.alerts.arn]
++  dimensions = {
++    QueueName = aws_sqs_queue.digest_dlq.name
++  }
++}
++
++resource "aws_cloudwatch_metric_alarm" "router_errors" {
++  alarm_name          = "${local.prefix}-router-errors"
++  namespace           = "AWS/Lambda"
++  metric_name         = "Errors"
++  comparison_operator = "GreaterThanThreshold"
++  threshold           = 0
++  evaluation_periods  = 1
++  period              = 300
++  statistic           = "Sum"
++  alarm_actions       = [aws_sns_topic.alerts.arn]
++  dimensions = {
++    FunctionName = aws_lambda_function.router.function_name
++  }
++}
++
++resource "aws_cloudwatch_metric_alarm" "digest_errors" {
++  alarm_name          = "${local.prefix}-digest-errors"
++  namespace           = "AWS/Lambda"
++  metric_name         = "Errors"
++  comparison_operator = "GreaterThanThreshold"
++  threshold           = 0
++  evaluation_periods  = 1
++  period              = 300
++  statistic           = "Sum"
++  alarm_actions       = [aws_sns_topic.alerts.arn]
++  dimensions = {
++    FunctionName = aws_lambda_function.digest.function_name
++  }
++}
++
++resource "aws_cloudwatch_metric_alarm" "mailer_errors" {
++  alarm_name          = "${local.prefix}-mailer-errors"
++  namespace           = "AWS/Lambda"
++  metric_name         = "Errors"
++  comparison_operator = "GreaterThanThreshold"
++  threshold           = 0
++  evaluation_periods  = 1
++  period              = 300
++  statistic           = "Sum"
++  alarm_actions       = [aws_sns_topic.alerts.arn]
++  dimensions = {
++    FunctionName = aws_lambda_function.mailer.function_name
++  }
++}
++
++resource "aws_cloudwatch_dashboard" "notifications" {
++  dashboard_name = "${local.prefix}"
++  dashboard_body = jsonencode({
++    widgets = [
++      { type = "metric", properties = { metrics = [["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", aws_sqs_queue.inbox.name]] } },
++      { type = "metric", properties = { metrics = [["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", aws_sqs_queue.digest.name]] } },
++      { type = "metric", properties = { metrics = [["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.router.function_name]] } }
++    ]
++  })
++}
+diff --git a/infra/stacks/notifications/queues.tf b/infra/stacks/notifications/queues.tf
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/infra/stacks/notifications/queues.tf
+@@ -0,0 +1,77 @@
++locals {
++  prefix = "notify-${var.stage}"
++}
++
++resource "aws_kms_key" "messages" {
++  description         = "Messages of the notification stack"
++  enable_key_rotation = true
++}
++
++resource "aws_sqs_queue" "inbox" {
++  name                       = "${local.prefix}-inbox"
++  visibility_timeout_seconds = 120
++  redrive_policy = jsonencode({ deadLetterTargetArn = aws_sqs_queue.inbox_dlq.arn, maxReceiveCount = 5 })
++}
++
++resource "aws_sqs_queue" "inbox_dlq" {
++  name                       = "${local.prefix}-inbox-dlq"
++  visibility_timeout_seconds = 120
++}
++
++resource "aws_sqs_queue" "digest" {
++  name                       = "${local.prefix}-digest"
++  visibility_timeout_seconds = 120
++  redrive_policy = jsonencode({ deadLetterTargetArn = aws_sqs_queue.digest_dlq.arn, maxReceiveCount = 5 })
++}
++
++resource "aws_sqs_queue" "digest_dlq" {
++  name                       = "${local.prefix}-digest-dlq"
++  visibility_timeout_seconds = 120
++}
++
++resource "aws_sns_topic" "events" {
++  name              = "${local.prefix}-events"
++  kms_master_key_id = aws_kms_key.messages.id
++}
++
++resource "aws_sns_topic" "alerts" {
++  name = "${local.prefix}-alerts"
++}
++
++resource "aws_sns_topic_subscription" "events_to_inbox" {
++  topic_arn = aws_sns_topic.events.arn
++  protocol  = "sqs"
++  endpoint  = aws_sqs_queue.inbox.arn
++}
++
++resource "aws_sns_topic_subscription" "events_to_digest" {
++  topic_arn = aws_sns_topic.events.arn
++  protocol  = "sqs"
++  endpoint  = aws_sqs_queue.digest.arn
++}
++
++resource "aws_sqs_queue_policy" "inbox" {
++  queue_url = aws_sqs_queue.inbox.id
++  policy    = data.aws_iam_policy_document.from_events.json
++}
++
++resource "aws_sqs_queue_policy" "digest" {
++  queue_url = aws_sqs_queue.digest.id
++  policy    = data.aws_iam_policy_document.from_events.json
++}
++
++data "aws_iam_policy_document" "from_events" {
++  statement {
++    actions   = ["sqs:SendMessage"]
++    resources = ["*"]
++    principals {
++      type        = "Service"
++      identifiers = ["sns.amazonaws.com"]
++    }
++    condition {
++      test     = "ArnEquals"
++      variable = "aws:SourceArn"
++      values   = [aws_sns_topic.events.arn]
++    }
++  }
++}

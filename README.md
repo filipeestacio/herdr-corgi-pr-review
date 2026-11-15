@@ -51,7 +51,9 @@ When the PR changes Terraform, CloudFormation or SAM files, **Infrastructure cha
 changes, removes or may replace as cards with their changed arguments and the references between them, and lists
 the changed variables and outputs. It is read from the diff and the files at the PR head, without a model and
 without `terraform plan` or a change set, so a replacement is an estimate and is marked as one. An infrastructure
-file larger than 2 MB is named as not read.
+file larger than 2 MB is named as not read. With more than 12 changed resources or 15 references there are no lines
+between the cards: they stand by file, what stands out first, and a card you point at or click shows what it refers
+to and what refers to it.
 
 When the PR changes a database schema, **Schema changes** shows the tables before and after as cards with their
 changed columns, keys and relations, and lists what may be risky for data that is in use, such as a dropped column,

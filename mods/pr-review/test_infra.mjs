@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync, readdirSync } from "node:fs";
-import { baseText, sidesOf, readTerraform, readCloudFormation, infraModel, infraArch, infraMarks, infraPicture, infraMd, infraSource, infraSummary, cardLines, rowText, noticeText, isIac, INFRA_MAX } from "./infra.js";
+import { baseText, sidesOf, readTerraform, readCloudFormation, infraModel, infraArch, infraMarks, infraPicture, infraMd, infraSource, infraSummary, cardLines, rowText, noticeText, isIac, isDense, infraDense, denseRefs, denseText, INFRA_DENSE } from "./infra.js";
 import { splitPatch } from "./pr.js";
 import { mermaidFlow } from "./markdown.js";
 import { archLayout, archBest } from "./arch.js";
@@ -331,7 +331,7 @@ test("the Terraform fixture end to end: from the patch and the files at the head
     assert.ok(out.includes("- `output.o changed · \"b\" → \"[click](https://example.invalid) @octo-org/everyone 'x'\"` (`main.tf:1`)")); }
   assert.ok(!md.includes("placeholder"), "the secret's value is in no line");
   const P = infraPicture(m);
-  assert.deepEqual([P.L.nodes.length, P.L.groups.length, P.arch.folded], [13, 1, null]);
+  assert.deepEqual([P.L.nodes.length, P.L.groups.length, isDense(m)], [13, 1, false]);
   // One layout for the render; the search for a better one runs after it, from the same arguments (stack.js laidOut).
   assert.deepEqual([P.args.length, P.args[4]], [5, { labels: true }]);
   assert.equal(JSON.stringify(P.L), JSON.stringify(archLayout(...P.args)), "the picture is archLayout's own");
@@ -340,14 +340,31 @@ test("the Terraform fixture end to end: from the patch and the files at the head
   assert.deepEqual([worker.status, worker.word, worker.dashed, worker.at], ["replaced", "MAY BE REPLACED", true, "stacks/orders/worker.tf:1"], "may be replaced: its own word and a dashed border, not only a colour");
 });
 
-test("over 40 cards, the resources of one type in a group are one card with their number", () => {
-  const n = INFRA_MAX + 5, head = [...Array.from({ length: n }, (_x, i) => `resource "aws_iam_role_policy" "p${i}" {\n  role = aws_iam_role.r.id\n}\n`), 'resource "aws_iam_role" "r" {\n}\n'].join("");
-  const m = model({ "iam.tf": ['resource "aws_iam_role" "r" {\n  path = "/"\n}\n', head] }), a = infraArch(m);
-  assert.deepEqual(a.nodes.map((x) => [x.label, x.description, x.status, x.count]), [[`${n} aws_iam_role_policy`, `${n} added`, "new", n], ["r", "aws_iam_role · iam.tf:136", "changed", undefined]]);
-  assert.deepEqual([a.edges.length, a.folded], [1, { types: 1, cards: n }], "their references are one line");
-  assert.equal(infraMarks(m, [{ file: "iam.tf", line: 2, severity: "low", title: "t" }], a.alias).nodes.get(a.nodes[0].id).n, 1, "a finding at one of them sits at their card");
-  assert.ok(infraMd(m, { table, flow: mermaidFlow }).join("\n").includes(`Over ${INFRA_MAX} cards: ${n} resources of 1 type are one card per type.`));
-  assert.equal(infraArch(model({ "iam.tf": [null, head] }), 100).folded, null);
+test("many resources: cards by file instead of a picture with lines, what stands out first", () => {
+  const n = INFRA_DENSE.cards + 1, head = [...Array.from({ length: n }, (_x, i) => `resource "aws_iam_role_policy" "p${i}" {\n  role = aws_iam_role.r.id\n}\n`), 'resource "aws_iam_role" "r" {\n}\n'].join("");
+  const m = model({ "iam.tf": ['resource "aws_iam_role" "r" {\n  path = "/"\n}\n', head] });
+  assert.ok(isDense(m) && !isDense(model({ "iam.tf": [null, 'resource "aws_iam_role" "r" {\n}\n'] })), "more changed resources than a picture with lines can show");
+  const D = infraDense(m, [{ id: "f", file: "iam.tf", line: 5, severity: "low", title: "t" }]), [G] = D.groups;
+  assert.deepEqual([D.groups.length, G.file, G.dir, G.base, G.kind, G.types, G.more, D.uniform], [1, "iam.tf", "", "iam.tf", "Terraform", [["aws_iam_role_policy", n], ["aws_iam_role", 1]], 0, null]);
+  assert.deepEqual(G.cards.slice(0, 4).map((c) => [c.name, c.status, c.line, c.mark?.n ?? 0, c.to, c.from]), [["p1", "added", 4, 1, 1, 0], ["r", "changed", 3 * n + 1, 0, 0, n], ["p0", "added", 1, 0, 1, 0], ["p2", "added", 7, 0, 1, 0]],
+    "the card with a finding first, then the changed one, then the added ones by line");
+  const role = m.cards.find((c) => c.addr === "aws_iam_role.r").id, p0 = m.cards.find((c) => c.addr === "aws_iam_role_policy.p0").id;
+  assert.equal(denseRefs(D, p0), "aws_iam_role_policy.p0 refers to 1: aws_iam_role.r (role). Nothing in this PR refers to it.");
+  assert.ok(denseRefs(D, role).startsWith(`aws_iam_role.r refers to nothing in this PR. ${n} refer to it: aws_iam_role_policy.p0 (role), aws_iam_role_policy.p1 (role), `));
+  const md = infraMd(m, { table, flow: mermaidFlow }).join("\n");
+  assert.ok(md.includes(denseText()) && !md.includes("```mermaid") && md.includes("| `aws_iam_role_policy p0` | added |"), "the Markdown says so and has the table, no flowchart");
+  // More cards of one file than are drawn: the rest is counted.
+  const big = infraDense(model({ "iam.tf": [null, Array.from({ length: INFRA_DENSE.perFile + 3 }, (_x, i) => `resource "aws_sqs_queue" "q${i}" {\n}\n`).join("")] }));
+  assert.deepEqual([big.groups[0].cards.length, big.groups[0].more, big.uniform], [INFRA_DENSE.perFile, 3, "added"]);
+});
+
+// A stack a PR adds whole (demo/fixtures/infra/dense, invented): 34 cards in three files, 49 references.
+test("the dense fixture: three files, the references of a chosen card", () => {
+  const m = infraModel(splitPatch(fx("dense/pr.diff"))), D = infraDense(m);
+  assert.deepEqual([m.cards.length, m.edges.length, m.counts.added, isDense(m), D.uniform], [34, 49, 34, true, "added"]);
+  assert.deepEqual(D.groups.map((g) => [g.base, g.dir, g.cards.length]), [["functions.tf", "infra/stacks/notifications/", 14], ["monitoring.tf", "infra/stacks/notifications/", 8], ["queues.tf", "infra/stacks/notifications/", 12]]);
+  const router = m.cards.find((c) => c.addr === "aws_lambda_function.router").id, r = D.refs.get(router);
+  assert.deepEqual([r.to.map((x) => D.names.get(x.id)), r.from.length], [["aws_iam_role.workers", "aws_sns_topic.events", "aws_lambda_function.mailer"], 4]);
 });
 
 // A file of the PR written to break the reader: it never throws and never takes long, the file is named as not read
