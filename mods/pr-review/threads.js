@@ -215,10 +215,11 @@ export function fixCommentsPrompt({ pr, comments, file, lang, branch = null, pat
 // hc run for the sub-agent: under the PR's agent (parent) so it shows there, in its worktree, on the PR's context
 // (env: the context's command prefix), no notes typed into the parent.
 // model: the review's model (pr.js codeModel), said outright so the account's default (maybe Haiku) never fixes code.
-// kind: "fix" or "verify" (the label); deny: the rules refused in any mode (a verify agent: NO_NET).
-export function subAgentArgs({ parent, cwd, name, env = [], task, job, auto = false, model = "sonnet", kind = "fix", deny = NO_PUSH }) {
+// kind: "fix" or "verify" (the label); deny: the rules refused in any mode (a verify agent: NO_NET); lock: the push
+// lock for the clone's remotes (noPushEnv, checked by the caller).
+export function subAgentArgs({ parent, cwd, name, env = [], task, job, auto = false, model = "sonnet", kind = "fix", deny = NO_PUSH, lock = NO_PUSH_ENV }) {
   return ["run", "--bg", "--json", "--no-notify", "--name", name, "--cwd", cwd, ...(parent ? ["--parent", parent] : ["--no-parent"]),
-    "--label", `pr-review.${kind}=${job}`, "--", ...NO_PUSH_ENV, ...env, "claude", "--model", model, ...NO_MCP, "--disallowedTools", ...deny, ...permissionArgs(auto), task];
+    "--label", `pr-review.${kind}=${job}`, "--", ...lock, ...env, "claude", "--model", model, ...NO_MCP, "--disallowedTools", ...deny, ...permissionArgs(auto), task];
 }
 // A new Claude tab that gets PR text: "Ask an agent…" (a question about a finding) and "Send review" (the comments
 // to a new session). No MCP servers, as for every agent that reads PR text. ask: Ask's permission mode by trust (a
@@ -232,12 +233,32 @@ export const NO_MCP = ["--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}
 // and these deny rules refuse the commands in any permission mode, also in the usual wrappers (git -C, git -c, env,
 // sh -c). The list takes any number of rules, so an option with one value has to follow it (permissionArgs).
 export const NO_PUSH = ["Bash(git push)", "Bash(git push *)", "Bash(git -C * push*)", "Bash(git -c * push*)", "Bash(env * git push*)",
-  "Bash(sh -c *git push*)", "Bash(bash -c *git push*)", "Bash(zsh -c *git push*)", "Bash(gh pr create *)", "Bash(gh pr merge *)", "Bash(hc send *)"];
-// Under the rules, git itself: every push URL of the agent's git (an empty pushInsteadOf matches every URL) becomes
-// one no git can open, however the push is called (a script, sh -c, git -C). Fetch is untouched.
-// ponytail: an environment, not a sandbox: a program that clears it, or a push through the API (gh api, curl), still
-// gets out; the preview says so (sendFacts "Push").
-export const NO_PUSH_ENV = ["env", "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=url.pushing-is-off-in-this-review://.pushInsteadOf", "GIT_CONFIG_VALUE_0="];
+  "Bash(sh -c *git push*)", "Bash(bash -c *git push*)", "Bash(zsh -c *git push*)", "Bash(git send-pack *)", "Bash(git http-push *)",
+  "Bash(gh pr create *)", "Bash(gh pr merge *)", "Bash(hc send *)"];
+// Under the rules, git itself, however the push is called (a script, sh -c, git -C). Fetch is untouched. Two parts,
+// because git rewrites a push URL with pushInsteadOf only where the remote has no pushurl of its own:
+// - an empty pushInsteadOf matches every URL and turns it into one no git can open: every remote without a pushurl,
+//   a remote the agent adds, a URL given on the command line;
+// - each remote of the clone (remotes: `git remote`) gets its pushurl emptied and set to that same dead URL (git 2.46
+//   and later: an empty value clears the list), so a pushurl in the clone's or the user's config does not count.
+// Whether it holds is asked of git itself before an agent starts (pushLockProbe, pushLockOpen): an older git, or a
+// remote this cannot cover, stops the start instead of leaving a way out.
+// ponytail: an environment, not a sandbox. What the agent sets against it on purpose still gets out: a push URL of
+// its own (git -c, git remote set-url --push), a cleared environment, git's plumbing (send-pack), a push through
+// the API (gh api, curl); the preview says so (sendFacts "Push"). A sandbox without network would close those.
+export const PUSH_OFF = "pushing-is-off-in-this-review://";
+export function noPushEnv(remotes = []) {
+  const pairs = [[`url.${PUSH_OFF}.pushInsteadOf`, ""], ...remotes.flatMap((r) => [[`remote.${r}.pushurl`, ""], [`remote.${r}.pushurl`, `${PUSH_OFF}${r}`]])];
+  return ["env", `GIT_CONFIG_COUNT=${pairs.length}`, ...pairs.flatMap(([k, v], i) => [`GIT_CONFIG_KEY_${i}=${k}`, `GIT_CONFIG_VALUE_${i}=${v}`])];
+}
+export const NO_PUSH_ENV = noPushEnv(); // no remote known: the first part alone
+// The question to git (argv after the lock's env, run in the agent's checkout): where each remote would push now.
+export const pushLockProbe = (remotes) => ["sh", "-c", 'for r in "$@"; do git remote get-url --push --all "$r" || echo "?"; done', "sh", ...remotes];
+// Its answer → the remotes git would still push to (a line that is not the dead URL, or fewer lines than remotes: "?").
+export function pushLockOpen(stdout, remotes) {
+  const lines = String(stdout ?? "").split("\n").filter(Boolean), open = lines.filter((l) => !l.startsWith(PUSH_OFF));
+  return lines.length < remotes.length || open.length ? (open.length ? open : ["?"]) : [];
+}
 // A trusted PR: auto (the classifier approves the harmless commands, reads, edits, commit, tests, and asks about risky
 // ones). An untrusted one: the task quotes its text and findings, which may carry injected instructions, and its
 // checkout's .claude/settings.json could allow anything or run hooks, so: manual, said outright (not left to the
@@ -346,7 +367,7 @@ export function sendFacts({ kind, account, trusted = false, branch = null, name 
     ["Runs as", own ? `${account}${model ? ` · ${model}` : ""}` : `${name ?? "The PR's session"}, on its own account and with its own permissions.`],
     ["Gets", own ? "The text below and every file it opens in its checkout. All of it goes to the provider." : "The text below. The session reads what it needs in its own checkout."],
     ["May", may],
-    ["Push", own && kind !== "new" ? `Not through git: the agent's git cannot push anywhere, however it is called, and git push and gh pr create are denied${kind === "verify" ? ", as are web tools and the plain network commands (curl, wget, git fetch, installs)" : ""}. The task forbids it too. Not covered: a program that clears its environment, or a push through the GitHub API (gh api, curl)${kind === "sub" && trusted ? ", which auto mode may run without asking" : ""}.` : kind === "new" ? "Only if you approve the command." : "Possible. Nothing here prevents it."],
+    ["Push", own && kind !== "new" ? `Not through git push: every remote of the checkout, also one with a push URL of its own, and every URL given to git push lead to an address no git can open, whatever calls git push. This is checked before the agent starts. git push, git send-pack and gh pr create are denied${kind === "verify" ? ", as are web tools and the plain network commands (curl, wget, git fetch, installs)" : ""}. The task forbids it too. Not covered: what the agent sets against it on purpose (a push URL of its own through git -c or git config, a cleared environment), git send-pack inside a script, or a push through the GitHub API (gh api, curl)${kind === "sub" && trusted ? "; auto mode may run these without asking" : ""}.` : kind === "new" ? "Only if you approve the command." : "Possible. Nothing here prevents it."],
     ["Result", result],
     // The CLI caps spending only for non-interactive runs (--max-budget-usd needs --print); these agents work in a tab.
     ["Cost", own ? `No spending limit: the CLI caps only non-interactive runs, and this agent works in a tab. Stop it there.${estimate ? ` One finding usually costs ${estimate}${model ? ` on ${model}` : ""}.` : kind === "verify" ? " One finding usually takes a few minutes." : ""} Billed to that account.` : "Billed to that session's account."],

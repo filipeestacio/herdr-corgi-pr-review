@@ -210,7 +210,8 @@ console.log("threads ok");
   const sub = Object.fromEntries(TH.sendFacts({ kind: "sub", account: "Claude Code (Anthropic) · account in ~/.claude", trusted: true, branch: "fix/7-f1" }));
   assert.equal(sub["Runs as"], "Claude Code (Anthropic) · account in ~/.claude");
   assert.equal(Object.fromEntries(TH.sendFacts({ kind: "new", account: "acct", model: "Sonnet" }))["Runs as"], "acct · Sonnet", "the model a new agent runs on");
-  assert.match(sub.May, /auto mode/); assert.match(sub.Push, /^Not through git: .*Not covered: a program that clears its environment, or a push through the GitHub API.*auto mode may run/); assert.match(sub.Result, /fix\/7-f1.*Nothing reaches the PR until you apply it/);
+  assert.match(sub.May, /auto mode/); assert.match(sub.Push, /^Not through git push: every remote of the checkout, also one with a push URL of its own.*checked before the agent starts.*Not covered: what the agent sets against it on purpose \(a push URL of its own.*a cleared environment\), git send-pack inside a script, or a push through the GitHub API.*auto mode may run/);
+  assert.doesNotMatch(sub.Push, /anywhere/, "it names what it covers and what not"); assert.match(sub.Result, /fix\/7-f1.*Nothing reaches the PR until you apply it/);
   assert.equal(sub.Starts, undefined, "the choice above says where it starts");
   assert.match(Object.fromEntries(TH.sendFacts({ kind: "sub", account: "a", trusted: false })).May, /someone else's PR.*asks before every edit/);
   const main = Object.fromEntries(TH.sendFacts({ kind: "main", account: "a", name: "PR #7" }));
@@ -280,7 +281,7 @@ console.log("threads ok");
   assert.equal(out.a1.result, "reproduced"); assert.equal(out.a1.state, "done");
   assert.deepEqual([out.a2.result, out.a2.reason, out.a2.head], ["not_reproduced", "The agent ended without a result for this finding.", "h"]);
   const f = Object.fromEntries(TH.sendFacts({ kind: "verify", account: "acct", trusted: false, branch: "verify/2-a1", model: "Sonnet" }));
-  assert.match(f.Starts, /can run code from this PR/); assert.match(f.May, /manual mode.*--setting-sources user/); assert.match(f.Push, /^Not through git: .*web tools.*Not covered/); assert.doesNotMatch(f.Push, /auto mode/, "someone else's PR: manual, nothing runs without asking");
+  assert.match(f.Starts, /can run code from this PR/); assert.match(f.May, /manual mode.*--setting-sources user/); assert.match(f.Push, /^Not through git push: .*web tools.*Not covered/); assert.doesNotMatch(f.Push, /auto mode/, "someone else's PR: manual, nothing runs without asking");
   assert.equal(f["Runs as"], "acct · Sonnet");
   assert.match(Object.fromEntries(TH.sendFacts({ kind: "verify", account: "a", trusted: true })).May, /auto mode.*runs the PR's code/);
   console.log("verify agent ok");
@@ -399,18 +400,59 @@ console.log("threads ok");
   assert.deepEqual(TH.tabArgs({ model: "sonnet", ask: true, trusted: true }).slice(-2), ["--permission-mode", "manual"]);
   assert.deepEqual(send, ["claude", "--model", "opus", ...TH.NO_MCP], "Send review: no MCP");
   for (const r of ["Bash(git -C * push*)", "Bash(git -c * push*)", "Bash(env * git push*)", "Bash(sh -c *git push*)"]) assert.ok(TH.NO_PUSH.includes(r), r);
-  // The real thing: with NO_PUSH_ENV, git pushes nowhere, in a script, with -C and -c, to any URL; fetch still works.
-  const { execFileSync } = await import("node:child_process"), { mkdtempSync, rmSync } = await import("node:fs"), { tmpdir } = await import("node:os");
-  const d = mkdtempSync(`${tmpdir()}/nopush-`), git = (args, env = {}) => execFileSync("git", args, { cwd: `${d}/w`, env: { ...process.env, ...env }, stdio: "pipe" }).toString();
+  for (const r of ["Bash(git send-pack *)", "Bash(git http-push *)"]) assert.ok(TH.NO_PUSH.includes(r), r);
+  // The real thing, each way to push on its own, against bare repositories in a temporary folder: with the lock for
+  // the clone's remotes nothing arrives anywhere; fetch still works; git itself confirms the lock (pushLockOpen).
+  const { execFileSync } = await import("node:child_process"), { mkdtempSync, rmSync, readFileSync, writeFileSync } = await import("node:fs"), { tmpdir } = await import("node:os");
+  const d = mkdtempSync(`${tmpdir()}/nopush-`), clean = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+  const envOf = (lock) => Object.fromEntries(lock.slice(1).map((x) => [x.slice(0, x.indexOf("=")), x.slice(x.indexOf("=") + 1)]));
+  const git = (args, env = {}) => execFileSync("git", args, { cwd: `${d}/w`, env: { ...clean, ...env }, stdio: "pipe" }).toString();
   try {
-    execFileSync("git", ["init", "-q", "--bare", `${d}/r.git`]); execFileSync("git", ["init", "-q", `${d}/w`]);
-    git(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"]); git(["remote", "add", "origin", `${d}/r.git`]);
-    const lock = Object.fromEntries(TH.NO_PUSH_ENV.slice(1).map((x) => [x.slice(0, x.indexOf("=")), x.slice(x.indexOf("=") + 1)]));
-    for (const how of [["push", "origin", "HEAD:main"], ["-C", ".", "-c", "a.b=c", "push", "origin", "HEAD:main"], ["push", "https://github.com/o/r.git", "HEAD:main"]])
-      assert.throws(() => git(how, lock), /pushing-is-off-in-this-review/, how.join(" "));
-    assert.throws(() => execFileSync("sh", ["-c", "git push -q origin HEAD:main"], { cwd: `${d}/w`, env: { ...process.env, ...lock }, stdio: "pipe" }), /pushing-is-off/, "sh -c");
+    for (const r of ["r", "r2", "alt"]) execFileSync("git", ["init", "-q", "--bare", `${d}/${r}.git`], { env: clean });
+    execFileSync("git", ["init", "-q", `${d}/w`], { env: clean });
+    git(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"]); git(["remote", "add", "origin", `${d}/r.git`]); git(["remote", "add", "second", `${d}/r2.git`]);
+    const U = `file://${d}/r.git`, ALT = `file://${d}/alt.git`, names = git(["remote"]).split("\n").filter(Boolean), lock = envOf(TH.noPushEnv(names));
+    const arrived = () => ["r", "r2", "alt"].filter((r) => execFileSync("git", ["-C", `${d}/${r}.git`, "for-each-ref"], { env: clean }).toString() !== "");
+    const asked = (env) => { try { return execFileSync(TH.pushLockProbe(names)[0], TH.pushLockProbe(names).slice(1), { cwd: `${d}/w`, env: { ...clean, ...env }, stdio: "pipe" }).toString(); } catch { return ""; } };
+    assert.deepEqual(names, ["origin", "second"]);
+    // [what the checkout's config has, the push]: every one of them is refused under the lock.
+    const ways = [
+      [[], ["push", "origin", "HEAD:main"], "a remote"],
+      [[], ["-C", ".", "-c", "a.b=c", "push", "origin", "HEAD:main"], "git -C and -c"],
+      [[], ["push", "https://github.com/o/r.git", "HEAD:main"], "a URL"],
+      [[], ["push", `${d}/r2.git`, "HEAD:main"], "a path"],
+      [[], ["push", "--no-verify", "second", "HEAD:main"], "a second remote"],
+      [[["remote.origin.pushurl", ALT]], ["push", "origin", "HEAD:main"], "a remote with a push URL of its own"],
+      [[["remote.second.pushurl", ALT], ["remote.pushDefault", "second"], ["push.default", "current"]], ["push"], "remote.pushDefault and push.default"],
+      [[["remote.second.pushurl", ALT], ["branch.main.pushRemote", "second"], ["push.default", "current"]], ["push"], "a branch's pushRemote"],
+      [[[`url.${ALT}.pushInsteadOf`, U]], ["push", "origin", "HEAD:main"], "a longer pushInsteadOf in the config"],
+      [[], ["-c", `remote.origin.pushurl=${ALT}`, "push", "origin", "HEAD:main"], "a push URL through git -c"],
+      [[], ["-c", `url.${ALT}.pushInsteadOf=${U}`, "push", "origin", "HEAD:main"], "pushInsteadOf through git -c"],
+    ];
+    git(["branch", "-M", "main"]);
+    // The config of a way is written into .git/config as text (one process less per key: git parses "a.b.c = v" lines
+    // under no section only as [a "b"] c, so the sections are spelled out).
+    const plain = readFileSync(`${d}/w/.git/config`, "utf8"), section = (k, v) => { const [s, ...rest] = k.split("."), name = rest.pop(); return `[${s}${rest.length ? ` "${rest.join(".")}"` : ""}]\n\t${name} = ${v}\n`; };
+    for (const [config, how, name] of ways) {
+      writeFileSync(`${d}/w/.git/config`, plain + config.map(([k, v]) => section(k, v)).join(""));
+      assert.throws(() => git(how, lock), /pushing-is-off-in-this-review/, name);
+      if (name === "remote.pushDefault and push.default") assert.deepEqual(TH.pushLockOpen(asked(lock), names), [], "git confirms the lock");
+    }
+    writeFileSync(`${d}/w/.git/config`, plain);
+    for (const [key, v] of [["GIT_DIR", `${d}/w/.git`], ["GIT_SSH_COMMAND", "false"], ["GIT_CONFIG_GLOBAL", `${d}/w/.git/config`]])
+      assert.throws(() => git(["push", "origin", "HEAD:main"], { ...lock, [key]: v }), /pushing-is-off-in-this-review/, `with ${key} set`);
+    assert.throws(() => execFileSync("sh", ["-c", "git push -q origin HEAD:main"], { cwd: `${d}/w`, env: { ...clean, ...lock }, stdio: "pipe" }), /pushing-is-off/, "sh -c");
     git(["fetch", "-q", "origin"], lock);
-    assert.equal(execFileSync("git", ["-C", `${d}/r.git`, "for-each-ref"]).toString(), "", "nothing arrived");
+    assert.deepEqual(arrived(), [], "nothing arrived anywhere");
+    // Why the lock names the remotes: the first part alone (no remote known) lets a remote's own push URL through,
+    // and git says so when asked, which stops the start.
+    git(["config", "remote.origin.pushurl", ALT]);
+    assert.deepEqual(TH.pushLockOpen(asked(envOf(TH.NO_PUSH_ENV)), names), [ALT], "without its remotes the lock is open, and the check sees it");
+    git(["push", "-q", "origin", "HEAD:main"], envOf(TH.NO_PUSH_ENV)); assert.deepEqual(arrived(), ["alt"], "that push went through");
+    assert.deepEqual([TH.pushLockOpen("", names), TH.pushLockOpen(`${TH.PUSH_OFF}origin\n`, names), TH.pushLockOpen(`${TH.PUSH_OFF}origin\n?\n`, names)], [["?"], ["?"], ["?"]], "no answer for a remote is not a lock");
+    // Not covered, as the preview says: git's plumbing reaches a repository without the push URLs.
+    git(["send-pack", `${d}/r2.git`, "HEAD:refs/heads/main"], lock); assert.deepEqual(arrived(), ["r2", "alt"], "send-pack is denied by rule only");
+    assert.deepEqual(TH.subAgentArgs({ cwd: "/w", name: "n", task: "x", job: "j", lock: TH.noPushEnv(names) }).filter((x) => x.startsWith("GIT_CONFIG_COUNT")), ["GIT_CONFIG_COUNT=5"], "the agent starts under the lock for its remotes");
   } finally { rmSync(d, { recursive: true, force: true }); }
   assert.deepEqual(["auto mode", "own agent session", "Probes start without asking", "security review starts by itself", "Language servers", "Codex review starts on your click"].filter((w) => !TH.TRUST_TURNS_ON.some((x) => x.includes(w))), [], "the trust prompt names all of it");
   console.log("agents with PR text ok");

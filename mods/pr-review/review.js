@@ -2009,6 +2009,16 @@ export const ReviewMode = {
     f.target = target;
     this.sendText.set_value(f.prompt(target === "sub" ? f : null));
   },
+  // The push lock for an agent that works in a worktree of `base` (threads.js noPushEnv): every remote of the clone
+  // gets a push URL no git can open, and git itself is asked where it would push now. A remote it would still push
+  // to (a git before 2.46 cannot clear a remote's own pushurl) stops the start: no agent without the lock.
+  async pushLock(base) {
+    const names = ((await exec("git", ["-C", base, "remote"], { timeout: 20000 })).stdout ?? "").split("\n").filter(Boolean), lock = TH.noPushEnv(names);
+    const asked = await exec(lock[0], [...lock.slice(1), ...TH.pushLockProbe(names)], { cwd: base, timeout: 20000 });
+    const open = asked.code === 0 ? TH.pushLockOpen(asked.stdout, names) : ["?"];
+    if (open.length) throw new Error(`git in this checkout could still push (${open.join(", ").slice(0, 120)}), so no agent starts. A remote's own push URL can be turned off from git 2.46 on; update git or remove the remote's pushurl.`);
+    return lock;
+  },
   // A new Claude in a fresh worktree on the fix branch from the PR head the preview named (shown under the PR's agent
   // when one runs). Nothing is typed into another session: the fix stays on its branch until the reviewer applies it.
   startSubFix(p, text, cx) {
@@ -2017,9 +2027,9 @@ export const ReviewMode = {
     this.sending = true; this.note = null;
     cx.spawn(async (cx) => {
       try {
-        const { git, head } = await this.addWorktree(base, f);
+        const lock = await this.pushLock(base), { git, head } = await this.addWorktree(base, f);
         const id = Date.now().toString(36), { agent } = this.sendAgent();
-        const r = await hc(TH.subAgentArgs({ parent: agent?.address ?? null, cwd: f.path, name: `fix-${id}`, env: this.ctxEnv(this.ctxId()), task: text, job: id, auto: trusted, model: model() }));
+        const r = await hc(TH.subAgentArgs({ parent: agent?.address ?? null, cwd: f.path, name: `fix-${id}`, env: this.ctxEnv(this.ctxId()), task: text, job: id, auto: trusted, model: model(), lock }));
         if (r.code !== 0) { await git(["worktree", "remove", "--force", f.path]); await git(["branch", "-D", f.branch]); throw new Error((r.stderr || r.stdout).trim().slice(0, 200)); }
         const terminal = JSON.parse(r.stdout).address;
         this.updateThreads(cx, (d) => TH.addFix(d, key, { id, branch: f.branch, path: f.path, base, head, items: f.items, terminal, target: "sub", at: Date.now(), state: "running" }));
@@ -5615,9 +5625,9 @@ export const ReviewMode = {
     this.sending = true; this.note = null;
     cx.spawn(async (cx) => {
       try {
-        const { git, head } = await this.addWorktree(base, v);
+        const lock = await this.pushLock(base), { git, head } = await this.addWorktree(base, v);
         const id = Date.now().toString(36), { agent } = this.sendAgent();
-        const r = await hc(TH.subAgentArgs({ parent: agent?.address ?? null, cwd: v.path, name: `verify-${id}`, env: this.ctxEnv(this.ctxId()), task: text, job: id, auto: trusted, model: model(), kind: "verify", deny: TH.NO_NET }));
+        const r = await hc(TH.subAgentArgs({ parent: agent?.address ?? null, cwd: v.path, name: `verify-${id}`, env: this.ctxEnv(this.ctxId()), task: text, job: id, auto: trusted, model: model(), kind: "verify", deny: TH.NO_NET, lock }));
         if (r.code !== 0) { await git(["worktree", "remove", "--force", v.path]); await git(["branch", "-D", v.branch]); throw new Error((r.stderr || r.stdout).trim().slice(0, 200)); }
         const proof = { state: "running", job: id, ids: v.ids, path: v.path, branch: v.branch, base, terminal: JSON.parse(r.stdout).address, head, at: Date.now() };
         this.writeStatus(cx, (st) => ({ ...st, ...Object.fromEntries(v.ids.map((k) => [k, { ...st[k], proof }])) }));
