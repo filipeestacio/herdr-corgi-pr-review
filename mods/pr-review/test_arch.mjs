@@ -1,7 +1,7 @@
 // Run: node test_arch.mjs  (the architecture / blast radius layout: columns, lanes, ports, fans, stubs, hops, badges,
 // card sizes, focus, orchestrator states)
 import assert from "node:assert/strict";
-import { archLayout, archBands, archFocus, archMarks, pathMark, labelLines, zoneArch, stateLayout, sourceStyle, hasSources, crossings, lineStats, archSearch, archBest, clampText, wrapLines, bundleChips, markRoom, MARK_CARD_H, ARCH, LABEL } from "./arch.js";
+import { archLayout, archBands, archFocus, archMarks, pathMark, labelLines, zoneArch, stateLayout, sourceStyle, hasSources, crossings, lineStats, layoutJob, layoutStep, archBest, archQuick, QUICK_LINES, widthAt, clampText, wrapLines, bundleChips, markRoom, MARK_CARD_H, ARCH, LABEL } from "./arch.js";
 import { overlapsOf, transitionLabel, SM } from "./arch.js";
 import { blastArch } from "./pr.js";
 
@@ -769,15 +769,18 @@ console.log("ok");
   // Wrapped into bands, the line through the picture goes on at its height in the next band.
   assert.ok(archBands(L, Math.round(L.width / 2)).length > 1);
   // What a render gets at once (archLayout) has the straight lines already and crosses no more than before; the long
-  // line's way through the picture comes with the search, a try per step, at most 400 / 10 lines of them.
+  // line's way through the picture comes with the search (layoutJob), in slices: with a clock that ticks once per
+  // step a slice of 10 ms is ten steps, and the result is the same wherever the slices fall.
   const quick = archLayout(...args(arch)), q = lineStats(quick);
   assert.ok(q.crossings <= 2 && q.bends < 18 && q.around === 1, JSON.stringify(q));
-  let steps = 0, r;
-  for (const g = archSearch(...args(arch)); !(r = g.next()).done;) steps++;
-  assert.deepEqual(r.value, L); assert.ok(steps > 0 && steps <= 40, `${steps} steps`);
-  // A picture without a long line has nothing to search: no step, the render's layout.
-  const plain = { ...arch, edges: arch.edges.filter((e) => !e.label.startsWith("3.")) }, g2 = archSearch(...args(plain)), first = g2.next();
-  assert.ok(first.done); assert.deepEqual(first.value, archLayout(...args(plain)));
+  assert.deepEqual(archQuick(...args(arch)), quick, "ten lines: a render can afford archLayout");
+  const ticking = () => { let t = 0; return () => t++; }, job = layoutJob(...args(arch));
+  let slices = 0, done = null;
+  for (let before = 0; !(done = layoutStep(job, 10, ticking())); before = job.n) { slices++; assert.equal(job.n - before, 10, "ten steps a slice"); }
+  assert.deepEqual(done, L); assert.ok(slices > 3, `${slices} slices`);
+  // A picture without a long line and without a crossing has nothing to search: the render's layout stays.
+  const plain = { ...arch, edges: arch.edges.filter((e) => !e.label.startsWith("3.")) };
+  assert.deepEqual(archBest(...args(plain)), archLayout(...args(plain)));
   console.log("ok frames and long lines run straight");
 }
 
@@ -813,6 +816,8 @@ console.log("ok");
     // Each map as a render gets it at once, and after its search.
     const m = mapArch(a, ai.access, ai.bypasses), maps = { sec: [archLayout(...secArgs), sec], wide: [false].flatMap((fit) => [archLayout(m, "diff", () => 0, fit, { labels: true }), archBest(m, "diff", () => 0, fit, { labels: true })]),
       fit: [true].flatMap((fit) => [archLayout(m, "diff", () => 0, fit, { labels: true }), archBest(m, "diff", () => 0, fit, { labels: true })]) };
+    // The width with the other card size follows from either layout: the review lays out only the one it shows.
+    assert.deepEqual([widthAt(maps.fit[0], true, false), widthAt(maps.wide[0], false, true), widthAt(maps.fit[0], true, true)], [maps.wide[0].width, maps.fit[0].width, maps.fit[0].width]);
     for (const [k, Ls] of Object.entries(maps)) for (const L of Ls) {
       const s = lineStats(L), now = [s.crossings + s.overlaps, s.bends, s.length, s.around];
       now.forEach((v, i) => assert.ok(v <= was[k][i], `${k}: ${now} was ${was[k]}`));
@@ -823,21 +828,41 @@ console.log("ok");
   }
 }
 
-// Straight lines never cost crossings: a dense invented map (six frames of six cards, each card calling into the next
-// frame, ten calls that skip columns) crosses and covers no more lines than with every frame and port left where the
-// stack put it (opts.still: the layout's own try, the picture as it was before frames moved).
+// Straight lines never cost crossings, and a big picture's search stays in its slices: a dense invented map (six
+// frames of six cards, each card calling into the next frame, ten calls that skip columns: 36 cards, 50 lines) and
+// one twice its size. After the search the picture crosses and covers no more lines than with every frame and port
+// left where the stack put it (opts.still: the picture as it was before frames moved). In slices (a clock that ticks
+// once per step: ten steps per 10 ms) the search gives the same layout as in one go, and no step is a whole layout:
+// the job takes over a hundred times more steps than it lays the picture out (a step is one order priced).
 {
-  const groups = Array.from({ length: 6 }, (_, g) => ({ id: `g${g}`, label: `Frame ${g}`, kind: "x" })), nodes = groups.flatMap((g, k) => Array.from({ length: 6 }, (_, i) => ({ id: `n${k}_${i}`, group: g.id, label: `card ${k} ${i}`, description: "d" })));
-  const edges = [];
-  for (let k = 0; k < 5; k++) for (let i = 0; i < 6; i++) { edges.push({ from: `n${k}_${i}`, to: `n${k + 1}_${(i * 5 + k) % 6}`, label: `call ${k} ${i}` }); if (i % 2) edges.push({ from: `n${k}_${i}`, to: `n${k + 1}_${(i + 2) % 6}`, label: `also ${k} ${i}` }); }
-  for (let j = 0; j < 10; j++) edges.push({ from: `n${j % 3}_${j % 6}`, to: `n${(j % 3) + 2 + (j % 2)}_${(j * 2) % 6}`, label: `far ${j}` });
-  const tangle = (L) => lineStats(L).crossings + 2 * lineStats(L).overlaps;
-  for (const opts of [{ labels: true }, { labels: true, lines: () => true }]) {
-    const still = archLayout({ groups, nodes, edges }, "diff", () => 0, true, { ...opts, over: new Set(), still: true });
-    for (const L of [archLayout({ groups, nodes, edges }, "diff", () => 0, true, opts), archBest({ groups, nodes, edges }, "diff", () => 0, true, opts)]) { // at once, and after the search
-      assert.ok(tangle(L) <= tangle(still), `${tangle(L)} was ${tangle(still)}`);
-      assert.equal(L.hops.length, lineStats(L).crossings, "every crossing that stays has its hop");
+  const dense = (frames) => {
+    const groups = Array.from({ length: frames }, (_, g) => ({ id: `g${g}`, label: `Frame ${g}`, kind: "x" })), nodes = groups.flatMap((g, k) => Array.from({ length: 6 }, (_, i) => ({ id: `n${k}_${i}`, group: g.id, label: `card ${k} ${i}`, description: "d" })));
+    const edges = [];
+    for (let k = 0; k < frames - 1; k++) for (let i = 0; i < 6; i++) { edges.push({ from: `n${k}_${i}`, to: `n${k + 1}_${(i * 5 + k) % 6}`, label: `call ${k} ${i}` }); if (i % 2) edges.push({ from: `n${k}_${i}`, to: `n${k + 1}_${(i + 2) % 6}`, label: `also ${k} ${i}` }); }
+    for (let j = 0; j < (frames * 5) / 3; j++) edges.push({ from: `n${j % (frames - 3)}_${j % 6}`, to: `n${(j % (frames - 3)) + 2 + (j % 2)}_${(j * 2) % 6}`, label: `far ${j}` });
+    return { groups, nodes, edges };
+  };
+  const tangle = (L) => lineStats(L).crossings + 2 * lineStats(L).overlaps, ticking = () => { let t = 0; return () => t++; };
+  for (const [frames, lines] of [[6, 55], [12, 119]]) {
+    const arch = dense(frames);
+    assert.deepEqual([arch.nodes.length, arch.edges.length], [frames * 6, lines]);
+    for (const opts of frames === 6 ? [{ labels: true }, { labels: true, lines: () => true }] : [{ labels: true }]) {
+      const args = [arch, "diff", () => 0, true, opts], still = archLayout(arch, "diff", () => 0, true, { ...opts, over: new Set(), still: true });
+      const job = layoutJob(...args);
+      let best = null, slices = 0;
+      for (let before = 0; !(best = layoutStep(job, 10, ticking())); before = job.n) { slices++; assert.equal(job.n - before, 10, "ten steps a slice"); }
+      assert.ok(tangle(best) <= tangle(still), `${tangle(best)} was ${tangle(still)}`);
+      assert.equal(best.hops.length, lineStats(best).crossings, "every crossing that stays has its hop");
+      assert.ok(job.n > 100 * (2 + Math.floor(400 / best.paths.length)), `${job.n} steps in ${slices} slices: no step is a whole layout`);
+      assert.deepEqual(archBest(...args), best, "in one go: the same layout");
+      assert.equal(widthAt(best, true, false), archQuick(arch, "diff", () => 0, false, opts).width, "the width with the usual cards, without laying them out");
+      // What a render gets for it at once (archQuick, past QUICK_LINES calls): the rough pass, with every card and line
+      // there, no card on another, each crossing with its hop; the search's layout replaces it.
+      const rough = archQuick(...args), boxes = rough.nodes.map((n) => ({ x: n.x, y: n.y, w: n.w, h: n.h }));
+      assert.ok(arch.edges.length > QUICK_LINES); assert.deepEqual(rough, archLayout(arch, "diff", () => 0, true, { ...opts, rough: true })); assert.notDeepEqual(rough, best);
+      assert.deepEqual([rough.nodes.length, rough.paths.every((p) => p.segments.length > 0), rough.hops.length], [arch.nodes.length, true, lineStats(rough).crossings]);
+      assert.ok(boxes.every((a, i) => boxes.every((b, j) => i >= j || a.x >= b.x + b.w || b.x >= a.x + a.w || a.y >= b.y + b.h || b.y >= a.y + a.h)), "no card on another");
     }
   }
-  console.log("ok straight lines cost no crossing");
+  console.log("ok a big picture's search stays in its slices");
 }

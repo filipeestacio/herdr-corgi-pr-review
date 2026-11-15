@@ -5,7 +5,7 @@ import { div, PathBuilder, Background } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { levels } from "./pr.js";
 import { markLine } from "./arch.js";
-import { archLayout, archFocus, stateLayout, transitionText, sourceStyle, hasSources, pathMark, SPEC_TIP, ARCH, LABEL } from "./arch.js";
+import { archQuick, layoutJob, layoutStep, FRAME_LINES, archFocus, stateLayout, transitionText, sourceStyle, hasSources, pathMark, SPEC_TIP, ARCH, LABEL } from "./arch.js";
 import { clampText, MARK_CARD_H } from "./arch.js"; // wave C2: a mark's finding in two lines
 import { bundleChips, markRoom } from "./arch.js"; // finding chips of a state diagram that would touch are one; a card's mark takes one or two lines
 import { transitionLabel, SM } from "./arch.js"; // a state diagram's labels: number and trigger, their width, the loop's room
@@ -13,7 +13,7 @@ import { flowArch, seqLayout, wrapCount, SEQ, solidOver } from "./views.js";
 import { readableFade } from "./views.js"; // wave R2: dimmed text stays readable
 import { TYPE } from "./views.js"; // the text sizes (U34)
 
-export const STATUS_COLOR = { new: "ansi2", added: "ansi2", changed: "accent", unchanged: "muted", removed: "ansi1" };
+export const STATUS_COLOR = { new: "ansi2", added: "ansi2", changed: "accent", unchanged: "muted", removed: "ansi1", replaced: "ansi3" }; // replaced: infra.js, a resource that may be replaced
 export const SEVERITY_COLOR = { critical: "ansi1", high: "ansi1", medium: "ansi3", low: "ansi4", minimal: "ansi2" };
 const GLYPH = { external: "⇢", component: "◧", data: "⛁", service: "⚙", "api·service": "⇄", api: "⇄", context: "</>", queue: "☰", job: "⏱", ui: "▣" };
 
@@ -58,7 +58,7 @@ export function foldCard(t, id, title, right, open, toggle, body) {
 // chip naming the target. A path with `text` (arch.js, the Architecture page) has its label next to its number; the
 // others are listed in archLegend.
 // onNode(node, event, cx) opens a card's place (its "Show in diff ↗" link, for cards with at or file); decorate(node) adds lines
-// to a card (findings); opts {hl: path num to highlight, onHl(num | null, cx), focus: node id, hover: node id,
+// to a card (findings; a node's own `word` replaces its status on the chip and `dashed` its solid border: infra.js); opts {hl: path num to highlight, onHl(num | null, cx), focus: node id, hover: node id,
 // onFocus(id | null, cx), onHover(id | null, cx), marks: arch.js archMarks, zoom, keep: a Set of node ids (with
 // nothing focused or hovered, the other cards and the lines not between two of them are dimmed: the Security page's
 // view), numbers: false (no number on a line unless it carries a mark)}. A focused node (clicked) keeps its paths
@@ -161,7 +161,7 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
     // A caller from outside (type external) is a dashed capsule.
     const ext = n.type === "external";
     return dim(v_flex().id(`${id}-n${i}`).absolute().left(n.x).top(n.y).w(n.w).h(n.h).px(ext ? 16 : 10).py(8).gap(3).rounded(ext ? 28 : 8).border_1()
-      .border_color(lit ? t.accent : live ? c : ext ? t.muted : t.border).when(live && !st.dashed && !ext, (e) => e.border_l(4)).when(lit, (e) => e.border_2()).when(st.dashed || ext, (e) => e.border_dashed())
+      .border_color(lit ? t.accent : live ? c : ext ? t.muted : t.border).when(live && !st.dashed && !ext && !n.dashed, (e) => e.border_l(4)).when(lit, (e) => e.border_2()).when(st.dashed || ext || Boolean(n.dashed), (e) => e.border_dashed())
       .bg(lit ? solidOver(t.background, t.accent + "1a") : ext ? t.background : n.status === "new" ? solidOver(t.background, t.ansi2 + "14") : solidOver(t.background, t.surface))
       .when(Boolean(tip), (e) => e.tooltip(tip))
       .when(Boolean(opts.onFocus), (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => opts.onFocus(opts.focus === n.id ? null : n.id, cx)))
@@ -186,7 +186,7 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
         .child(div().flex_1())
         .when(open && Boolean(opts.onFocus) && n.w >= ARCH.W, (e) => e.child(div().id(`${id}-o${i}`).flex_none().px(4).rounded(4).text_color(t.accent).cursor_pointer().hover((s) => s.bg(t.hover))
           .tooltip("Show this place in the diff").child("Show in diff ↗").on_click((ev, cx) => { onNode(n, ev, cx); cx.stop_propagation(); })))
-        .when(Boolean(n.status) && !(ext && n.status === "unchanged"), (e) => e.child(chip(t, n.status === "new" ? "ADDED" : n.status.toUpperCase(), c, false, `${id}-st${i}`, `Status in this PR: ${n.status === "new" ? "added" : n.status}`)))), dimN(n), cardFade);
+        .when(Boolean(n.status) && !(ext && n.status === "unchanged"), (e) => e.child(chip(t, n.word ?? (n.status === "new" ? "ADDED" : n.status.toUpperCase()), c, false, `${id}-st${i}`, `Status in this PR: ${n.word ? n.word.toLowerCase() : n.status === "new" ? "added" : n.status}`)))), dimN(n), cardFade);
   });
   // An orchestrator's states: a lane down the card, one row each; a state that calls a component ends in "→" where its
   // line leaves the card.
@@ -207,6 +207,49 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
   });
   return div().id(id).relative().flex_none().w(L.width + 4).h(L.height + 4).children([gridBg(t, L.width + 4, L.height + 4), ...groups, ...els, ...crossings, ...bypasses, ...nodes, ...states, ...texts, ...badges, ...chips, ...notes]);
 }
+// A picture's layout for a view that draws in a frame: laidOut(args) gives a memo entry {L} with what a frame can
+// afford at once (arch.js archQuick: archLayout's picture, for a bigger map a rough one) and queues the search for the
+// better layout (arch.js layoutJob: frames and long lines where they cross least, too much work for a frame).
+// layoutPump(cx), called by the view after each frame, works the queue off after it: one slice of about 10 ms per
+// timer tick (layoutSlice), the job keeping its place between them. entry.L is replaced once, when the search is
+// through and its layout differs, and the view is told; no try in between is shown. entry: what else the memo keeps
+// (its key; an L it already has stays); live(): the memo's entry now, so a replaced one is not searched on. A search
+// that throws is dropped.
+// o.wait: the view can draw its page without the picture. A map of more than FRAME_LINES calls is then not laid out
+// in the frame at all: entry.L is o.before (the layout shown so far, when it is of the same map) or null, and the
+// first slice after the frame lays it out roughly and tells the view, unless o.before stands in until the search is
+// through.
+// ponytail: one queue for all views of this module, the 24 newest entries; the view that pumps is the one told.
+const layoutQueue = [];
+let layoutChain = 0; // the newest chain of slices; an older one ends at its next tick
+export function laidOut(args, entry = {}, live = () => entry, o = {}) {
+  const late = Boolean(o.wait) && (args[0]?.edges?.length ?? 0) > FRAME_LINES;
+  entry.L ??= late ? o.before ?? null : archQuick(...args); // a model that laid its picture out itself (a pure module, no view) brings it
+  layoutQueue.push({ entry, args, live, job: null, first: late && !entry.L });
+  if (layoutQueue.length > 24) layoutQueue.shift();
+  return entry;
+}
+// After a frame: a timer only when something is queued (a frame that laid nothing out asks for none). Each call starts
+// a new chain of slices and so ends the one before, which keeps one slice per tick and needs no flag that a lost
+// timer could leave set.
+export function layoutPump(cx) {
+  if (!layoutQueue.length) return;
+  const chain = ++layoutChain;
+  cx.timer.after(0, (cx) => layoutSlice(cx, chain));
+}
+export function layoutSlice(cx, chain = layoutChain) {
+  const q = layoutQueue[0];
+  if (!q || chain !== layoutChain) return;
+  try {
+    if (q.live() !== q.entry) layoutQueue.shift();
+    else if (q.first) { q.first = false; q.entry.L = archQuick(...q.args); cx.notify(); } // a big map's first picture: this slice is the rough pass
+    else {
+      const L = layoutStep(q.job ??= layoutJob(...q.args), 10);
+      if (L) { layoutQueue.shift(); if (JSON.stringify(L) !== JSON.stringify(q.entry.L)) { q.entry.L = L; cx.notify(); } }
+    }
+  } catch { layoutQueue.shift(); }
+  if (layoutQueue.length) cx.timer.after(0, (cx) => layoutSlice(cx, chain));
+}
 const FLOW_FITS = 380;
 // A layer's flow laid out by archLayout, memoized like archModel. fit: its narrow cards (the layer column is about
 // 420 px); over the code there is room for the usual ones.
@@ -215,10 +258,11 @@ function flowModel(v, fit = true) {
   const key = `${fit}|${JSON.stringify(v)}`;
   if (!flowMemo.has(key)) {
     // labels: a call's text on its line, once archLayout takes that option (until then it is ignored, and every text is in the legend).
-    flowMemo.set(key, archLayout(flowArch(v), "diff", () => 0, fit, { labels: true }));
+    const args = [flowArch(v), "diff", () => 0, fit, { labels: true }];
+    flowMemo.set(key, laidOut(args, {}, () => flowMemo.get(key)));
     if (flowMemo.size > 12) flowMemo.delete(flowMemo.keys().next().value);
   }
-  return flowMemo.get(key);
+  return flowMemo.get(key).L;
 }
 const cap = (s) => String(s ?? "").replace(/^./, (c) => c.toUpperCase());
 // Trust zones (arch.js zoneArch): a colour per trust level, none of them the severity red.
@@ -542,15 +586,22 @@ export function triageCard(t, id, pr, tri, onClick) {
 }
 
 // A faint grid behind a picture (graph paper): one painted path (window.paint_path) with a line every GRID px, as many
-// as the box holds, in the text colour at 7 % strength (low contrast in both themes). One element however big the picture is.
-const GRID = 24;
+// as the box holds, in the text colour at 7 % strength (low contrast in both themes). One element however big the
+// picture is, and its path built once per size: a built path is immutable native geometry, and building it anew in
+// every frame cost two calls per grid line (5.7 ms a frame for a map of 80 cards, measured in the window).
+const GRID = 24, gridPaths = new Map();
 export function gridBg(t, w, h) {
-  // ponytail: coordinates in % of the box, as the other mods' paint_path rings do.
-  const X = (x) => `${(100 * x) / w}%`, Y = (y) => `${(100 * y) / h}%`;
-  let p = PathBuilder.stroke(1);
-  for (let x = GRID; x < w; x += GRID) p = p.move_to(X(x), "0%").line_to(X(x), "100%");
-  for (let y = GRID; y < h; y += GRID) p = p.move_to("0%", Y(y)).line_to("100%", Y(y));
-  return globalThis.window.paint_path(p.build(), t.foreground + "12").absolute().top(0).left(0).w(w).h(h);
+  const key = `${w}x${h}`;
+  if (!gridPaths.has(key)) {
+    // ponytail: coordinates in % of the box, as the other mods' paint_path rings do.
+    const X = (x) => `${(100 * x) / w}%`, Y = (y) => `${(100 * y) / h}%`;
+    let p = PathBuilder.stroke(1);
+    for (let x = GRID; x < w; x += GRID) p = p.move_to(X(x), "0%").line_to(X(x), "100%");
+    for (let y = GRID; y < h; y += GRID) p = p.move_to("0%", Y(y)).line_to("100%", Y(y));
+    gridPaths.set(key, p.build());
+    if (gridPaths.size > 16) gridPaths.delete(gridPaths.keys().next().value); // the pictures of a review; the oldest size goes
+  }
+  return globalThis.window.paint_path(gridPaths.get(key), t.foreground + "12").absolute().top(0).left(0).w(w).h(h);
 }
 
 

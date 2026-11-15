@@ -29,7 +29,7 @@ import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview,
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible, pastTop } from "./views.js";
 import { worst, byFocus, layerAccess, analysisAge, stateHints, noteRule, mergeGroups, mergeFirst, mergeHeld, runLabel, byCause, sessionCost, sessionDir, fixEstimate, fixCostLine } from "./views.js";
 import { archView, archLegend, visualsCard, visualCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR, bulletChart } from "./stack.js";
-import { visualPlan } from "./stack.js";
+import { visualPlan, laidOut } from "./stack.js";
 import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCALE } from "./views.js";
 import { ghMd, mdBlocks } from "./views.js"; // GitHub comments as GitHub shows them
 import { wrapCode, codeCols, sliceSpans } from "./views.js"; // long lines wrap
@@ -40,7 +40,7 @@ import { mdTarget, secPicture, secBlast, resNoPicture } from "./views.js"; // Co
 const MD_W = textW("⧉ Copy as Markdown…", TYPE.small) + 22; // the button's width on a layer's head, where clicks are placed by x
 import { plainText } from "./pr.js";
 import { pollDue, pollAfter, windowActive } from "./pr.js"; // background fetches (ghTick)
-import { hasSources, archLayout, archSearch, archBands } from "./arch.js";
+import { hasSources, archBands, widthAt } from "./arch.js";
 import { archMarks, transitionText, MARK_CARD_ROWS } from "./arch.js";
 import { markRoom, FIT as ARCH_FIT, ARCH as ARCH_SIZE } from "./arch.js"; // a card's mark takes the lines its finding needs
 import { resStartOf, resPicture, budgetBar, resCardOf, resSentence, resMarksOn } from "./views.js";
@@ -62,6 +62,8 @@ import { scopeTable, scopeConflicts, runSummary, AREA_NAME, areaFindings, surfac
 import * as TH from "./threads.js";
 import { leftWidth, rowClick, CHIP_W, ASK_W, keyRoute, scopeLine, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf, rangeLabel, pinAnchor, pinAdd, pinDrop, pinsOf, pinsOn, codePins, drillPush, drillTo, crumbs, drillKey, cachePut, mapDrill, exploreId, exploreIndex, exploreAi, pathOf, lineOf, repoOfRemote, exploreTrust, layersForNode } from "./explore.js";
 import { TYPE } from "./views.js"; // the text sizes (U34)
+import { isIac, dirOf, infraModel, infraPicture } from "./infra.js"; // "Infrastructure changes" on the Architecture page
+import { infraSection } from "./infra-view.js";
 
 const LEVEL = { high: "ansi1", medium: "ansi3", low: "ansi4", skim: "muted" };
 const COVER = { seen: ["done", "ansi2"], partly: ["partly", "ansi3"], absent: ["missing", "ansi1"], extra: ["extra (not asked)", "ansi4"] };
@@ -95,7 +97,6 @@ const resStartMemo = new WeakMap();
 const resStartOfPatch = (patch) => { if (!resStartMemo.has(patch)) resStartMemo.set(patch, resilienceStart(patch)); return resStartMemo.get(patch); };
 const STEP_LINES = 3000; // diff lines the Walkthrough lists at once (stepsItems): 4 000 took 23 ms per frame in Herdr on a busy machine (load 10 to 17), a frame is stopped at about 50
 const LEAN_MS = 5 * 60000; // how long a view draws less after its frames were stopped (frameCut), before it tries all of it again
-const LAYOUT_IN_FRAME = 20; // cards a map may have to be laid out while a frame is drawn (archL)
 const NO_HUNKS = []; // a file outside the diff has no hunks: always this array, so memoRows sees the same input (rowsFor)
 // A patch's file by its path (the first with it, as find gives): a Map per patch array, since rowsFor asks per finding.
 const byPath = new WeakMap();
@@ -604,9 +605,9 @@ export const ReviewMode = {
     this.reviewKey = null; this.ai = null; this.aiError = null; this.aiModel = null; this.cur = 0; this.focusHunk = null; this.fsel = null; this.sug = null;
     this.composing = false; this.editing = null; this.finishOpen = false; this.posted = null; this.gh = []; this.route = null; this.event = null;
     this.full = {}; this.gaps = {}; this.whole = new Set(); this.collapsed = new Set(); this.hunks = null;
-    this.rowsMemo = null; this.ghMemo = null; this.fitMemos = null; this.layQueue = null; this.kept = null; this.openH = null; this.leanBy = null; this.cut = 0; // what was computed for the PR before goes with it
+    this.rowsMemo = null; this.ghMemo = null; this.fitMemos = null; this.kept = null; this.openH = null; this.leanBy = null; this.cut = 0; // what was computed for the PR before goes with it
     this.ctx = null; this.since = null; this.sinceOn = false; this.lastReviewed = null; this.page = "overview"; this.aiFile = null; this.needClone = null;
-    this.resumed = null; this.resumeIn = null; this.pendingScroll = null;
+    this.resumed = null; this.resumeIn = null; this.pendingScroll = null; this.infra = null; this.infraMemo = null;
   },
 
   // A new diff: its hunks, progress and the cached analysis, if any.
@@ -643,6 +644,7 @@ export const ReviewMode = {
     const reg = JSON.parse(await readTextFile(openFile()).catch(() => null) ?? "[]").find((r) => r.url === url);
     this.lastReviewed = reg?.reviewed ?? null;
     this.makeWorktree(cx);
+    this.loadInfra(cx);
     this.loadAi(cx, "cache"); // never runs by itself: Analyze is a click
     await this.loadFindings(cx);
     this.registerReview(cx); // opened: an open review from now on
@@ -724,7 +726,7 @@ export const ReviewMode = {
       if (!shared("gh.login")) exec("gh", ["api", "user", "--jq", ".login"]).then((r) => { if (r.code === 0) { setShared("gh.login", r.stdout.trim()); this.applyTrust(); } }).catch(() => null);
       this.applyTrust();
       if (this.pendingRun) { this.pendingRun = false; this.loadAi(cx, "run"); }
-      this.loadSince(cx); this.loadContext(cx);
+      this.loadSince(cx); this.loadContext(cx); this.loadInfra(cx);
       cx.notify();
     });
   },
@@ -3351,7 +3353,7 @@ export const ReviewMode = {
     const more = () => visualsCard(this.ai.visuals, t, "rv-arch-vis", (at, cx) => this.jumpTo(at, cx), this.archVisTab ?? 0, (k, cx) => { this.archVisTab = k; cx.notify(); }, this.wrapX());
     const out = (list) => (parts ? list : v_flex().gap(12).children(list.map(([, el]) => el)));
     if (!a) return out([["head", this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams")], ["none", div().text_size(TYPE.body).text_color(t.muted).child(this.ai ? "This analysis has no architecture picture (older analysis, or the PR touches no architecture). Re-analyze for one." : "No analysis yet: Analyze in the left column.")],
-      ...this.impactParts(t), ...(this.ai?.visuals?.length > 0 ? [["views", div().w_full().child(more())]] : [])]);
+      ...this.impactParts(t), ...this.infraPart(t), ...(this.ai?.visuals?.length > 0 ? [["views", div().w_full().child(more())]] : [])]);
     const groups = new Set(a.nodes.map((n) => n.group)).size, L = this.archL(), fit = this.archFitOn(), marks = this.archMarksNow();
     // The first time, and after Fit changed the layout, the picture starts at the way in (the Internet card), wherever
     // the layout put it. Not before the view is measured: Fit switches itself on then, and the cards move.
@@ -3360,7 +3362,7 @@ export const ReviewMode = {
     const opts = { ...this.archOpts("arch"), marks, zoom: settings().zoom || 1, zones: a.zones ?? [], effective: this.effZones(a) }, count = (...st) => L.nodes.filter((n) => st.includes(n.status)).length; // of the cards shown (Before hides the added ones)
     const head = ["head", h_flex().gap(12).items_center().flex_wrap().child(div().text_size(TYPE.page).font_semibold().child("Architecture impact")).child(this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams"))
         .when(this.drawerState() !== "open", (e) => e.child(pill("rv-ask-open", t, "Ask", (_e, cx) => this.setDrawer("open", cx, null)).tooltip("Ask one model question about the architecture picture")))];
-    if (!L) return out([head]); // a big map, laid out right after this frame (archL): the page without its picture until then
+    if (!L) return out([head]); // no map
     return out([
       head,
       ["switches", h_flex().w_full().gap(12).items_center().flex_wrap() // wraps onto two rows when narrow
@@ -3388,7 +3390,48 @@ export const ReviewMode = {
         .when(Boolean(this.fold.archCalls), (e) => e.child(archLegend(L, t, "rv-arch-edges", "Calls without their whole text in the picture", opts)))]] : []),
       ...((this.ai.components ?? []).length ? [["components", this.componentsTable(t, a)]] : []),
       ...this.impactParts(t),
+      ...this.infraPart(t),
       ...(this.ai?.visuals?.length > 0 ? [["views", v_flex().gap(12).child(div().pt(6).text_size(TYPE.body).font_semibold().text_color(t.muted).child("More views")).child(div().w_full().child(more()))]] : [])]);
+  },
+
+  // The infrastructure files of the patch with their text at the PR head, for "Infrastructure changes" (infra.js: static,
+  // no model). Without a checkout: what the patch itself holds (added and deleted files). With one: the changed
+  // files and, for Terraform, the other .tf files of their folders, read from the checkout. Which of them exist is
+  // asked through safegit.py (ls-files -s: tracked regular files only, so a link out of the checkout is not followed).
+  loadInfra(cx) {
+    const url = this.prSel?.url, patch = this.patch ?? [], w = this.worktree, files = patch.filter((f) => isIac(f.path) && !f.binary);
+    this.infra = files.length ? infraModel(files) : null; this.infraMemo = null;
+    if (!files.length || !w?.path) return;
+    cx.spawn(async (cx) => {
+      const tf = [...new Set(files.filter((f) => /\.tf(vars)?$/.test(f.path)).map((f) => dirOf(f.path)))], want = files.filter((f) => f.status !== "added" && f.status !== "deleted").map((f) => f.path);
+      if (!tf.length && !want.length) return;
+      const r = await exec("python3", [`${appHome()}/mods/pr-review/safegit.py`, w.path, "ls-files", "-s", "--", ...tf.map((d) => `${d ? `${d}/` : ""}*.tf`), ...want], { timeout: 30000 }).catch(() => null);
+      if (r?.code !== 0 || this.prSel?.url !== url || this.patch !== patch) return;
+      const listed = r.stdout.split("\n").map((l) => /^100\d+ \S+ \d\t(.+)$/.exec(l)?.[1]).filter((p) => p && !p.startsWith('"')), texts = new Map();
+      // ponytail: at most 200 files (Terraform first), one after the other, and one parse in one slice (about 50 ms
+      // for a megabyte of .tf): a module larger than that is read in part; split the parse over timers if it matters.
+      for (const p of listed.filter((x) => want.includes(x) || (/\.tf$/.test(x) && tf.includes(dirOf(x)))).sort((x, y) => /\.tf$/.test(y) - /\.tf$/.test(x)).slice(0, 200)) { const text = await readTextFile(`${w.path}/${p}`).catch(() => null); if (typeof text === "string") texts.set(p, text); }
+      if (this.prSel?.url !== url || this.patch !== patch) return;
+      this.infra = infraModel(files.map((f) => ({ ...f, head: texts.get(f.path) })), [...texts].filter(([p]) => !files.some((f) => f.path === p)).map(([path, text]) => ({ path, text })));
+      this.infraMemo = null; cx.notify();
+    });
+  },
+  // "Infrastructure changes" as a part of the Architecture page, only when the diff has infrastructure code. A click on
+  // a card leads to the resource in the diff (no panel of its own), a finding's mark to the finding.
+  infraPart(t) {
+    const m = this.exMode ? null : this.infra;
+    if (!m) return [];
+    const fs = this.openFindings(), key = fs.map((f) => `${f.id}|${f.severity}`).join();
+    if (m.cards.length && (this.infraMemo?.model !== m || this.infraMemo.key !== key)) {
+      // As archL (stack.js laidOut): what a frame can afford now, the better layout after it; a picture too big for
+      // the frame comes with the first slice after it (until then the section without its picture, or with the one
+      // from before when only the findings changed).
+      const pic = infraPicture(m, fs, false, false), before = this.infraMemo?.model === m ? this.infraMemo.pic.L : null;
+      this.infraMemo = { model: m, key, pic: laidOut(pic.args, pic, () => this.infraMemo?.pic, { wait: true, before }) };
+    }
+    const o = this.archOpts("infra");
+    return [["infra", infraSection(t, { model: m, pic: m.cards.length && this.infraMemo?.model === m && this.infraMemo.pic.L ? this.infraMemo.pic : null, onJump: (at, cx) => this.jumpTo(at, cx), hl: o.hl, onHl: o.onHl,
+      canvas: (L, decorate, marks) => this.archCanvas(t, L, { ...o, onFocus: null, marks, zoom: settings().zoom || 1 }, { id: "rv-infra-canvas", pic: "rv-infra", wrap: false, decorate, notes: false }) })]];
   },
 
   // The picture: wider than the view and Wrap on (archWrapOn, off by default), in bands stacked top to bottom (arch.js
@@ -3568,10 +3611,18 @@ export const ReviewMode = {
   setArchWrap(on) { setShared("review.archWrap", on); this.hsOf("rv-arch-canvas").x = 0; },
   // Fit (narrow cards, never rows): the person's choice when there is one; else on as soon as the usual cards are wider
   // than the view, so more of the picture is in sight (the view's width is known after the first layout: until then, off).
-  archFitOn() {
+  // Fit until it is chosen: on when the picture with the usual cards is wider than the view. Only one of the two
+  // pictures is laid out to find out, the one a guess shows (narrow cards for a map of more than 8 cards: those are the
+  // wide ones); the other's width follows from it (arch.js widthAt), and it is laid out only when the guess was wrong
+  // or Fit is switched.
+  // lay(fit): the layout of the map that asks (the Resilience map has its own).
+  archFitOn(lay = (fit) => this.archL(fit)) {
     if (typeof this.archFit === "boolean") return this.archFit;
-    const s = this.hsOf("rv-arch-canvas"), L = s.viewW ? this.archL(false) : null;
-    return Boolean(L) && L.width + 44 > hsVisible(s.viewW / (settings().zoom || 1), this.drawerCover());
+    const s = this.hsOf("rv-arch-canvas"), guess = (this.ai?.arch?.nodes.length ?? 0) > 8;
+    if (!s.viewW) return false;
+    const L = lay(guess);
+    if (!L) return guess; // its layout comes after the frame (a big map): the guess stands until then
+    return widthAt(L, guess, false) + 44 > hsVisible(s.viewW / (settings().zoom || 1), this.drawerCover());
   },
   // The picture shown: its layout with the calls' texts on their lines, a row in a card and above a call for the
   // findings there, normal or narrow cards (Fit). Memoized: the page renders often.
@@ -3586,14 +3637,10 @@ export const ReviewMode = {
     if (!(slot in memo) && Object.keys(memo).length >= 8) delete memo[Object.keys(memo)[0]]; // a layout per kind of map shown, the oldest goes
     if (memo[slot]?.key !== key) {
       const args = [mapArch(a, this.ai?.access, this.ai?.bypasses ?? []), this.archMode, (n) => (m.nodes.has(n.id) ? markRoom(m.nodes.get(n.id), (fit ? ARCH_FIT.W : ARCH_SIZE.W) - 20).rows : 0) + (more?.has(n.id) ? resMarkRows(more.get?.(n.id) ?? 1) : 0), fit, { labels: true, labelPx: labelPx ?? undefined, marked: (es) => es.some((i) => m.edges.has(i)) }];
-      const make = () => { memo[slot] = this.layoutLater({ key, L: archLayout(...args) }, args, () => memo[slot]); };
-      // A map of more cards than LAYOUT_IN_FRAME takes longer to lay out than a frame may take, even once (measured in
-      // Herdr: 20 cards 20 ms, 40 cards 49 ms, 80 cards 208 ms; a render is stopped after about 50 ms and starts over
-      // the next time, so the page never came). While a frame is drawn it is only queued (firstLayouts lays it out
-      // right after the frame, then draws again); the frame gets the layout from before, or none: the page without
-      // its picture.
-      if (!this.drawing || a.nodes.length <= LAYOUT_IN_FRAME) make();
-      else { (this.layQueue ??= new Map()).set(String(slot), make); return memo[slot]?.L ?? null; }
+      // What a frame can afford now, the better layout after it (stack.js laidOut). A map too big even for a rough
+      // pass in the frame keeps the layout from before while its own is searched (new marks; not another view of the
+      // map), else the page is drawn without its picture until the first slice after the frame.
+      memo[slot] = laidOut(args, { key, mode: this.archMode }, () => memo[slot], { wait: true, before: memo[slot]?.mode === this.archMode ? memo[slot].L : null });
     }
     return memo[slot].L;
   },
@@ -3613,40 +3660,6 @@ export const ReviewMode = {
     return v_flex().id(`${id}-lean`).w_full().gap(8).p(12).rounded(8).border_1().border_color(t.border).text_size(TYPE.body).text_color(t.muted)
       .child(div().whitespace_normal().child(`The picture of ${cards} ${cards === 1 ? "card" : "cards"} is left out: drawing this page took longer than a frame may take (about 50 ms), twice in a row. Copy as Markdown has the picture as a diagram.`))
       .child(h_flex().child(pill(`${id}-again`, t, "Draw it again", (_e, cx) => { this.leanBy?.delete(`${this.tab}|${this.page ?? ""}`); this.cut = 0; cx.notify(); }).tooltip("Try to draw the picture again")));
-  },
-  // The big maps the last frame asked for and left for later (archL): one per task, so no task runs longer than one
-  // layout, then a redraw, which finds it in the memo (and may ask for the next: Fit is decided from the first).
-  firstLayouts(cx) {
-    if (!this.layQueue?.size || this.layBusy) return;
-    this.layBusy = true;
-    cx.timer.after(0, (cx) => {
-      const [slot, make] = this.layQueue?.entries().next().value ?? [];
-      if (make) { this.layQueue.delete(slot); make(); }
-      this.layBusy = false; cx.notify();
-    });
-  },
-  // A map's better layout (arch.js archSearch: long lines through the picture, cards at the place that suits them) takes
-  // a full layout per try, more than a render may (Herdr stops a script slice after ~50 ms): the memo shows archLayout's
-  // picture at once, and the search runs after the render, a few tries per slice (layoutMore). The picture changes once,
-  // when the search is through and found a better one. live(): the memo's entry now; a replaced one is not searched on.
-  layoutLater(entry, args, live) { (this.layoutJobs ??= []).push({ entry, args, live }); return entry; },
-  // The maps laid out in the last render: their search after it, queued once, and only when a map was laid out (a
-  // timer on every frame would run for nothing while the review is left alone). main.js calls this after the frame.
-  layoutSoon(cx) { if (this.layoutJobs?.length && !this.layoutTick) { this.layoutTick = true; cx.timer.after(0, (cx) => { this.layoutTick = false; this.layoutMore(cx); }); } },
-  layoutMore(cx) {
-    if (this.layoutBusy || !this.layoutJobs?.length) return;
-    this.layoutBusy = true;
-    cx.spawn(async (cx) => {
-      try {
-        for (let job, t = Date.now(); (job = this.layoutJobs.shift());) {
-          for (let g = null, r = null; job.live() === job.entry;) {
-            if (Date.now() - t > 12) { await new Promise((res) => cx.timer.after(0, res)); t = Date.now(); continue; } // a fresh slice
-            r = (g ??= archSearch(...job.args)).next();
-            if (r.done) { if (JSON.stringify(r.value) !== JSON.stringify(job.entry.L)) { job.entry.L = r.value; cx.notify(); } break; }
-          }
-        }
-      } finally { this.layoutBusy = false; }
-    });
   },
   // ---- sideways scrollers inside the scrolling page (the architecture canvas, the flow, state-machine and blast
   // pictures): clipped at their box, the content moved by left(-x); wheel and trackpad through wheelStep (one axis per
@@ -4228,9 +4241,10 @@ export const ReviewMode = {
       const marks = { nodes: new Map([...marksAll.nodes].filter(([id]) => nodes.has(id))), edges: new Map() };
       // Fit: narrow cards, so the zones fit the page's width more often (the Data column was cut off).
       const args = [{ groups, nodes: [...nodes.values()], edges }, "diff", (n) => (marks.nodes.has(n.id) ? MARK_CARD_ROWS : 0) + (eff.has(n.id) ? 1 : 0), true, { labels: true, lines: () => true }];
-      this.secMemo = this.layoutLater({ key, marks, L: archLayout(...args) }, args, () => this.secMemo); // the search for the better layout: after the render
+      this.secMemo = laidOut(args, { key, marks }, () => this.secMemo, { wait: true, before: this.secMemo?.L }); // what a frame can afford now, the better layout after it (stack.js)
     }
     const { L, marks } = this.secMemo;
+    if (!L) return null; // a map too big for the frame: there after its first slice
     // keep: the way of the kind of data chosen under the map (sec-view.js), lit; the rest dimmed.
     const opts = { ...this.archOpts("blast"), marks, numbers: false, zoom: settings().zoom || 1, keep: this.secDataLit(ctx.crossings), onFocus: (id, cx) => { this.fh.focus(); this.secCard(id, cx); } };
     const deco = (n) => (eff.has(n.id) ? [h_flex().flex_none().h(15).child(chip(t, eff.get(n.id).cond ? `${eff.get(n.id).trust[0].toUpperCase()}${eff.get(n.id).trust.slice(1)} if ${eff.get(n.id).cond.replace(/^if crossing /, "")}` : `Reachable as ${eff.get(n.id).trust}`, t.ansi3, false, `rv-sec-eff-${n.id}`, `Drawn in ${eff.get(n.id).zone.name ?? eff.get(n.id).drawn} (${eff.get(n.id).drawn}), but ${eff.get(n.id).why}${eff.get(n.id).cond ? `: reachable as ${eff.get(n.id).trust} ${eff.get(n.id).cond}` : ""}.`))] : []);
@@ -4561,10 +4575,15 @@ export const ReviewMode = {
   resMap(t, a, p, start) {
     // Every card any path marks keeps room for its longest marks (wrapped into the card: views.js resMarkLines), so
     // the cards do not grow from path to path; before the run, a line for the ○.
-    const cardW = (this.archFitOn() ? ARCH_FIT.W : ARCH_SIZE.W) - 24, marked = new Map((start ?? []).map((id) => [id, 1]));
-    for (const x of this.resNow()?.paths ?? []) for (const [id, text] of resMarksOn(x.marks, a, true)) marked.set(id, Math.max(marked.get(id) ?? 1, resMarkLines(text, cardW).length));
-    const L = this.archL(this.archFitOn(), 13, marked), on = new Set(p ? (Array.isArray(p.reach) ? p.reach : (p.steps ?? []).map((s) => resCardOf(s, a)).filter(Boolean)) : start); // pr.js reachOf, else places light the card of their file
-    if (!L) return v_flex().id("rv-res-map"); // a big map, laid out right after this frame (archL)
+    const markedAt = (f) => {
+      const w = (f ? ARCH_FIT.W : ARCH_SIZE.W) - 24, m = new Map((start ?? []).map((id) => [id, 1]));
+      for (const x of this.resNow()?.paths ?? []) for (const [id, text] of resMarksOn(x.marks, a, true)) m.set(id, Math.max(m.get(id) ?? 1, resMarkLines(text, w).length));
+      return m;
+    };
+    // Fit is decided from this map's own layout, so the plain map is not laid out for it.
+    const fit = this.archFitOn((f) => this.archL(f, 13, markedAt(f))), cardW = (fit ? ARCH_FIT.W : ARCH_SIZE.W) - 24, marked = markedAt(fit);
+    const L = this.archL(fit, 13, marked), on = new Set(p ? (Array.isArray(p.reach) ? p.reach : (p.steps ?? []).map((s) => resCardOf(s, a)).filter(Boolean)) : start); // pr.js reachOf, else places light the card of their file
+    if (!L) return v_flex().id("rv-res-map"); // no map
     for (const id of resTwice(p, this.resNow(), a)) on.add(id); // an effect done twice: every way to it lit (views.js resTwice)
     const fs = p ? this.openFindings().filter((f) => (p.findings ?? []).some((id) => (f.ids ?? [f.id]).includes(id))) : [];
     // R-D marksOf: a call's marks on the call (resEdgeMarks), a queue's at the queue, a place's on the card of its file.
@@ -5807,7 +5826,7 @@ export const ReviewMode = {
       findings: () => findingsMd(findings, { ...base, statusOf, asks, notes: this.openSugs(), sources: this.findingSources().map((x) => x.text) }),
       layer: () => layerMd(layer, { ...base, n: this.cur + 1, files: this.filesOf(layer), findings: this.layerFindings(layer), statusOf, open: this.openFindings(), deps: this.stepDeps(layer).map(([d]) => plain(d.title)),
         access: layerAccess(ai?.access, this.filesOf(layer))?.text ?? null, hunks: this.present(layer).map((id) => this.byId.get(id)).filter(Boolean).map((h) => ({ path: h.path, rows: h.rows })) }),
-      arch: () => architectureMd({ ...base, ai, findings, statusOf, impact: this.impactNow(), layersOf: (n) => this.cardLayerList(n).map((s) => plain(s.title)),
+      arch: () => architectureMd({ ...base, ai, findings, statusOf, impact: this.impactNow(), infra: this.exMode ? null : this.infra, layersOf: (n) => this.cardLayerList(n).map((s) => plain(s.title)),
         placesIn: (path) => [...(this.fileHunks ?? new Map())].filter(([p]) => p === path || p.endsWith(`/${path}`) || path.endsWith(`/${p}`)).flatMap(([, h]) => h).length }),
       blast: () => securityMd({ ...base, ai, findings, statusOf, runs: this.find.runs, eff: ai?.arch ? this.effZones(ai.arch) : null, extra: this.secExtra(crossingsOf({ arch: ai?.arch ?? null, access: ai?.access ?? [], threats: ai?.threats ?? [], gates: ai?.gates ?? [], bypasses: ai?.bypasses ?? [], findings: this.openFindings() })) }),
       res: () => resilienceMd({ ...base, res: this.resNow(), arch: ai?.arch ?? null, names: new Map((ai?.arch?.nodes ?? []).map((n) => [n.id, n.label ?? n.id])), findings, statusOf, probes: this.resNow() ? this.probesNow() : null,

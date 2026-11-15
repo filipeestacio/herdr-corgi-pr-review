@@ -1748,3 +1748,28 @@ export function worktreePrs(lists, now = Date.now(), weeks = 4, max = 200) {
   }
   return [...seen.values()].sort((a, b) => a.repo.localeCompare(b.repo) || a.number - b.number).slice(0, max);
 }
+
+// ---- the panel's diff list (main.js): the buttons of its cards, drawn and hit from one description
+// A virtual list's renderer holds no handler, so a press on a card is found by its place. panelButtons says which
+// buttons a card's row has, left to right, each with its width, and the gap between them; the last one ends PANEL_EDGE
+// px before the list's right edge. main.js draws them from it (diffItem) and panelHit finds the one under a press from
+// it, so what is drawn and what is hit cannot drift apart.
+// kind: "ca" the composer's buttons, "ch" its presets, "bh" a comment's Edit and Delete. o: {editing, presets: [label]}.
+export const PANEL_EDGE = 21; // a card's margin (12), border (1) and padding (8)
+export function panelButtons(kind, { editing = false, presets = [] } = {}) {
+  if (kind === "ca") return { gap: 6, list: [{ key: "cancel", w: 58 }, { key: "comment", w: 78 }, ...(editing ? [] : [{ key: "ask", w: 46 }])] };
+  if (kind === "ch") return { gap: 6, list: editing ? [] : presets.map((label, k) => ({ key: `preset:${k}`, w: textW(label, TYPE.panel) + 20 })) };
+  if (kind === "bh") return { gap: 8, list: [{ key: "edit", w: 32 }, { key: "delete", w: 46 }] };
+  return { gap: 0, list: [] };
+}
+// Where they stand in a list w px wide: [{key, x0, x1}], left to right.
+export function panelZones(kind, w, o) {
+  const { gap, list } = panelButtons(kind, o), out = [];
+  for (let k = list.length - 1, r = w - PANEL_EDGE; k >= 0; r -= list[k].w + gap, k--) out.unshift({ key: list[k].key, x0: r - list[k].w, x1: r });
+  return out;
+}
+/** The button under a press x px from the left edge of a list w px wide (null: none). */
+export const panelHit = (kind, x, w, o) => panelZones(kind, w, o).find((z) => x >= z.x0 && x < z.x1)?.key ?? null;
+// A press as the list's own handler gets it (logical px) in the items' px: the items are laid out in the person's zoom.
+export const panelPress = (x, width, zoom, fallback) => { const z = zoom || 1; return { x: (x ?? 0) / z, w: width ? width / z : fallback }; };
+

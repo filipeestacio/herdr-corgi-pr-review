@@ -159,6 +159,8 @@ in but not run.
 Language servers are optional. Each turns on go-to-definition, hover and the Architecture page's Impact picture
 (who calls what the PR changes) for its language. Without one, those three are off for that language and nothing
 else changes; the Impact section then names the missing server and its install command. Setup checks them too.
+Impact needs no server for Terraform, CloudFormation or SAM: those files are in "Infrastructure changes", read from
+the diff.
 
 | Language | Language server | macOS | Linux |
 |---|---|---|---|
@@ -167,7 +169,7 @@ else changes; the Impact section then names the missing server and its install c
 | Go | `gopls` | `brew install gopls` | `go install golang.org/x/tools/gopls@latest` |
 | Rust | `rust-analyzer` (only for PRs you trust) | `rustup component add rust-analyzer` | same |
 | Java | `jdtls` | `brew install jdtls` | see the Eclipse JDT LS docs |
-| Terraform | `terraform-ls` | `brew install hashicorp/tap/terraform-ls` | see HashiCorp's docs |
+| Terraform (go-to-definition and hover only) | `terraform-ls` | `brew install hashicorp/tap/terraform-ls` | see HashiCorp's docs |
 | C, C++ | `clangd` | `xcode-select --install` | `sudo apt install clangd` |
 
 The reviewers use Claude Code's `/security-review` and a `/code-review` command; without the command in your
