@@ -1183,7 +1183,16 @@ export const ReviewMode = {
     if (this.exMode || !this.ai) return;
     this.ai = withSecurity(this.ai, mine ? this.find.security : null, this.ctx, head);
     // The Resilience run's block with its derived parts (pr.js withResilience), and where it would start (resilienceStart).
-    this.ai = { ...withResilience(this.ai, mine ? this.find.resilience : null, head, this.ai ? this.findings() : this.find.list ?? []), resilienceStart: this.patch ? resStartOfPatch(this.patch) : resilienceStart([]) };
+    // Where the run would start is counted from every added line of the diff (pr.js resilienceStart: 100 ms on
+    // 10 000 diff lines in Herdr, the longest single piece of work while a review opened). Once per patch, and a
+    // second after the review is there instead of before its first frame; until then the Resilience page words the
+    // start from the map (views.js resStartOf), as it does for an analysis without the count.
+    const patch = this.patch;
+    if (patch && !resStartMemo.has(patch) && this.resStartFor !== patch) {
+      this.resStartFor = patch;
+      cx.timer.after(1000, (cx) => { if (this.patch !== patch) return; const start = resStartOfPatch(patch); if (this.ai && !this.exMode) { this.ai = { ...this.ai, resilienceStart: start }; cx.notify(); } });
+    }
+    this.ai = { ...withResilience(this.ai, mine ? this.find.resilience : null, head, this.ai ? this.findings() : this.find.list ?? []), resilienceStart: patch ? resStartMemo.get(patch) : resilienceStart([]) };
     if (this.secStart.start) this.runReviewer("security", cx, this.secStart.reasons.slice(0, 3).join("; "));
   },
   // Why the security review would run, for someone else's PR where it does not start by itself; null otherwise.
@@ -4281,7 +4290,7 @@ export const ReviewMode = {
     if (!res) {
       // Before the run: where it would start, the offer, what it does not do.
       // The count from the diff (pr.js resilienceStart) for the sentence; the cards from the map for the circles.
-      const own = this.ai?.resilienceStart, map = resStartOf(a, this.ai?.access), start = own?.sentence ? { text: own.sentence, nodes: map.nodes } : map;
+      const own = this.ai?.resilienceStart ?? (this.patch ? resStartMemo.get(this.patch) : null), map = resStartOf(a, this.ai?.access), start = own?.sentence ? { text: own.sentence, nodes: map.nodes } : map;
       return [["head", head], ["start", v_flex().id("rv-res-start").gap(10).max_w(1000)
         .child(div().text_size(TYPE.title).line_height(1.5).whitespace_normal().child(start.text))
         .when(run?.state !== "running", (e) => e.child(this.runOffer("resilience", t)))

@@ -95,6 +95,16 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   globalThis.window.is_window_active = active; S.exec = null;
 }
 
+// ---- opening a review: where a resilience run would start is counted after the review is there
+{
+  later(); // what the reviews above left for later
+  const v = await openReview(BIG());
+  assert.equal(v.ai.resilienceStart, undefined, "not counted while the review opens");
+  const ran = counted(() => later());
+  assert.ok(ran("pr.resilienceStart") === 1 && /^This PR adds /.test(v.ai.resilienceStart?.sentence ?? ""), "counted once, a moment later, and then on the analysis");
+  assert.equal(counted(() => { v.securityNow(cx); later(); })("pr.resilienceStart"), 0, "and never again for the same diff");
+}
+
 // ---- the review of a PR does not ask git again what the panel asked
 {
   const { default: PrReview } = await import("./main.js");
