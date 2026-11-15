@@ -11,8 +11,8 @@ const { default: PrReview } = await import("./main.js");
 const { splitPatch, hunksOf, diffRows, hash } = await import("./pr.js");
 const { foldOnOpen, resWatch } = await import("./views.js");
 const R = await import("./review.js");
-const { withThreadState } = await import("./threads.js");
-const { mapAnswer, threadAdd } = await import("./explore.js");
+const { withThreadState, addThreads, addFollowup } = await import("./threads.js");
+const { mapAnswer, threadAdd, pinAdd } = await import("./explore.js");
 const fx = (name) => readFileSync(new URL(`../../demo/fixtures/review/${name}`, import.meta.url), "utf8");
 
 // cx.spawn runs the task (as Herdr does) and keeps it, to wait for; a task that throws is a failure, except for the
@@ -113,12 +113,22 @@ async function tour(v, name) {
     act(v, "comments", at("Comments with GitHub's threads")); v.showResolved = true; v.allBots = true; act(v, "files", at("files with GitHub's threads")); act(v, "comments", at("Comments, resolved and bots shown"));
   }
   if (line) { act(v, `comment:${line}`, at("composer open")); act(v, "draft:Why this?", at("composer with text")); act(v, "add", at("a pending comment")); assert.ok(v.comments.length > 0, at("the comment was added")); act(v, "comments", at("Comments with a pending comment")); act(v, "files", at("files again")); }
+  // Two more comments on that line sent to an agent (one answered and followed up, one reported fixed: folded to a
+  // line), and an Ask answer pinned to it: their cards in the diff and on the Comments tab.
+  if (line && v.comments[0]) {
+    const c = v.comments[0], key = v.threadKey(), how = { route: "agent", agent: "claude · pane 2" };
+    v.threadDoc = addFollowup(addThreads(v.threadDoc, key, [{ ...c, id: "t1", text: "Why **this**?" }, { ...c, id: "t2", text: "Rename it" }], how), key, "t1", "And the caller?", 1);
+    v.replies = { t1: [{ reply: "Because of `x`.", status: "answered", commit: null }, { reply: "The caller is fine.", status: "question", commit: null }], t2: [{ reply: "Renamed.", status: "fixed", commit: "abc1234def" }] };
+    v.deep = { ...v.deep, pins: pinAdd(v.deep.pins, v.deepKey(), { q: "What reads this?", at: 1, a: { text: "The consumer reads it.\n\nIt mails **once** per event.", evidence: [{ at: line, why: "here" }] },
+      scope: { kind: "range", range: { file: c.file, start: c.start, end: c.end, old: Boolean(c.old) } } }) };
+    act(v, "files", at("files with a sent thread, a fixed one and a note")); act(v, "comments", at("Comments with sent threads")); v.command("files", cx);
+  }
   // The pages, with their folds and rows clicked.
   for (const p of ["overview", "blast", "arch", "res"]) act(v, `page:${p}`, at(`page ${p}`));
   // Resilience: every path opened (its picture and probe), all paths, the clean checks, a probe's script, and none open.
   v.command("page:res", cx);
   for (const p of v.resNow()?.paths ?? []) act(v, `res-path:${p.id}`, at(`Resilience, path ${p.id}`));
-  for (const c of ["res-more", "res-clean", "res-add", "res-probe-open:pr1", "res-path:"]) act(v, c, at(`Resilience, ${c}`));
+  for (const c of ["res-more", "res-clean", "res-add", ...v.probeList().map((p) => `res-probe-open:${p.id}`), "res-path:"]) act(v, c, at(`Resilience, ${c}`));
   v.command("page:overview", cx); v.rulesOpen = true; draw(v, at("Overview, rules open"));
   for (const a of [...(v.ai?.asks ?? []).map((x) => x.id), "other"]) act(v, `criterion:${a}`, at(`Overview, criterion ${a}`));
   v.command("page:blast", cx);
@@ -170,6 +180,19 @@ async function tour(v, name) {
   v.tab = "files"; v.page = null; draw(v, at("the header"));
   for (const id of ["rv-more", "rv-model"]) click(id, at(id));
   overlays(at("popups"));
+  // A comment card's ⋯ in the diff (the sent threads, the note, the pending comment): its menu as a popup, then each
+  // of its items picked (pr-review.cmenu:<index>|<card>).
+  for (const [k, obj] of [...v.threads().map((x) => ["th", x]), ...v.pins().map((x) => ["pin", x]), ...v.comments.slice(0, 1).map((x) => ["c", x])]) {
+    const it = { t: "ch", k, obj }, x = v.cardZones(v.cardOf(it)).menu[0];
+    v.tab = "files";
+    if (v.cardOf(it).folded) { v.cardClick(it, x, cx); draw(v, at(`card ${k}:${obj.id}, unfolded by a click`)); } // a fixed thread is one line until clicked
+    const c = v.cardOf(it); v.cardClick(it, x, cx);
+    assert.equal(S.overlays.length, 1, at(`card ${c.key}: ⋯ opens its menu`)); overlays(at(`card ${c.key} ⋯`));
+    for (let i = 0; i < c.menu.length; i++) {
+      v.command(`cmenu:${i}|${c.key}`, cx); await settle(); draw(v, at(`card ${c.key}, ${c.menu[i][0]}`));
+      v.sendP = null; v.replyTo = null; if (v.composing) v.closeComposer(cx);
+    }
+  }
   // A probe of the resilience run asks before it starts on this machine (no sandbox here): the question, then no.
   // (A probe shows in its path, open: the path that names it, or the one it is of.)
   for (const p of v.probeList().slice(0, 2)) {
@@ -209,7 +232,7 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
 }
 // The Resilience run's block: read, on another head (stale), running, failed, and on someone else's PR (a probe asks first).
 {
-  const res = JSON.parse(fx("resilience.json")), doc = JSON.parse(fx("findings-s.json"));
+  const res = JSON.parse(fx("resilience-view.json")), doc = JSON.parse(fx("findings-s.json"));
   await tour(await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify({ ...doc, resilience: res }) }), "PR #2 with its resilience paths");
   await tour(await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify({ ...doc, resilience: { ...res, head: "0000000aaaa" } }) }), "PR #2, resilience of an older head");
   await tour(await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify({ ...doc, resilience: { ...res, paths: res.paths.map((p) => ({ ...p, blocker: null, result: "mitigated", limited_by: "template.yaml:11" })) } }) }), "PR #2, every path limited");
