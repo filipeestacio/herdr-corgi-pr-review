@@ -663,7 +663,7 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     /^in a sandbox, without network, at most 30 s$/, /^\d+ more: /, /^\d+ [^.]*(criteria|high|medium|low|observable|blockers?|paths?) ▸$/, /^GitHub read .* ago/, /^call over a trust boundary$/, /^Look inside/, /Ask names it/, /^This analysis has no further details for this card\.$/, /^“Look inside” reads/, /^“↻ Refresh diagrams”/,
     /^and \d+ more in the Findings tab$/, /^\d+ (more|findings?) at this place ▸$/, /^shown at crossing \d+:$/, /^Ask about this layer$/, /^A finding sent to Fix stays unresolved and shows here/, /^not counted as findings$/, /^Each call has its own scale\.$/, /^Scroll sideways for the whole picture →$/];
   const norm = (x) => String(x).toLowerCase().replace(/,? \d+ (s|min|h|d|days?) ago/g, "").replace(/#\d+;|#quot;|#lt;|#gt;/g, " ").replace(/[^a-z0-9äöüß]+/g, " ").trim();
-  const drawn = (states, part) => { const all = new Set(); for (const st of states) { st(); S.texts = null; S.lists.length = 0; v.render(cx); S.lists.length = 0; S.texts = all; part(); } S.texts = null; return [...all]; };
+  const drawn = (states, part, w = v) => { const all = new Set(); for (const st of states) { st(); S.texts = null; S.lists.length = 0; w.render(cx); S.lists.length = 0; S.texts = all; part(); } S.texts = null; return [...all]; };
   const missing = (texts, md) => { const text = norm(md), segs = [...new Set(texts.flatMap((x) => x.split(/(?<=[.;:])\s+|\s·\s|\n+/)).map((x) => x.replace(/^\*\*Suggested:\*\*\s*/, "").replace(/ and \d+(?: m(?:o(?:re?)?)?)?…?$/, "")))].filter((x) => x.trim().length >= 20 && x.trim().split(/\s+/).length >= 4);
     return segs.filter((x) => !NOT_COPIED.some((re) => re.test(x.trim())) && norm(x.replace(/…$/, "")) && !text.includes(norm(x.replace(/…$/, "")))); };
   // A Mermaid block as Mermaid reads it: a known diagram, every line of a known form, frames closed, no call to a card that is not there.
@@ -680,18 +680,23 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     } else if (kind === "stateDiagram-v2") { for (const l of rest) if (!/^\s*state "[^"]*" as \w+$/.test(l) && !/^\s*(\[\*\]|\w+) --> (\[\*\]|\w+)( : [^:;]+)?$/.test(l)) bad.push(l); }
     else if (kind === "sequenceDiagram") { for (const l of rest) if (!/^\s*participant \w+ as [^:;]+$/.test(l) && !/^\s*\w+-?->>\w+: [^;]+$/.test(l) && !/^\s*Note over \w+: [^:;]*$/.test(l)) bad.push(l); }
     else if (kind === "gantt") { for (const l of rest) if (!/^\s*(title [^:;]+|dateFormat X|axisFormat %s|section [^:;]+|[^:;]+ :(done, |crit, )?\d+, \d+)$/.test(l)) bad.push(l); }
+    else if (kind === "erDiagram") { // tables with "type name keys comment" rows, relations between tables of the diagram
+      for (const l of rest) { const ent = /^\s*([A-Za-z_][\w-]*)( \{)?$/.exec(l), rel = /^\s*([A-Za-z_][\w-]*) (?:\}o|\|o)(?:--|\.\.)(?:\|\||o\{) ([A-Za-z_][\w-]*) : "[^"]+"$/.exec(l);
+        if (ent) ids.add(ent[1]); else if (rel) { if (!ids.has(rel[1]) || !ids.has(rel[2])) bad.push(`unknown table: ${l}`); }
+        else if (!/^\s*(%% .+|\}|[A-Za-z_][\w()[\]-]* [A-Za-z_][\w()[\]-]*( (PK|FK|UK)(, (PK|FK|UK))*)?( "[^"]*")?)$/.test(l)) bad.push(l); }
+    }
     else bad.push(`unknown diagram: ${kind}`);
     return bad;
   };
   const pictures = (md) => { const out = [], lines = md.split("\n"); for (let i = 0; i < lines.length; i++) if (lines[i] === "```mermaid") { const k = lines.indexOf("```", i + 1); out.push(lines.slice(i + 1, k)); i = k; } return out; };
-  const check = (name, texts, want) => {
-    const md = v.mdText(true), pics = pictures(md), heads = md.split("\n").filter((l) => /^Code `[^`]+:\d+-\d+`:$/.test(l)), cs = codeStats(md);
+  const check = (name, texts, want, w = v) => {
+    const md = w.mdText(true), pics = pictures(md), heads = md.split("\n").filter((l) => /^Code `[^`]+:\d+-\d+`:$/.test(l)), cs = codeStats(md);
     assert.deepEqual(missing(texts, md), [], `${name}: what the page shows and its Markdown does not have`);
     assert.deepEqual(pics.flatMap(mermaidBad), [], `${name}: a Mermaid block does not read as one`);
     for (const [kind, n] of Object.entries(want)) assert.ok(pics.filter((p) => p[0].startsWith(kind)).length >= n, `${name}: ${n} ${kind} pictures as Mermaid, found ${pics.filter((p) => p[0].startsWith(kind)).length}`);
     assert.equal(new Set(heads).size, heads.length, `${name}: a place's code is there once`);
     assert.ok(cs.blocks === heads.length && cs.lines >= cs.blocks && !/```\w*\n```/.test(md), `${name}: no code block is empty`);
-    assert.ok(mdParts(md).parts.length > 0 && mdParts(v.mdText(false)).parts.every((p) => !p.lines.some((l) => /^Code `/.test(l))), `${name}: sections for the preview, and none of the code without the code context`);
+    assert.ok(mdParts(md).parts.length > 0 && mdParts(w.mdText(false)).parts.every((p) => !p.lines.some((l) => /^Code `/.test(l))), `${name}: sections for the preview, and none of the code without the code context`);
     return md;
   };
   const a = v.ai.arch, paths = v.resNow().paths, page = () => v.pageView(tt);
@@ -727,6 +732,39 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   const f = v.findings().find((x) => x.sources.length > 1); v.ffocus = f.id;
   const one = drawn(["reported", "evidence", "sent", "verified", "in_pr"].map((k) => () => { v.fstep = { id: f.id, key: k }; }), () => v.findingsPane(tt)).filter((x) => !all.includes(x));
   check("an open finding", one, {}); v.fstep = null;
+  // "Schema changes" (schema.js): PR #2 has no migration and no model file, so its Architecture page has no such part.
+  v.command("steps", cx); v.command("page:arch", cx); draw(v, "Architecture impact: no schema change");
+  assert.ok(v.schemaSt && v.schemaNow() === null && !v.pageParts.includes("schema") && !/Schema changes/.test(v.mdText(false)), "PR #2 changes no schema: no Schema changes part, on the page or in its text");
+  // A PR with three migrations (demo/fixtures/schema) and no analysis: first what the patch itself says, then, with
+  // the older migrations of the checkout, every state of a table and a column, the relations and the risk list. The
+  // page and its text agree; a card, a row and a risk lead into the diff; a finding stands at its table's card.
+  {
+    const { readdirSync } = await import("node:fs"), SF = new URL("../../demo/fixtures/schema/", import.meta.url), sfx = (p) => readFileSync(new URL(p, SF), "utf8"), dir = "db/migrations";
+    const found = { runs: {}, status: {}, findings: [{ id: "sx1", reviewer: "claude", file: "db/migrations/V5__loan_renewals.sql", line: 3, end: 3, severity: "high", title: "Notes longer than 80 characters are cut", detail: "The column shrinks to 80 characters.", category: "bug" }] };
+    const w = await open({ diff: sfx("pr.diff"), pr: 9, title: "feat(loans): renewals and reservations", findings: JSON.stringify(found) }), timed = { ...cx, timer: { after: (_ms, f) => setImmediate(() => f(timed)) } }; // the reader's pauses end
+    const parts = (what) => { S.ids = new Set(); act(w, "page:arch", what); const ids = [...S.ids]; S.ids = null; return ids; };
+    act(w, "steps", "Schema changes: the Analysis tab");
+    assert.ok(!parts("Schema changes: not read yet").includes("rv-schema-legend") && w.schemaSt?.root === null, "nothing shows before the files are read");
+    await w.schemaLoad(w.schemaSt, timed);
+    assert.ok(parts("Schema changes: from the patch alone").includes("rv-schema-note0") && w.pageParts.includes("schema") && w.schemaNow().cards.filter((c) => c.partial).length === 4, "without a checkout the tables show what the PR changes, and a line says so");
+    for (const n of readdirSync(new URL(`head/${dir}/`, SF))) S.files.set(`/h/w/${dir}/${n}`, sfx(`head/${dir}/${n}`));
+    let asked = null;
+    S.exec = async (_c, args) => { asked = args; return { code: 0, stdout: [...S.files.keys()].filter((p) => p.startsWith("/h/w/")).map((p) => `100644 0000000 0\t${p.slice(5)}`).join("\n"), stderr: "" }; };
+    try { w.worktree = { url: w.prSel.url, head: w.head, path: "/h/w" }; draw(w, "Schema changes: the checkout is there"); assert.equal(w.schemaSt.root, "/h/w", "a checkout is a reason to read again"); await w.schemaLoad(w.schemaSt, timed); } finally { S.exec = null; }
+    assert.deepEqual(asked.slice(1), ["/h/w", "ls-files", "-s", "--", "db/migrations/*.sql"], "the folder's migrations are listed through safegit.py, nothing else is run");
+    const ids = parts("Schema changes: the fixture"), m = w.schemaNow(), cardId = (name) => `rv-schema-n${w.schemaSt.pic.L.nodes.findIndex((n) => n.label === name)}`;
+    assert.deepEqual(m.cards.map((c) => `${c.name} ${c.status}`), ["book_authors unchanged", "books changed", "loans changed", "members changed", "reservations added", "shelves removed"], "the six tables of the fixture, each with its state");
+    assert.ok(ids.includes("rv-schema-legend") && !ids.includes("rv-schema-note0") && S.clicks.has("rv-schema-risk9") && !S.clicks.has("rv-schema-risk10") && S.clicks.has(cardId("loans")) && [...S.clicks.keys()].filter((k) => /^rv-schema-r\d+-\d+-\d+$/.test(k)).length >= 15, "the picture with its cards and rows, and ten risk hints under it");
+    const text = check("Schema changes", drawn([() => {}], () => w.pageView(tt), w).filter((x) => !/^No analysis yet: /.test(x)), { erDiagram: 1 }, w); // (the offer to analyze is the page's own)
+    assert.match(text, /The analysis has no architecture picture for this PR\.\n\n## Schema changes \(5\)\n\nDerived from the migration and model files in the diff; the database was not asked\.\n\n5 tables: 1 added, 3 changed, 1 removed\./, "the section needs no analysis and says where it comes from");
+    assert.ok(mdParts(text).parts.some((p) => /^Schema changes \(5\)$/.test(p.title)), "it is a part of its own in the preview");
+    click(cardId("loans"), "the loans card"); draw(w, "Schema changes: a card clicked");
+    assert.ok(w.page === null && !w.note && w.fsel?.path === "db/migrations/V5__loan_renewals.sql" && w.fsel.a === "+2", "a click on a table's card leads to the first statement about it in the diff");
+    parts("Schema changes: back on the page"); click("rv-schema-risk0", "the first risk hint"); draw(w, "Schema changes: a risk clicked");
+    assert.ok(w.page === null && w.fsel?.path === "db/migrations/V6__members_and_shelves.sql" && w.fsel.a === "+6", "a risk hint leads to its line: DROP TABLE shelves");
+    assert.deepEqual([...w.schemaSt.pic.marks.nodes].map(([id, k]) => [id, k.n, k.severity]), [["sql:db/migrations|loans", 1, "high"]], "the review's finding at a line of the migration stands at the loans card");
+    assert.match(text, /\| loans \| high: Notes longer than 80 characters are cut \|/, "and in the text");
+  }
 }
 // The acceptance round's corrections, each on the drawn page.
 {

@@ -1,0 +1,41 @@
+diff --git a/db/migrations/V4__reservations.sql b/db/migrations/V4__reservations.sql
+new file mode 100644
+index 0000000..86a89ca
+--- /dev/null
++++ b/db/migrations/V4__reservations.sql
+@@ -0,0 +1,10 @@
++-- A member can reserve a book that is lent out.
++CREATE TABLE reservations (
++    id           bigserial PRIMARY KEY,
++    member_id    bigint NOT NULL REFERENCES members (id),
++    book_id      bigint NOT NULL REFERENCES books (id),
++    reserved_at  timestamptz NOT NULL DEFAULT now(),
++    expires_on   date
++);
++
++CREATE INDEX reservations_member_idx ON reservations (member_id);
+diff --git a/db/migrations/V5__loan_renewals.sql b/db/migrations/V5__loan_renewals.sql
+new file mode 100644
+index 0000000..cd128ad
+--- /dev/null
++++ b/db/migrations/V5__loan_renewals.sql
+@@ -0,0 +1,7 @@
++-- Renewals are counted, the due date gets its final name, the old import code goes.
++ALTER TABLE loans ADD COLUMN renewals integer NOT NULL;
++ALTER TABLE loans ALTER COLUMN note TYPE varchar(80);
++ALTER TABLE loans RENAME COLUMN due_on TO due_date;
++ALTER TABLE loans DROP COLUMN legacy_code;
++
++CREATE INDEX loans_due_idx ON loans (due_date);
+diff --git a/db/migrations/V6__members_and_shelves.sql b/db/migrations/V6__members_and_shelves.sql
+new file mode 100644
+index 0000000..fb43c0d
+--- /dev/null
++++ b/db/migrations/V6__members_and_shelves.sql
+@@ -0,0 +1,6 @@
++-- One account per address, a phone number for every member, and no shelves any more.
++CREATE UNIQUE INDEX CONCURRENTLY members_email_key ON members (email);
++ALTER TABLE members ALTER COLUMN phone SET NOT NULL;
++
++ALTER TABLE books DROP COLUMN shelf_id;
++DROP TABLE shelves;
