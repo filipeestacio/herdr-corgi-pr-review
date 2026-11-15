@@ -48,7 +48,7 @@ import { withProbes, certaintyText, probedText } from "./views.js"; // wave C2 V
 import { withThreats, secNote, secByEffect, secWhy } from "./pr.js"; // the Security page: one count, and a run from before its current rules
 import { withResilience, resilienceStart, RUN_TYPICAL } from "./pr.js"; // the Resilience run's data // the Resilience page
 import { keepLast } from "./views.js"; // every cache has a limit
-import { resDepRows, resMeta, resFade, resShown, resRefs } from "./views.js"; // Resilience: dependencies that fail or are overloaded; a path's second line; readable dimming
+import { resDepRows, resMeta, resFade, resShown, resRefs, probeBaseWord, datedByDiff } from "./views.js"; // Resilience: dependencies that fail or are overloaded; a path's second line; readable dimming
 import { wayOf, wayText, passZones, runsIn } from "./views.js"; // panel round 3: ways through every gate, zones passed on
 import { transitionMarks, effectiveFrom, inProcess, mapArch, crossingsOf, crossingChanged, crossOnce, secSentence, TRUST_ORDER, asideOf, threatCited, blastOf, skipText, guardLine } from "./views.js";
 import { trustLegend, hasTrust } from "./stack.js";
@@ -4362,7 +4362,7 @@ export const ReviewMode = {
           .child(badge(t, f.severity, t[SEV[f.severity]] ?? t.accent)).child(div().min_w(0).whitespace_normal().child(plain(f.title)))
           .when(f.certainty === "confirmed", (x) => x.child(div().id(`rv-res-f-cf-${p.id}-${f.id}`).flex_none().text_color(t.ansi2).tooltip(`Confirmed: something that ran shows it.${probedText(f)}`).child(certaintyText(f))))
           .child(div().flex_none().text_color(t.muted).child(`${f.file.split("/").pop()}:${f.line} ↗`))))
-        .when(Boolean(probe), (x) => x.child(this.resProbe(t, probe)))));
+        .when(Boolean(probe), (x) => x.child(this.resProbe(t, probe, datedByDiff(p))))));
   },
   // A path's one picture (views.js resPicture): the ladder, the budget's bullet chart, the race's timeline with what
   // on-call sees, or the writers of a shared state. On the surface, no grid.
@@ -4411,15 +4411,15 @@ export const ReviewMode = {
   // A probe in its path: before its run the claim and Run probe (for someone else's PR the script and the sentence of
   // what it does first); after it the result as symbol and word, strength, the one number, the base, head and time,
   // script and output folded. A probe on an older head is grey.
-  resProbe(t, x) {
+  resProbe(t, x, byDiff = false) {
     // pre_existing: true (the base breaks the same way) greys the probe; "unknown" (the base was not comparable) says so.
     const done = x.status === "done", now = this.worktree?.head ?? this.head, old = x.older || x.pre_existing === true || (done && x.head && now && x.head !== now), open = this.resProbeOpen === x.id;
-    const BASE = { reproduced: "breaks the same way", not_reproduced: "not reproduced", new_in_pr: "new in this PR", new: "new in this PR", unknown: "unknown", not_run: "not run" };
-    // The base in words: the runner's verdict (threads.js BASE_WORDS: already on the base, new in this PR, unknown on the
-    // base, not on the base), else (an older result) its status.
+    // The base in words (views.js probeBaseWord): the runner's verdict (threads.js BASE_WORDS: already on the base, new in
+    // this PR, unknown on the base, not on the base) where the diff could not date the path; where it could, that word
+    // stands at the path and the probe says only what its script did on the base, so old and new are said once.
     // The base's line without the runner's temporary paths (a file by its name), at most about a line long.
     const short = (l) => { const v = String(l).replace(/(?:\/[^\s/'"()]+)+\/([^\s/'"()]+)/g, "$1"); return v.length > 140 ? `${v.slice(0, 139)}…` : v; };
-    const base = typeof x.base === "object" && x.base ? `${TH.BASE_WORDS[x.base.verdict] ?? `on base: ${BASE[x.base.status] ?? resWord(x.base.status)}`}${x.base.line ? `, ${short(x.base.line)}` : ""}` : x.base && `on base: ${x.base}`;
+    const bw = probeBaseWord(x, byDiff, TH.BASE_WORDS), base = bw ? `${bw.dates ? bw.word : `on base: ${bw.word}`}${x.base.line ? `, ${short(x.base.line)}` : ""}` : x.base && `on base: ${x.base}`;
     // Not run: the runner never ran a script (no head, no time), with why; never "script failed".
     const notRun = done && (x.result === "not_run" || (x.result === "script_failed" && !x.head && !x.ms));
     const RES = { reproduced: ["✓", "reproduced", t.foreground], not_reproduced: ["✗", "not reproduced", t.muted], script_failed: ["!", "script failed", t.ansi3], unknown: ["?", "unknown", t.muted] };
@@ -4433,7 +4433,7 @@ export const ReviewMode = {
     return v_flex().id(`rv-res-probe-${x.id}`).gap(4).p(10).rounded(6).border_1().border_color(t.border).text_size(TYPE.small).when(Boolean(old), (e) => e.opacity(resFade(t)))
       .when(done, (e) => e.child(h_flex().gap(8).flex_wrap().items_center().child(div().font_semibold().text_color(r[2]).child(`Probe ${r[0]} ${r[1]}`))
         .child(div().min_w(0).whitespace_normal().text_color(t.muted).child((notRun ? [x.reason || x.number || "no script ran"] : [STRENGTH[x.strength] ?? x.strength, x.ms != null && `${(x.ms / 1000).toFixed(1)} s`, sandbox, x.head && String(x.head).slice(0, 7), base,
-          x.pre_existing === true && "breaks the same way on the base", x.pre_existing === "unknown" && "old or new unclear: the base was not comparable"]).filter(Boolean).join(" · "))))
+          x.pre_existing === true && !byDiff && "breaks the same way on the base", x.pre_existing === "unknown" && "old or new unclear: the base was not comparable"]).filter(Boolean).join(" · "))))
         .when(Boolean(x.number) && !notRun, (y) => y.child(div().whitespace_normal().child(x.number)))
         .when(notRun, (y) => y.child(h_flex().child(pill(`rv-res-again-${x.id}`, t, `Run probe again (${price})`, start).tooltip("One model call writes a script; the runner starts it against the PR head and the base, in a sandbox without network, for at most 30 s"))))
         .when(!notRun, (y) => y.child(h_flex().gap(8).child(div().id(`rv-res-pso-${x.id}`).text_color(t.accent).cursor_pointer().on_click((_e, cx) => { this.resProbeOpen = open ? null : x.id; cx.notify(); }).child(open ? "script and output ▾" : "script and output ▸"))))

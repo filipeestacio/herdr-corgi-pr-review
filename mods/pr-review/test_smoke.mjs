@@ -614,6 +614,18 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   const full = folded.ids.filter((x) => /^rv-sec-cr-f-/.test(x)).map((x) => x.replace(/^rv-sec-cr-f-\d+-/, "")), refs = folded.ids.filter((x) => /^rv-sec-cr-r-/.test(x)).map((x) => x.replace(/^rv-sec-cr-r-\d+-/, ""));
   assert.equal(new Set(full).size, full.length, "a finding stands in full at one crossing only");
   assert.ok(refs.length > 0 && refs.every((id) => full.includes(id)) && folded.got.some((x) => /^shown at crossing \d+:$/.test(x)), "the second crossing that names it refers to the first");
+  // UX 4: a path the diff dates as new, with a probe that reproduced on the base too: the path keeps its word, and
+  // neither the probe nor the Markdown says "already on the base" next to it.
+  {
+    const p = v.resNow().paths.find((x) => x.pre_existing === false && x.probe === null && v.probeList().some((q) => q.of === x.id)) ?? v.resNow().paths.find((x) => x.pre_existing === false && v.probeList().some((q) => q.of === x.id || q.id === x.probe));
+    const q = v.probeList().find((x) => x.of === p.id || x.id === p.probe), keep = v.deep;
+    v.deep = { ...v.deep, probes: { ...v.deep.probes, [v.probeKey(q.id)]: { state: "done", status: "reproduced", line: "two mails", ms: 900, head: "ccddf95", base: { status: "reproduced", verdict: "already_on_base", line: "two mails" }, pre_existing: true, network_barrier: true, script: "print('reproduced two mails')\n", output: "reproduced two mails\n" } } };
+    v.command("page:res", cx); v.command(`res-path:${p.id}`, cx); if (v.resOpen !== p.id) v.command(`res-path:${p.id}`, cx);
+    const got = texts(() => v.pageView(tt)).filter((x) => /on the base|on base:/.test(x));
+    assert.ok(got.some((x) => /on base: breaks the same way/.test(x)) && !got.some((x) => /already on the base|breaks the same way on the base/.test(x)), `old or new is said once: ${JSON.stringify(got)}`);
+    assert.ok(/On the base: breaks the same way/.test(v.mdText(true)) && !/On the base: already on the base/.test(v.mdText(true)), "and in the Markdown");
+    v.deep = keep;
+  }
 }
 await settle();
 assert.deepEqual(late, [], "a spawned task threw");

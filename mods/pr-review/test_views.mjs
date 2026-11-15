@@ -1150,3 +1150,18 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.equal(crossOnce(null).size, 0);
   console.log("ok crossings name a finding once");
 }
+
+// Acceptance, UX 4: old or new is said once. A path the diff dates keeps its word, and its probe says only what the
+// script did on the base; a path the diff could not date takes the probe's verdict.
+{
+  const { probeBaseWord, datedByDiff, resByProbe } = await import("./views.js");
+  const W = { already_on_base: "already on the base", new_in_pr: "new in this PR", unknown: "unknown on the base", not_on_base: "not on the base" };
+  const probe = { id: "r1", of: "p4", status: "done", result: "reproduced", base: { status: "script_failed", verdict: "new_in_pr", line: "import failed: ImportError" } };
+  const old = { id: "p4", pre_existing: true, blocker: null }, unclear = { id: "p4", pre_existing: "unknown", blocker: { reason: "x", unclear: true } };
+  assert.ok(datedByDiff(old) && datedByDiff({ pre_existing: false }) && !datedByDiff(unclear) && !datedByDiff(resByProbe([unclear], [probe])[0]) && !datedByDiff(null));
+  assert.deepEqual(probeBaseWord(probe, datedByDiff(old), W), { dates: false, word: "script failed" }, "the path says already on the base, the probe not 'new in this PR'");
+  assert.deepEqual(probeBaseWord(probe, datedByDiff(resByProbe([unclear], [probe])[0]), W), { dates: true, word: "new in this PR" }, "the probe dates a path the diff could not");
+  assert.deepEqual(probeBaseWord({ base: { status: "reproduced", verdict: "already_on_base" } }, true, W), { dates: false, word: "breaks the same way" });
+  assert.deepEqual([probeBaseWord({ base: { status: "new_in_pr" } }, false, W).word, probeBaseWord({ base: { status: "new_in_pr" } }, true, W).word, probeBaseWord({ base: "x" }, false, W), probeBaseWord({}, false, W)], ["new in this PR", "script failed", null, null]);
+  console.log("ok old or new is said once");
+}

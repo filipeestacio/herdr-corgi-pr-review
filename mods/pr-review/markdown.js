@@ -11,7 +11,7 @@ import { resWord, resToolText, resVerdict, resWatch } from "./views.js"; // wave
 // the map as the Architecture page draws it, the paths' order and verdict, a finding's facts.
 import { crossingsOf, crossingChanged, secSentence, wayOf, wayText, secPicture, secBlast, scopeTable, scopeConflicts, AREA_NAME, mapArch, resVerdictParts, resCardOf, factRows } from "./views.js";
 import { archMarks } from "./arch.js";
-import { transitionMarks, surfaceOf, reachLevel, secOrder, EXPOSURE, inProcess, resNoPicture, resShown } from "./views.js";
+import { transitionMarks, surfaceOf, reachLevel, secOrder, EXPOSURE, inProcess, resNoPicture, resShown, probeBaseWord, datedByDiff } from "./views.js";
 import { doesList, surfaceLine, countLine, funnelShort, funnel as funnelOf, findingSteps } from "./pr.js";
 import { resDepRows } from "./views.js"; // Resilience: dependencies that fail or are overloaded
 
@@ -691,8 +691,9 @@ export function resilienceMd({ pr, head, res = null, names = new Map(), arch = n
     : p.same_cause ? `same cause as path ${num(p.same_cause)}`
     : p.result === "mitigated" ? (p.limited_by ? `limited at \`${p.limited_by}\`` : "limited, no guard named")
     : p.result === "finding" ? (p.pre_existing === true ? "finding, already on the base" : "finding") : String(p.result ?? "").replace(/_/g, " "));
-  const probeMd = (x) => { if (!x) return ["- **Probe:** none proposed for this path."];
-    const done = x.status === "done", base = x.base && typeof x.base === "object" ? `${BASE[x.base.verdict] ?? String(x.base.status ?? "").replace(/_/g, " ")}${x.base.line ? ` (${flat(x.base.line)})` : ""}` : x.base ? flat(x.base) : null;
+  // Old or new is said once: by the path where the diff dates it, else by the probe's run on the base (views.js probeBaseWord).
+  const probeMd = (x, byDiff = false) => { if (!x) return ["- **Probe:** none proposed for this path."];
+    const done = x.status === "done", bw = probeBaseWord(x, byDiff, BASE), base = bw ? `${bw.word}${x.base.line ? ` (${flat(x.base.line)})` : ""}` : x.base ? flat(x.base) : null;
     return [`- **Probe:** ${flat(x.claim ?? x.kind ?? "a script")} (${[x.kind && resWord(x.kind), STRENGTH[x.strength] ?? x.strength].filter(Boolean).join(", ")})`,
       `  - State: ${done ? `${String(x.result ?? "").replace(/_/g, " ")}${x.number ? `, ${flat(x.number)}` : ""}${x.head ? ` at ${String(x.head).slice(0, 7)}` : ""}${x.ms ? `, ${(x.ms / 1000).toFixed(1)} s` : ""}` : x.status === "running" ? "running" : "proposed, not run yet"}`,
       done && base && `  - On the base: ${base}`, done && Boolean(x.reason) && `  - ${flat(x.reason)}`,
@@ -725,7 +726,7 @@ export function resilienceMd({ pr, head, res = null, names = new Map(), arch = n
         ...table(["", "Who", "Where", "Guard", ""], p.writers.map((w) => [w.kind === "R" ? "reads" : "writes", nm(w.node), w.at ? `\`${w.at}\`` : "", w.guard ?? "", w.breaks ? "breaks the rule" : ""]))],
       !p.ladder?.length && !p.budget && !p.race?.steps?.length && !p.writers?.length && [`(${resNoPicture(p)}.)`, ""],
       "",
-      ...probeMd(probeOf(p)), "",
+      ...probeMd(probeOf(p), datedByDiff(p)), "",
       ...places.flatMap((s) => cx.at(s)), ""];
   };
   const parts = resVerdictParts(order), paths = res.paths ?? [], checks = res.checks ?? [], clean = checks.filter((c) => c.result === "clean"), ncheck = checks.filter((c) => c.result === "not_checkable");
