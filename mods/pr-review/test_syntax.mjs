@@ -15,8 +15,14 @@ assert.equal(langOf("build.gradle.kts"), "kotlin");
 assert.equal(langOf("LICENSE"), null);
 // Shell by its name: endings, dotfiles, templates of a script, Git hooks, make and just.
 for (const p of ["a.sh", "a.bash", "a.zsh", "a.ksh", "a.fish", "test/load.bats", "Start.command", ".envrc", "home/.bashrc", ".zshrc", ".profile", ".env", ".env.local", "prod.env",
-  "infra/user_data.sh.tpl", "boot.sh.tftpl", "Makefile", "rules.mk", "justfile", "hooks/pre-commit", ".husky/commit-msg", ".githooks/pre-push"]) assert.equal(langOf(p), "shell", p);
+  "infra/user_data.sh.tpl", "boot.sh.tftpl", "justfile", "tasks.just", "hooks/pre-commit", ".husky/commit-msg", ".githooks/pre-push"]) assert.equal(langOf(p), "shell", p);
 assert.equal(langOf("config.yaml.tpl"), "yaml");
+// Make, YAML with more to say (a workflow, a Spring configuration), key=value files and TOML, by their names.
+for (const [p, lang] of [["Makefile", "make"], ["sub/makefile", "make"], ["GNUmakefile", "make"], ["rules.mk", "make"], ["win.make", "make"], ["Makefile.inc", "make"], ["Makefile.am", "make"],
+  [".github/workflows/ci.yml", "workflow"], [".github/workflows/release.yaml", "workflow"], ["action.yml", "workflow"], [".github/actions/deploy/action.yaml", "workflow"], [".github/dependabot.yml", "yaml"], ["workflows/ci.yml", "yaml"],
+  ["src/main/resources/application.yml", "spring"], ["application-prod.yaml", "spring"], ["bootstrap.yml", "spring"], ["compose.yaml", "yaml"], ["template.yaml", "yaml"], ["application.yml.example", "spring"],
+  ["application.properties", "properties"], ["gradle.properties", "properties"], ["tox.ini", "properties"], ["setup.cfg", "properties"], ["app.conf", "properties"], [".editorconfig", "properties"], [".npmrc", "properties"],
+  ["pyproject.toml", "toml"], ["Cargo.lock", "toml"], ["Pipfile", "toml"], ["package-lock.json", "json"], [".env", "shell"]]) assert.equal(langOf(p), lang, p);
 assert.equal(langOf("docs/hooks/readme"), "shell"); // a guess by the folder, which the first line overrules:
 assert.equal(langOf("hooks/pre-commit", "#!/usr/bin/env python3"), "python");
 // A file without an ending, by its first line.
@@ -171,7 +177,6 @@ esac`.split("\n");
   has("for ((i = 0; i < 10; i++)); do echo $i; done", "shell", ["echo", "function"]);
   has("POLICIES=(one two)", "shell", ["POLICIES", "constant"]);
   assert.ok(!kinds("POLICIES=(one two)", "shell").some(([, k]) => k === "function"));
-  has("\t$(CC) -o $@ $<", "shell", ["-o", "type"]); // a Makefile recipe
   has("RUN apt-get update && apt-get install -y curl", "dockerfile", ["-y", "type"]);
   has("```sh", "markdown", ["```sh", "punctuation"], "md");
   has("echo $HOME", "markdown", ["echo", "function"], tokenize("```bash", "markdown", "md").state);
@@ -244,8 +249,157 @@ const sample = ['import { a, b } from "./x.js";', "export function foo(bar, baz)
 const big = Array.from({ length: 10000 }, (_, i) => ({ kind: i % 7 === 0 ? "-" : i % 5 === 0 ? "+" : " ", text: sample[i % sample.length] }));
 const py = Array.from({ length: 10000 }, (_, i) => ({ kind: " ", text: ['def f(x: int) -> "Foo":', '    return {"a": [1, 2.5, None]}  # c', "    s = f'{x!r}' + other.call(y)"][i % 3] }));
 highlightRows(big.slice(0, 500), "js"); // warm up the JIT
+// ---- Make, YAML, key=value files, TOML: an invented file each, line by line with the state carried on
+// file(lines, lang): what each line got, [[text, kind], …]; every line's spans are in order, do not overlap and stay
+// inside the line (a recipe and a workflow's script mix two scanners' spans).
+const file = (lines, lang) => {
+  let st = null;
+  const got = lines.map((l) => {
+    const t = tokenize(l, lang, st); st = t.state;
+    t.spans.forEach((x, k) => assert.ok(x.start < x.end && x.end <= l.length && (k === 0 || t.spans[k - 1].end <= x.start), `${lang}: spans of ${JSON.stringify(l)}: ${JSON.stringify(t.spans)}`));
+    return t.spans.map((x) => [l.slice(x.start, x.end), x.kind]);
+  });
+  const at = (start) => { const k = lines.findIndex((l) => l.trimStart().startsWith(start)); assert.ok(k >= 0, `no line starts with ${start}`); return got[k]; };
+  return { got, state: st, at,
+    want: (start, ...pairs) => { for (const p of pairs) assert.ok(at(start).some(([t, k]) => t === p[0] && k === p[1]), `${lang} ${JSON.stringify(start)}: ${JSON.stringify(p)} in ${JSON.stringify(at(start))}`); },
+    none: (start, text, kind) => assert.ok(!at(start).some(([t, k]) => t.includes(text) && (!kind || k === kind)), `${lang} ${JSON.stringify(start)}: no ${kind ?? "span"} with ${text} in ${JSON.stringify(at(start))}`) };
+};
+{
+  const mk = ["# Builds and ships the reminder service.", "SHELL := /bin/bash", "APP ?= reminders", "VERSION = $(shell git describe --tags --always)", "SRCS := $(wildcard src/*.c) \\", "        extra/util.c",
+    "OBJS = $(patsubst %.c,build/%.o,$(SRCS))", "CFLAGS += -Wall -O2 # warnings on", "export AWS_REGION ?= eu-west-1", "include config.mk", "-include local.mk", "ifeq ($(OS),Windows_NT)", "  EXE := .exe", "else ifdef CI", "endif",
+    ".PHONY: all clean test", "all: build/$(APP)$(EXE) | build", "build/%.o: %.c include/app.h", "\t@mkdir -p $(dir $@)", "\t$(CC) $(CFLAGS) -c $< -o $@", "build/$(APP)$(EXE): $(OBJS)",
+    "\t$(CC) -o $@ $^ && echo \"built $@ at $$(date +%H:%M)\"", "test: all", "\t-rm -f report.xml", "\tfor f in tests/*.sh; do \\", "\t  bash \"$$f\" || exit 1; \\", "\tdone", "deploy: VERSION := release",
+    "deploy: all ; @echo \"deploying $(VERSION)\"", "define banner", "echo \"== $(1) ==\"", "endef", "lint tidy:", "        ruff check src   # drawn with spaces, as the diff view does", "        X=1 ./run.sh"];
+  const f = file(mk, "make");
+  assert.equal(f.state, null);
+  assert.deepEqual(f.got[0], [["# Builds and ships the reminder service.", "comment"]]);
+  f.want("SHELL :=", ["SHELL", "variable"], [":=", "operator"]); f.want("APP ?=", ["APP", "variable"], ["?=", "operator"]);
+  f.want("VERSION =", ["VERSION", "variable"], ["=", "operator"], ["$(", "variable"], ["shell", "function"], ["git", "function"], ["--tags", "type"], [")", "variable"]);
+  f.want("SRCS :=", ["wildcard", "function"]); assert.deepEqual(f.at("extra/util.c"), []); // the value goes on after "\": no command
+  f.want("OBJS =", ["patsubst", "function"], ["$(SRCS)", "variable"]);
+  f.want("CFLAGS +=", ["CFLAGS", "variable"], ["+=", "operator"], ["# warnings on", "comment"]);
+  f.want("export AWS_REGION", ["export", "keyword"], ["AWS_REGION", "variable"], ["?=", "operator"]);
+  f.want("include config.mk", ["include", "keyword"]); f.want("-include", ["-include", "keyword"]);
+  f.want("ifeq", ["ifeq", "keyword"], ["$(OS)", "variable"]); f.want("EXE := .exe", ["EXE", "variable"]); f.want("else ifdef", ["else", "keyword"], ["ifdef", "keyword"]); f.want("endif", ["endif", "keyword"]);
+  f.want(".PHONY", [".PHONY", "keyword"], [":", "operator"]); f.none(".PHONY", "clean", "function");
+  f.want("all:", ["all", "function"], ["$(APP)", "variable"]);
+  f.want("build/%.o:", ["build/%.o", "function"], [":", "operator"]); f.none("build/%.o:", "%.c", "function");
+  f.want("@mkdir", ["@", "operator"], ["mkdir", "function"], ["-p", "type"], ["dir", "function"], ["$@", "variable"]);
+  f.want("$(CC) $(CFLAGS)", ["$(CC)", "variable"], ["$(CFLAGS)", "variable"], ["-c", "type"], ["$<", "variable"], ["$@", "variable"]); f.none("$(CC) $(CFLAGS)", "CC", "function");
+  f.want("build/$(APP)$(EXE):", ["build/", "function"], ["$(APP)", "variable"], ["$(OBJS)", "variable"]);
+  f.want("$(CC) -o", ["$^", "variable"], ["&&", "operator"], ["echo", "function"], ["built ", "string"], ["$@", "variable"], ["$", "operator"], ["date", "function"]); // "$$(date)": the shell's
+  f.want("-rm", ["-", "operator"], ["rm", "function"], ["-f", "type"]);
+  f.want("for f in", ["for", "keyword"], ["do", "keyword"]); f.want("bash \"$$f\"", ["bash", "function"], ["$f", "constant"], ["exit", "keyword"]); f.want("done", ["done", "keyword"]); // one command over three lines
+  f.want("deploy: VERSION", ["deploy", "function"], ["VERSION", "variable"], [":=", "operator"]);
+  f.want("deploy: all", ["deploy", "function"], [";", "punctuation"], ["@", "operator"], ["echo", "function"], ["$(VERSION)", "variable"]);
+  f.want("define banner", ["define", "keyword"], ["banner", "variable"]); f.want("echo \"== ", ["$(1)", "variable"]); assert.deepEqual(f.at("endef"), [["endef", "keyword"]]);
+  f.want("lint tidy:", ["lint", "function"], ["tidy", "function"]);
+  f.want("ruff check", ["ruff", "function"], ["# drawn with spaces, as the diff view does", "comment"]); f.want("X=1", ["X", "constant"], ["./run.sh", "function"]);
+  assert.deepEqual(tokenize("\tfor f in a b; do \\", "make").state, { m: "r", sh: null });
+  assert.deepEqual(tokenize("\taws s3 cp a \\", "make").state, { m: "r", sh: { s: "", k: true } });
+  assert.deepEqual(tokenize("SRCS := a.c \\", "make").state, { m: "v" });
+  has("```makefile", "markdown", ["```makefile", "punctuation"], "md");
+  has("all: build", "markdown", ["all", "function"], tokenize("```make", "markdown", "md").state);
+}
+{
+  const wf = ["name: CI", "on:", "  push:", "    branches: [main, \"release/**\"]", "  workflow_dispatch:", "    inputs:", "      stage: { description: \"Where to deploy\", required: true, default: dev }", "permissions:", "  contents: read",
+    "concurrency:", "  group: ci-${{ github.ref }}", "env:", "  NODE_VERSION: 20", "  REGISTRY: ghcr.io/example/reminders # the image", "jobs:", "  build:", "    runs-on: ubuntu-latest", "    strategy:", "      matrix:",
+    "        python: [\"3.11\", \"3.12\"]", "    steps:", "      - uses: actions/checkout@v4", "      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0", "        with:", "          python-version: ${{ matrix.python }}",
+    "      - name: Test", "        if: github.event_name == 'push' && !contains(github.event.head_commit.message, '[skip ci]')", "        run: |", "          set -euo pipefail",
+    "          pytest -q --junitxml=\"report-${{ matrix.python }}.xml\" | tee out.log", "          cat <<EOF > notes.txt", "          built by ${{ github.actor }} in $HOME", "          EOF", "          if [ \"${{ github.ref }}\" = \"refs/heads/main\" ]; then",
+    "            echo \"sha=$(git rev-parse --short HEAD)\" >> \"$GITHUB_OUTPUT\"", "          fi", "        env:", "          TOKEN: ${{ secrets.DEPLOY_TOKEN }}", "      - run: echo \"done on ${{ runner.os }}\" && ls -la",
+    "  deploy:", "    needs: [build]", "    if: ${{ success() && startsWith(github.ref, 'refs/tags/') }}", "    steps:", "      - uses: ./.github/actions/deploy"];
+  const f = file(wf, "workflow");
+  assert.equal(f.state, null);
+  f.want("name: CI", ["name", "keyword"], [":", "punctuation"]); f.want("on:", ["on", "keyword"]); f.none("on:", "on", "boolean");
+  f.want("branches:", ["branches", "keyword"], ["[", "punctuation"], ["\"release/**\"", "string"]);
+  f.want("stage: {", ["stage", "function"], ["description", "function"], ["\"Where to deploy\"", "string"], ["true", "boolean"]);
+  f.want("group:", ["${{", "operator"], ["github", "variable"], ["}}", "operator"]);
+  f.want("NODE_VERSION", ["NODE_VERSION", "function"], ["20", "number"]); f.want("REGISTRY", ["# the image", "comment"]);
+  f.want("build:", ["build", "function"]); f.want("runs-on", ["runs-on", "keyword"]);
+  f.want("- uses: actions/checkout", ["-", "operator"], ["uses", "keyword"], ["@", "operator"], ["v4", "constant"]);
+  f.want("- uses: actions/setup-python", ["0b93645e9fea7318ecaed2b359559ac225c90a2b", "constant"], ["# v5.3.0", "comment"]);
+  f.want("python-version", ["python-version", "function"], ["matrix", "variable"]);
+  f.want("if: github", ["if", "keyword"], ["github", "variable"], ["==", "operator"], ["'push'", "string"], ["&&", "operator"], ["!", "operator"], ["contains", "function"], ["'[skip ci]'", "string"]);
+  f.want("run: |", ["run", "keyword"], ["|", "operator"]);
+  f.want("set -euo", ["set", "keyword"], ["-euo", "type"]); // the script is shell
+  f.want("pytest", ["pytest", "function"], ["--junitxml", "type"], ["report-", "string"], ["${{", "operator"], ["matrix", "variable"], [".xml\"", "string"], ["|", "operator"], ["tee", "function"]);
+  f.want("cat <<EOF", ["cat", "function"], ["<<EOF", "keyword"]); f.want("built by", ["built by ", "string"], ["github", "variable"], ["$HOME", "constant"]); assert.deepEqual(f.at("EOF"), [["EOF", "keyword"]]);
+  f.want("if [ \"${{", ["if", "keyword"], ["[", "keyword"], ["github", "variable"], ["then", "keyword"]);
+  f.want("echo \"sha=", ["echo", "function"], ["git", "function"], [">>", "operator"], ["$GITHUB_OUTPUT", "constant"]); f.want("fi", ["fi", "keyword"]);
+  f.want("env:", ["env", "keyword"]); f.want("TOKEN:", ["TOKEN", "function"], ["secrets", "variable"]); // after the script: YAML again
+  f.want("- run: echo", ["run", "keyword"], ["echo", "function"], ["runner", "variable"], ["&&", "operator"], ["ls", "function"], ["-la", "type"]);
+  f.want("if: ${{", ["success", "function"], ["startsWith", "function"], ["'refs/tags/'", "string"]);
+  f.none("- uses: ./.github", "@");
+  assert.deepEqual(tokenize("        run: |", "workflow").state, { b: 8, run: 1, sh: null });
+  assert.deepEqual(tokenize("        run: |", "yaml").state, { b: 8 }); // plain YAML: a block of text
+}
+{
+  const yml = ["---", "# Settings of the reminder service in production.", "spring:", "  datasource:", "    url: jdbc:postgresql://${DB_HOST:localhost}:5432/library", "    hikari: &pool", "      maximum-pool-size: 10", "  profiles.active: prod",
+    "replica:", "  <<: *pool", "  read-only: yes", "server:", "  port: 8080", "  version: 1.2.3", "  on: true", "reminders:", "  ratio: 0.75", "  sender: \"noreply@example.test\"", "  subject: 'It''s due: ${title}'",
+    "  greeting: \"#{T(java.time.LocalDate).now().getYear()}\"", "  empty: ~", "  nothing: null", "  tags: !!set {a, b}", "  cron: \"0 0 7 * * *\" # every morning", "  template: |", "    Dear ${name},", "", "    your loan: is due # no comment", "  folded: >-",
+    "    one long", "  after: yes", "list:", "  - plain text: with a colon", "  - http://example.test:8080/path#frag", "  - - nested", "    - 12:30", "  - key: value", "    other: [1, 2.5, true, text]", "  QueueName: !Sub \"${AWS::StackName}-events\"",
+    "  long: \"a quoted text", "    that goes on\" # done", "  last: 1"];
+  const f = file(yml, "spring");
+  assert.equal(f.state, null);
+  assert.deepEqual(f.got[0], [["---", "punctuation"]]);
+  f.want("url:", ["url", "function"], ["${DB_HOST:localhost}", "variable"]); f.none("url:", "5432", "number");
+  f.want("hikari:", ["&pool", "constant"]); f.want("maximum-pool-size", ["maximum-pool-size", "function"], ["10", "number"]); f.want("profiles.active", ["profiles.active", "function"]);
+  f.want("<<:", ["<<", "operator"], ["*pool", "constant"]); f.want("read-only", ["yes", "boolean"]);
+  f.want("port:", ["8080", "number"]); f.none("version:", "1.2", "number"); f.want("on: true", ["on", "function"], ["true", "boolean"]);
+  f.want("ratio:", ["0.75", "number"]); f.want("sender:", ["\"noreply@example.test\"", "string"]);
+  f.want("subject:", ["'It''s due: ", "string"], ["${title}", "variable"]); f.want("greeting:", ["#{T(java.time.LocalDate).now().getYear()}", "variable"]);
+  f.want("empty:", ["~", "constant"]); f.want("nothing:", ["null", "constant"]); f.want("tags:", ["!!set", "type"], ["{", "punctuation"]);
+  f.want("cron:", ["\"0 0 7 * * *\"", "string"], ["# every morning", "comment"]);
+  f.want("template:", ["|", "operator"]); f.want("Dear", ["Dear ", "string"], ["${name}", "variable"]); assert.deepEqual(f.at("your loan"), [["your loan: is due # no comment", "string"]]);
+  f.want("folded:", [">-", "operator"]); assert.deepEqual(f.at("one long"), [["one long", "string"]]); f.want("after:", ["after", "function"], ["yes", "boolean"]);
+  f.want("- plain text", ["-", "operator"], ["plain text", "function"]); assert.deepEqual(f.at("- http://"), [["-", "operator"]]); // no key, no comment
+  assert.deepEqual(f.at("- - nested"), [["-", "operator"], ["-", "operator"]]); assert.deepEqual(f.at("- 12:30"), [["-", "operator"]]);
+  f.want("other:", ["1", "number"], ["2.5", "number"], ["true", "boolean"], [",", "punctuation"]); f.none("other:", "text");
+  f.want("QueueName", ["!Sub", "type"], ["${AWS::StackName}", "variable"], ["-events\"", "string"]);
+  assert.deepEqual(f.at("long:").at(-1), ["\"a quoted text", "string"]); assert.deepEqual(f.at("that goes on"), [["    that goes on\"", "string"], ["# done", "comment"]]); f.want("last:", ["last", "function"]);
+  assert.deepEqual(kinds("greeting: \"#{x}\"", "yaml").filter(([, k]) => k === "variable"), []); // "#{…}" is Spring's
+  has("title: Notes # c", "markdown", ["title", "function"], tokenize("---", "markdown").state); // front matter
+}
+{
+  const f = file(["# Settings of the reminder service.", "! an old-style comment", "server.port=8080", "spring.application.name = reminders", "spring.datasource.url=jdbc:postgresql://${DB_HOST:localhost}:5432/library", "reminders.enabled=true",
+    "reminders.greeting=Gr\\u00fc\\u00dfe\\n", "reminders.year=#{T(java.time.Year).now()}", "reminders.recipients=front-desk, \\", "    back-office", "logging.level.root: INFO", "empty.value=", "[*.{py,toml}]", "indent_size = 4", "; a note"], "properties");
+  assert.equal(f.state, null);
+  assert.deepEqual(f.got[0], [["# Settings of the reminder service.", "comment"]]); assert.deepEqual(f.got[1], [["! an old-style comment", "comment"]]);
+  assert.deepEqual(f.at("server.port"), [["server", "function"], [".", "punctuation"], ["port", "function"], ["=", "operator"], ["8080", "number"]]);
+  f.want("spring.application.name", ["name", "function"], ["=", "operator"], ["reminders", "string"]);
+  f.want("spring.datasource.url", ["jdbc:postgresql://", "string"], ["${DB_HOST:localhost}", "variable"], [":5432/library", "string"]);
+  f.want("reminders.enabled", ["true", "boolean"]); f.want("reminders.greeting", ["\\u00fc", "string.escape"], ["\\n", "string.escape"]); f.want("reminders.year", ["#{T(java.time.Year).now()}", "variable"]);
+  assert.deepEqual(f.at("back-office"), [["back-office", "string"]]); // the value goes on after "\"
+  f.want("logging.level.root", [":", "operator"], ["INFO", "string"]); f.want("empty.value", ["=", "operator"]);
+  assert.deepEqual(f.at("[*.{py,toml}]"), [["[*.{py,toml}]", "keyword"]]); f.want("indent_size", ["indent_size", "function"], ["4", "number"]); assert.deepEqual(f.at("; a note"), [["; a note", "comment"]]);
+}
+{
+  const f = file(["# Packaging of the reminder service.", "[project]", "name = \"reminders\"", "dependencies = [\"boto3>=1.34\", 'jinja2']", "released = 2026-11-01T07:30:00Z", "debug = false", "ratio = 0.75", "[[tool.poetry.source]]",
+    "\"a key\" = { url = \"https://example.test/simple\", priority = 1 }   # the mirror", "description = \"\"\"", "Several lines # no comment", "of text.\"\"\"", "line-length = 120"], "toml");
+  assert.equal(f.state, null);
+  assert.deepEqual(f.at("[project]"), [["[project]", "type"]]); assert.deepEqual(f.at("[[tool"), [["[[tool.poetry.source]]", "type"]]);
+  f.want("name =", ["name", "function"], ["=", "operator"], ["\"reminders\"", "string"]); f.want("dependencies", ["[", "punctuation"], ["\"boto3>=1.34\"", "string"], ["'jinja2'", "string"]);
+  f.want("released", ["2026-11-01T07:30:00Z", "number"]); f.want("debug", ["false", "boolean"]); f.want("ratio", ["0.75", "number"]);
+  f.want("\"a key\"", ["\"a key\"", "function"], ["url", "function"], ["priority", "function"], ["1", "number"], ["# the mirror", "comment"]);
+  assert.deepEqual(f.at("Several lines"), [["Several lines # no comment", "string"]]); f.want("line-length", ["line-length", "function"], ["120", "number"]);
+}
+// A Dockerfile: only RUN, CMD and ENTRYPOINT hold a command; the other instructions' words are arguments.
+{
+  const f = file(["ARG PYTHON=3.12", "FROM python:${PYTHON} AS build", "WORKDIR /app", "COPY --from=build /app /app", "RUN --mount=type=cache,target=/root/.cache pip install -r requirements.txt \\", "    && python -m compileall -q .", "EXPOSE 8080",
+    "HEALTHCHECK --interval=30s CMD [\"python\", \"-m\", \"health\"]"], "dockerfile");
+  f.want("ARG", ["ARG", "keyword"], ["PYTHON", "constant"]); f.want("FROM", ["FROM", "keyword"], ["${PYTHON}", "constant"], ["AS", "keyword"]);
+  assert.deepEqual(f.at("WORKDIR"), [["WORKDIR", "keyword"]]); f.want("COPY", ["--from=build", "type"]); f.none("COPY", "/app", "function");
+  f.want("RUN", ["--mount=type=cache,target=/root/.cache", "type"], ["pip", "function"], ["-r", "type"]); f.want("&& python", ["python", "function"]);
+  f.want("EXPOSE", ["8080", "number"]); f.want("HEALTHCHECK", ["--interval=30s", "type"], ["CMD", "keyword"], ["\"", "string"]);
+}
 const sh = Array.from({ length: 10000 }, (_, i) => ({ kind: " ", text: ['if [[ -s "$STATE_DIR/$id.pem" && "$id" != tmp-* ]]; then', '  echo "$id $(stat -f %m "$STATE_DIR/$id.pem" 2>/dev/null || echo 0)" | sort -k2 -nr # c', "  KEEP=$((KEEP + 1)); log 'done' >&2", "fi"][i % 4] }));
-for (const [name, set, lang] of [["js", big, "js"], ["python", py, "python"], ["shell", sh, "shell"]]) {
+const lines10k = (lines) => Array.from({ length: 10000 }, (_, i) => ({ kind: " ", text: lines[i % lines.length] }));
+const ymlBig = lines10k(["jobs:", "  build:", "    runs-on: ubuntu-latest # the runner", "    steps:", "      - uses: actions/checkout@v4", "        with: { fetch-depth: 0, token: \"${{ secrets.TOKEN }}\" }", "      - run: |",
+  "          pytest -q --junitxml=\"report-${{ matrix.python }}.xml\" | tee out.log", "        env:", "          URL: jdbc:postgresql://${DB_HOST:localhost}:5432/library"]);
+const mkBig = lines10k(["OBJS = $(patsubst %.c,build/%.o,$(SRCS))", "build/%.o: %.c include/app.h", "\t$(CC) $(CFLAGS) -c $< -o $@ && echo \"built $@ at $$(date +%H:%M)\"", "ifeq ($(OS),Windows_NT)", "endif"]);
+const propsBig = lines10k(["spring.datasource.url=jdbc:postgresql://${DB_HOST:localhost}:5432/library", "# a comment", "server.port=8080", "name = \"reminders\"   # toml too"]);
+for (const [name, set, lang] of [["js", big, "js"], ["python", py, "python"], ["shell", sh, "shell"], ["workflow", ymlBig, "workflow"], ["make", mkBig, "make"], ["properties", propsBig, "properties"], ["toml", propsBig, "toml"]]) {
   // Best of three, so a busy machine (parallel test runs, model calls) does not fail a fast tokenizer.
   let ms = Infinity;
   for (let i = 0; i < 3 && ms >= 150; i++) {

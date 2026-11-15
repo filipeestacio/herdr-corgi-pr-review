@@ -5214,18 +5214,27 @@ export const ReviewMode = {
 
   // A row's code: plain text now; phase 3 (syntax.js) swaps in highlighted spans here.
   // Highlights queued files outside render, ~12 ms per slice, then redraws; the next render finds them in the cache.
+  // One file must not take the others' colors with it: a job that throws is dropped, and so is one that was running
+  // when Herdr stopped its slice (a tokenizer that does not come back). Its file stays plain, the queue goes on;
+  // hlAt lets the render start the queue again when a slice never came back to clear hlBusy.
   drainHighlight(cx) {
-    const start = Date.now();
+    const start = this.hlAt = Date.now();
     for (const [k, job] of this.hlQueue ?? []) {
-      job.hl ??= highlightJob(job.shown, job.lang); // a big file takes several slices: the job keeps its place
-      const out = highlightStep(job.hl, Math.max(1, 12 - (Date.now() - start)));
+      if (job.running) { this.hlQueue.delete(k); continue; }
+      let out = null;
+      job.running = true;
+      try {
+        job.hl ??= highlightJob(job.shown, job.lang); // a big file takes several slices: the job keeps its place
+        out = highlightStep(job.hl, Math.max(1, 12 - (Date.now() - start)));
+      } catch { this.hlQueue.delete(k); continue; }
+      job.running = false;
       if (!out) break;
       job.inf.spans = out;
       this.hlQueue.delete(k);
       if (Date.now() - start > 12) break;
     }
     this.hlBusy = false;
-    if (this.hlQueue?.size) { this.hlBusy = true; cx.timer.after(0, (cx) => this.drainHighlight(cx)); }
+    if (this.hlQueue?.size) { this.hlBusy = true; this.hlAt = Date.now(); cx.timer.after(0, (cx) => this.drainHighlight(cx)); }
     cx.notify();
   },
   // A row's code, highlighted (syntax.js); spans per row array are computed once per render (spanMap).
@@ -5366,7 +5375,8 @@ export const ReviewMode = {
       this.spanMap.set(it.src, inf);
       if (lang) (this.hlQueue ??= new Map()).set(inf, { shown, lang, hkey: `${head}:${it.path}`, inf });
     }
-    if (this.hlQueue?.size && !this.hlBusy) { this.hlBusy = true; cx.timer.after(0, (cx) => this.drainHighlight(cx)); }
+    // hlBusy older than two seconds: its slice was stopped or its timer never fired, so the queue starts again.
+    if (this.hlQueue?.size && (!this.hlBusy || Date.now() - (this.hlAt ?? 0) > 2000)) { this.hlBusy = true; this.hlAt = Date.now(); cx.timer.after(0, (cx) => this.drainHighlight(cx)); }
     if (items.length > 9990) items.length = 9990; // the virtual list's hard limit is 10000
     const keys = itemKeys(items), sizes = items.map((it) => this.sizeOf(it)), hcode = this.codeScroll(listShown ? items : []);
     if (listShown) { this.items = items; this.at = at; this.byKey = new Map(keys.map((k, i) => [k, items[i]])); }
