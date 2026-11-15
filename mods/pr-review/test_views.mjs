@@ -251,11 +251,21 @@ assert.equal(pendingText([{ file: "a.py" }, { file: "a.py" }, { file: "b.py" }])
   const bm = [{ kind: "security", finding: F("s1") }, { kind: "security", finding: F("s2") }, { kind: "resilience", path: "p1" }, { kind: "resilience", path: "p2" }, { kind: "resilience", path: "p3" },
     { kind: "resilience", path: null }, { kind: "criterion", finding: F("c1"), asks: [A("a1"), A("a2")] }, { kind: "criterion", finding: F("c2"), asks: [A("a1")] }, { kind: "ask", ask: A("a3"), asks: [A("a3")] },
     { kind: "rule" }, { kind: "finding", finding: F("h1") }, { kind: "finding", finding: F("h2") }, { kind: "verify" }];
-  assert.deepEqual(mergeGroups(bm).map((g) => g.text), ["⛨ 2 security", "3 resilience blockers", "1 not observable", "3 criteria", "1 check", "2 high", "1 fix to verify"]);
+  assert.deepEqual(mergeGroups(bm).map((g) => g.text), ["⛨ 2 security", "3 resilience blockers", "1 not observable", "2 findings on 2 criteria and 1 criterion without a finding", "1 check", "2 high", "1 fix to verify"]);
+  // Every number counts rows (acceptance, engineer 3): the numbers of a line add up to the rows it speaks of.
+  for (const part of [bm, bm.slice(5), bm.slice(7), bm.slice(8), []]) assert.equal(mergeGroups(part).reduce((n, g) => n + g.n, 0), part.length);
   assert.deepEqual(mergeFirst(bm, 5).map((r) => bm.indexOf(r)), [0, 1, 2, 5, 6], "every security row, then one of each group in order before a second of any");
   assert.deepEqual(mergeFirst(bm.slice(2), 5).map((r) => bm.slice(2).indexOf(r)), [0, 3, 4, 7, 8]);
   assert.deepEqual(mergeFirst(bm.slice(0, 3), 5).length, 3);
-  assert.deepEqual(mergeGroups(bm.slice(7), [bm[6]]).map((g) => g.text), ["1 criterion", "1 check", "2 high", "1 fix to verify"], "the criteria a shown row breaks are not counted again");
+  assert.deepEqual(mergeGroups(bm.slice(7)).map((g) => g.text), ["1 finding on 1 criterion and 1 criterion without a finding", "1 check", "2 high", "1 fix to verify"]);
+  assert.deepEqual(mergeGroups([bm[8], { kind: "ask", ask: A("a4"), asks: [A("a4")] }]).map((g) => [g.n, g.text]), [[2, "2 criteria without a finding"]]);
+  // Acceptance, engineer 2: the later findings of a row's cause count at that row, not under "Other findings".
+  {
+    const { mergeHeld } = await import("./views.js");
+    const tok2 = { id: "tok", ids: ["tok", "tok2"] }, tpl2 = { id: "tpl", same_cause: "tok2" }, lone = { id: "lone", same_cause: "gone" }, free = { id: "free" };
+    assert.deepEqual([...mergeHeld([{ kind: "security", finding: tok2 }, { kind: "rule" }], [tok2, tpl2, lone, free])], ["tok", "tpl"]);
+    assert.deepEqual([...mergeHeld([{ kind: "finding", finding: free }], [tpl2, lone, free])], ["free"], "its first is not a row: it stays among the other findings");
+  }
   // By cause: the later finding of a cause goes while the first is open, and the first row names its place.
   const { byCause } = await import("./views.js");
   const tok = { id: "a1", ids: ["a1"] }, tpl = { id: "a2", ids: ["a2"], same_cause: "a1" }, other = { id: "a3", ids: ["a3"] };

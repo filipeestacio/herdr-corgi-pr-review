@@ -627,6 +627,26 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     v.deep = keep;
   }
 }
+// Acceptance, engineer 2 and 3: the Overview. A later finding of a cause that has a row in "Before merge" is not under
+// "Other findings" again, and the numbers of "n more: …" (there and in the box over the layers) add up to n.
+{
+  const doc = JSON.parse(fx("findings-s.json")); doc.resilience = JSON.parse(fx("resilience-r2.json"));
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify(doc) });
+  const frameOf = () => { S.texts = new Set(); S.ids = new Set(); draw(v, "the Overview"); const got = { texts: [...S.texts], ids: [...S.ids] }; S.texts = null; S.ids = null; return got; };
+  const adds = (line) => { const [, n, rest] = /^(\d+) more: (.*) [▸→]$/.exec(line); return [Number(n), rest.split(/, | and /).reduce((sum, x) => sum + Number(/^(?:⛨ )?(\d+) /.exec(x)[1]), 0)]; };
+  v.command("page:overview", cx); (v.askOpen ??= new Set()).delete("bm-all"); v.askOpen.add("other");
+  const ov = frameOf(), more = ov.texts.filter((x) => /^\d+ more: /.test(x));
+  assert.ok(more.length > 0, "the Overview folds rows of Before merge");
+  for (const line of more) assert.equal(adds(line)[1], adds(line)[0], `the numbers add up: ${line}`);
+  const rows = v.mergeRows(), open2 = v.openFindings(), firstOf = (f) => open2.find((g) => g !== f && (g.id === f.same_cause || (g.ids ?? []).includes(f.same_cause)));
+  const partners = open2.filter((f) => f.same_cause && rows.some((r) => r.finding && r.finding === firstOf(f)));
+  assert.ok(partners.length > 0, "the fixture has a cause with two findings, the first before the merge");
+  const other = open2.filter((f) => ov.ids.includes(`rv-of-${f.id}`) || ov.ids.includes(`rv-ob-${f.id}`)).map((f) => f.id);
+  assert.ok(other.length > 0 && partners.every((f) => !other.includes(f.id)), "a cause's later finding is not among the other findings");
+  assert.equal(new Set([...rows.flatMap((r) => (r.finding ? [r.finding.id] : [])), ...partners.map((f) => f.id), ...other]).size, open2.length, "every unresolved finding is at one place: a row, a row's cause, or the other findings");
+  v.command("order:reading", cx); v.command("step:0", cx); v.attFold = false;
+  for (const line of frameOf().texts.filter((x) => /^\d+ more: /.test(x))) assert.equal(adds(line)[1], adds(line)[0], `the box over the layers adds up: ${line}`);
+}
 // Acceptance, engineer 1: a security run under older rules says so at the ⛨ count, in the verdict and in the bar, and
 // its re-run sentence counts the causes that hang on its threats. A run under the current rules says neither.
 {

@@ -27,7 +27,7 @@ import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf,
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState, codeOf, isStale } from "./pr.js";
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible, pastTop } from "./views.js";
-import { worst, byFocus, layerAccess, analysisAge, stateHints, noteRule, mergeGroups, mergeFirst, runLabel, byCause, sessionCost, sessionDir, fixEstimate, fixCostLine } from "./views.js";
+import { worst, byFocus, layerAccess, analysisAge, stateHints, noteRule, mergeGroups, mergeFirst, mergeHeld, runLabel, byCause, sessionCost, sessionDir, fixEstimate, fixCostLine } from "./views.js";
 import { archView, archLegend, visualsCard, visualCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR, bulletChart } from "./stack.js";
 import { visualPlan } from "./stack.js";
 import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCALE } from "./views.js";
@@ -2965,7 +2965,7 @@ export const ReviewMode = {
         .when(rest.length > 0, (x) => x.child(div().id("rv-att-more").tooltip("Open the Overview: its Before merge list has them all").h(22).px(4).flex().items_center().rounded(5).cursor_pointer()
           .text_size(TYPE.small).text_color(t.muted).hover((s) => s.text_color(t.foreground))
           .on_click((_e, cx) => { this.page = "overview"; (this.askOpen ??= new Set()).add("bm-all"); cx.notify(); })
-          .child(`${rest.length} more: ${mergeGroups(rest.map((a) => a.row), shown.map((a) => a.row)).map((p) => p.text).join(", ")} →`))));
+          .child(`${rest.length} more: ${mergeGroups(rest.map((a) => a.row)).map((p) => p.text).join(", ")} →`))));
   },
 
   // The PR's pages (Overview, Architecture, Security) at the top of the Analysis tab, above its layers: they are part
@@ -4712,7 +4712,7 @@ export const ReviewMode = {
     if (!rows.length) out.push(div().px(6).text_size(TYPE.body).text_color(t.muted).child(ai ? "Nothing stands before the merge." : "No analysis yet: the reviewers' findings are below."));
     out.push(...shown.map(mergeRow));
     if (hidden.length) out.push(div().id("rv-bm-more").px(16).py(2).text_size(TYPE.small).text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground)).on_click(flip("bm-all"))
-      .child(`${hidden.length} more: ${mergeGroups(hidden, shown).map((p) => p.text).join(", ")} ▸`));
+      .child(`${hidden.length} more: ${mergeGroups(hidden).map((p) => p.text).join(", ")} ▸`));
     else if (open("bm-all") && rows.length > 5) out.push(div().id("rv-bm-less").px(16).py(2).text_size(TYPE.small).text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground)).on_click(flip("bm-all")).child("Show the first five ▴"));
     out.push(div().h(14));
     // Criteria: met of all and their symbols in one line
@@ -4726,7 +4726,7 @@ export const ReviewMode = {
     if (extra.length) out.push(fold("extra", "Not in the task", div().child(`${extra.length}`), "What the diff does that the task did not ask for: click to show it", open("extra")));
     if (extra.length && open("extra")) out.push(...extra.map(ask));
     // Other findings: unresolved, not before the merge; the ones already there before this PR folded inside
-    const inRows = new Set(rows.flatMap((r) => (r.finding ? [r.finding.id] : []))), before = new Set(alreadyThere(this.openFindings()).map((x) => x.finding));
+    const inRows = mergeHeld(rows, this.openFindings()), before = new Set(alreadyThere(this.openFindings()).map((x) => x.finding));
     const rest = this.openFindings().filter((f) => !inRows.has(f.id)), mine = rest.filter((f) => !before.has(f.id)), old = rest.filter((f) => before.has(f.id));
     const sevOf = (l) => ["high", "medium", "low"].map((k) => [k, l.filter((f) => f.severity === k).length]).filter(([, c]) => c).map(([k, c]) => `${c} ${k}`).join(", ");
     if (rest.length) out.push(fold("other", "Other findings", div().truncate().child(`${mine.length}${mine.length ? ` · ${sevOf(mine)}` : ""}${old.length ? ` · ${old.length} already there before this PR` : ""}`),
