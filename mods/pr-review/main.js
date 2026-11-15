@@ -408,7 +408,9 @@ export default class PrReview extends View {
           const key = this.reviewKey;
           if (this.key() === context) await this.syncSource(cx).catch((e) => { this.note = `Could not load the review: ${e}`; });
           if (this.part === "review" || this.reviewKey !== key || this.note) cx.notify(); // the source's comments came: once more
-        } else if (this.dirty.has(this.root)) this.recheck(this.root, cx); // written again meanwhile
+        }
+        // Written again while this ran: once more in a second, also when no render comes to ask (a covered window draws nothing).
+        if (this.root && this.dirty.has(this.root) && this.key() === context) this.recheck(this.root, cx);
       }
     });
     if (!quiet) cx.notify();
