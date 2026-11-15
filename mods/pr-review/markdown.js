@@ -244,9 +244,14 @@ const numbered = (list, statusOf, asks, h, cx = null, moreOf = () => []) => list
 // tab's line of who found how many ("Analysis 13", "Codex review: failed").
 export function findingsMd(findings, { pr, head, statusOf = () => "open", asks = [], code = null, moreOf = () => [], notes = [], sources = [] } = {}) {
   const list = bySeverity(findings.filter((f) => unresolved(statusOf(f)))), cx = codeContext(code), settled = findings.filter((f) => !unresolved(statusOf(f))), fun = funnelOf(findings, statusOf);
+  // One part per severity ("## High (16)"), the findings numbered through under them: the preview lists a handful of
+  // parts to tick, not one per finding.
+  const groups = ["critical", "high", "medium", "low"].map((k) => [k, list.filter((f) => f.severity === k)]).filter(([, l]) => l.length), rest = list.filter((f) => !groups.some(([, l]) => l.includes(f)));
+  const group = (title, l) => [`## ${title} (${l.length})`, "", ...l.flatMap((f) => [`### ${list.indexOf(f) + 1}. ${flat(f.title)}`, "", findingBody(f, { status: statusOf(f), asks, h: "####", cx, more: moreOf(f) })])];
   return doc(prLine({ pr, head }), "", `# ${count(list.length, "unresolved finding")}${list.length ? `: ${sevCount(list)}` : ""}`, "",
     findings.length > 0 && countLine(findingCounts(findings, statusOf)), Boolean(funnelShort(fun)) && `${funnelShort(fun)}.`, sources.length > 0 && `Sources: ${sources.map(flat).join(" · ")}.`,
-    "A finding with a fix sent stays unresolved until it is verified.", "", numbered(list, statusOf, asks, "##", cx, moreOf),
+    "A finding with a fix sent stays unresolved until it is verified.", "",
+    ...groups.flatMap(([k, l]) => group(`${k[0].toUpperCase()}${k.slice(1)}`, l)), rest.length > 0 && group("Other severity", rest),
     settled.length > 0 && [`## Fixed or dismissed (${settled.length})`, "", ...settled.map((f) => `- ${findingLine(f, statusOf(f))}`), ""],
     notes.length > 0 && [`## AI notes (${notes.length})`, "", ...notes.map((x) => `- ${x.severity ?? "low"}: ${flat(x.reason)} (\`${x.path}:${x.line}\`)`), ""]);
 }
@@ -406,6 +411,7 @@ export function securityMd({ pr, head, ai = null, findings = [], statusOf = () =
   // The guards: rules that take a right away, with the threat they hold against (views.js asideOf).
   const guards = asideOf({ arch: a, access: ai?.access ?? [], threats, gates: ai?.gates ?? [], bypasses: ai?.bypasses ?? [], findings: openAll }).guards ?? [];
   // Codex answers in text and a small Claude pass turns it into findings: an older run carries that pass's model.
+  const secN = findingCounts(findings, statusOf).security; // the page's one number: ⛨ findings once per cause
   const modelOf = (kind, r) => (!r.model ? "" : kind === "codex" && /^claude/i.test(r.model) ? ` (Codex; its text turned into findings by ${r.model})` : ` (${r.model})`);
   const label = (id) => a?.nodes?.find((n) => n.id === id)?.label ?? (a?.groups ?? []).find((g) => g.id === id)?.label ?? (id === "internet" ? "Internet" : id);
   const num = (r) => rows.indexOf(r) + 1, fline = (f) => `  - ${findingLine(f, statusOf(f))}`;
@@ -462,9 +468,9 @@ export function securityMd({ pr, head, ai = null, findings = [], statusOf = () =
   const ordered = placed.map((r) => r.f), why = new Map(placed.map((r) => [r.f.id, r.why]));
   const effLines = [...(eff ?? [])].map(([id, v]) => `- ${flat(label(id))}: ${v.cond ? `${v.trust[0].toUpperCase()}${v.trust.slice(1)} if ${v.cond.replace(/^if crossing /, "")}` : `Reachable as ${v.trust}`}. Drawn in ${flat(v.zone?.name ?? v.drawn)} (${v.drawn}), but ${flat(v.why)}${v.cond ? ` ${v.cond}` : ""}.`);
   return doc(prLine({ pr, head }), "", "# Security", "",
-    `${count(list.length, "unresolved security finding")}${list.length ? `: ${sevCount(list)}` : cited.length ? " about access or data" : ""}.${cited.length ? ` ${count(cited.length, "other unresolved finding backs", "other unresolved findings back")} a threat named here (${sevCount(cited)}).` : ""}`, "",
+    `${count(list.length, "unresolved security finding")}${list.length ? `: ${sevCount(list)}` : cited.length ? " about access or data" : ""}${secN && secN !== list.length ? `, ${count(secN, "cause")}` : ""}.${cited.length ? ` ${count(cited.length, "other unresolved finding backs", "other unresolved findings back")} a threat named here (${sevCount(cited)}).` : ""}`, "",
     // As the page counts: ⛨ findings once per cause, the findings behind a threat, the guards this PR loosens.
-    rows.length > 0 && [secSentence(rows, findingCounts(findings, statusOf).security, cited.length, guards.filter((g) => g.loosened).length), ""],
+    rows.length > 0 && [secSentence(rows, secN, cited.length, guards.filter((g) => g.loosened).length), ""],
     // pr.js secNote: a run from before the current rules of the security view.
     Boolean(ai?.securityFrom?.predates) && ["This security review is older than the current rules for guards, operators and taken-over roles, so a crossing it calls not assessed may only be left open by the old prompt. Re-run it for the current view.", ""],
     [`## Trust boundary crossings (${changed.length}${rest.length ? `, and ${rest.length} unchanged` : ""})`, "",

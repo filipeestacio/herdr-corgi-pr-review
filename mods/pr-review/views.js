@@ -1529,6 +1529,12 @@ export const RES_NO_PICTURE = { retry: "the run named no retry or redelivery on 
   race: "the run named no steps of this race", state: "the run named no writers for this state" };
 export const resNoPicture = (p) => `no picture: ${RES_NO_PICTURE[p?.kind] ?? "the run named no call on this path that multiplies or times out"}`;
 
+// "#2 left In progress: its PR was merged.": the reviews that were listed a moment ago (before: a Set of urls) and are
+// among the merged or closed ones now (left, from inProgressLeft); null when none moved.
+export function leftNow(before, left) {
+  const moved = (left ?? []).filter((r) => before?.has(r.url));
+  return moved.length ? moved.map((r) => `#${r.number} left In progress: its PR was ${r.state}.`).join(" ") : null;
+}
 
 // ---- Resilience: a path's second line, short enough to read: the way, at most three of the things it breaks (the
 // rest counted, all of them in `tip`), and its findings. today: why it cannot happen today, a line of its own. Pure.

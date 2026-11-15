@@ -389,6 +389,9 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   v.spaceSlug = { root: "/h/a", slug: "saefty/corgi-demo" }; v.picking = true; draw(v, "panel: In progress with more behind Show all");
   assert.deepEqual([v.panelProgress().shown.map((r) => r.number), v.panelProgress().more], [[2], 2]);
   v.allOpen = true; draw(v, "panel: In progress, all shown");
+  // A review listed a moment ago whose PR is merged now: the line that says so, once.
+  { const before = S.store.get("review.open"), merged = { ...prs[0], state: "merged" }; v.prs = [merged, ...v.prs.slice(1)]; draw(v, "panel: a review left In progress, said in a line");
+    assert.equal(v.leftNote, "#2 left In progress: its PR was merged."); v.prs = prs; v.leftNote = null; S.store.set("review.open", before); draw(v, "panel: In progress again"); }
   assert.deepEqual(v.panelProgress().shown.map((r) => r.number), [2, 5, 9], "all: this repo's first, then the other repo's");
   v.dropReview(prs[0].url, cx); await settle(); draw(v, "panel: a review removed, Undo offered");
   assert.ok(!S.store.get("review.open").some((r) => r.number === 2) && S.store.get("review.minimized") === null && v.undo?.number === 2, "✕ takes the review and its chip away and keeps it for Undo");
@@ -400,6 +403,7 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   S.exec = async (cmd, args) => (cmd === "gh" && args[1] === "diff" ? { code: 0, stdout: fx("pr2.diff"), stderr: "" } : { code: 1, stdout: "", stderr: "stub" });
   v.memo.clear(); v.context = null; v.choose(prs[0], cx); await settle(); draw(v, "panel: PR #2 with its diff");
   assert.ok(v.files.length > 1 && v.rows.length > 0 && !v.error, "the diff is shown");
+  v.panelCommand("wrap:on", cx); v.panelH = 900; draw(v, "panel: long lines wrapped, the file list up to 40 % high"); v.panelCommand("wrap:off", cx);
   v.sel = v.rows.findIndex((r) => r.kind === "+"); draw(v, "panel: a line picked, the composer under it");
   v.selEnd = v.sel + 2; v.question = "Why this?"; v.addComment(cx); await settle(); draw(v, "panel: a pending comment and the bar");
   assert.equal(v.comments.length, 1, "the comment was added");
@@ -418,7 +422,7 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     for (let k = 0; k <= v.walk.steps.length + 1; k++) { v.step = k; draw(v, `panel: Walkthrough, layer ${k}`); }
     v.walkMore = true; v.walkError = "The model gave no answer"; draw(v, "panel: Walkthrough, its options and an error"); v.walkMore = false; v.walkError = null;
   }
-  v.panelCommand("setup", cx); draw(v, "panel: Setup"); v.panelCommand("setup:close", cx); assert.equal(v.view, "diff", "setup:close leaves Setup like its Close button"); draw(v, "panel: Setup closed");
+  v.panelCommand("setup", cx); draw(v, "panel: Setup"); v.setupOpen = true; draw(v, "panel: Setup, the list of programs unfolded"); v.panelCommand("setup:close", cx); assert.equal(v.view, "diff", "setup:close leaves Setup like its Close button"); draw(v, "panel: Setup closed");
   // The other scripted clicks: the folds, a pick and a removal by owner/repo#number (two repos can share a number).
   for (const c of ["picker", "merged", "other", "progress-all", "progress-all", "merged", "other"]) { v.panelCommand(c, cx); draw(v, `panel: command ${c}`); }
   v.panelCommand(`drop:${prs[0].repo}#${prs[0].number}`, cx); await settle(); assert.equal(v.undo?.url, prs[0].url); v.panelCommand("undrop", cx); await settle(); assert.equal(v.undo, null);
@@ -497,7 +501,7 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   // What a page draws for itself and a text does not need: offers and prices of runs, ages, buttons, hints how to use
   // the page, lines that only fold or count what the text has in full, and the certainty said in the page's own
   // second wording (the text has it as Certainty and Preconditions).
-  const NOT_COPIED = [/recommended because/, /^Re-run \(/, /^Run probe/, /^last run .* ago/, /^A click shows the way\.$/, /^Verify (all \d+ )?with an agent/, /^Derived from the code that was read;$/, /^It needs nothing else:$/, /^it holds as the code stands\.$/, /lit on the map, the rest dimmed/,
+  const NOT_COPIED = [/recommended because/, /^Re-run \(/, /^Run probe/, /^last run .* ago/, /^A click shows the way\.$/, /^Verify (all \d+ )?with an agent/, /^Derived from the code that was read;$/, /^It needs nothing else:$/, /^it holds as the code stands\.$/, /lit on the map, the rest dimmed/, /^Open a path to light it on the map\.$/,
     /^in a sandbox, without network, at most 30 s$/, /^\d+ more: /, /^\d+ [^.]*(criteria|high|medium|low|observable|blockers?|paths?) ▸$/, /^GitHub read .* ago/, /^call over a trust boundary$/, /^Look inside/, /Ask names it/, /^This analysis has no further details for this card\.$/, /^“Look inside” reads/, /^“↻ Refresh diagrams”/,
     /^and \d+ more in the Findings tab$/, /^Ask about this layer$/, /^A finding sent to Fix stays unresolved and shows here/, /^not counted as findings$/];
   const norm = (x) => String(x).toLowerCase().replace(/,? \d+ (s|min|h|d|days?) ago/g, "").replace(/#\d+;|#quot;|#lt;|#gt;/g, " ").replace(/[^a-z0-9äöüß]+/g, " ").trim();
@@ -540,6 +544,15 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   v.command("page:res", cx);
   check("Resilience", drawn([...paths.map((p) => () => v.command(`res-path:${p.id}`, cx)), () => { v.command("res-more", cx); v.command("res-clean", cx); v.command("res-add", cx); v.command("res-probe-open:r1", cx); }], page),
     { flowchart: 1 + paths.filter((p) => (p.via ?? []).length > 0).length, sequenceDiagram: (v.resNow().races ?? []).filter((r) => paths.some((p) => (p.findings ?? []).some((id) => (r.findings ?? []).includes(id)))).length });
+  // With dependencies that fail: their part is in the text and in the preview's list.
+  {
+    const dn = [{ dep: "Mailer", kind: "external", mode: "sync", at: "library/mailer.py:14", cases: [{ when: "slow", handled: "no", how: "waits up to 7 s", effect: "The request hangs until its timeout.", path: paths[0].id, findings: [] },
+      { when: "down", at: "library/mailer.py:19", handled: "yes", how: "fails fast", effect: "", path: null, findings: [] }, { when: "recovers", at: null, handled: "not_checkable", how: "", effect: "", path: null, findings: [] }] }];
+    const keep = v.find.resilience; v.find.resilience = { ...keep, downstream: dn }; if (v.ai.resilience) v.ai.resilience = { ...v.ai.resilience, downstream: dn };
+    const md = check("Resilience with dependencies", drawn([() => v.command("res-path:", cx)], page), {});
+    assert.ok(mdParts(md).parts.some((p) => /^When a dependency fails \(1\)$/.test(p.title)) && /- Mailer \(/.test(md), "the dependencies are a part of the text and of the preview");
+    v.find.resilience = keep; if (v.ai.resilience) delete v.ai.resilience.downstream;
+  }
   v.command("page:overview", cx); v.rulesOpen = true; v.relOpen = true;
   check("Overview", drawn([() => {}, ...[...v.ai.asks.map((x) => x.id), "other"].map((k) => () => v.command(`criterion:${k}`, cx))], page), {});
   v.command("page:arch", cx);
@@ -549,7 +562,8 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   check("a layer", drawn([() => {}], () => { v.stepRow(st, 0, tt); v.item({ t: "step", s: st, i: 0 }, tt); }), { stateDiagram: (st.visuals ?? []).filter((x) => x.kind === "state_machine").length });
   v.command("findings", cx); v.ffocus = null;
   const all = drawn([() => {}], () => v.findingsPane(tt));
-  check("the Findings tab", all, {});
+  const tab = check("the Findings tab", all, {});
+  assert.ok(mdParts(tab).parts.length <= 6 && mdParts(tab).parts.some((p) => /^High \(\d+\)$/.test(p.title)), "the preview lists the findings by severity, not one by one");
   const f = v.findings().find((x) => x.sources.length > 1); v.ffocus = f.id;
   const one = drawn(["reported", "evidence", "sent", "verified", "in_pr"].map((k) => () => { v.fstep = { id: f.id, key: k }; }), () => v.findingsPane(tt)).filter((x) => !all.includes(x));
   check("an open finding", one, {}); v.fstep = null;
