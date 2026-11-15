@@ -448,7 +448,8 @@ def security_view(answer, findings, pic, changed, root=None):
         return [{"access": r["id"]} for r in rows if r.get("effect") != "deny" and (
             (r.get("public") and r.get("node") == w["to"] and trust(w["from"]) == "public")
             or (r.get("node") == w["to"] and r.get("principal_node") in (w["from"], group_of.get(w["from"])) and r.get("principal_node"))
-            or (r.get("node") == w["from"] and any(t["where"] == {"access": r["id"]} and walks(t) for t in threats)))]
+            or (r.get("node") == w["from"] and r.get("principal_kind") in ("operator", "ci") and w in crossing
+                and any(t["where"] == {"access": r["id"]} and walks(t) for t in threats)))]
     for where, boundary in open_:
         if not any(t["where"] in (where, *same(where)) for t in threats):
             threats.append({"id": f"t{len(threats) + 1}", "where": where, "boundary": boundary, "threat": "No threat was named for this crossing.", "stride": "",

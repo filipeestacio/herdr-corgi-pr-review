@@ -993,7 +993,7 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.equal(rows[4].identity, "Topic", "inside one frame the card says who calls, not the account");
   const aside = asideOf({ arch, access, threats, findings });
   assert.deepEqual(aside.guards.map((g) => [g.text, g.threats.map((x) => x.id)]), [
-    ["Guard at Topic: everyone but the fn role is denied events:Put (resource policy, infra.tf:1).", ["t3"]], ["Guard at Sink: anyone in the account is denied store:* without TLS (infra.tf:1).", []]]);
+    ["Guard at Topic: denies events:Put to everyone but the fn role (resource policy, infra.tf:1).", ["t3"]], ["Guard at Sink: denies store:* without TLS to anyone in the account (infra.tf:1).", []]]);
   assert.deepEqual(aside.rights.map((r) => r.text), ["fn role may logs:Put on fn-policy (log group, infra.tf:1)."], "nothing is lost: the right off the map stands here");
   assert.deepEqual(threatCited(threats, findings).map((f) => f.id), ["flood", "script"]);
   const said = secSentence(rows, 0, 2);
@@ -1003,5 +1003,7 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.deepEqual(blastOf(arch, access).map((b) => b.text), ["If fn role is taken over, it can secrets:Get on Secrets; logs:Put on log group fn-policy."], "by principal behind the way in; no guard, no operator");
   assert.equal(skipText("git diff not run: Bash denied, read the changed files instead"), "git diff not run: read the changed files instead");
   assert.equal(skipText("tests not reviewed"), "tests not reviewed");
+  assert.equal(skipText("git diff (the tool was denied, so I read the files at HEAD)"), "git diff (I read the files at HEAD)");
+  assert.equal(skipText("the shell: not available, so no tests were run"), "no tests were run");
   console.log("ok guards, operator ways and the findings behind threats");
 }

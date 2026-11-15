@@ -814,12 +814,12 @@ const namedAt = (x, threats, findings) => (threats ?? []).some((t) => !t.derived
 const offMap = (x, threats, findings) => !x.public && !["operator", "ci"].includes(x.principal_kind) && Boolean(x.principal_node) && !x.node && !namedAt(x, threats, findings);
 const notCrossing = (x, threats, findings) => isGuard(x) || offMap(x, threats, findings);
 // → {guards: [{row, text, threats: the named ones at it}], rights: [{row, text}]}: a guard as "Guard at <its card or
-// resource>: <who> is denied <what> (<rule>, <at>)", a right as "<who> may <what> on <resource> (<kind>, <at>)".
+// resource>: denies <what> to <who> (<rule>, <at>)", a right as "<who> may <what> on <resource> (<kind>, <at>)".
 export function asideOf({ arch = null, access = [], threats = [], findings = [] } = {}) {
   const label = (id) => (arch?.nodes ?? []).find((n) => n.id === id)?.label ?? null, plainAct = (a) => String(a).replace(/^\s*(deny|denies|block|blocks)\s+/i, "");
   const tail = (x) => [x.auth, x.at].filter(Boolean).join(", ");
   return { guards: (access ?? []).filter(isGuard).map((x) => ({ row: x, threats: (threats ?? []).filter((t) => !t.derived && t.where?.access === x.id),
-      text: `Guard at ${label(x.node) ?? x.resource}: ${x.principal || "everyone else"} is denied ${(x.actions ?? []).map(plainAct).join(", ") || "access"}${tail(x) ? ` (${tail(x)})` : ""}.` })),
+      text: `Guard at ${label(x.node) ?? x.resource}: denies ${(x.actions ?? []).map(plainAct).join(", ") || "access"} to ${x.principal || "everyone else"}${tail(x) ? ` (${tail(x)})` : ""}.` })),
     rights: (access ?? []).filter((x) => !isGuard(x) && offMap(x, threats, findings)).map((x) => ({ row: x,
       text: `${x.principal || "A principal"} may ${(x.actions ?? []).join(", ") || "act"} on ${x.resource}${[x.kind, x.at].filter(Boolean).length ? ` (${[x.kind, x.at].filter(Boolean).join(", ")})` : ""}${x.used === false ? ", granted and not used" : ""}.` })) };
 }
@@ -844,7 +844,7 @@ export function blastOf(arch, access) {
 }
 // A run's "left out" line without the words about its tools ("git diff not run: Bash denied, read the files" → "git
 // diff not run: read the files"): what it did not look at stays.
-export const skipText = (s) => String(s ?? "").replace(/\b(bash|tool|permission|sandbox)\b[^,.;:]*\b(denied|refused|not allowed|blocked)\b\s*[,;:]?\s*/gi, "").trim();
+export const skipText = (s) => String(s ?? "").replace(/(?:\bthe\s+)?\b(bash|tool|permission|sandbox|shell)\b:?[^,.;:()]*\b(denied|refused|not allowed|blocked|not available|unavailable)\b\s*[,;:]?\s*(?:(?:so|and)\s+)?/gi, "").trim();
 
 // Whether a crossing is new or changed in this PR (not said counts as such: better shown than hidden).
 // An operator's way derived from a gate's condition belongs to that gate, so it shows with it whatever its own change.

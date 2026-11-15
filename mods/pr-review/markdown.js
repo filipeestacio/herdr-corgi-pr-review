@@ -322,7 +322,8 @@ function blastMd(ai, h) {
     const free = [...new Set(out.filter((e) => !zoneOf(e.to)).map((e) => e.to))];
     // With the principal's card named (a newer run): by principal, each right on its card or, off the map, its kind
     // and resource; else as before, "it can … on <resource>".
-    const on = (x) => `${(x.actions ?? []).map(flat).join(", ") || "use"} on ${nodes.some((n) => n.id === x.node) ? name(x.node) : [x.kind, flat(x.resource)].filter(Boolean).join(" ")}${x.used === false ? " (granted, not used by the code)" : ""}`;
+    // An operator's right works through its script or workflow (the row's card), not on it.
+    const on = (x) => `${(x.actions ?? []).map(flat).join(", ") || "use"} ${["operator", "ci"].includes(x.principal_kind) ? "through" : "on"} ${nodes.some((n) => n.id === x.node) ? name(x.node) : [x.kind, flat(x.resource)].filter(Boolean).join(" ")}${x.used === false ? " (granted, not used by the code)" : ""}`;
     const who = [...new Set(rights.filter((x) => x.principal_node).map((x) => flat(x.principal)))];
     const can = !rights.length ? "no right in this PR names it" : who.length ? who.map((p) => `${p} can ${rights.filter((x) => flat(x.principal) === p).map(on).join("; ")}`).join(". ") : `it can ${rights.map(right).join("; ")}`;
     const via = [...reached.map((x) => `${flat(x.name ?? x.id)} (${x.trust ?? "trust not stated"})`), free.length && `${count(free.length, "card")} outside every zone (${free.map(name).join("; ")})`].filter(Boolean);
