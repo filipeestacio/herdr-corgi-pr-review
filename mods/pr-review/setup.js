@@ -2,14 +2,21 @@
 // A mod can't install programs: Setup only shows the command, and "Install in terminal" pre-types it for you.
 
 // need: required (the panel can't work without it), optional (one feature), lsp (go-to-definition for a language).
-// also: more programs the same item needs. auth: how to log in, when the check says logged out.
+// also: more programs the same item needs. auth: how to log in, when the check says logged out. os: the one system
+// the program is for (bwrap; macOS has sandbox-exec built in). A minimum version and what happens below it stand in
+// `what`. ponytail: Setup does not compare versions; the feature that needs one says so when it starts (review.js
+// pushLock, the Codex run's own error). Add a version check here when people run into it.
 export const TOOLS = [
-  { id: "git", need: "required", what: "Diffs, checkouts and review worktrees", mac: "brew install git", linux: "sudo apt install git" },
+  { id: "git", need: "required", what: "Diffs, checkouts and review worktrees. From 2.46 on, fix and verify agents cannot push even where a remote has a push URL of its own; with an older git they do not start in such a clone.",
+    mac: "brew install git", linux: "sudo apt install git" },
   { id: "gh", need: "required", what: "PR lists, diffs, CI checks and clones (GitHub CLI)", mac: "brew install gh", linux: "sudo apt install gh", auth: "gh auth login" },
   { id: "claude", need: "required", what: "The AI analysis, reviewers, triage and fix verification (Claude Code CLI)",
     mac: "npm install -g @anthropic-ai/claude-code", linux: "npm install -g @anthropic-ai/claude-code", auth: "claude auth login" },
   { id: "python3", need: "required", what: "The helper scripts (analysis, clones, language-server bridge)", mac: "brew install python", linux: "sudo apt install python3" },
-  { id: "codex", need: "optional", what: "Codex review (a second reviewer)", mac: "npm install -g @openai/codex", linux: "npm install -g @openai/codex" },
+  { id: "codex", need: "optional", what: "Codex review (a second reviewer). It runs with a permission profile that reads only the PR checkout (checked with Codex 0.164); a Codex without permission profiles fails the run instead of reading more.",
+    mac: "npm install -g @openai/codex", linux: "npm install -g @openai/codex" },
+  { id: "bwrap", need: "optional", os: "linux", what: "The sandbox for probes on Linux (bubblewrap). Without it every probe asks first and its script runs with no sandbox: it can read and change your files and reach the network.",
+    mac: null, linux: "sudo apt install bubblewrap" },
   { id: "acli", need: "optional", what: "The Jira ticket a PR names, in the task check (Atlassian CLI)",
     mac: "brew tap atlassian/homebrew-acli && brew install acli", linux: null },
   { id: "typescript-language-server", also: ["tsc"], need: "lsp", lang: "TypeScript and JavaScript",
@@ -51,7 +58,7 @@ export function parseCheck(text) {
 // One row per tool: status ok | missing (required) | optional-missing | logged-out, what it enables, the install
 // command for this OS ("darwin" or "linux"; null when there is no simple one).
 export function report({ found = {}, auth = {} } = {}, os = "darwin") {
-  return TOOLS.map((t) => {
+  return TOOLS.filter((t) => !t.os || t.os === os).map((t) => {
     const have = [t.id, ...(t.also ?? [])].every((n) => Boolean(found[n]));
     const loggedOut = have && t.auth && auth[t.id] === false;
     const status = !have ? (t.need === "required" ? "missing" : "optional-missing") : loggedOut ? "logged-out" : "ok";

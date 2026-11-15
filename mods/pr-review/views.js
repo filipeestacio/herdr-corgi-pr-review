@@ -1301,23 +1301,32 @@ export const certaintyText = (f) => `${f?.certainty ?? ""}${f?.certainty === "co
 // Which probe confirmed a finding, as a sentence after its certainty (" Probe r1 reproduced it, with the platform modeled.").
 export const probedText = (f) => (f?.certainty === "confirmed" && f?.probed ? ` Probe ${f.probed.id} reproduced it${f.probed.strength === "models_env" ? ", with the platform modeled" : ""}.` : "");
 
-// "Before merge" counted by what decides it, one number per group, in the rows' order: "⛨ 2 security", "5 criteria"
-// (the criteria not met that its rows break or stand for, each once), "5 resilience blockers", "14 high" (the other
-// findings by severity), "2 checks", "1 fix to verify", "1 overlapping PR". rows: review.js mergeRows (pr.js
-// beforeMerge and the Resilience run's rows); seen: rows already shown, whose criteria are not counted again. -> [{key, n, text}]
+// "Before merge" counted by what decides it, one number per group, in the rows' order: "⛨ 2 security", "9 findings on
+// 3 criteria" (the rows that break a criterion and how many criteria they break; a criterion nothing stands for is
+// "1 criterion without a finding"), "5 resilience blockers", "14 high" (the other findings by severity), "2 checks",
+// "1 fix to verify", "1 overlapping PR". Every number counts rows, so the numbers of a line add up to the rows it
+// speaks of ("16 more: …"). rows: review.js mergeRows (pr.js beforeMerge and the Resilience run's rows). -> [{key, n, text}]
 const mergeKey = (r) => (r.kind === "security" ? "security" : r.kind === "criterion" || r.kind === "ask" ? "criteria" : r.kind === "resilience" ? (r.path ? "resilience" : "blind")
   : r.kind === "finding" ? `sev-${r.finding?.severity ?? "high"}` : r.kind === "verify" || r.kind === "overlap" ? r.kind : "checks");
-export function mergeGroups(rows, seen = []) {
-  const say = { security: (n) => `⛨ ${n} security`, criteria: (n) => `${n} ${n === 1 ? "criterion" : "criteria"}`, resilience: (n) => `${n} resilience ${n === 1 ? "blocker" : "blockers"}`, // the verdict line's word for the same paths
+export function mergeGroups(rows) {
+  const say = { security: (n) => `⛨ ${n} security`, resilience: (n) => `${n} resilience ${n === 1 ? "blocker" : "blockers"}`, // the verdict line's word for the same paths
     blind: (n) => `${n} not observable`, verify: (n) => `${n} ${n === 1 ? "fix" : "fixes"} to verify`, overlap: (n) => `${n} overlapping ${n === 1 ? "PR" : "PRs"}`, checks: (n) => `${n} ${n === 1 ? "check" : "checks"}` };
-  const groups = new Map(), asks = new Set(seen.flatMap((r) => (r.asks?.length ? r.asks : [r.ask]).filter(Boolean).map((a) => a.id)));
-  for (const r of rows) {
-    const k = mergeKey(r);
-    if (!groups.has(k)) groups.set(k, 0);
-    if (k === "criteria") for (const a of r.asks?.length ? r.asks : [r.ask]) { if (a && !asks.has(a.id)) { asks.add(a.id); groups.set(k, groups.get(k) + 1); } }
-    else groups.set(k, groups.get(k) + 1);
-  }
-  return [...groups].filter(([, n]) => n > 0).map(([key, n]) => ({ key, n, text: say[key] ? say[key](n) : `${n} ${key.slice(4)}` }));
+  const crit = (n) => `${n} ${n === 1 ? "criterion" : "criteria"}`;
+  const criteria = (l) => {
+    const fs = l.filter((r) => r.kind === "criterion"), a = l.length - fs.length, c = new Set(fs.flatMap((r) => (r.asks?.length ? r.asks : [r.ask]).filter(Boolean).map((x) => x.id))).size;
+    return [fs.length > 0 && `${fs.length} ${fs.length === 1 ? "finding" : "findings"}${c ? ` on ${crit(c)}` : ""}`, a > 0 && `${crit(a)} without a finding`].filter(Boolean).join(" and ");
+  };
+  const groups = new Map();
+  for (const r of rows) { const k = mergeKey(r); groups.set(k, [...(groups.get(k) ?? []), r]); }
+  return [...groups].map(([key, l]) => ({ key, n: l.length, text: key === "criteria" ? criteria(l) : say[key] ? say[key](l.length) : `${l.length} ${key.slice(4)}` }));
+}
+// The findings "Before merge" stands for (acceptance, engineer 2): each row's own, and the later open findings of its
+// cause (pr.js same_cause), which byCause puts on that row. They count there, not again under "Other findings".
+// open: the unresolved findings. -> Set of finding ids.
+export function mergeHeld(rows, open = []) {
+  const own = new Set(rows.flatMap((r) => (r.finding ? [r.finding.id] : []))), held = new Set(own);
+  for (const f of open) if (f.same_cause && open.some((g) => g !== f && own.has(g.id) && (g.id === f.same_cause || (g.ids ?? []).includes(f.same_cause)))) held.add(f.id);
+  return held;
 }
 // The rows shown of "Before merge" (and the box over the layers): at most n, every security row first, then the first
 // of each other group before a second of any, in the rows' order, so a criterion is not pushed out by resilience
@@ -1675,3 +1684,50 @@ export function signEl(div, t, sign, glyph = sign.glyph) {
 }
 // A risk mark's label for a chip (rowMarks): the ⛨ as a sign before the word, or the text alone.
 export const markLabel = (div, t, m) => (m.glyph ? div().flex().items_center().gap(3).child(signEl(div, t, m, m.glyph)).child(m.word) : m.text);
+
+// ---- Resilience: the run's own ids out of its sentences (acceptance, UX 1). A path's id (p5) reads as the number the
+// list shows ("path 6"; the list is sorted, blockers first, so the two differ); a ref the run gave one of its findings
+// (r_f1: it is not stored, so nothing can show which finding it was) goes. nums: Map(path id -> number shown). Pure.
+// ponytail: a word like "p5" in a sentence is read as the path with that id; the run writes its ids no other way.
+export function resRefs(text, nums) {
+  return String(text ?? "").replace(/\s*\((?:see\s+)?r_f\d+(?:(?:,|\s+and)\s*r_f\d+)*\)/g, "").replace(/[;,]?\s*\bsee r_f\d+(?:(?:,|\s+and)\s*r_f\d+)*/g, "")
+    .replace(/\b(?:paths?\s+)?(p\d+)\b/g, (all, id) => (nums?.has(id) ? `path ${nums.get(id)}` : all));
+}
+// The paths as the page and its Markdown list them: in the page's order, each in the page's shape, their sentences
+// (note, why not today, the race's note) with the numbers shown. -> {paths, nums, say}; say(text) does the same for
+// another sentence of the run (a check's reason).
+export function resShown(res) {
+  const paths = resOrder((res?.paths ?? []).map((p) => resPathView(p, res ?? {}))), nums = new Map(paths.map((p, k) => [p.id, k + 1])), say = (s) => (s ? resRefs(s, nums) : s);
+  return { nums, say, paths: paths.map((p) => ({ ...p, note: say(p.note), wired: p.wired && { ...p.wired, today: say(p.wired.today) }, race: p.race && { ...p.race, note: say(p.race.note) } })) };
+}
+
+// ---- Security page: a finding stands in full once among the crossings (acceptance, UX 3), at the first crossing that
+// names it; a later crossing refers to that one by its number. rows: the crossings shown, in their order; num(r): a
+// row's number in the list. -> Map(row key -> {first: [finding], again: [{f, at}]}). Pure.
+export function crossOnce(rows, num = (r) => rows.indexOf(r) + 1) {
+  const seen = new Map(), out = new Map();
+  for (const r of rows ?? []) {
+    const first = [], again = [];
+    for (const f of r.findings ?? []) { if (seen.has(f.id)) again.push({ f, at: seen.get(f.id) }); else { seen.set(f.id, num(r)); first.push(f); } }
+    out.set(r.key, { first, again });
+  }
+  return out;
+}
+
+// ---- Resilience: one statement about old or new (acceptance, UX 4). Where the diff dates a path (pr.js withResilience:
+// pre_existing true or false, from the lines of its findings), that word counts, and its probe says only what the script
+// did on the base ("on base: the script could not run there"); the probe's verdict ("new in this PR", from an ImportError on the base)
+// dates only a path the diff could not date (resByProbe). x: the probe; byDiff: the diff dated its path; words:
+// threads.js BASE_WORDS. -> {dates: the word is a verdict of old or new, word} | null without a base run.
+// What the script did there, by the runner's verdict (an ImportError or AttributeError: the code it needs is not on the
+// base, so it could not run; the runner's status says "not reproduced" for that too), else by its status.
+const BASE_RAN = { already_on_base: "breaks the same way", new_in_pr: "the script could not run there", unknown: "the script failed there", not_on_base: "not reproduced" };
+const BASE_DID = { reproduced: "breaks the same way", not_reproduced: "not reproduced", script_failed: "the script failed there", new_in_pr: "the script could not run there", new: "the script could not run there", unknown: "unknown", not_run: "not run" };
+export function probeBaseWord(x, byDiff, words = {}) {
+  const b = x?.base;
+  if (!b || typeof b !== "object") return null;
+  const verdict = byDiff ? null : words[b.verdict] ?? (b.verdict ? null : { new_in_pr: "new in this PR", new: "new in this PR" }[b.status]);
+  return verdict ? { dates: true, word: verdict } : { dates: false, word: BASE_RAN[b.verdict] ?? BASE_DID[b.status] ?? resWord(b.status ?? "unknown") };
+}
+// The diff dated this path itself: old or new is known without a probe (resByProbe sets byProbe when the probe did).
+export const datedByDiff = (p) => typeof p?.pre_existing === "boolean" && !p.byProbe;

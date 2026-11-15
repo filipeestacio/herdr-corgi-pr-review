@@ -46,7 +46,7 @@ try:
         llm.log("Codex review", "blue", "codex", 0, 100, tool="codex")  # non-Claude tools log the same way
         assert len(next(ledger.glob("usage-*.jsonl")).read_text().splitlines()) == 2
 
-        # No context: the env is inherited untouched, the ledger says "default".
+        # No context: the account's own login is inherited, the ledger says "default".
         llm.claude("Feature C", "p")
         assert calls[-1][1]["env"].get("CLAUDE_CONFIG_DIR") == __import__("os").environ.get("CLAUDE_CONFIG_DIR")
         assert json.loads(next(ledger.glob("usage-*.jsonl")).read_text().splitlines()[-1])["account"] == "default"

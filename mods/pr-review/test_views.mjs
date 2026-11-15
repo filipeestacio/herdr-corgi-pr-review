@@ -252,11 +252,21 @@ assert.equal(pendingText([{ file: "a.py" }, { file: "a.py" }, { file: "b.py" }])
   const bm = [{ kind: "security", finding: F("s1") }, { kind: "security", finding: F("s2") }, { kind: "resilience", path: "p1" }, { kind: "resilience", path: "p2" }, { kind: "resilience", path: "p3" },
     { kind: "resilience", path: null }, { kind: "criterion", finding: F("c1"), asks: [A("a1"), A("a2")] }, { kind: "criterion", finding: F("c2"), asks: [A("a1")] }, { kind: "ask", ask: A("a3"), asks: [A("a3")] },
     { kind: "rule" }, { kind: "finding", finding: F("h1") }, { kind: "finding", finding: F("h2") }, { kind: "verify" }];
-  assert.deepEqual(mergeGroups(bm).map((g) => g.text), ["⛨ 2 security", "3 resilience blockers", "1 not observable", "3 criteria", "1 check", "2 high", "1 fix to verify"]);
+  assert.deepEqual(mergeGroups(bm).map((g) => g.text), ["⛨ 2 security", "3 resilience blockers", "1 not observable", "2 findings on 2 criteria and 1 criterion without a finding", "1 check", "2 high", "1 fix to verify"]);
+  // Every number counts rows (acceptance, engineer 3): the numbers of a line add up to the rows it speaks of.
+  for (const part of [bm, bm.slice(5), bm.slice(7), bm.slice(8), []]) assert.equal(mergeGroups(part).reduce((n, g) => n + g.n, 0), part.length);
   assert.deepEqual(mergeFirst(bm, 5).map((r) => bm.indexOf(r)), [0, 1, 2, 5, 6], "every security row, then one of each group in order before a second of any");
   assert.deepEqual(mergeFirst(bm.slice(2), 5).map((r) => bm.slice(2).indexOf(r)), [0, 3, 4, 7, 8]);
   assert.deepEqual(mergeFirst(bm.slice(0, 3), 5).length, 3);
-  assert.deepEqual(mergeGroups(bm.slice(7), [bm[6]]).map((g) => g.text), ["1 criterion", "1 check", "2 high", "1 fix to verify"], "the criteria a shown row breaks are not counted again");
+  assert.deepEqual(mergeGroups(bm.slice(7)).map((g) => g.text), ["1 finding on 1 criterion and 1 criterion without a finding", "1 check", "2 high", "1 fix to verify"]);
+  assert.deepEqual(mergeGroups([bm[8], { kind: "ask", ask: A("a4"), asks: [A("a4")] }]).map((g) => [g.n, g.text]), [[2, "2 criteria without a finding"]]);
+  // Acceptance, engineer 2: the later findings of a row's cause count at that row, not under "Other findings".
+  {
+    const { mergeHeld } = await import("./views.js");
+    const tok2 = { id: "tok", ids: ["tok", "tok2"] }, tpl2 = { id: "tpl", same_cause: "tok2" }, lone = { id: "lone", same_cause: "gone" }, free = { id: "free" };
+    assert.deepEqual([...mergeHeld([{ kind: "security", finding: tok2 }, { kind: "rule" }], [tok2, tpl2, lone, free])], ["tok", "tpl"]);
+    assert.deepEqual([...mergeHeld([{ kind: "finding", finding: free }], [tpl2, lone, free])], ["free"], "its first is not a row: it stays among the other findings");
+  }
   // By cause: the later finding of a cause goes while the first is open, and the first row names its place.
   const { byCause } = await import("./views.js");
   const tok = { id: "a1", ids: ["a1"] }, tpl = { id: "a2", ids: ["a2"], same_cause: "a1" }, other = { id: "a3", ids: ["a3"] };
@@ -1205,4 +1215,46 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.deepEqual(drawn({ glyph: "↯", color: "ansi1", form: "plain" }).filter(([k]) => ["bg", "text_color", "child", "border_dashed"].includes(k)), [["text_color", "#ff0000"], ["child", "↯"]]);
   assert.equal(markLabel(() => null, {}, { glyph: "", text: "medium" }), "medium");
   console.log("ok signs");
+}
+
+// Acceptance, UX 1: the Resilience page says the number its list shows, never the run's id; a ref of a finding that is
+// not stored goes.
+{
+  const { resRefs, resShown } = await import("./views.js");
+  const res = { paths: [{ id: "p1", result: "mitigated", steps: [], findings: [] }, { id: "p2", result: "finding", steps: [], findings: [], wired: { why: "load grows", today: "not possible today: no caller (r_f1) and no SQS publisher (p5)." } },
+    { id: "p5", result: "finding", blocker: { why: "an effect is lost" }, steps: [], findings: [], note: "See path p2; p99 stays." }] };
+  const s = resShown(res);
+  assert.deepEqual(s.paths.map((p) => [p.id, s.nums.get(p.id)]), [["p5", 1], ["p2", 2], ["p1", 3]], "numbered in the page's order");
+  assert.equal(s.paths[1].wired.today, "not possible today: no caller and no SQS publisher (path 1).");
+  assert.equal(s.paths[0].note, "See path 2; p99 stays.", "an id of no path stays, 'path p2' is not said twice");
+  assert.equal(s.say("Exact-day equality and a UTC date; see r_f5."), "Exact-day equality and a UTC date.");
+  assert.equal(resRefs("Nothing publishes (p5), see r_f1 and r_f2.", new Map([["p5", 6]])), "Nothing publishes (path 6).");
+  assert.equal(resShown(null).paths.length, 0);
+  console.log("ok resilience ids as numbers");
+}
+
+// Acceptance, UX 3: among the crossings a finding stands in full once, later crossings refer to the first by its number.
+{
+  const { crossOnce } = await import("./views.js");
+  const f1 = { id: "f1" }, f2 = { id: "f2" }, rows = [{ key: "a:1", findings: [f1, f2] }, { key: "e:3", findings: [] }, { key: "e:4", findings: [f2, { id: "f3" }] }];
+  const once = crossOnce(rows, (r) => rows.indexOf(r) + 10);
+  assert.deepEqual([...once].map(([k, v]) => [k, v.first.map((f) => f.id), v.again.map((x) => [x.f.id, x.at])]), [["a:1", ["f1", "f2"], []], ["e:3", [], []], ["e:4", ["f3"], [["f2", 10]]]]);
+  assert.equal(crossOnce(null).size, 0);
+  console.log("ok crossings name a finding once");
+}
+
+// Acceptance, UX 4: old or new is said once. A path the diff dates keeps its word, and its probe says only what the
+// script did on the base; a path the diff could not date takes the probe's verdict.
+{
+  const { probeBaseWord, datedByDiff, resByProbe } = await import("./views.js");
+  const W = { already_on_base: "already on the base", new_in_pr: "new in this PR", unknown: "unknown on the base", not_on_base: "not on the base" };
+  const probe = { id: "r1", of: "p4", status: "done", result: "reproduced", base: { status: "script_failed", verdict: "new_in_pr", line: "import failed: ImportError" } };
+  const old = { id: "p4", pre_existing: true, blocker: null }, unclear = { id: "p4", pre_existing: "unknown", blocker: { reason: "x", unclear: true } };
+  assert.ok(datedByDiff(old) && datedByDiff({ pre_existing: false }) && !datedByDiff(unclear) && !datedByDiff(resByProbe([unclear], [probe])[0]) && !datedByDiff(null));
+  assert.deepEqual(probeBaseWord(probe, datedByDiff(old), W), { dates: false, word: "the script could not run there" }, "the path says already on the base, the probe not 'new in this PR'");
+  assert.equal(probeBaseWord({ base: { status: "not_reproduced", verdict: "new_in_pr" } }, true, W).word, "the script could not run there", "an import that failed on the base is not 'not reproduced'");
+  assert.deepEqual(probeBaseWord(probe, datedByDiff(resByProbe([unclear], [probe])[0]), W), { dates: true, word: "new in this PR" }, "the probe dates a path the diff could not");
+  assert.deepEqual(probeBaseWord({ base: { status: "reproduced", verdict: "already_on_base" } }, true, W), { dates: false, word: "breaks the same way" });
+  assert.deepEqual([probeBaseWord({ base: { status: "new_in_pr" } }, false, W).word, probeBaseWord({ base: { status: "new_in_pr" } }, true, W).word, probeBaseWord({ base: "x" }, false, W), probeBaseWord({}, false, W)], ["new in this PR", "the script could not run there", null, null]);
+  console.log("ok old or new is said once");
 }
