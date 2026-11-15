@@ -52,6 +52,8 @@ import { resDepRows, resMeta, resFade } from "./views.js"; // Resilience: depend
 import { wayOf, wayText, passZones, runsIn } from "./views.js"; // panel round 3: ways through every gate, zones passed on
 import { transitionMarks, effectiveFrom, inProcess, mapArch, crossingsOf, crossingChanged, secSentence, TRUST_ORDER, asideOf, threatCited, blastOf, skipText, guardLine } from "./views.js";
 import { trustLegend, hasTrust } from "./stack.js";
+import { timelineOf, timelineLayout } from "./timeline.js"; // Resilience: the picture "Timing"
+import { timelineView } from "./stack.js";
 import { scopeTable, scopeConflicts, runSummary, AREA_NAME, areaFindings, surfaceOf, EXPOSURE, reachLevel, secOrder, extraWays } from "./views.js";
 import * as TH from "./threads.js";
 import { leftWidth, rowClick, CHIP_W, ASK_W, keyRoute, scopeLine, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf, rangeLabel, pinAnchor, pinAdd, pinDrop, pinsOf, pinsOn, codePins, drillPush, drillTo, crumbs, drillKey, cachePut, mapDrill, exploreId, exploreIndex, exploreAi, pathOf, lineOf, repoOfRemote, exploreTrust, layersForNode } from "./explore.js";
@@ -514,6 +516,7 @@ export const ReviewMode = {
     else if (name === "res-add") { this.page = "res"; this.resAddOpen = !this.resAddOpen; } // the parts this PR adds, folded or open
     else if (name === "res-more") { this.page = "res"; this.resAll = !this.resAll; }
     else if (name === "res-clean") { this.page = "res"; this.resClean = !this.resClean; }
+    else if (name === "res-time") { this.page = "res"; this.resTimeOpen = this.resTimeOpen === false; } // the picture "Timing", folded or open
     else if (name === "res-probe-open") { this.page = "res"; this.resProbeOpen = this.resProbeOpen === arg ? null : arg; } // a probe's script and output
     else if (name === "cross") { this.page = "blast"; this.tab = "steps"; if (arg === "quiet") this.crossQuiet = !this.crossQuiet; else if (arg === "unchanged") this.crossAll = !this.crossAll; else this.crossOpen = this.crossOpen === arg ? null : arg || null; } // a click on a row of "Trust boundary crossings" (its key: a:<access id> | e:<edge index>)
     else if (name === "vis") { this.toggleVis(arg); } // a click on a folded or open state diagram over a layer's code (vis|<layer>|<k>)
@@ -4212,7 +4215,23 @@ export const ReviewMode = {
       ...shown.map((p, k) => [`p:${p.id}`, this.resPath(t, res, p, k, p === cur).when(stale, (e) => e.opacity(resFade(t)))]),
       ...(shown.length < paths.length ? [["more", div().id("rv-res-more").text_size(TYPE.small).text_color(t.muted).cursor_pointer().hover((x) => x.text_color(t.foreground))
         .on_click((_e, cx) => { this.resAll = true; cx.notify(); }).child(`${paths.length - shown.length} more ▸`)]] : []),
+      ...[this.resTiming(t, res, stale)].filter(Boolean).map((el) => ["timing", el]),
       ["rest", this.resRest(t, res)]];
+  },
+  // The picture "Timing" (timeline.js): per call the limit it runs inside as a frame and what runs inside it, over
+  // seconds; a click on a row shows its line, a click on a row's words the path that shows it. Open unless folded.
+  resTiming(t, res, stale) {
+    const m = timelineOf(res, this.ai?.arch), open = this.resTimeOpen !== false, tier = this.runTier("resilience").chosen ?? this.runTier("resilience").tier;
+    if (!m) return null;
+    return v_flex().id("rv-res-time").gap(6).when(stale, (e) => e.opacity(resFade(t)))
+      .child(h_flex().id("rv-res-time-h").gap(8).items_center().cursor_pointer().tooltip(open ? "Fold the picture" : "Timeouts, retries and pauses of each call over seconds").on_click((_e, cx) => { this.resTimeOpen = !open; cx.notify(); })
+        .child(div().text_size(TYPE.title).font_semibold().child(`Timing · ${m.total}`)).child(div().text_color(t.muted).child(open ? "▾" : "▸")).child(div().flex_1())
+        .child(div().text_size(TYPE.small).text_color(t.muted).child(m.line.replace(/^\d+ calls?: /, ""))))
+      .when(open, (e) => e.child(div().text_size(TYPE.small).text_color(t.muted).whitespace_normal().child(m.note))
+        .child(timelineView(timelineLayout(m), t, "rv-res-tl", { jump: (at, cx) => this.jumpTo(at, cx), go: (id, cx) => this.resGo(id, this.resNums?.get(id), cx), num: (id) => this.resNums?.get(id) ?? null }))
+        .when(m.more > 0, (x) => x.child(div().text_size(TYPE.small).text_color(t.muted).child(m.moreLine ?? "")))
+        .when(Boolean(m.rerun), (x) => x.child(h_flex().gap(8).items_center().text_size(TYPE.small).child(div().min_w(0).text_color(t.muted).whitespace_normal().child(m.rerun ?? ""))
+          .child(pill("rv-res-time-rerun", t, runLabel(this.find.runs?.resilience, this.runPrice("resilience", tier), "", true), (_e, cx) => this.runReviewer("resilience", cx, null, tier))))));
   },
   // Opens a path and brings it into view (a click on a dependency's case): the path may be under "n more", and its
   // part exists only after the next frame.

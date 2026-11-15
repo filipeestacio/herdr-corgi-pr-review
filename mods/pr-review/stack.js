@@ -531,3 +531,45 @@ export function bulletChart(t, id, b, valueText, limitText, width = 320) {
     .child(div().text_size(TYPE.small).child(`${valueText} against ${limitText}`))
     .when(b.over > 0, (e) => e.child(div().text_size(TYPE.small).font_semibold().text_color(t.ansi1).child(`✗ ${b.overS} s over`)));
 }
+
+// The Resilience page's picture "Timing" (timeline.js timelineLayout), on the surface, no grid. Per call a head (the
+// call, its way in, its line) and its rows over one axis of seconds: a limit as a frame (an unstated one dashed and
+// open to the right), under it what runs inside: an attempt as a thick bar, a pause as a thin one, a length the run
+// does not state as a dashed stub open to the right; the limit's line goes through the runs, and the part over it
+// is hatched in red with its words beside it. A click on a row shows its line (jump), a click on a row's words the
+// path that shows it on the page (go; num: the path's number there).
+export function timelineView(L, t, id, { jump = null, go = null, num = () => null } = {}) {
+  const COLOR = { over: t.ansi1, tight: t.ansi3, open: t.foreground, fits: t.ansi2 }, LABEL = 170;
+  const rect = () => PathBuilder.fill().move_to("0%", "0%").line_to("100%", "0%").line_to("100%", "100%").line_to("0%", "100%").close().build();
+  const open = (el, c) => el.border_l(1).border_t(1).border_b(1).border_dashed().border_color(c);
+  const bar = (b, key) => {
+    const thin = b.kind === "pause", el = div().id(key).absolute().left(b.x).w(b.w).top(thin ? (b.open ? 6 : 7) : 3).h(thin ? (b.open ? 6 : 4) : 12);
+    if (b.kind === "limit") return b.open ? open(el, t.muted) : el.rounded(2).border_1().border_color(t.foreground);
+    return b.open ? open(el, t.foreground).bg(t.background) : el.bg(t.muted);
+  };
+  const row = (g, r, key) => {
+    const text = r.kind === "run" ? [r.cells.attempts, r.cells.backoff, r.cells.sum].filter(Boolean).join(" · ") : "", path = r.verdict && r.verdict.kind !== "fits" ? g.path : null, n = path ? num(path) : null;
+    const track = div().relative().flex_none().w(L.W).h(18)
+      // known bars first, the open stubs over them: a stub stands where its part starts
+      .children([...r.bars.filter((b) => !b.open), ...r.bars.filter((b) => b.open)].map((b, k) => bar(b, `${key}-b${k}`)))
+      .when(Boolean(r.over), (e) => e.child(div().absolute().left(r.over.x).top(1).h(16).w(r.over.w).border_1().border_color(t.ansi1)
+        .child(globalThis.window.paint_path(rect(), Background.pattern_slash(t.ansi1, 1.5, 6)).absolute().top(0).left(0).size_full())))
+      .when(r.kind === "run" && g.limitX !== null, (e) => e.child(div().absolute().left(g.limitX).top(-2).w(2).h(22).bg(t.foreground)))
+      .when(Boolean(r.cut || r.bars[0]?.cut), (e) => e.child(div().absolute().left(L.W - 4).top(0).text_size(TYPE.small).text_color(t.muted).child("⫽")));
+    return h_flex().id(key).gap(10).items_start().rounded(4).hover((x) => x.bg(t.hover))
+      .when(Boolean(r.at && jump), (e) => e.cursor_pointer().on_click((_e, cx) => jump(r.at, cx))).tooltip([r.tip, r.at && `Shows ${r.at}.`].filter(Boolean).join("\n"))
+      .child(div().w(LABEL).flex_none().truncate().text_color(t.muted).child(r.kind === "limit" ? `${r.label} · ${r.cells.timeout}` : r.label))
+      .child(v_flex().flex_none().w(L.W).child(track).when(Boolean(text), (e) => e.child(div().pb(2).whitespace_normal().text_color(t.muted).child(text))))
+      .when(Boolean(r.verdict), (e) => e.child(div().id(`${key}-v`).flex_1().min_w(0).whitespace_normal().font_semibold().text_color(COLOR[r.verdict.kind] ?? t.muted)
+        .when(Boolean(path && go), (x) => x.cursor_pointer().hover((y) => y.underline()).tooltip(`Opens path ${n ?? path}, which shows it, and scrolls to it.`).on_click((_e, cx) => { go(path, cx); cx.stop_propagation(); }))
+        .child(`${r.verdict.text}${path && go ? " ↗" : ""}`)));
+  };
+  return v_flex().id(id).p(16).gap(14).rounded(8).border_1().border_color(t.border).bg(t.background).text_size(TYPE.small)
+    .when(L.own, (e) => e.child(div().text_color(t.muted).child("Each call has its own scale.")))
+    .children(L.groups.map((g, k) => v_flex().id(`${id}-g${k}`).gap(2)
+      .child(h_flex().gap(8).items_center().child(div().min_w(0).truncate().font_semibold().child(g.title)).when(Boolean(g.entry), (e) => e.child(div().flex_none().text_color(t.muted).child(`from ${g.entry}`)))
+        .child(div().flex_1()).when(Boolean(g.at && jump), (e) => e.child(div().id(`${id}-g${k}-at`).flex_none().text_color(t.accent).cursor_pointer().hover((x) => x.underline()).on_click((_e, cx) => jump(g.at, cx)).child(`${String(g.at).split("/").pop()} ↗`))))
+      .children(g.rows.map((r, j) => row(g, r, `${id}-g${k}-r${j}`)))
+      .child(h_flex().gap(10).child(div().w(LABEL).flex_none()).child(div().relative().flex_none().w(L.W).h(16).border_t(1).border_color(t.border)
+        .children(g.ticks.flatMap((x, j) => [div().absolute().left(x.x).top(0).w(1).h(4).bg(t.muted), div().id(`${id}-g${k}-t${j}`).absolute().left(x.x + 3).top(2).text_size(TYPE.micro).text_color(t.muted).child(x.label)]))))));
+}

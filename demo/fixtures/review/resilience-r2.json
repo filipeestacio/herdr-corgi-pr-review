@@ -23,6 +23,11 @@
     "layer": "Mailer.send",
     "attempts": 3,
     "backoff": "2**attempt s (1,2,4; sleeps after the last attempt too)",
+    "backoff_s": [
+     1,
+     2,
+     4
+    ],
     "jitter": false,
     "on": "OSError",
     "exhausted": "swallowed",
@@ -128,6 +133,11 @@
     "layer": "Mailer.send",
     "attempts": 3,
     "backoff": "2**attempt",
+    "backoff_s": [
+     1,
+     2,
+     4
+    ],
     "jitter": false,
     "on": "OSError",
     "exhausted": "swallowed",
