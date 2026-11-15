@@ -584,7 +584,7 @@ export const ReviewMode = {
     this.reviewKey = null; this.ai = null; this.aiError = null; this.aiModel = null; this.cur = 0; this.focusHunk = null; this.fsel = null; this.sug = null;
     this.composing = false; this.editing = null; this.finishOpen = false; this.posted = null; this.gh = []; this.route = null; this.event = null;
     this.full = {}; this.gaps = {}; this.whole = new Set(); this.collapsed = new Set(); this.hunks = null;
-    this.rowsMemo = null; this.ghMemo = null; this.fitMemos = null; this.layQueue = null; // what was computed for the PR before goes with it
+    this.rowsMemo = null; this.ghMemo = null; this.fitMemos = null; this.layQueue = null; this.kept = null; // what was computed for the PR before goes with it
     this.ctx = null; this.since = null; this.sinceOn = false; this.lastReviewed = null; this.page = "overview"; this.aiFile = null; this.needClone = null;
     this.resumed = null; this.resumeIn = null; this.pendingScroll = null;
   },
@@ -1067,6 +1067,19 @@ export const ReviewMode = {
   findingById(id) { return this.findings().find((f) => f.ids.includes(id)) ?? null; },
   // The one count every view shows (pr.js findingCounts): unresolved, of them with a fix sent, by severity, security.
   counts() { return this.perFindings("counts", (fs) => findingCounts(fs, (f) => this.fstatus(f))); },
+  // A value kept while its inputs are the same objects (the analysis' parts and the lists from merged() are replaced,
+  // never changed in place): for what a page computes from them on every frame.
+  keep(name, deps, make) {
+    const all = (this.kept ??= {}), k = all[name];
+    if (k && k.deps.length === deps.length && k.deps.every((d, i) => d === deps[i])) return k.v;
+    return (all[name] = { deps, v: make() }).v;
+  },
+  // The Security page's crossings (views.js crossingsOf: every call against every zone, gate and threat; on a map of
+  // 80 cards 3 ms per call in Herdr, asked twice per frame of the page).
+  crossingsNow() {
+    const ai = this.ai, a = ai?.arch ?? null, open = this.openFindings();
+    return this.keep("crossings", [a, ai?.access, ai?.threats, ai?.gates, ai?.bypasses, open], () => crossingsOf({ arch: a, access: ai?.access ?? [], threats: ai?.threats ?? [], gates: ai?.gates ?? [], bypasses: ai?.bypasses ?? [], findings: open }));
+  },
   // A value made from the findings and their statuses, kept until one of them changes (the list from merged(), and
   // what fstatus reads): the tab, the bar and every page ask for the same counts and lists in one frame.
   perFindings(name, make) {
@@ -4010,7 +4023,7 @@ export const ReviewMode = {
     const cardOf = new Map([...[...marks.nodes].flatMap(([id, m]) => m.findings.map((f) => [f.id, id])), ...[...marks.edges].flatMap(([i, m]) => m.findings.map((f) => [f.id, a.edges[i].from]))]);
     // The crossings (views.js crossingsOf), with the unresolved findings of every source. A finding stands at one
     // crossing: the row that names it; its head ("reachable from …, over a trust boundary") is built from that row.
-    const crossings = crossingsOf({ arch: a, access: this.ai?.access ?? [], threats, gates: this.ai?.gates ?? [], bypasses: this.ai?.bypasses ?? [], findings: this.openFindings() }), changed = crossings.filter(crossingChanged);
+    const crossings = this.crossingsNow(), changed = crossings.filter(crossingChanged);
     const rowOf = (f) => crossings.find((r) => r.findings.includes(f)) ?? null;
     // Without a row: the access rows the finding names (stated), else the ways in at its card or line (derived).
     const all = [...surface.entries, ...surface.grants];
@@ -4082,7 +4095,7 @@ export const ReviewMode = {
   // them (the red ring and "Reachable as" only with data).
   // ... and passed on over calls in one process without a check (views.js passZones), with the way in it hangs on.
   effZones(a) {
-    const rows = crossingsOf({ arch: a, access: this.ai?.access ?? [], threats: this.ai?.threats ?? [], gates: this.ai?.gates ?? [], bypasses: this.ai?.bypasses ?? [], findings: this.openFindings() });
+    const rows = this.crossingsNow();
     const door = (id) => { const k = rows.findIndex((r) => r.kind === "entry" && r.ends.to === id); return k >= 0 ? `if crossing ${k + 1} fails open` : null; };
     // The data's own (pr.js effectiveZonesOf, passed on already): its where names the crossing that must fail open.
     const eff = effectiveFrom(this.ai?.effectiveZones ?? [], a);
@@ -4580,7 +4593,7 @@ export const ReviewMode = {
     const open = (area) => this.scopeRow === area, toggle = (area) => (_e, cx) => { this.scopeRow = open(area) ? null : area; cx.notify(); };
     const cell = (c, area, k) => {
       if (!c) return div().text_color(t.dim).child("–");
-      const found = c.result === "finding" ? areaFindings(area, k, all) : [], files = read(k);
+      const found = c.result === "finding" ? this.keep(`area|${area}|${k}`, [all], () => areaFindings(area, k, all)) : [], files = read(k);
       return v_flex().id(`rv-sec-sc-${area}-${k}`).gap(4).cursor_pointer().on_click(toggle(area))
         .tooltip(c.result === "clean" ? (files.length ? `Clean, as this run reports it. It read:\n${files.join("\n")}` : "Clean, as this run reports it; it names no file it read.") : open(area) ? "Fold this row" : "Show the whole text and the findings behind it")
         .child(h_flex().gap(6).items_start().child(c.result === "clean" && !files.length ? chip(t, "Clean, no file named", t.ansi3, false) : chip(t, RESULT[c.result][0], RESULT[c.result][1], c.result !== "clean"))

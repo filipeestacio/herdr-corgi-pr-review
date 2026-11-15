@@ -13,9 +13,9 @@ if (!hasFixtures) {
 }
 
 // What the views read of the findings, as text; fresh: the same with every memo dropped first.
-const MEMOS = ["findMemo", "fstMemo", "perMemo", "marksMemo", "rowsKey", "anchorMemo", "rowsMemo"];
+const MEMOS = ["findMemo", "fstMemo", "perMemo", "marksMemo", "rowsKey", "anchorMemo", "rowsMemo", "kept"];
 const snap = (v) => JSON.stringify({ findings: v.findings(), notes: v.merged().notes, status: v.findings().map((f) => v.fstatus(f)), counts: v.counts(), open: v.openFindings().map((f) => f.id),
-  marks: [[...v.archMarksNow().nodes.keys()], [...v.archMarksNow().edges.keys()]], rows: v.patch.slice(0, 12).map((f) => v.rowsFor(f.path, true).length) });
+  marks: [[...v.archMarksNow().nodes.keys()], [...v.archMarksNow().edges.keys()]], crossings: v.crossingsNow(), rows: v.patch.slice(0, 12).map((f) => v.rowsFor(f.path, true).length) });
 const fresh = (v) => { for (const k of MEMOS) v[k] = null; return snap(v); };
 const same = (v, what) => { const kept = snap(v); assert.equal(kept, fresh(v), `${what}: the remembered findings, statuses, counts and marks are the ones a fresh computation gives`); };
 
@@ -54,7 +54,7 @@ for (const [name, data] of [["PR #2", PR2()], ["the big review", BIG()]]) {
 // the Overview ran 13 350, a layer 38 900), and none of the expensive ones.
 const BUDGET = { "Files (as opened)": 14000, "Files (all open)": 14000, "Findings": 15000, "Findings, one open": 15000, "Comments": 14000, "Walkthrough, a layer": 17000, "Overview": 3000, "Architecture": 3200,
   "Architecture, a card": 3200, "Security": 2600, "Resilience": 3500, "Markdown preview": 3000 };
-const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilienceStart", "pr.diffRows", "pr.splitPatch", "pr.hunksOf", "views.findingAnchor"];
+const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilienceStart", "pr.diffRows", "pr.splitPatch", "pr.hunksOf", "views.findingAnchor", "views.crossingsOf", "views.areaFindings"];
 {
   const v = await openReview(BIG());
   for (const id of ["rv-arch-canvas", "rv-sec-canvas", "rv-res-canvas"]) v.hsOf(id).viewW = 1300; // measured, as in a window: Fit decides from it
