@@ -48,7 +48,7 @@ SCHEMA = {
     "deps": {"type": "array", "items": {"type": "object", "required": ["at", "mode", "node"], "properties": {
         "edge": S, "node": S, "at": AT, "mode": {"enum": MODES},
         "timeout": {"type": "object", "properties": {"s": NUM, "source": S}},
-        "retry": {"type": "object", "properties": {"layer": S, "attempts": INT, "backoff": S, "jitter": BOOL, "on": S, "exhausted": {"enum": EXHAUSTED}, "at": AT}},
+        "retry": {"type": "object", "properties": {"layer": S, "attempts": INT, "attempt_s": NUM, "backoff": S, "backoff_s": {"type": "array", "items": NUM}, "jitter": BOOL, "on": S, "exhausted": {"enum": EXHAUSTED}, "at": AT}},
         "trigger": {"type": "object", "properties": {"batch": INT, "partial_batch": BOOL, "fn_timeout_s": NUM, "visibility_s": NUM, "retention_s": NUM,
                                                      "dlq": BOOL, "max_receive": INT, "worst_record_s": NUM}},
         "request_path": BOOL, "entry": S, "throttle": S,
@@ -160,7 +160,10 @@ ASK = (
     " Answer with: findings (only new problems; one already in the list is named by its id in the parts below, not "
     "written again; each new one with ref r_f1, r_f2, …; category availability, consistency, observability, performance "
     "or another of the list; impact as always). deps (one per call: edge (the picture's e<k> of this call; for a queue trigger the edge from the queue to its consumer), "
-    "node (the picture's node that makes the call; for a queue trigger the consumer), at, mode, timeout {s, source}, retry {layer, attempts, backoff, jitter, on, exhausted, at}, trigger for a consumer "
+    "node (the picture's node that makes the call; for a queue trigger the consumer), at, mode, timeout {s (the limit that ends this call: its own timeout, else the timeout of the function or request it runs in), source}, "
+    "retry {layer, attempts, attempt_s (the longest one attempt can take, in seconds: its own timeout; leave it out when the code sets none), "
+    "backoff (in words), backoff_s (the pauses in seconds in their order, one for each attempt the code waits after, e.g. [1, 2, 4]; "
+    "leave it out when the code does not give them in seconds, never a guess), jitter, on, exhausted, at}, trigger for a consumer "
     "{batch, partial_batch, fn_timeout_s, visibility_s, retention_s, dlq, max_receive, worst_record_s}, request_path, "
     "entry, throttle, context {carrier, kind, missing, receiver_logs, at}); effects; state; races (steps as [actor, text, "
     "file:line], breaks_at the index of the step that breaks, oncall (one sentence: what on-call sees while it happens), "
@@ -234,6 +237,7 @@ def view(answer, findings, pic, known, changed=None):
     enum = lambda v, allowed: v if v in allowed else None  # noqa: E731
     step = lambda s: s if s in nodes or s in edges or (":" in str(s) and str(s).rsplit(":", 1)[-1].isdigit()) else None  # noqa: E731
     lst = lambda k: [x for x in answer.get(k) or [] if isinstance(x, dict)]  # noqa: E731
+    num = lambda x: isinstance(x, (int, float)) and not isinstance(x, bool)  # noqa: E731
 
     deps = []
     for d in lst("deps"):
@@ -244,6 +248,13 @@ def view(answer, findings, pic, known, changed=None):
                 row[k] = dict(d[k])
         if "retry" in row:
             row["retry"]["exhausted"] = enum(row["retry"].get("exhausted"), EXHAUSTED)
+            # Seconds for the page's timing picture (timeline.js): kept only as numbers, else left out (not stated,
+            # drawn open), never 0 for an unknown.
+            secs, one = row["retry"].pop("backoff_s", None), row["retry"].pop("attempt_s", None)
+            if isinstance(secs, list) and all(num(x) and x >= 0 for x in secs):
+                row["retry"]["backoff_s"] = secs
+            if num(one) and one > 0:
+                row["retry"]["attempt_s"] = one
         if "context" in row:
             row["context"]["kind"] = enum(row["context"].get("kind"), CONTEXT_KINDS)
         deps.append({**row, **{k: d[k] for k in ("request_path", "entry", "throttle") if k in d}})

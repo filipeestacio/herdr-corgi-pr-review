@@ -291,6 +291,21 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   v3.deep = { ...v3.deep, probes: { [v3.probeKey("r1")]: { state: "done", status: "reproduced", line: "handled=1, no mail", ms: 1100, head: "ccddf95", base: { status: "script_failed", verdict: "new_in_pr", line: "ImportError" }, pre_existing: false, network_barrier: true, sandbox: "sandbox-exec" } } };
   assert.ok((v3.resNow()?.unseen ?? []).length > 0 && v3.resNow().paths.some((p) => p.same_cause), "unseen and one cause blocking once come from the data");
   await tour(v3, "PR #2, a real resilience run with the R2 schema");
+  // The picture "Timing": a click on a row's words opens the path that shows it, a click on a row shows its line, its
+  // head folds it; a run from before the pauses came in seconds draws its retries open and offers a new run.
+  {
+    act(v3, "page:res", "Resilience with its timing"); const over = (await import("./timeline.js")).timelineOf(v3.resNow(), v3.ai?.arch).groups[0];
+    assert.equal(over.verdict.kind, "over", "the batch over its function's timeout comes first");
+    click("rv-res-tl-g0-r2-v", "the mark of the batch over its timeout"); assert.equal(v3.resOpen, over.path, "the mark opens the path that shows it");
+    draw(v3, "after the mark"); click("rv-res-tl-g1-r1", "a retry's row"); draw(v3, "after a row of the timing");
+    assert.ok(!S.clicks.has("rv-res-time-rerun"), "a run with the pauses in seconds offers no new run there");
+    act(v3, "res-time", "the timing folded"); assert.ok(v3.pageParts.includes("timing") && !S.clicks.has("rv-res-tl-g0-r2-v"), "folded: its head stays, the picture goes");
+    const old = { ...r3, deps: r3.deps.map((d) => (d.retry ? { ...d, retry: { ...d.retry, backoff_s: undefined } } : d)) };
+    const v5 = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify({ ...doc, resilience: old }) });
+    act(v5, "page:res", "the timing of a run without seconds for its pauses"); assert.ok(S.clicks.has("rv-res-time-rerun"), "the older run offers a new one");
+    const none = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify({ ...doc, resilience: { ...r3, deps: [] } }) });
+    act(none, "page:res", "a run without calls"); assert.ok(!none.pageParts.includes("timing"), "no numbers, no picture");
+  }
   // Dependencies that fail or are overloaded: a row each under the map; a click on a case opens the path that shows
   // how it spreads and marks the dependency on the map; a run without them (the one above) draws no such rows.
   assert.ok(!S.clicks.has("rv-res-dep-0-slow"), "no rows without dependencies");
@@ -305,6 +320,15 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     assert.ok(v4.pageParts.includes(`p:${ps.at(-1)}`), "its path is a part of the page, also one under \"n more\", so the click can scroll to it");
     assert.ok(v4.resNow().paths.find((p) => p.id === ps.at(-1)).marks.some((m) => m.at === "mailer" && m.mark === "✕ when slow"), "and the map marks the dependency");
     for (const id of ["rv-res-dep-0-down", "rv-res-dep-at-0"]) { click(id, "a dependency's line"); draw(v4, `after ${id}`); }
+    // A case's fault tree: "▸" unfolds it under the row, a click on its path's card opens that path; a case with
+    // nothing but its words (down: handled, no effect, no path) has none.
+    assert.ok(!S.clicks.has("rv-res-dep-0-down-t"), "no tree for a case with nothing to follow");
+    v4.resOpen = null; click("rv-res-dep-0-slow-t", "a case's tree"); S.ids = new Set(); draw(v4, "a case's fault tree, open"); const ids = S.ids; S.ids = null;
+    assert.ok(v4.resTreeOpen === "0:slow" && ids.has("rv-res-tree-0"), "the tree stands under its dependency's row");
+    const card = [...S.clicks.keys()].filter((k) => k.startsWith("rv-res-tree-0-slow-av-n")); assert.ok(card.length >= 2, "its cards with a place can be clicked");
+    for (const id of card) click(id, "a card of the tree"); assert.equal(v4.resOpen, ps.at(-1), "the path's card opens the path");
+    draw(v4, "after the tree's cards"); act(v4, "res-tree:0:slow", "the tree folded by its command"); assert.equal(v4.resTreeOpen, null);
+    assert.match((await import("./markdown.js")).resilienceMd({ pr: {}, head: v4.head, res: v4.resNow(), arch: v4.ai?.arch }), /## When a dependency fails, step by step \(1\)\n\n[^\n]+\n\n### Mailer is slow\n\n```mermaid\nflowchart LR\n/, "the export has the tree as a flowchart");
     assert.match((await import("./markdown.js")).resilienceMd({ pr: {}, head: v4.head, res: v4.resNow(), arch: v4.ai?.arch }), /## When a dependency fails \(\d+\)\n\n- Mailer/, "the export has the dependencies");
   }
 }
@@ -549,7 +573,7 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   // second wording (the text has it as Certainty and Preconditions).
   const NOT_COPIED = [/recommended because/, /^Re-run \(/, /^Run probe/, /^last run .* ago/, /^A click shows the way\.$/, /^Verify (all \d+ )?with an agent/, /^Derived from the code that was read;$/, /^It needs nothing else:$/, /^it holds as the code stands\.$/, /lit on the map, the rest dimmed/, /^Open a path to light it on the map\.$/,
     /^in a sandbox, without network, at most 30 s$/, /^\d+ more: /, /^\d+ [^.]*(criteria|high|medium|low|observable|blockers?|paths?) ▸$/, /^GitHub read .* ago/, /^call over a trust boundary$/, /^Look inside/, /Ask names it/, /^This analysis has no further details for this card\.$/, /^“Look inside” reads/, /^“↻ Refresh diagrams”/,
-    /^and \d+ more in the Findings tab$/, /^\d+ (more|findings?) at this place ▸$/, /^shown at crossing \d+:$/, /^Ask about this layer$/, /^A finding sent to Fix stays unresolved and shows here/, /^not counted as findings$/];
+    /^and \d+ more in the Findings tab$/, /^\d+ (more|findings?) at this place ▸$/, /^shown at crossing \d+:$/, /^Ask about this layer$/, /^A finding sent to Fix stays unresolved and shows here/, /^not counted as findings$/, /^Each call has its own scale\.$/, /^Scroll sideways for the whole picture →$/];
   const norm = (x) => String(x).toLowerCase().replace(/,? \d+ (s|min|h|d|days?) ago/g, "").replace(/#\d+;|#quot;|#lt;|#gt;/g, " ").replace(/[^a-z0-9äöüß]+/g, " ").trim();
   const drawn = (states, part) => { const all = new Set(); for (const st of states) { st(); S.texts = null; S.lists.length = 0; v.render(cx); S.lists.length = 0; S.texts = all; part(); } S.texts = null; return [...all]; };
   const missing = (texts, md) => { const text = norm(md), segs = [...new Set(texts.flatMap((x) => x.split(/(?<=[.;:])\s+|\s·\s|\n+/)).map((x) => x.replace(/^\*\*Suggested:\*\*\s*/, "").replace(/ and \d+ more$/, "")))].filter((x) => x.trim().length >= 20 && x.trim().split(/\s+/).length >= 4);
@@ -567,6 +591,7 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
       if (open) bad.push("a frame is not closed");
     } else if (kind === "stateDiagram-v2") { for (const l of rest) if (!/^\s*state "[^"]*" as \w+$/.test(l) && !/^\s*(\[\*\]|\w+) --> (\[\*\]|\w+)( : [^:;]+)?$/.test(l)) bad.push(l); }
     else if (kind === "sequenceDiagram") { for (const l of rest) if (!/^\s*participant \w+ as [^:;]+$/.test(l) && !/^\s*\w+-?->>\w+: [^;]+$/.test(l) && !/^\s*Note over \w+: [^:;]*$/.test(l)) bad.push(l); }
+    else if (kind === "gantt") { for (const l of rest) if (!/^\s*(title [^:;]+|dateFormat X|axisFormat %s|section [^:;]+|[^:;]+ :(done, |crit, )?\d+, \d+)$/.test(l)) bad.push(l); }
     else bad.push(`unknown diagram: ${kind}`);
     return bad;
   };
@@ -589,13 +614,13 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   assert.ok(ranged && new RegExp(`Code \`${ranged.file.replace(/[.]/g, "\\.")}:\\d+-\\d+\`:\\n\\n\`\`\`diff\\n`).test(sec), "a finding's lines stand under it as a diff block");
   v.command("page:res", cx);
   check("Resilience", drawn([...paths.map((p) => () => v.command(`res-path:${p.id}`, cx)), () => { v.command("res-more", cx); v.command("res-clean", cx); v.command("res-add", cx); v.command("res-probe-open:r1", cx); }], page),
-    { flowchart: 1 + paths.filter((p) => (p.via ?? []).length > 0).length, sequenceDiagram: (v.resNow().races ?? []).filter((r) => paths.some((p) => (p.findings ?? []).some((id) => (r.findings ?? []).includes(id)))).length });
+    { flowchart: 1 + paths.filter((p) => (p.via ?? []).length > 0).length, sequenceDiagram: (v.resNow().races ?? []).filter((r) => paths.some((p) => (p.findings ?? []).some((id) => (r.findings ?? []).includes(id)))).length, gantt: 1 });
   // With dependencies that fail: their part is in the text and in the preview's list.
   {
     const dn = [{ dep: "Mailer", kind: "external", mode: "sync", at: "library/mailer.py:14", cases: [{ when: "slow", handled: "no", how: "waits up to 7 s", effect: "The request hangs until its timeout.", path: paths[0].id, findings: [] },
       { when: "down", at: "library/mailer.py:19", handled: "yes", how: "fails fast", effect: "", path: null, findings: [] }, { when: "recovers", at: null, handled: "not_checkable", how: "", effect: "", path: null, findings: [] }] }];
     const keep = v.find.resilience; v.find.resilience = { ...keep, downstream: dn }; if (v.ai.resilience) v.ai.resilience = { ...v.ai.resilience, downstream: dn };
-    const md = check("Resilience with dependencies", drawn([() => v.command("res-path:", cx)], page), {});
+    const md = check("Resilience with dependencies", drawn([() => v.command("res-path:", cx), () => v.command("res-tree:0:slow", cx)], page), { flowchart: 2 });
     assert.ok(mdParts(md).parts.some((p) => /^When a dependency fails \(1\)$/.test(p.title)) && /- Mailer \(/.test(md), "the dependencies are a part of the text and of the preview");
     v.find.resilience = keep; if (v.ai.resilience) delete v.ai.resilience.downstream;
   }

@@ -15,6 +15,8 @@ import { archMarks } from "./arch.js";
 import { transitionMarks, surfaceOf, reachLevel, secOrder, EXPOSURE, inProcess, resNoPicture, resShown, probeBaseWord, datedByDiff } from "./views.js";
 import { doesList, surfaceLine, countLine, funnelShort, funnel as funnelOf, findingSteps } from "./pr.js";
 import { resDepRows } from "./views.js"; // Resilience: dependencies that fail or are overloaded
+import { timelineOf, timelineMd } from "./timeline.js"; // Resilience: the picture "Timing"
+import { faultTrees, faultFlow, FAULT_NOTE } from "./faulttree.js"; // Resilience: what follows from a dependency's case, as a tree
 
 const STATE = { open: "Unresolved", progress: "Fix sent", fixed: "Fixed", dismissed: "Dismissed", recheck: "Unresolved, line changed" };
 const SOURCE = { analysis: "Analysis", security: "Security review", claude: "Claude code review", codex: "Codex review", resilience: "Resilience review", ai: "AI note" };
@@ -756,6 +758,7 @@ export function resilienceMd({ pr, head, res = null, names = new Map(), arch = n
   const depRows = resDepRows(res, order), down = depRows.flatMap((d) => [`- ${flat(d.dep)} (${[d.what, d.entry && `from ${flat(d.entry)}`, d.at].filter(Boolean).join(", ")})`,
     ...d.cases.map((c) => `  - ${flat(c.text)}${c.number ? `, path ${c.number}` : c.at ? ` (${c.at})` : ""}${c.effect ? `. ${flat(c.effect)}` : ""}`),
     ...(d.open.length ? [`  - The code cannot tell: ${d.open.join(", ")}.`] : [])]);
+  const trees = faultTrees(res, order, num);
   return doc(prLine({ pr, head }), "", "# Resilience", "",
     parts ? [parts.head, parts.counts.length > 0 && parts.counts.join(" · ")] : flat(res.summary ?? (paths.length ? "No path grows without limit or doubles an effect." : "")),
     [`${count(paths.length, "path")}`, `${count(clean.length, "check")} clean`, `${ncheck.length + (res.not_checked ?? []).length} not checkable`, res.head && `analysis of ${String(res.head).slice(0, 7)}`, cost !== null && cost !== undefined && `$${Number(cost).toFixed(2)}`].filter(Boolean).join(" · "),
@@ -767,6 +770,8 @@ export function resilienceMd({ pr, head, res = null, names = new Map(), arch = n
     (res.deps ?? []).length > 0 && [`## Calls and their limits (${res.deps.length})`, "", "What the map marks at a call: its timeout, retries and how a queue redelivers.", "",
       ...table(["Call", "Where", "Mode", "Limits"], res.deps.map((d) => [callOf(d), d.at ? `\`${d.at}\`` : "", d.mode ?? "", lim(d)]))],
     down.length > 0 && [`## When a dependency fails (${depRows.length})`, "", ...down, ""],
+    trees.length > 0 && [`## When a dependency fails, step by step (${trees.length})`, "", FAULT_NOTE, "", ...trees.flatMap(({ tree }) => [`### ${flat(tree.title)}`, "", ...mermaidFlow(faultFlow(tree)), ""])],
+    timelineMd(timelineOf(res, arch), num),
     other.length > 0 && [`## Other checks (${other.length})`, "", ...other.map(check), ""],
     clean.length > 0 && [`## Checked, clean (${clean.length})`, "", ...clean.map(check), ""],
     nc.length > 0 && [`## Not checkable (${nc.length})`, "", ...nc.map((x) => `- ${x}`), ""],

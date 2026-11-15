@@ -1116,6 +1116,11 @@
      "layer": "mailer",
      "attempts": 3,
      "backoff": "1 s, 2 s, 4 s (exponential), also after the last attempt",
+     "backoff_s": [
+      1,
+      2,
+      4
+     ],
      "jitter": false,
      "on": "OSError",
      "exhausted": "swallowed",
@@ -1213,6 +1218,11 @@
      "layer": "mailer",
      "attempts": 3,
      "backoff": "1 s, 2 s, 4 s",
+     "backoff_s": [
+      1,
+      2,
+      4
+     ],
      "jitter": false,
      "on": "OSError",
      "exhausted": "swallowed",
