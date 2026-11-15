@@ -5238,11 +5238,13 @@ export const ReviewMode = {
 
   // A row's code: plain text now; phase 3 (syntax.js) swaps in highlighted spans here.
   // Highlights queued files outside render, ~12 ms per slice, then redraws; the next render finds them in the cache.
-  // One file must not take the others' colors with it: a job that throws is dropped, and so is one that was running
-  // when Herdr stopped its slice (a tokenizer that does not come back). Its file stays plain, the queue goes on;
-  // hlAt lets the render start the queue again when a slice never came back to clear hlBusy.
+  // One file must not take the others' colors with it. hlBusy is the time the running slice started (0: none runs).
+  // Herdr stops a slice that takes too long without throwing anything, so nothing here could catch that: the render
+  // sees a slice busy for more than HL_STALE and starts the queue again. The job that was running then (it never got
+  // to clear `running`) is dropped, and so is one that throws: its file stays plain (its spans stay empty and it is
+  // not queued again), the files behind it get their colors.
   drainHighlight(cx) {
-    const start = this.hlAt = Date.now();
+    const start = this.hlBusy = Date.now();
     for (const [k, job] of this.hlQueue ?? []) {
       if (job.running) { this.hlQueue.delete(k); continue; }
       let out = null;
@@ -5257,8 +5259,8 @@ export const ReviewMode = {
       this.hlQueue.delete(k);
       if (Date.now() - start > 12) break;
     }
-    this.hlBusy = false;
-    if (this.hlQueue?.size) { this.hlBusy = true; this.hlAt = Date.now(); cx.timer.after(0, (cx) => this.drainHighlight(cx)); }
+    this.hlBusy = 0;
+    if (this.hlQueue?.size) { this.hlBusy = Date.now(); cx.timer.after(0, (cx) => this.drainHighlight(cx)); }
     cx.notify();
   },
   // A row's code, highlighted (syntax.js); spans per row array are computed once per render (spanMap).
@@ -5401,8 +5403,8 @@ export const ReviewMode = {
       this.spanMap.set(it.src, inf);
       if (lang) (this.hlQueue ??= new Map()).set(inf, { shown, lang, hkey: `${head}:${it.path}`, inf });
     }
-    // hlBusy older than two seconds: its slice was stopped or its timer never fired, so the queue starts again.
-    if (this.hlQueue?.size && (!this.hlBusy || Date.now() - (this.hlAt ?? 0) > 2000)) { this.hlBusy = true; this.hlAt = Date.now(); cx.timer.after(0, (cx) => this.drainHighlight(cx)); }
+    // A slice busy for longer than HL_STALE was stopped (or its timer never fired): the queue starts again.
+    if (this.hlQueue?.size && (!this.hlBusy || Date.now() - this.hlBusy > HL_STALE)) { this.hlBusy = Date.now(); cx.timer.after(0, (cx) => this.drainHighlight(cx)); }
     if (items.length > 9990) items.length = 9990; // the virtual list's hard limit is 10000
     const keys = itemKeys(items), sizes = items.map((it) => this.sizeOf(it)), hcode = this.codeScroll(listShown ? items : []);
     if (listShown) { this.items = items; this.at = at; this.byKey = new Map(keys.map((k, i) => [k, items[i]])); }
@@ -6030,6 +6032,7 @@ function certaintyWord(t, f, id) {
   const reach = f?.certainty === "derived" && f.path_certainty === "assumed";
   return f?.security && CERT_TIP[f.certainty] ? div().id(id).tooltip(`${CERT_TIP[f.certainty]}${reach ? ". That an attacker gets there is assumed" : ""}`).flex_none().text_size(TYPE.small).text_color(t.muted).child(reach ? "assumed reachable" : certaintyText(f)) : null;
 }
+const HL_STALE = 2000; // ms a highlight slice may be busy before it counts as stopped (Herdr stops one after ~50 ms)
 // A row's sign (views.js signOf, signEl): the kind's glyph in the color of the highest severity behind the row, on
 // a filled ground when that is confirmed, in a dashed frame with "?" when it is only assumed. The column has one
 // width, so the titles of a list line up whatever the sign's form.
