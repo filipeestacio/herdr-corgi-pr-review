@@ -3250,7 +3250,8 @@ export const ReviewMode = {
   // The picture: wider than the view and Wrap on (archWrapOn, off by default), in bands stacked top to bottom (arch.js
   // archBands); else one row in the sideways scroller (40 px of room after the last column). A line that goes on in the
   // next band ends at the band's right edge in a turn with its number, and starts again at the left edge of the next
-  // one with the same number, at the same height: no line goes on unnamed.
+  // one with the same number (at the same height of the picture; a band shows only from where its own frames start):
+  // no line goes on unnamed.
   // o: {id, pic: the canvas's and the picture's element ids, wrap, decorate: archView's, notes: pinned notes on it}.
   archCanvas(t, L, opts, o = {}) {
     const { id = "rv-arch-canvas", pic: pid = "rv-arch", wrap = this.archWrapOn(), decorate = null, notes = true } = o;
@@ -3269,7 +3270,7 @@ export const ReviewMode = {
         // y0 (arch.js archBands): the strip over the picture this band does not need (no line runs up there).
         const w = b.x1 - b.x0, left = b.in.length ? M : 0, y0 = b.y0 ?? 0;
         return [
-          ...(k ? [div().id(`${pid}-cut${k}`).w_full().h(0).border_t(1).border_dashed().border_color(t.border).tooltip("The picture goes on here: a line that leaves the row above on the right comes in on the left at the same height, with the same number")] : []),
+          ...(k ? [div().id(`${pid}-cut${k}`).w_full().h(0).border_t(1).border_dashed().border_color(t.border).tooltip("The picture goes on here: a line that leaves the row above on the right comes in on the left with the same number")] : []),
           div().id(`${pid}-band${k}`).w(left + w + (b.out.length ? M : 0)).h(b.h - y0 + 4).relative()
             .child(div().absolute().top(0).left(left).w(w).h(b.h - y0 + 4).overflow_hidden().child(div().absolute().top(-y0).left(-b.x0).w(L.width).h(L.height + 4).children(pic(k))))
             .children(b.in.map((m) => turn(m, k, "in", y0).left(0)))
