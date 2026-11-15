@@ -147,13 +147,42 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   assert.equal(await wrote(() => { v.comments = [...v.comments, { id: "c9", file: v.patch[0].path, start: 1, end: 1, text: "x" }]; v.publish(); }), 1, "one more pending comment: written once");
   S.writes = false;
 }
+// ---- an agent's status change does not draw the panel or the review: they never ask Herdr for its live data
+// (Herdr draws a copy again whenever live data it has ever read changes; live.js. The chip and the bar read it.)
+{
+  const { feed } = await import("./live.js"), four = () => ["spaces", "panes", "agents", "terminals"].map((k) => S.live[k] ?? 0);
+  const lay = (parts) => ({ id: "root", children: parts.map((part) => ({ id: `b-${part}`, type: "block", content: { mod: "pr-review", props: part ? { part } : undefined } })) });
+  S.layout = lay([null, "mini"]); S.focused = { space: "sA", pane: "p1", cwd: "/h/a" }; S.panes = [{ pane: "p1", cwd: "/h/a" }];
+  feed(); // the chip's frame
+  S.live = {};
+  const { v: p, prs } = await openPanel(PR2(), 40);
+  p.picking = true; frame(p); S.store.set("pr.source", "space"); p.loadSource(cx, true); await settle(); frame(p);
+  p.memo.clear(); p.context = null; p.choose(prs[0], cx); await settle(); await quiet(p);
+  const drawn = frame(p);
+  assert.deepEqual(four(), [0, 0, 0, 0], "the panel (its list, This space, a chosen PR) asked Herdr for no spaces, panes, agents or terminals");
+  assert.ok(drawn.el <= 1300, `a frame of the panel with a PR chosen builds ${drawn.el} elements (100 files would be 885; before the list behind it and every diff line were built too)`);
+  S.exec = null; S.props = null; S.spaces = null;
+  // The review with a fix whose agent runs: its state comes from what the bar's copy read.
+  S.layout = lay(["bar", "review"]); S.terminals = [{ address: "t9", state: "live" }];
+  const v = await openReview(PR2()), key = v.threadKey();
+  v.threadDoc = { ...v.threadDoc, [key]: { ...(v.threadDoc?.[key] ?? {}), fixes: [{ id: "j1", state: "running", target: "sub", path: "/h/fix", terminal: "t9", at: Date.now(), items: [] }] } };
+  assert.equal(feed(), false); frame(v); // the review says which terminals it shows; the bar's next frame sees the new list
+  assert.equal(feed(), true, "the bar's copy notices the terminal the review watches");
+  S.live = {};
+  for (const st of ["Files (as opened)", "Findings", "Overview"]) { STATES[st](v); await settle(); frame(v); }
+  v.fixCostTick(cx); v.proofTick(cx); v.probeTick(cx); await settle();
+  assert.deepEqual([four(), v.fixView(v.fixes()[0]).job.id], [[0, 0, 0, 0], "j1"], "the review (frames and timers, a fix running) asked Herdr for none of the four");
+  S.terminals = [{ address: "t9", state: "finished" }];
+  assert.equal(feed(), true, "and the bar's copy says when that terminal ended");
+  S.layout = undefined; S.focused = null; S.panes = null; S.terminals = null;
+}
 // ---- the panel with a PR chosen does not build the list of PRs behind it
 {
   const { v: p, prs } = await openPanel(PR2(), 40);
   p.picking = true; const list = counted(() => frame(p));
   p.memo.clear(); p.context = null; p.choose(prs[0], cx); await settle();
   const chosen = counted(() => frame(p));
-  assert.ok(list("context.ruleContext") >= 40 && chosen("context.ruleContext") === 0 && chosen("view.picker") === 0, "the list's rows are made while the list shows, not behind a chosen PR");
+  assert.ok(list("view.picker") === 1 && list("context.ruleContext") >= 40 && chosen("view.picker") === 0 && chosen("context.ruleContext") <= 2, "the list's rows are made while the list shows, not behind a chosen PR");
   S.exec = null; S.props = null; S.spaces = null;
 }
 // ---- the list's triage reads a PR's cached diff once per head, not each time the list opens

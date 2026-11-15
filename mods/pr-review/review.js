@@ -11,7 +11,8 @@
 // submit popover: one GitHub review (gh api) or, for a PR with an agent session, the prompt to that session.
 import { div } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, TextView, v_virtual_list, VirtualListScrollHandle, ScrollHandle, Textarea, TextareaState, Input, InputState, HoverCard } from "gpui-base";
-import { exec, hc, run, spaces, agents, terminals, focused, pickFolder, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, nextCommand, watchFolder, openOverlay, closeOverlay, props, home } from "herdr";
+import { exec, hc, run, focused, pickFolder, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, nextCommand, watchFolder, openOverlay, closeOverlay, props, home } from "herdr";
+import { spaces, agents, terminals, watch } from "./live.js"; // never straight from Herdr (live.js says why)
 import { parseReports, findingStatus, mergeFindings, findingCounts, countLine, runsOf, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
 import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig } from "./setup-view.js";
@@ -5533,6 +5534,11 @@ export const ReviewMode = {
     }
     this.leaveExplore();
     if (target?.url !== this.prSel?.url) { this.prSel = target; this.resetReview(); }
+    // The terminals whose state this review shows (a fix's agent, a check, a probe): the bar's copy tells when one of
+    // them changed (live.js), so this copy is not drawn for every other agent's status.
+    watch([...this.fixes().filter((j) => j.state === "running" && j.terminal).map((j) => j.terminal),
+      ...Object.values(this.find.status ?? {}).filter((x) => x?.proof?.state === "running" && x.proof.terminal).map((x) => x.proof.terminal),
+      ...Object.values(this.deep?.probes ?? {}).filter((x) => x?.state === "running" && x.terminal).map((x) => x.terminal)]);
     // After a refresh for the previous target ended; queued, since refresh() notifies and render may not.
     if (!this.refreshQueued && this.prSel && this.key() !== this.context) {
       this.refreshQueued = true;
