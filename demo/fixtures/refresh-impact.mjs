@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 const here = new URL("./review/", import.meta.url), repo = new URL("../../", import.meta.url);
 const { splitPatch, hunksOf, diffRows } = await import(new URL("mods/pr-review/pr.js", repo));
 const { computeImpact } = await import(new URL("mods/pr-review/impact.js", repo));
+const { isInfraFile } = await import(new URL("mods/pr-review/infra.js", repo));
 const root = process.argv[2] && resolve(process.argv[2]), diff = process.argv[3] ?? "pr2.diff";
 if (!root) { console.error("usage: node demo/fixtures/refresh-impact.mjs <checkout of the PR head> [diff]"); process.exit(2); }
 
@@ -22,11 +23,12 @@ const env = { ...process.env, HERDR_APP_HOME: home }, py = (...args) => execFile
 // The extensions the bridge has a server for, read from its own table.
 const exts = new Set(JSON.parse(execFileSync("python3", ["-c", `import json, sys; sys.path.insert(0, sys.argv[1]); import lsp_bridge; print(json.dumps(sorted(lsp_bridge.EXT)))`, fileURLToPath(new URL("mods/pr-review/", repo))], { encoding: "utf8" })));
 const supported = (path) => exts.has(path.split("/").pop().includes(".") ? path.split(".").pop().toLowerCase() : "");
-const hunks = hunksOf(splitPatch(readFileSync(new URL(diff, here), "utf8"))).map((h) => ({ ...h, rows: diffRows(h.lines) }));
+const patch = splitPatch(readFileSync(new URL(diff, here), "utf8")), hunks = hunksOf(patch).map((h) => ({ ...h, rows: diffRows(h.lines) }));
+const infraPaths = new Set(patch.filter(isInfraFile).map((f) => f.path)), infra = (p) => infraPaths.has(p) || isInfraFile({ path: p }); // as impact-view.js impactInfra
 try {
   let r;
   for (let i = 0; i < 60; i++) { // a cold Java or Rust index answers "starting" first
-    r = await computeImpact({ call: async (endpoint, body) => JSON.parse(py("call", endpoint, JSON.stringify({ ...body, trusted: true }))), root, hunks, supported });
+    r = await computeImpact({ call: async (endpoint, body) => JSON.parse(py("call", endpoint, JSON.stringify({ ...body, trusted: true }))), root, hunks, supported, infra });
     if (r.status !== "starting") break;
     await new Promise((done) => setTimeout(done, 2000));
   }

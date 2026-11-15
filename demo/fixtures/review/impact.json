@@ -1,14 +1,10 @@
 {
- "v": 1,
+ "v": 2,
+ "infra": 1,
  "servers": [
   "Python"
  ],
- "uncovered": [
-  {
-   "ext": "yaml",
-   "files": 1
-  }
- ],
+ "uncovered": [],
  "failed": [],
  "functions": [
   {
@@ -70,5 +66,5 @@
   }
  ],
  "skipped": 0,
- "ms": 15524
+ "ms": 13419
 }

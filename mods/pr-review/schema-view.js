@@ -6,7 +6,8 @@ import { div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { exec, readTextFile, appHome, settings } from "herdr";
 import { TYPE } from "./views.js";
-import { SCHEMA_SOURCE, SCHEMA_MARKS, SCHEMA_STATES, schemaFiles, schemaWants, schemaSteps, schemaPicture, schemaMarks, SCHEMA_MAX, schemaSummary, foldText, unreadText, edgeText } from "./schema.js";
+import { laidOut } from "./stack.js";
+import { SCHEMA_SOURCE, SCHEMA_MARKS, SCHEMA_STATES, schemaFiles, schemaWants, schemaSteps, schemaPicture, schemaMarks, schemaSummary, foldText, unreadText, edgeText } from "./schema.js";
 
 const ROW = 18; // a row of a card, as the layout counts it
 const MAX_FILES = 200; // older migrations read from the checkout
@@ -15,7 +16,8 @@ const MAX_FILES = 200; // older migrations read from the checkout
  * The section as the page's parts: [["schema", the picture with what it says about itself], ["schema-risks", the risk
  * hints, when a rule holds]]. o: {model: schema.js schemaModel, pic: schema.js schemaPicture (null without cards), canvas(L,
  * decorate, marks): the picture in the page's sideways scroller (review.js archCanvas), onJump(at, cx), hl: the
- * highlighted line's number, onHl(num | null, cx)}.
+ * highlighted line's number, onHl(num | null, cx), edit(id, at): the short "open in the editor" link for a place
+ * (review.js editAt; [] without an editor or a checkout)}.
  */
 export function schemaSection(t, o) {
   const m = o.model, P = o.pic;
@@ -25,23 +27,28 @@ export function schemaSection(t, o) {
   // index, a note. A row with a place leads to its line in the diff; ⚠ marks what a risk rule names (the list below).
   const row = (n, r, k) => {
     const tip = [r.tip ?? r.text, ...(r.risk ?? [])].filter(Boolean).join("\n");
+    // A card's first row carries the link to its place in the person's editor (the row's own line, else the card's).
+    const ed = k === 0 && o.edit && (r.at ?? n.at) ? o.edit(`rv-schema-ed${n.col}-${n.row}`, r.at ?? n.at) : [];
     const el = h_flex().id(`rv-schema-r${n.col}-${n.row}-${k}`).flex_none().h(ROW).gap(5).items_center().text_size(TYPE.micro).when(Boolean(tip), (e) => e.tooltip(tip))
       .when(Boolean(r.at), (e) => e.cursor_pointer().hover((s) => s.underline()).on_click((_e, cx) => { o.onJump(r.at, cx); cx.stop_propagation(); }));
-    if (r.kind === "head") return el.font_semibold().text_color(tone(r.state)).child(`${r.text[0].toUpperCase()}${r.text.slice(1)}`);
-    if (r.kind === "note") return el.text_color(t.muted).child(div().flex_1().min_w(0).truncate().child(r.text)).children(warn(r));
+    if (r.kind === "head") return el.font_semibold().text_color(tone(r.state)).child(div().flex_1().min_w(0).child(`${r.text[0].toUpperCase()}${r.text.slice(1)}`)).children(ed);
+    if (r.kind === "note") return el.text_color(t.muted).child(div().flex_1().min_w(0).truncate().child(r.text)).children(warn(r)).children(ed);
     const sign = div().flex_none().w(9).text_color(tone(r.state)).child(r.sign ?? "");
-    if (r.kind === "idx") return el.text_color(t.foreground).child(sign).child(div().flex_1().min_w(0).truncate().child(r.text)).children(warn(r));
+    if (r.kind === "idx") return el.text_color(t.foreground).child(sign).child(div().flex_1().min_w(0).truncate().child(r.text)).children(warn(r)).children(ed);
     return el.text_color(t.foreground).child(sign)
       .child(div().flex_none().max_w(r.text ? 80 : 110).truncate().font_semibold().when(r.state === "removed", (e) => e.line_through()).child(r.name))
       .child(div().flex_1().min_w(0).truncate().text_color(r.text ? t.foreground : t.muted).child(r.text || r.type))
       .when(r.marks.length > 0, (e) => e.child(div().flex_none().text_color(t.muted).child(r.marks.join(" "))))
-      .children(warn(r));
+      .children(warn(r)).children(ed);
   };
   const decorate = (n) => (n.rows?.length ? [v_flex().flex_none().h(n.rows.length * ROW).children(n.rows.map((r, k) => row(n, r, k)))] : []);
   const name = new Map(m.cards.map((c) => [c.id, c.name])), nameOf = (id) => name.get(id) ?? P?.L.nodes.find((n) => n.id === id)?.label ?? id, loose = P ? P.L.paths.filter((p) => !p.text || p.text.cut) : [];
   const edgeOf = (p) => P.arch.edges[p.edges?.[0]] ?? null;
-  const line = (id, text, at, color = t.muted) => div().id(id).text_size(TYPE.small).line_height(1.5).whitespace_normal().text_color(color)
-    .when(Boolean(at), (e) => e.cursor_pointer().hover((s) => s.text_color(t.foreground)).tooltip("Show this place in the diff").on_click((_e, cx) => o.onJump(at, cx))).child(text);
+  // A line under the picture: its text leads to its place in the diff; the short editor link stands at its end, in the same row.
+  const line = (id, text, at, color = t.muted) => h_flex().flex_1().min_w(0).gap(8).items_start()
+    .child(div().id(id).min_w(0).text_size(TYPE.small).line_height(1.5).whitespace_normal().text_color(color)
+      .when(Boolean(at), (e) => e.cursor_pointer().hover((s) => s.text_color(t.foreground)).tooltip("Show this place in the diff").on_click((_e, cx) => o.onJump(at, cx))).child(text))
+    .children(at && o.edit ? o.edit(`${id}-ed`, at) : []);
   const key = (sign, word, color = t.muted) => h_flex().flex_none().gap(4).child(div().text_color(color).child(sign)).child(div().child(word));
   const risks = m.risks.length ? [["schema-risks", v_flex().id("rv-schema-risks").w_full().gap(2).child(div().text_size(TYPE.small).font_semibold().text_color(t.muted).child(`May be risky for live data · ${m.risks.length}`))
     .child(div().text_size(TYPE.small).text_color(t.muted).child("From fixed rules over the changes above, not from a review."))
@@ -101,17 +108,17 @@ export const SchemaMode = {
     const m = this.schemaNow(), st = this.schemaSt;
     if (!m) return [];
     // The layout is kept per model and per marks: a frame that changes nothing lays nothing out (openFindings gives
-    // the same list while nothing changed). A picture of more than SCHEMA_MAX tables is laid out after the frame
-    // (review.js firstLayouts, as a big map is); until then the section shows without it, or with the one before.
+    // the same list while nothing changed). As archL (stack.js laidOut): what a frame can afford now, the better
+    // layout after it; a picture too big for the frame comes with the first slice after it (until then the section
+    // without its picture, or with the one from before when only the findings changed).
     const fs = this.openFindings();
     if (m.cards.length && (!st.pic || st.open !== fs)) {
       const sig = [...schemaMarks(m, fs).nodes].map(([id, k]) => `${id}:${k.severity}:${k.findings.map((f) => f.id)}`).join("|");
-      const make = () => { if (this.schemaSt === st && st.model === m) { st.pic = schemaPicture(m, fs); st.sig = sig; } };
-      if (!st.pic || st.sig !== sig) { if (!this.drawing || m.cards.length <= SCHEMA_MAX) make(); else (this.layQueue ??= new Map()).set("schema", make); }
+      if (!st.pic || st.sig !== sig) { const pic = schemaPicture(m, fs, false, false); st.pic = laidOut(pic.args, pic, () => this.schemaSt?.pic, { wait: true, before: st.pic?.L ?? null }); st.sig = sig; }
       st.open = fs;
     }
     const o = this.archOpts("schema");
-    return schemaSection(t, { model: m, pic: m.cards.length ? st.pic : null, onJump: (at, cx) => this.jumpTo(at, cx), hl: o.hl, onHl: o.onHl,
+    return schemaSection(t, { model: m, pic: m.cards.length && st.pic?.L ? st.pic : null, onJump: (at, cx) => this.jumpTo(at, cx), edit: (id, at) => this.editAt(t, id, at), hl: o.hl, onHl: o.onHl,
       canvas: (L, decorate, marks) => this.archCanvas(t, L, { ...o, onFocus: null, marks, zoom: settings().zoom || 1 }, { id: "rv-schema-canvas", pic: "rv-schema", wrap: false, decorate, notes: false }) });
   },
 };

@@ -15,11 +15,11 @@
 // - Prisma (readPrisma): the models of a schema.prisma, both sides of the one file.
 // Not read: Django and Rails migrations, Liquibase changelogs in XML, YAML or JSON, JPA entities, DynamoDB tables in
 // Terraform or CloudFormation, views, types, triggers and data changes.
-import { archLayout, markRoom, ARCH, FIT } from "./arch.js";
+import { archQuick, markRoom, ARCH, FIT } from "./arch.js";
+import { sidesOf, dirOf } from "./infra.js"; // a file before the PR: its head with the patch applied backwards
 
 export const SCHEMA_MAX = 20, SCHEMA_ROWS = 12; // tables before one area becomes one card; rows on a card
 const MAX_BYTES = 400000; // a larger file (a dump of a big database) is named as not read
-export const dirOf = (path) => (path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "");
 // The folder whose files are one series of migrations (…/migrations/<name>/migration.sql: the folder above).
 export const seriesOf = (path) => (/(^|\/)migration\.sql$/i.test(path) ? dirOf(dirOf(path)) : dirOf(path));
 const squash = (x) => String(x).replace(/\s+/g, " ").trim();
@@ -37,35 +37,6 @@ export function schemaWants(files) {
   for (const f of files) { const k = kindOf(f); if (k === "sql") dirs.set(seriesOf(f.path), ".sql"); else if (k === "alembic") dirs.set(dirOf(f.path), ".py"); }
   const want = files.filter((f) => kindOf(f) && f.status !== "added" && f.status !== "deleted").map((f) => f.path);
   return { specs: [...[...dirs].map(([d, ext]) => `${d ? `${d}/` : ""}*${ext}`), ...want], keep: (p) => want.includes(p) || [...dirs].some(([d, ext]) => p.endsWith(ext) && (ext === ".sql" ? seriesOf(p) : dirOf(p)) === d) };
-}
-
-// ---- the two sides of a changed file
-// ponytail: infra.js (not in this branch yet) has the same three functions; one copy can go once both are merged.
-
-const patchSide = (lines, sign) => { const out = []; let body = false; for (const l of lines) { if (l.startsWith("@@")) body = true; else if (body && (l[0] === sign || l[0] === " ")) out.push(l.slice(1)); } return out.join("\n"); };
-// The file before the PR: its text at the head with the patch (pr.js splitPatch's lines) applied backwards. null when
-// the patch does not fit this text (another head).
-export function baseText(head, lines) {
-  const src = head.split("\n"), out = [];
-  let at = 0, body = false;
-  for (const l of lines) {
-    const m = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(l);
-    if (m) { const to = Number(m[1]) - (m[2] === "0" ? 0 : 1); if (to < at || to > src.length) return null; out.push(...src.slice(at, to)); at = to; body = true; continue; }
-    if (!body || l[0] === "\\") continue;
-    if (l[0] === "-") { out.push(l.slice(1)); continue; }
-    if (src[at] !== l.slice(1)) return null;
-    if (l[0] === " ") out.push(src[at]);
-    at++;
-  }
-  return [...out, ...src.slice(at)].join("\n");
-}
-// f: a file of the patch with `head`, its text at the PR head when it was read → {head, base} (null: no file on that
-// side), or null when the head is needed and missing or the patch does not fit it.
-export function sidesOf(f) {
-  if (f.status === "added") return { head: f.head ?? patchSide(f.lines, "+"), base: null };
-  if (f.status === "deleted") return { head: null, base: patchSide(f.lines, "-") };
-  const base = typeof f.head === "string" ? baseText(f.head, f.lines) : null;
-  return base === null ? null : { head: f.head, base };
 }
 
 // ---- SQL
@@ -862,13 +833,14 @@ export function schemaMarks(model, findings, alias = new Map()) {
   return { nodes, edges: new Map() };
 }
 /**
- * → {arch, marks, L}: the layout with a row per row of a card and the room its finding mark takes. One pass (over: an
- * empty Set is what arch.js gives its own tries, so it does not search again): the search at the end of archLayout
- * lays a picture out many times over, and Herdr stops a render that takes about 50 ms.
+ * → {arch, marks, args, L}: one layout with a row per row of a card and the room its finding mark takes. args: what
+ * the layout got, for the search for a better one after the frame (stack.js laidOut). L is what a frame can afford
+ * (arch.js archQuick); lay: false leaves it to the caller (the review lays a big picture out after the frame).
  */
-export function schemaPicture(model, findings = [], fit = false) {
+export function schemaPicture(model, findings = [], fit = false, lay = true) {
   const arch = schemaArch(model), marks = schemaMarks(model, findings, arch.alias), w = (fit ? FIT : ARCH).W - 20;
-  return { arch, marks, L: archLayout(arch, "diff", (n) => (n.rows ?? []).length + (marks.nodes.has(n.id) ? markRoom(marks.nodes.get(n.id), w).rows : 0), fit, { labels: true, over: new Set() }) };
+  const args = [arch, "diff", (n) => (n.rows ?? []).length + (marks.nodes.has(n.id) ? markRoom(marks.nodes.get(n.id), w).rows : 0), fit, { labels: true }];
+  return { arch, marks, args, ...(lay ? { L: archQuick(...args) } : {}) };
 }
 
 // ---- Copy as Markdown: the section's lines. table(head, rows) is markdown.js's own, handed in so this file stays below it.

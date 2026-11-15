@@ -21,6 +21,7 @@ assert.equal(r.jdtls.what, "Go to definition and Impact in Java need jdtls");
 assert.equal(r.jdtls.install, "brew install jdtls");
 assert.equal(report(min, "linux").find((x) => x.id === "jdtls").install, null); // no simple Linux command
 assert.equal(r["typescript-language-server"].what, "Go to definition and Impact in TypeScript and JavaScript need typescript-language-server + tsc");
+assert.equal(r["terraform-ls"].what, "Go to definition in Terraform needs terraform-ls"); // Impact leaves Terraform to Infrastructure changes
 // A language server the bridge could not start: the message names the language, this system's command and Setup.
 assert.equal(installHint("pyright-langserver is not installed"), "pyright-langserver is not installed (the language server for Python). Install it with `npm install -g pyright`; the panel's Setup (PRs ▾ → Setup) offers the same command.");
 assert.equal(installHint("tsc is not installed", "linux"), "tsc is not installed (the language server for TypeScript and JavaScript). Install it with `npm install -g typescript-language-server typescript`; the panel's Setup (PRs ▾ → Setup) offers the same command.");
@@ -57,4 +58,11 @@ const argv = pretypeArgv("brew install gh");
 assert.equal(argv[0], "sh");
 assert.equal(argv.at(-1), "brew install gh");
 assert.ok(/vared/.test(argv[2]) && /read -e -i/.test(argv[2]));
+// The editors of "Open in <Editor>": optional, and on macOS the app alone counts (the links open through the app).
+{
+  const script = checkScript();
+  assert.ok(script.includes('"Visual Studio Code"') && script.includes('"IntelliJ IDEA Ultimate"') && script.includes("printf '%s=%s\\n' code"), "the check also looks for the apps");
+  const got = parseCheck("git=/usr/bin/git\ncode=\nidea=\ncode=/Applications/Visual Studio Code.app\n"), rows = report(got, "darwin");
+  assert.deepEqual([rows.find((r) => r.id === "code").status, rows.find((r) => r.id === "idea").status, rows.find((r) => r.id === "idea").need], ["ok", "optional-missing", "optional"]);
+}
 console.log("ok");

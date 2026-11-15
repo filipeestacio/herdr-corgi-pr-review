@@ -1,0 +1,131 @@
+diff --git a/stacks/orders/main.tf b/stacks/orders/main.tf
+index acb99db..c9ffc58 100644
+--- a/stacks/orders/main.tf
++++ b/stacks/orders/main.tf
+@@ -3,7 +3,7 @@ terraform {
+ 
+   backend "s3" {
+     bucket = "acme-terraform-state"
+-    key    = "orders/terraform.tfstate"
++    key    = "shop/orders/terraform.tfstate"
+     region = "eu-central-1"
+   }
+ }
+diff --git a/stacks/orders/queue.tf b/stacks/orders/queue.tf
+index 6aa80f7..1a4db51 100644
+--- a/stacks/orders/queue.tf
++++ b/stacks/orders/queue.tf
+@@ -1,15 +1,5 @@
+-# The queue the shop writes orders to, and where failed ones end up.
++# The queue the shop writes orders to.
+ resource "aws_sqs_queue" "orders" {
+   name                       = "${local.prefix}-orders"
+-  visibility_timeout_seconds = 30
+-
+-  redrive_policy = jsonencode({
+-    deadLetterTargetArn = aws_sqs_queue.orders_dlq.arn
+-    maxReceiveCount     = 5
+-  })
+-}
+-
+-resource "aws_sqs_queue" "orders_dlq" {
+-  name                      = "${local.prefix}-orders-dlq"
+-  message_retention_seconds = 1209600
++  visibility_timeout_seconds = 60
+ }
+diff --git a/stacks/orders/storage.tf b/stacks/orders/storage.tf
+index c494af6..bd1a460 100644
+--- a/stacks/orders/storage.tf
++++ b/stacks/orders/storage.tf
+@@ -2,11 +2,33 @@ resource "aws_s3_bucket" "receipts" {
+   bucket = "${local.prefix}-receipts"
+ }
+ 
++resource "aws_s3_bucket_lifecycle_configuration" "receipts" {
++  bucket = aws_s3_bucket.receipts.id
++
++  rule {
++    id     = "expire"
++    status = "Enabled"
++
++    expiration {
++      days = var.receipt_expiry_days
++    }
++  }
++}
++
++import {
++  to = aws_s3_bucket.archive
++  id = "orders-archive"
++}
++
++resource "aws_s3_bucket" "archive" {
++  bucket = "orders-archive"
++}
++
+ resource "aws_secretsmanager_secret" "mailer" {
+   name = "${local.prefix}/mailer"
+ }
+ 
+ resource "aws_secretsmanager_secret_version" "mailer" {
+   secret_id     = aws_secretsmanager_secret.mailer.id
+-  secret_string = "placeholder-one"
++  secret_string = "placeholder-two"
+ }
+diff --git a/stacks/orders/variables.tf b/stacks/orders/variables.tf
+index 6543671..2933dca 100644
+--- a/stacks/orders/variables.tf
++++ b/stacks/orders/variables.tf
+@@ -9,7 +9,12 @@ variable "env" {
+ 
+ variable "retention_days" {
+   type    = number
+-  default = 14
++  default = 30
++}
++
++variable "receipt_expiry_days" {
++  type    = number
++  default = 365
+ }
+ 
+ locals {
+diff --git a/stacks/orders/worker.tf b/stacks/orders/worker.tf
+index 2458ef3..4413b40 100644
+--- a/stacks/orders/worker.tf
++++ b/stacks/orders/worker.tf
+@@ -1,23 +1,29 @@
+ resource "aws_lambda_function" "worker" {
+-  function_name = "${local.prefix}-worker"
++  function_name = "${local.prefix}-order-worker"
+   role          = aws_iam_role.worker.arn
+   handler       = "worker.handle"
+   runtime       = "python3.13"
+   filename      = "build/worker.zip"
+-  timeout       = 10
++  timeout       = 30
+   memory_size   = 256
+ 
+   environment {
+     variables = {
+-      QUEUE_URL = aws_sqs_queue.orders.url
++      QUEUE_URL      = aws_sqs_queue.orders.url
++      RECEIPT_BUCKET = aws_s3_bucket.receipts.bucket
+     }
+   }
+ }
+ 
+-resource "aws_lambda_event_source_mapping" "orders" {
++resource "aws_lambda_event_source_mapping" "orders_queue" {
+   event_source_arn = aws_sqs_queue.orders.arn
+   function_name    = aws_lambda_function.worker.arn
+-  batch_size       = 10
++  batch_size       = 5
++}
++
++moved {
++  from = aws_lambda_event_source_mapping.orders
++  to   = aws_lambda_event_source_mapping.orders_queue
+ }
+ 
+ resource "aws_cloudwatch_log_group" "worker" {

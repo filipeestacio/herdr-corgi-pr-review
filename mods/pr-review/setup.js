@@ -2,7 +2,8 @@
 // A mod can't install programs: Setup only shows the command, and "Install in terminal" pre-types it for you.
 
 // need: required (the panel can't work without it), optional (one feature), lsp (go-to-definition, hover and the
-// Architecture page's Impact picture for a language).
+// Architecture page's Impact picture for a language; impact: false where Impact does not use it: Terraform is
+// "Infrastructure changes", read without a server).
 // also: more programs the same item needs. auth: how to log in, when the check says logged out. os: the one system
 // the program is for (bwrap; macOS has sandbox-exec built in). A minimum version and what happens below it stand in
 // `what`. ponytail: Setup does not compare versions; the feature that needs one says so when it starts (review.js
@@ -20,13 +21,19 @@ export const TOOLS = [
     mac: null, linux: "sudo apt install bubblewrap" },
   { id: "acli", need: "optional", what: "The Jira ticket a PR names, in the task check (Atlassian CLI)",
     mac: "brew tap atlassian/homebrew-acli && brew install acli", linux: null },
+  // Editors for "Open in <Editor>" (editor.js): one is enough. apps: the macOS applications that count as installed
+  // without the command line tool (the links open through the app, not through the tool).
+  { id: "code", need: "optional", apps: ["Visual Studio Code"], what: "Open in VS Code: a file of a PR's checkout at its line, a definition, a card's place in the code, the checkout itself.",
+    mac: "brew install --cask visual-studio-code", linux: "sudo snap install code --classic" },
+  { id: "idea", need: "optional", apps: ["IntelliJ IDEA", "IntelliJ IDEA Ultimate", "IntelliJ IDEA CE", "IntelliJ IDEA Community Edition"], what: "Open in IntelliJ IDEA: the default for Java, Kotlin and Gradle files and for Maven and Gradle projects.",
+    mac: "brew install --cask intellij-idea-ce", linux: "sudo snap install intellij-idea-community --classic" },
   { id: "typescript-language-server", also: ["tsc"], need: "lsp", lang: "TypeScript and JavaScript",
     mac: "npm install -g typescript-language-server typescript", linux: "npm install -g typescript-language-server typescript" },
   { id: "pyright-langserver", need: "lsp", lang: "Python", mac: "npm install -g pyright", linux: "npm install -g pyright" },
   { id: "gopls", need: "lsp", lang: "Go", mac: "brew install gopls", linux: "go install golang.org/x/tools/gopls@latest" },
   { id: "rust-analyzer", need: "lsp", lang: "Rust", mac: "rustup component add rust-analyzer", linux: "rustup component add rust-analyzer" },
   { id: "jdtls", need: "lsp", lang: "Java", mac: "brew install jdtls", linux: null },
-  { id: "terraform-ls", need: "lsp", lang: "Terraform", mac: "brew install hashicorp/tap/terraform-ls", linux: null },
+  { id: "terraform-ls", need: "lsp", lang: "Terraform", impact: false, mac: "brew install hashicorp/tap/terraform-ls", linux: null },
   { id: "clangd", need: "lsp", lang: "C and C++", mac: "xcode-select --install", linux: "sudo apt install clangd" },
 ];
 
@@ -39,6 +46,8 @@ export function checkScript(names = programs()) {
   return [
     'PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$HOME/go/bin:$HOME/.local/bin"',
     `for c in ${names.join(" ")}; do printf '%s=%s\\n' "$c" "$(command -v "$c" 2>/dev/null)"; done`,
+    // An editor's macOS app counts as that editor: a later line for the same name wins in parseCheck.
+    ...TOOLS.filter((t) => t.apps && names.includes(t.id)).map((t) => `for a in ${t.apps.map((a) => `"${a}"`).join(" ")}; do for d in /Applications "$HOME/Applications"; do [ -d "$d/$a.app" ] && printf '%s=%s\\n' ${t.id} "$d/$a.app"; done; done`),
     'if command -v gh >/dev/null 2>&1; then gh auth status >/dev/null 2>&1 && echo auth:gh=1 || echo auth:gh=0; fi',
     'if command -v claude >/dev/null 2>&1; then claude auth status 2>/dev/null | grep -q \'"loggedIn": *true\' && echo auth:claude=1 || echo auth:claude=0; fi',
   ].join("\n");
@@ -63,7 +72,7 @@ export function report({ found = {}, auth = {} } = {}, os = "darwin") {
     const have = [t.id, ...(t.also ?? [])].every((n) => Boolean(found[n]));
     const loggedOut = have && t.auth && auth[t.id] === false;
     const status = !have ? (t.need === "required" ? "missing" : "optional-missing") : loggedOut ? "logged-out" : "ok";
-    const what = t.need === "lsp" ? `Go to definition and Impact in ${t.lang} need ${[t.id, ...(t.also ?? [])].join(" + ")}` : t.what;
+    const what = t.need === "lsp" ? `${t.impact === false ? "Go to definition" : "Go to definition and Impact"} in ${t.lang} ${t.impact === false && !t.also ? "needs" : "need"} ${[t.id, ...(t.also ?? [])].join(" + ")}` : t.what;
     const install = status === "logged-out" ? t.auth : status === "ok" ? null : (os === "linux" ? t.linux : t.mac) ?? null;
     return { id: t.id, need: t.need, status, what, install, path: found[t.id] ?? null };
   });

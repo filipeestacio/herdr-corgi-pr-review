@@ -162,10 +162,24 @@ in but not run.
 | `codex` (optional, with permission profiles; checked with 0.164) | the Codex reviewer, offered only when installed | `npm install -g @openai/codex` | same |
 | `bwrap` (optional, Linux only) | the sandbox a probe's script runs in | built in (`sandbox-exec`) | `sudo apt install bubblewrap` |
 | `acli` (optional) | the Jira ticket a PR names, in the task check | `brew tap atlassian/homebrew-acli && brew install acli` | see Atlassian's docs |
+| an editor (optional): VS Code, IntelliJ IDEA, Cursor or Zed | "Open in VS Code" on a file's head, a definition, a card's place in the code and a PR's checkout | `brew install --cask visual-studio-code`, or `brew install --cask intellij-idea-ce` | `sudo snap install code --classic`, or `sudo snap install intellij-idea-community --classic` |
+
+**Open in your editor.** A file's head in the diff, the file and definition view, the panel and the cards that
+name a place in the code carry a link "VS Code ↗" or "IntelliJ ↗": it opens that file at its line in the checkout the
+review made for the PR. A click starts one process and changes nothing in the checkout. On macOS the app is enough
+(the link goes through `open` and the editor's own URL, `vscode://file/…` or `idea://open?file=…`); on Linux the
+`code` or `idea` command is used. Java, Kotlin and Gradle files open in IntelliJ IDEA and the rest in VS Code; a
+folder goes by the kind of project. The ▾ next to the link picks another editor for that project, and the pick is
+shared with the other Corgi mods. For a PR from someone else that you have not trusted, only single files are
+opened, never the folder and never a build or workspace file, because an editor can run a project's code when it
+opens those. More editors: `"editors": [{"id", "name", "folder": [argv…], "file": [argv…]}]` in
+`pr-review.config.json`, with `{dir}`, `{file}` and `{line}`.
 
 Language servers are optional. Each turns on go-to-definition, hover and the Architecture page's Impact picture
 (who calls what the PR changes) for its language. Without one, those three are off for that language and nothing
 else changes; the Impact section then names the missing server and its install command. Setup checks them too.
+Impact needs no server for Terraform, CloudFormation or SAM: those files are in "Infrastructure changes", read from
+the diff.
 
 | Language | Language server | macOS | Linux |
 |---|---|---|---|
@@ -174,7 +188,7 @@ else changes; the Impact section then names the missing server and its install c
 | Go | `gopls` | `brew install gopls` | `go install golang.org/x/tools/gopls@latest` |
 | Rust | `rust-analyzer` (only for PRs you trust) | `rustup component add rust-analyzer` | same |
 | Java | `jdtls` | `brew install jdtls` | see the Eclipse JDT LS docs |
-| Terraform | `terraform-ls` | `brew install hashicorp/tap/terraform-ls` | see HashiCorp's docs |
+| Terraform (go-to-definition and hover only) | `terraform-ls` | `brew install hashicorp/tap/terraform-ls` | see HashiCorp's docs |
 | C, C++ | `clangd` | `xcode-select --install` | `sudo apt install clangd` |
 
 The reviewers use Claude Code's `/security-review` and a `/code-review` command; without the command in your

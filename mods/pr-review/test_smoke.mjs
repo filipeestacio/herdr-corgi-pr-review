@@ -16,7 +16,7 @@ if (!existsSync(FIXTURES)) {
 }
 
 const { default: PrReview } = await import("./main.js");
-const { splitPatch, hunksOf, diffRows, hash, mapReview, lineKey } = await import("./pr.js");
+const { splitPatch, hunksOf, diffRows, hash, mapReview, lineKey, reviewRequest } = await import("./pr.js");
 const { langOf } = await import("./syntax.js");
 const { foldOnOpen, resWatch } = await import("./views.js");
 const R = await import("./review.js");
@@ -100,10 +100,14 @@ async function open({ diff, analysis = null, findings = null, ctx = null, pr = 2
   v.hunks = hunksOf(v.patch).map((h) => ({ ...h, rows: diffRows(h.lines) }));
   v.byId = new Map(v.hunks.map((h) => [h.id, h])); v.fileHunks = new Map();
   for (const h of v.hunks) v.fileHunks.set(h.path, [...(v.fileHunks.get(h.path) ?? []), h]);
-  v.collapsed = new Set(foldOnOpen(v.patch));
+  v.collapsed = new Set(foldOnOpen(v.patch)); v.loadInfra(cx); // as onSource does: the infrastructure files of the patch
   v.ctx = ctx ? JSON.parse(ctx) : null; v.head = v.ctx?.head ?? null;
   await v.loadFindings(cx);
   if (analysis) v.ai = v.mapSaved(JSON.parse(analysis), true);
+  // The analysis also where the first frame asks for it (renderReview: loadAi reads the picked model's cached one,
+  // the exact file and the newest). Without the files that read took the analysis away at the first settle(), and
+  // what a tour draws after it (the previews, the popups, the card menus, Ask and Look inside) had none.
+  if (analysis) { const job = reviewRequest({ url, pr: url, worktree: null, files: v.patch, hunks: v.hunks, model: "sonnet", context: v.ctxReq(), dir: "/h/pr-data/cache" }); S.files.set(job.out, analysis); S.files.set(job.latest, analysis); }
   v.securityNow(cx); v.publish();
   await settle();
   return v;
@@ -111,7 +115,7 @@ async function open({ diff, analysis = null, findings = null, ctx = null, pr = 2
 
 // Everything one review shows.
 async function tour(v, name) {
-  const at = (x) => `${name}: ${x}`;
+  const at = (x) => `${name}: ${x}`, had = Boolean(v.ai);
   for (const tab of ["files", "steps", "comments", "findings"]) act(v, tab, at(`tab ${tab}`));
   // Syntax colors: once the queue is drained, a line of code that starts with a keyword has spans. It keeps them with a
   // line selected (the row arrays stay the same ones), with line wrap on, and gets them again with the whole file
@@ -274,6 +278,7 @@ async function tour(v, name) {
   }
   await deep(v, at);
   await settle();
+  assert.equal(Boolean(v.ai), had, at("the analysis is there to the tour's end (or was never there)"));
 }
 
 const PR2 = { diff: fx("pr2.diff"), ctx: fx("ctx.json"), impact: fx("impact.json") };
@@ -448,23 +453,26 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   act(b, "steps", "no data: the Analysis tab"); act(b, "page:blast", "a run without data or rights");
   assert.ok(!b.pageParts.includes("data") && !b.pageParts.includes("rights") && !/Where sensitive data goes|Who may do what/.test(b.mdText(false)), "no data, no section, on the page and in its Markdown");
 }
-// The Security page's map shows archLayout's picture at once; its better layout (arch.js archSearch: a full layout per
-// try, too much for a render) comes after the render, in slices (layoutMore): the memo's layout is replaced once, the
-// view is told, and the page draws with it.
+// The Security page's map shows archLayout's picture at once (the base layout: two lines round the picture); its
+// better layout (arch.js layoutJob: too much work for a render) comes after the render, in slices of a timer tick each
+// (stack.js layoutPump): the memo's layout is replaced once, the view is told once, and the page draws with it.
 {
   const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json") });
   act(v, "page:blast", "Security, the map at once");
-  const { lineStats, archLayout } = await import("./arch.js"), quick = v.secMemo.L, jobs = v.layoutJobs.length;
+  const { lineStats } = await import("./arch.js"), { layoutSlice, laidOut } = await import("./stack.js"), quick = v.secMemo.L, q = lineStats(quick);
+  assert.deepEqual([q.crossings, q.bends, q.around], [0, 10, 2], "the base layout, at once");
   let told = 0;
-  const later = { ...cx, notify() { told++; }, timer: { ...cx.timer, after: (_ms, f) => setImmediate(() => f(later)) }, spawn: (fn) => cx.spawn(() => fn(later)) };
-  v.layoutMore(later); await settle();
-  const s = lineStats(v.secMemo.L), q = lineStats(quick);
-  assert.ok(jobs > 0 && v.secMemo.L !== quick && told >= 1 && !v.layoutBusy && v.layoutJobs.length === 0, "searched after the render");
-  assert.ok(s.crossings <= q.crossings && s.bends < q.bends && s.around < q.around, `${JSON.stringify(s)} was ${JSON.stringify(q)}`);
+  const later = { ...cx, notify() { told++; }, timer: { ...cx.timer, after: (_ms, f) => setImmediate(() => f(later)) } };
+  layoutSlice(later); // the tick after the render (this test's renders have a timer that never fires)
+  for (let i = 0; i < 50 && v.secMemo.L === quick; i++) await settle();
+  const s = lineStats(v.secMemo.L);
+  assert.deepEqual([s.crossings, s.bends, s.around], [0, 8, 1], "after the search: fewer bends, one line less round the picture");
+  assert.ok(told >= 1, "the view is told");
   draw(v, "Security, the map after its search");
-  // A memo replaced meanwhile is not searched on: its job ends without a layout.
-  const gone = { key: "x", L: quick }; v.layoutLater(gone, [null], () => null); v.layoutMore(later); await settle();
-  assert.ok(gone.L === quick && !v.layoutBusy && archLayout(null).nodes.length === 0);
+  // A memo replaced meanwhile is not searched on: its entry keeps its layout, and nobody is told.
+  await settle(); told = 0;
+  const gone = laidOut([null], { key: "x" }, () => null), empty = gone.L; layoutSlice(later); await settle();
+  assert.ok(gone.L === empty && told === 0);
 }
 // Someone else's PR with reasons for a security review: the offers instead of a start.
 {
@@ -508,6 +516,55 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   v.steps().forEach((_s, k) => act(v, `step:${k}`, `Explore: layer ${k}`));
   v.exBusy = { id: "x2", topic: "Next?", model: "sonnet", started: Date.now() }; draw(v, "Explore: one running"); v.exBusy = null;
   v.exErr = "The model gave no answer"; draw(v, "Explore: one failed"); v.exErr = null;
+  // A run that ended at once without an answer: the sentence with Retry, the model's choice and "Details" (what the
+  // CLI printed stays folded); the red line never holds the result object.
+  {
+    S.store.set("review.explore", { start: true, at: 3, root: "/h/repo" }); draw(v, "Explore: a new start"); v.exRoot = { root: "/h/repo", repo: "o/r" }; // the repo, as found
+    const raw = JSON.stringify({ type: "result", is_error: true, duration_api_ms: 0, stop_reason: "stop_sequence", session_id: "0000", total_cost_usd: 0, usage: { input_tokens: 0 }, result: "Claude AI usage limit reached|1794751200" });
+    v.exErr = "Explore: walkthrough: The run ended at once without an answer: Claude AI usage limit reached. It resets at 15:00. Choose another model or try again later."; v.exDetail = raw; v.exDetailOpen = false;
+    const shown = () => { S.ids = new Set(); S.texts = new Set(); draw(v, "Explore: a run that ended at once"); const got = { ids: S.ids, texts: [...S.texts] }; S.ids = null; S.texts = null; return got; };
+    let got = shown();
+    assert.ok(["rv-ex-err", "rv-ex-retry", "rv-ex-detail"].every((id) => got.ids.has(id)) && !got.ids.has("rv-ex-raw"), "the sentence, Retry and Details; the raw object folded");
+    assert.ok(got.texts.includes("The run ended at once without an answer: Claude AI usage limit reached. It resets at 15:00. Choose another model or try again later.") && !got.texts.some((x) => x.includes("session_id")), "one sentence, without the feature's name and without the object");
+    S.clicks.get("rv-ex-detail")(null, cx); got = shown();
+    assert.ok(got.ids.has("rv-ex-raw") && got.texts.includes(raw), "Details shows what the CLI printed");
+    v.exTopic.set_value("How are reminders sent?"); const before = v.exBusy; S.clicks.get("rv-ex-retry")(null, cx);
+    assert.ok(!before && v.exBusy?.topic === "How are reminders sent?" && v.exErr === null && v.exDetail === null, "Retry starts the run again and takes the error away");
+    v.exBusy = null; v.exTopic.set_value("");
+  }
+  // Minimize in Explore: the bar has it beside Back; the entry keeps the topic typed, the repo and a run that is going;
+  // the chip says what it is and how the run stands; Resume opens the page with all of it, and the run's end is read.
+  {
+    const bar = () => { S.ids = new Set(); frame("Explore: the bar", () => v.renderBar()); const ids = S.ids; S.ids = null; return ids; };
+    assert.ok(bar().has("rv-back") && bar().has("rv-min"), "Explore's bar: Back and Minimize");
+    const busy = { id: "x9", topic: "How are reminders sent?", model: "opus", started: Date.now() - 42000, status: "/h/pr-data/explore/x9.json.status", out: "/h/pr-data/explore/x9.json", ctx: null };
+    v.exTopic.set_value("How are reminders sent?"); v.exBusy = busy; v.exErr = null;
+    v.command("explore-min", cx);
+    const kept = S.store.get("review.minimized");
+    assert.deepEqual([kept.explore.draft, kept.explore.busy.id, kept.explore.exRoot.root, kept.target], ["How are reminders sent?", "x9", "/h/repo", undefined], "the page as it stands is kept");
+    assert.deepEqual(R.miniExploreText(kept.explore, null, busy.started + 42000), { head: "Explore", topic: "How are reminders sent?", repo: "o/r", state: "running", text: "running · 0:42" });
+    assert.equal(R.miniExploreText(kept.explore, { id: "x9", state: "done" }).text, "the walkthrough is ready");
+    assert.deepEqual([R.miniExploreText(kept.explore, { id: "x9", state: "failed" }).state, R.miniExploreText(kept.explore, { id: "other", state: "done" }).state], ["failed", "running"], "another run's end says nothing of this one");
+    assert.deepEqual([R.miniExploreText({ start: true, root: "/h/repo" }).head, R.miniExploreText({ start: true, root: "/h/repo" }).text], ["Explore: repo", ""], "no topic yet: the repo");
+    assert.equal(R.miniExploreText({ id: "x1", topic: "Loans", repo: "o/r", root: "/h/repo" }).state, null, "an exploration that is shown: no run");
+    for (const run of [null, { id: "x9", state: "done" }, { id: "x9", state: "failed" }]) { S.ids = new Set(); frame(`the minimized Explore chip, ${run?.state ?? "running"}`, () => R.renderMini(run)); assert.ok(["rv-mini", "rv-mini-open", "rv-mini-x"].every((id) => S.ids.has(id))); S.ids = null; }
+    // Resume: a view that lost the page's state (a new one) takes it from the entry; the run ended meanwhile with an error.
+    S.files.set("/h/mods/pr-review/review-layout.json", "{}"); // the layout it copies on a first start
+    await R.startExplore("/h/repo", kept.explore);
+    const back = S.store.get("review.explore");
+    assert.ok(S.store.get("review.minimized") === null && back.busy.id === "x9" && back.draft === "How are reminders sent?", "Resume: the entry is gone, the page has its state");
+    S.files.set(busy.status, JSON.stringify({ error: "Explore: walkthrough: The run was stopped before it answered. Try again.", kind: "stopped", detail: "" }));
+    v.exBusy = null; v.exTopic.set_value(""); v.exRoot = null; v.exStart = null;
+    const timers = []; const cx2 = { ...cx, timer: { after: (_ms, f) => timers.push(f), every() {} }, spawn: (f) => { void Promise.resolve().then(() => f(cx2)).catch(() => null); } };
+    v.enterExplore(back, cx2);
+    assert.deepEqual([v.exBusy?.id, v.exTopic.value(), v.exRoot?.root], ["x9", "How are reminders sent?", "/h/repo"], "the topic, the repo and the run are back");
+    for (const f of timers.splice(0)) f(cx2); await settle();
+    assert.deepEqual([v.exBusy, v.exErr], [null, "Explore: walkthrough: The run was stopped before it answered. Try again."], "the run's end is read at once");
+    v.enterExplore({ ...back }, cx2); // the next render reads the same entry as a new object: nothing is taken again
+    assert.deepEqual([v.exBusy, v.exErr === null, timers.length], [null, false, 0], "the entry is taken once: the ended run does not start over");
+    draw(v, "Explore: back from the chip, the run had failed");
+    v.exErr = null; v.exDetail = null; v.exTopic.set_value(""); S.store.set("review.minimized", null);
+  }
   await deep(v, (x) => `Explore: ${x}`);
   S.files.set("/h/repo/library/loans.py", FILE); v.openExploreFile("library/loans.py", 9, cx); await settle(); draw(v, "Explore: a cited file open");
   v.defFile = null; S.store.set("review.explore", null); v.leaveExplore(); draw(v, "back to the review");
@@ -526,6 +583,10 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   S.store.set("review.minimized", { target: prs[3], at: now });
   S.spaces = [{ id: "sA", active: true, folder: "/h/a" }];
   const v = new PrReview(); v.init({}, cx); await settle();
+  // Not the first-run switch to Setup (nothing is installed here): it covered every frame below until "setup:close",
+  // and the lists and the diff were built behind it only because the panel built them whether they showed or not.
+  // Setup has its own frames further down.
+  v.setupFirst = false;
   v.spaceSlug = { root: "/h/a", slug: "saefty/corgi-demo" };
   assert.deepEqual(v.panelProgress().shown.map((r) => r.number), [2], "In progress: work done and not merged; one only opened is not there");
   assert.deepEqual(v.panelProgress().left.map((r) => [r.number, r.state]), [[1, "merged"]], "the merged one is listed apart, dimmed");
@@ -709,6 +770,19 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     assert.equal(w.impactSt.state, "idle"); assert.deepEqual(asked, [], "no language server is asked for someone else's PR before the click");
     click("rv-impact-run", "Impact, untrusted: Find callers"); await settle(); await settle(); draw(w, "Impact, untrusted: the result");
     assert.equal(w.impactSt.state, "ok");
+    // A Terraform PR (demo/fixtures/infra): its files are "Infrastructure changes"' part. No Impact section, nothing in
+    // the Markdown, and no bridge or language server asked, though the checkout is there and the PR is trusted.
+    const tfDiff = readFileSync(new URL("../../demo/fixtures/infra/pr.diff", import.meta.url), "utf8"), starts = [];
+    const exec0 = S.exec; S.exec = async (cmd, args) => { starts.push(args.at(-1)); return exec0(cmd, args); };
+    const tf = await open({ diff: tfDiff, pr: 7, title: "feat(orders): drop the dead-letter queue" }); tf.head = "0123abc"; tf.worktree = { url: tf.prSel.url, head: tf.head, path: "/h/w" }; asked.length = 0; starts.length = 0;
+    act(tf, "steps", "Impact, Terraform only: the Analysis tab"); act(tf, "page:arch", "Impact, Terraform only: the page"); await settle(); draw(tf, "Impact, Terraform only: still none"); tf.command("impact", cx); await settle();
+    assert.deepEqual([tf.impactSt.state, tf.pageParts.includes("impact"), tf.pageParts.includes("infra"), asked, starts.filter((x) => x === "start"), /## Impact/.test(tf.mdText(false))], ["none", false, true, [], [], false], "a diff of infrastructure code has no Impact section and starts nothing");
+    // The same files next to code: Impact covers the code and says where the rest is.
+    const mixed = await open({ diff: `${tfDiff}\n${fx("pr2.diff")}`, ctx: fx("ctx.json"), pr: 8, title: "feat: both" }); mixed.worktree = { url: mixed.prSel.url, head: mixed.head, path: "/h/w" }; asked.length = 0;
+    act(mixed, "steps", "Impact, mixed: the Analysis tab"); act(mixed, "page:arch", "Impact, mixed: the page"); await settle(); draw(mixed, "Impact, mixed: about to start"); mixed.impactRun(cx); await settle(); await settle(); S.texts = new Set(); draw(mixed, "Impact, mixed: the result"); const seen = [...S.texts]; S.texts = null;
+    assert.deepEqual([mixed.impactNow()?.infra, asked.filter((x) => /\.tf|\.ya?ml/.test(x))], [6, []], "five Terraform files and the SAM template are left out");
+    assert.ok(seen.includes("Not covered: 6 infrastructure files: see Infrastructure changes.") && mixed.pageParts.includes("impact") && mixed.pageParts.includes("infra") && mixed.mdText(false).includes("Not covered: 6 infrastructure files: see Infrastructure changes."), "the hint is on the page and in its Markdown");
+    S.exec = exec0;
   } finally { globalThis.fetch = realFetch; S.exec = null; }
 }
 // The Markdown of a page says what the page shows: every text the page draws (each crossing and path opened in turn,
@@ -728,7 +802,7 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   // second wording (the text has it as Certainty and Preconditions).
   const NOT_COPIED = [/recommended because/, /^Re-run \(/, /^Run probe/, /^last run .* ago/, /^A click shows the way\.$/, /^Verify (all \d+ )?with an agent/, /^Derived from the code that was read;$/, /^It needs nothing else:$/, /^it holds as the code stands\.$/, /lit on the map, the rest dimmed/, /^Open a path to light it on the map\.$/,
     /^in a sandbox, without network, at most 30 s$/, /^\d+ more: /, /^\d+ [^.]*(criteria|high|medium|low|observable|blockers?|paths?) ▸$/, /^GitHub read .* ago/, /^call over a trust boundary$/, /^Look inside/, /Ask names it/, /^This analysis has no further details for this card\.$/, /^“Look inside” reads/, /^“↻ Refresh diagrams”/,
-    /^and \d+ more in the Findings tab$/, /^\d+ (more|findings?) at this place ▸$/, /^shown at crossing \d+:$/, /^Ask about this layer$/, /^A finding sent to Fix stays unresolved and shows here/, /^not counted as findings$/, /^Each call has its own scale\.$/, /^Scroll sideways for the whole picture →$/];
+    /^and \d+ more in the Findings tab$/, /^\d+ (more|findings?) at this place ▸$/, /^shown at crossing \d+:$/, /^Ask about this layer$/, /^A finding sent to Fix stays unresolved and shows here/, /^not counted as findings$/, /^Each call has its own scale\.$/, /^Scroll sideways for the whole picture →$/, /^References without their text in the picture$/, /^Analyze in the left column\.$/];
   const norm = (x) => String(x).toLowerCase().replace(/,? \d+ (s|min|h|d|days?) ago/g, "").replace(/#\d+;|#quot;|#lt;|#gt;/g, " ").replace(/[^a-z0-9äöüß]+/g, " ").trim();
   const drawn = (states, part, w = v) => { const all = new Set(); for (const st of states) { st(); S.texts = null; S.lists.length = 0; w.render(cx); S.lists.length = 0; S.texts = all; part(); } S.texts = null; return [...all]; };
   const missing = (texts, md) => { const text = norm(md), segs = [...new Set(texts.flatMap((x) => x.split(/(?<=[.;:])\s+|\s·\s|\n+/)).map((x) => x.replace(/^\*\*Suggested:\*\*\s*/, "").replace(/ and \d+(?: m(?:o(?:re?)?)?)?…?$/, "")))].filter((x) => x.trim().length >= 20 && x.trim().split(/\s+/).length >= 4);
@@ -790,10 +864,34 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   v.command("page:overview", cx); v.rulesOpen = true; v.relOpen = true;
   check("Overview", drawn([() => {}, ...[...v.ai.asks.map((x) => x.id), "other"].map((k) => () => v.command(`criterion:${k}`, cx))], page), {});
   v.command("page:arch", cx); v.impactSt = { key: v.impactKey(), state: "ok", model: JSON.parse(fx("impact.json")) }; // the Impact section with PR #2's result
-  check("Architecture impact", drawn([() => {}, ...a.nodes.map((n) => () => v.command(`card:${n.id}`, cx)), () => { v.fold.impactList = true; }], page), { flowchart: 2 });
+  const archMd = check("Architecture impact", drawn([() => {}, ...a.nodes.map((n) => () => v.command(`card:${n.id}`, cx)), () => { v.fold.impactList = true; }], page), { flowchart: 3 });
   assert.match(v.mdText(false), /\n## Impact \(2 changed functions, 0 callers, 1 test\)\n/, "the Impact section is a section of its own in the page's Markdown");
+  // "Infrastructure changes" (infra.js): PR #2 adds template.yaml, so the page has the part and the text its section, from the diff alone.
+  assert.ok(v.infra?.cards.length === 3 && v.infra.edges.length === 2 && v.pageParts.includes("infra") && S.clicks.has("rv-infra-n0"), "PR #2's template is the Infrastructure changes part, its cards drawn");
+  assert.match(archMd, /## Infrastructure changes \(3\)\n\nDerived from the diff; no change set was created, so replacements and computed values are estimates\.\n\n3 resources: 3 added\./, "the section's text says where it comes from and what it counts");
+  assert.ok(mdParts(archMd).parts.some((p) => /^Infrastructure changes \(3\)$/.test(p.title)), "it is a part of its own in the preview");
+  // A Terraform PR without an analysis (demo/fixtures/infra): first only what the patch holds, then, with the files of
+  // the checkout, every state of a card, the notice above the picture, the rows under it; the page and its text agree.
+  {
+    const { infraModel } = await import("./infra.js"), { readdirSync } = await import("node:fs"), IF = new URL("../../demo/fixtures/infra/", import.meta.url), ifx = (p) => readFileSync(new URL(p, IF), "utf8");
+    const w = await open({ diff: ifx("pr.diff"), pr: 7, title: "feat(orders): drop the dead-letter queue" }), dir = "stacks/orders";
+    assert.deepEqual([w.infra.cards.length, w.infra.unread.length], [0, 5], "without a checkout the changed files are named as not read");
+    act(w, "page:arch", "Infrastructure changes: the files are not read yet");
+    w.infra = infraModel(w.patch.map((f) => ({ ...f, head: ifx(`head/${f.path}`) })), readdirSync(new URL(`head/${dir}/`, IF)).filter((n) => !w.patch.some((f) => f.path === `${dir}/${n}`)).map((n) => ({ path: `${dir}/${n}`, text: ifx(`head/${dir}/${n}`) })));
+    act(w, "page:arch", "Infrastructure changes: the Terraform fixture");
+    assert.ok(w.pageParts.includes("infra") && S.clicks.has("rv-infra-note0") && S.clicks.has("rv-infra-row0") && S.clicks.has("rv-infra-n12"), "the notice, the rows and thirteen cards are drawn");
+    const text = check("Infrastructure changes (Terraform)", drawn([() => {}], () => w.pageView(tt), w), { flowchart: 1 }, w);
+    assert.match(text, /The analysis has no architecture picture for this PR\.\n\n## Infrastructure changes \(10\)/, "the section needs no analysis");
+    click(`rv-infra-n${w.infraMemo.pic.L.nodes.findIndex((n) => n.at === "stacks/orders/queue.tf:2")}`, "a card of the infrastructure picture"); draw(w, "Infrastructure changes: a card clicked");
+    assert.ok(w.page === null && !w.note, "a click on a changed resource's card leads to it in the diff");
+  }
+  // Back to this review: opening the other ones above put their PR in the stand-in's shared state, and the next
+  // frame of `v` would take it for a new target and start over (then the layer checked below was "All changes"
+  // without an analysis, whose short texts the comparison skips).
+  S.store.set("review.target", v.prSel);
   v.command("order:reading", cx); v.command("step:0", cx);
   const st = v.steps()[0];
+  assert.ok(v.ai && st.title !== "All changes", "the layer checked is one of the analysis");
   check("a layer", drawn([() => {}], () => { v.stepRow(st, 0, tt); v.item({ t: "step", s: st, i: 0 }, tt); }), { stateDiagram: (st.visuals ?? []).filter((x) => x.kind === "state_machine").length });
   v.command("findings", cx); v.ffocus = null;
   const all = drawn([() => {}], () => v.findingsPane(tt));
@@ -931,6 +1029,39 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     assert.equal(/older rules, re-run/.test(v.mdText(false)), false, "the Security page's Markdown has the sentence, not the bar's note");
     assert.equal(/Re-run it for the current view\. (\d+ of the|None of the)/.test(v.mdText(false)), old, `rules ${rules}: the Markdown's sentence counts`);
   }
+}
+// "Open in <Editor>" with editors installed (their Info.plist files are there; `open` is a stub, no editor starts):
+// the file heads' zones, the cards' monogram, the definition view, the panel's head and its file link, the state
+// "Opening …"; then a PR that is not trusted.
+{
+  const EV = await import("./editor-view.js"); EV.forgetEditors();
+  const started = [];
+  for (const app of ["/Applications/Visual Studio Code.app", "/Applications/IntelliJ IDEA.app"]) S.files.set(`${app}/Contents/Info.plist`, "<plist/>");
+  S.exec = async (cmd, args = []) => { if (cmd === "open") { started.push(args); return { code: 0, stdout: "", stderr: "" }; } throw new Error("stub"); };
+  for (const trusted of [true, false]) {
+    const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json"), trusted }), who = trusted ? "your PR" : "someone else's PR";
+    EV.forgetEditors(); // also the first round's "Opening …"
+    for (const app of ["/Applications/Visual Studio Code.app", "/Applications/IntelliJ IDEA.app"]) S.files.set(`${app}/Contents/Info.plist`, "<plist/>"); // open() cleared the files
+    v.worktree = { url: v.prSel.url, head: v.head, path: "/h/w" }; S.store.set("review.worktree", v.worktree);
+    draw(v, `editor, ${who}: the frame that asks for the editors`); EV.editorFor({ root: "/h/w" }, cx); await EV.lookForEditors(true); await settle();
+    for (const tab of ["files", "findings"]) act(v, tab, `editor, ${who}: ${tab} with the links`);
+    assert.equal(v.fileEditMark(v.patch[0])?.text, "VS Code ↗", "the file heads carry the link");
+    assert.deepEqual(["a/b.py:9-14", "a/b.py:9:3", "a/b.py", "a/b.py:9", "../x:1"].map((at) => v.editAt(S.theme, "x", at).length), [1, 1, 1, 1, 0], "a card's place gets its monogram; a path that leaves the checkout gets none");
+    S.files.set("/h/w/library/loans.py", "class Loan:\n    pass\n".repeat(8)); v.tab = "files"; v.goDef({ path: "library/loans.py", line: 9, inRoot: true }, cx); await settle();
+    assert.ok(v.defFile, "a file outside the diff is open"); draw(v, `editor, ${who}: the definition view with its link`); v.defFile = null; v.defAt = null;
+    for (const pg of ["overview", "blast", "arch"]) act(v, `page:${pg}`, `editor, ${who}: page ${pg} with the monogram`);
+    for (const nd of (v.ai?.arch?.nodes ?? []).slice(0, 3)) act(v, `card:${nd.id}`, `editor, ${who}: card ${nd.id}`);
+    started.length = 0; v.command(`editor:${v.patch[0].path}:3`, cx); await settle();
+    assert.deepEqual(started, [[`vscode://file/h/w/${v.patch[0].path}:3`]], `${who}: the file at its line, one process`);
+    act(v, "files", `editor, ${who}: the link says Opening`); assert.equal(v.fileEditMark(v.patch[0]) && EV.isOpening({ root: "/h/w", file: v.patch[0].path, line: 3 }), true);
+    started.length = 0; v.command("editor:", cx); await settle();
+    assert.equal(started.length, trusted ? 1 : 0, `${who}: its folder ${trusted ? "opens" : "does not open"}`);
+    EV.openEditorMenu(v, v.fileEditTarget(v.patch[0])); v.command("editor-use:idea", cx); await settle(); draw(v, `editor, ${who}: another editor picked for the project`);
+    assert.equal(S.store.get("editor.choice")?.repos?.["/h/w/.git"]?.main, "idea");
+    S.props = {}; const panel = new PrReview(); panel.init({}, cx); await settle(); panel.prSel = v.prSel; panel.context = panel.key(); panel.patch = v.patch; panel.files = v.patch; panel.open = v.patch[0].path; draw(panel, `editor, ${who}: the panel's head and its file link`);
+    S.props = null; S.store.set("editor.choice", null);
+  }
+  EV.forgetEditors(); S.exec = null;
 }
 await settle();
 assert.deepEqual(late, [], "a spawned task threw");

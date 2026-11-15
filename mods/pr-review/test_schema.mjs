@@ -3,8 +3,9 @@
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { sqlStatements, readSql, readAlembic, readPrisma, schemaFiles, schemaWants, schemaModel, schemaSteps, schemaArch, schemaMarks, schemaPicture, schemaMermaid, schemaMd, schemaSummary, cardRows, colDetail, edgeText, narrower,
-  baseText, sidesOf, seriesOf, unreadText, foldText, SCHEMA_SOURCE, SCHEMA_MAX, SCHEMA_ROWS } from "./schema.js";
+  seriesOf, unreadText, foldText, SCHEMA_SOURCE, SCHEMA_MAX, SCHEMA_ROWS } from "./schema.js";
 import { splitPatch } from "./pr.js";
+import { sidesOf } from "./infra.js";
 
 // ---- helpers: a file of a patch as pr.js splitPatch gives it
 const added = (path, text) => ({ path, status: "added", binary: false, lines: [`@@ -0,0 +1,${text.split("\n").length} @@`, ...text.split("\n").map((l) => `+${l}`)] });
@@ -215,14 +216,6 @@ model Odd {
   assert.deepEqual([t.Loan.pk, t.Loan.uniques.map((u) => u.cols), t.Loan.fks.map((f) => [f.cols, f.ref, f.refCols, f.line]), t.Loan.cols.find((c) => c.name === "codes").type, t.Loan.cols.find((c) => c.name === "due").type],
     [["member_id", "bookId"], [["bookId", "due"]], [[["member_id"], "members", ["id"], 21]], "String[]", "Date"], "a relation's key points at the mapped names");
   assert.deepEqual([t.Odd.vague, t.Odd.raw, t.members.vague, t.members.line, t.members.end], [true, "id Int @id\nthis line is not a field (", false, 7, 17], "a model with a line the reader does not understand is not read in detail");
-}
-// ---- the two sides of a file
-{
-  const base = "a\nb\nc\nd", head = "a\nB\nc\nd\ne";
-  assert.equal(baseText(head, ["@@ -1,4 +1,5 @@", " a", "-b", "+B", " c", " d", "+e"]), base);
-  assert.equal(baseText("x\ny", ["@@ -1,4 +1,5 @@", " a", "-b", "+B"]), null, "a patch for another text does not fit");
-  assert.deepEqual(sidesOf(changed("s.sql", base, head)), { head, base });
-  assert.deepEqual([sidesOf(added("a.sql", "x\ny")), sidesOf({ status: "deleted", lines: ["@@ -1,2 +0,0 @@", "-x", "-y"] }), sidesOf({ status: "modified", lines: [] })], [{ head: "x\ny", base: null }, { head: null, base: "x\ny" }, null]);
 }
 // ---- which files, and what is read from the checkout
 {

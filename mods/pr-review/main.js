@@ -16,19 +16,22 @@
 // follows its rules; a picked one is kept in shared "pr.picked" so the selection survives remounts.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, Editor, EditorState, TextView, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
-import { spaces, panes, terminals, focused, agents, exec, hc, run, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, home, layout, props, watchFolder, nextCommand } from "herdr";
+import { focused, exec, hc, run, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, home, layout, props, watchFolder, nextCommand } from "herdr";
+import { spaces, panes, agents, terminals, feed, whenFed } from "./live.js"; // never straight from Herdr: one read and this copy is drawn on every agent's status change
 import { diffRows, buildPrompt, splitPatch, selection, nextChange, lineLabel, anchorRow, buildReview, hunksOf, hash, uiLine, reviewRequest, mapReview, triageOf, isSecurity, withThreats, knownOf } from "./pr.js";
 import { parsePrRef, ghTarget, pruneSources, codeModel, windowActive, pollDue, pollAfter } from "./pr.js";
 import * as C from "./context.js";
 import { tabArgs } from "./threads.js"; // a new Claude tab with the PR's text: no MCP servers
 import { loadDiff, saveDiff } from "./diffcache.js";
 import { setupBanner, renderSetup, loadSetup, runSetup, openUrl, readConfig } from "./setup-view.js";
-import { chip, PRIORITY_TIP } from "./stack.js";
+import { chip, PRIORITY_TIP, layoutPump } from "./stack.js";
 import { panelState, bodyTab, DONE_DAYS, diffTooLarge, filesToDiff, isOpenPr, byState, listRows, riskSignal, progressText, pendingText, rowMarks, mineGroups, progressRows, removedText, withPick, openSig, panelShown, byRef, fileRisk, leftNow, wrapCode, codeCols, sliceSpans, markLabel, textW, panelButtons, panelHit, panelPress, PANEL_EDGE, spaceFolders, headBranch, spaceBranches, branchPrQuery, branchPrs, spaceOrder, focusedPr, spaceEmpty, worktreePrs } from "./views.js";
 import { keepLast } from "./views.js"; // every cache has a limit
 import { ReviewMode, startReview, startExplore, saveKey, flowCard, modelPills, modelLabel, renderReviews, renderAgentBar, renderKeys, renderCardMenu, renderMini } from "./review.js";
 import { highlightJob, highlightStep, langOf, firstLineOf, colors, renderLine, editorSyntax } from "./syntax.js";
 import { TYPE } from "./views.js"; // the text sizes (U34)
+import { editorLink, editorCommand, startOpen, setEditors } from "./editor-view.js"; // "Open in <Editor>"
+import { copyText } from "./setup-view.js";
 
 // Same mapping as the shipped files panel.
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html" };
@@ -59,6 +62,7 @@ const SOURCE_MS = 3 * 60 * 1000, SOURCE_KEEP = 20, PICKED_KEEP = 20;
 const GH_FIELDS = "number,title,author,headRefName,headRefOid,baseRefName,updatedAt,isDraft,reviewDecision,additions,deletions,url";
 const REVIEW = { APPROVED: ["approved", "ansi2"], CHANGES_REQUESTED: ["changes requested", "ansi1"], REVIEW_REQUIRED: ["review required", "ansi3"] };
 const BRANCH = "branch"; // shared "pr.selected": the current branch was picked (not a PR)
+const CMD_STALE = 3000; // ms a command may be running before its loop counts as stopped (listen)
 // The panel's diff is a virtual list (as the review's): only the lines on screen are built per frame, so a frame costs
 // the same for 200 lines as for 9000. Its cards have no handler of their own (a list's renderer cannot hold one): a
 // press is found by its place. views.js panelButtons says each card's buttons, their widths and gap: they are drawn
@@ -76,12 +80,17 @@ const HEADS = new Map(), HEAD_ASKS = new Map();
 // review of a PR is a new copy each time it opens, and waited for this one command (0.3 s, 0.7 to 2 s on a busy
 // machine) before it built anything from the diff it had read from the cache in a few ms.
 const REPOS = new Map();
+const SIZES = new Map(); // a cached diff's size ({files, lines}) by PR and head, for the list's triage (loadTriage)
 const age = (iso) => { const m = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000)); return !Number.isFinite(m) ? "" : m < 60 ? `${m}m` : m < 2880 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`; };
 
+// Where the person is: the active space and the folder of the focused pane. From focused() alone when it says both
+// (it carries the pane's space and folder, and does not change with an agent's status); else from the spaces and
+// panes as live.js has them.
 function location() {
-  const space = spaces().find((s) => s.active), f = focused();
-  const pane = f?.pane ? panes().find((p) => p.pane === f.pane) : null;
-  return { cwd: pane?.cwd || f?.cwd || space?.folder, space: space?.id ?? null };
+  const f = focused();
+  if (f?.space && f.cwd) return { cwd: f.cwd, space: f.space };
+  const space = spaces().find((s) => s.active), pane = f?.pane ? panes().find((p) => p.pane === f.pane) : null;
+  return { cwd: pane?.cwd || f?.cwd || space?.folder, space: f?.space ?? space?.id ?? null };
 }
 
 // Contexts (optional, a plug-in's shared "pr-review.contexts"; context.js): a space's, a PR's, whether the view shows it.
@@ -127,7 +136,9 @@ export default class PrReview extends View {
     this.uid = Math.random().toString(36).slice(2, 8);
     // The minimized chip's copy sits in the main layouts also while the panel does not: it keeps a click on a PR mark
     // of the Worktrees mod ("want:<owner/repo#n>") for the panel (wantPick).
-    if (this.part === "mini") cx.spawn(async () => { for (;;) { const c = String(await nextCommand()); if (c.startsWith("want:")) this.wantPick(c.slice(5)); } });
+    if (this.part === "mini") this.listen(cx, (c) => { if (c.startsWith("want:")) this.wantPick(c.slice(5)); }, false);
+    // A minimized Explore whose run is going: its status file says when it has ended, so the chip can say so.
+    if (this.part === "mini") cx.timer.every(5000, (cx) => this.miniPoll(cx));
     if (this.part === "bar" || this.part === "reviews" || this.part === "agentbar" || this.part === "keys" || this.part === "cmenu" || this.part === "mini") return;
     this.announces = true; // Go to's keys: published while this copy runs, cleared in close()
     this.files = []; this.rows = []; this.sel = null; this.selEnd = null; this.question = "";
@@ -158,7 +169,7 @@ export default class PrReview extends View {
     if (before === BRANCH) this.branchPicked = true; else if (before) this.restoring = !this.picking;
     if (visible() && this.branchPicked) this.refresh(cx);
     // Key commands (keys.json "pr-review.<name>"): picker (the PR list), source:mine|repo|review, merged, setup, walkthrough, review, finish.
-    cx.spawn(async (cx) => { for (;;) { this.panelCommand(String(await nextCommand()), cx); cx.notify(); } });
+    this.listen(cx, (c, cx) => this.panelCommand(c, cx));
     cx.spawn(async (cx) => {
       try {
         await this.loadPrs(cx);
@@ -175,7 +186,7 @@ export default class PrReview extends View {
         if (pr) this.choose(pr, cx);
         if (listed) { this.picking = true; this.loadSource(cx); } // opened from the list: the list again, the PR behind "Back to #n →"
       } finally { this.restoring = false; cx.notify(); } // a pick that is gone: the list after all
-      this.cfg = await readConfig();
+      this.cfg = await readConfig(); setEditors(this.cfg.editors);
       await loadSetup(this, cx);
       // The open reviews as the registry file has them (it outlives shared state edits and format changes).
       const reg = JSON.parse(await readTextFile(`${appHome()}/pr-data/open-reviews.json`).catch(() => null) ?? "null");
@@ -188,6 +199,7 @@ export default class PrReview extends View {
   // A key command or scripted click for the panel (pr-review.<c>).
   panelCommand(c, cx) {
     const [name, arg] = [c.split(":")[0], c.split(":").slice(1).join(":")];
+    if (editorCommand(this, c, cx, copyText)) return; // editor:<path>[:<line>], and the ▾ menu's entries
     if (name === "source" && SOURCES.some(([k]) => k === arg)) { this.pickSource(arg); this.picking = true; this.loadSource(cx); }
     else if (c === "picker") { this.picking = !this.picking; if (this.picking) this.loadSource(cx); }
     else if (c === "setup") { this.view = "setup"; runSetup(this, cx, false); }
@@ -831,6 +843,7 @@ export default class PrReview extends View {
     let key, fetch, why = null;
     if (now === "space") {
       // Local only: the folders of the space's panes and agents, their repos (remembered) and HEAD files.
+      await whenFed(cx); // right after a start the chip may not have read the spaces yet (live.js)
       const found = (await Promise.all(spaceFolders(space, spaces(), panes(), terminals()).map((cwd) => this.checkout(cwd)))).filter(Boolean), repos = spaceBranches(found);
       if (stale()) return;
       this.spaceHeads = new Map(found.map((c) => [c.cwd, c]));
@@ -936,9 +949,10 @@ export default class PrReview extends View {
     // Written when they differ from what is there (a call per render wrote both keys each time).
     if (JSON.stringify(shared("goto.handlers.review")) !== JSON.stringify(handlers)) setShared("goto.handlers.review", handlers);
     this.gotoSig = openSig(shared("review.open"));
-    setShared("goto.items.review", (shared("review.open") ?? []).map((r) => ({ id: `review:${r.url}`, title: `Resume review #${r.number} ${r.title ?? ""}`,
+    const items = (shared("review.open") ?? []).map((r) => ({ id: `review:${r.url}`, title: `Resume review #${r.number} ${r.title ?? ""}`,
       subtitle: [r.repo, progressText(r.progress)].filter(Boolean).join(" · "), tag: "Review", url: r.url, keywords: [String(r.number), r.repo ?? ""],
-      run: [["goto.set", { key: "pr.goto", value: { url: r.url } }]] })));
+      run: [["goto.set", { key: "pr.goto", value: { url: r.url } }]] }));
+    if (JSON.stringify(shared("goto.items.review") ?? null) !== JSON.stringify(items)) setShared("goto.items.review", items); // as the handlers: only another value is written
   }
 
   // A PR handed over by Go to: resume a review in progress, else open it in the review layout like "Open PR…".
@@ -965,6 +979,18 @@ export default class PrReview extends View {
       let out;
       try { out = highlightStep(hl.job, 10); } catch { out = hl.rows.map(() => []); }
       if (out) { hl.spans = out; cx.notify(); } else this.highlightMore(cx, hl);
+    });
+  }
+
+  // The minimized Explore's run (review.js minimizeExplore keeps {id, status}): done or failed once its status file
+  // says so; nothing is read while no run is minimized.
+  miniPoll(cx) {
+    const b = shared("review.minimized")?.explore?.busy;
+    if (!b?.status || this.miniRun?.id === b.id) return;
+    cx.spawn(async (cx) => {
+      const st = JSON.parse(await readTextFile(b.status).catch(() => null) ?? "null");
+      if (!st || st.busy) return cx.notify(); // still going: the chip's time moves on
+      this.miniRun = { id: b.id, state: st.error ? "failed" : "done" }; cx.notify();
     });
   }
 
@@ -995,10 +1021,13 @@ export default class PrReview extends View {
         risk.set(pr.url, riskSignal(known));
         if (!listed.has(pr.url)) return;
         // The diff's size from its cache (in parts, diffcache.js); a missing one leaves the effort to the analysis.
-        const [ctx, diff] = await Promise.all([pr.headSha ? read(`${cacheDir()}/ctx-${h}-${pr.headSha}.json`) : null, loadDiff(`${cacheDir()}/diff-${h}-${head}`, pr.url, head, readTextFile)]);
-        const files = diff ? splitPatch(diff) : null;
+        // Once per PR and head (SIZES): the diff of a head never changes, and each time the list opened every listed
+        // PR's whole diff was read and split again for these two numbers (a big one: 0.9 MB, 20 ms to split).
+        const sized = async () => { const diff = await loadDiff(`${cacheDir()}/diff-${h}-${head}`, pr.url, head, readTextFile), fs = diff ? splitPatch(diff) : null; return fs && { files: fs.length, lines: fs.reduce((n, f) => n + f.add + f.del, 0) }; };
+        if (!SIZES.has(`${h}-${head}`)) { SIZES.set(`${h}-${head}`, sized().then((x) => { if (!x) SIZES.delete(`${h}-${head}`); return x; })); keepLast(SIZES, 300); }
+        const [ctx, size] = await Promise.all([pr.headSha ? read(`${cacheDir()}/ctx-${h}-${pr.headSha}.json`) : null, SIZES.get(`${h}-${head}`)]);
         const security = (known.findings ?? []).filter((f) => isSecurity(f) && !["fixed", "dismissed"].includes(known.status?.[f.id]?.s)); // as the review's ⛨
-        out.set(pr.url, triageOf({ pr, analysis, size: files && { files: files.length, lines: files.reduce((n, f) => n + f.add + f.del, 0) },
+        out.set(pr.url, triageOf({ pr, analysis, size,
           security, related: ctx, llm: llm[pr.url] ?? null }));
       }).map((one) => one.catch(() => null))); // a broken cache file costs that row its chips, not the whole list
       this.triage = out; this.risk = risk; cx.notify();
@@ -1305,6 +1334,19 @@ export default class PrReview extends View {
     cx.notify();
   }
 
+  // ---- "Open in <Editor> ↗" (editor-view.js), for every part of the mod
+  // The checkout a link opens: for a PR the one the review uses (shared "review.worktree": the PR's head as files),
+  // for the current branch the repo of the focused pane; null: there is none, and no link.
+  checkoutRoot() {
+    if (this.part === "review") return this.worktree?.path ?? null;
+    const pr = this.part === "mini" ? shared("review.minimized")?.target : this.prSel, w = shared("review.worktree");
+    return pr ? (w?.url === pr.url ? w.path ?? null : null) : !this.part && this.branchPicked ? this.root ?? null : null;
+  }
+  // A PR from a source that is not trusted: a click opens the file alone, never its folder.
+  editorForeign() { const pr = this.part === "mini" ? shared("review.minimized")?.target : this.prSel; return pr ? !this.trustedPr(pr) : false; }
+  // A click: one process; the link says "Opening …" for three seconds, a failure is a toast (editor-view.js startOpen).
+  openEditor(target, cx, id = null) { startOpen(target, cx, id); }
+
   // Into the review from the panel. Whether the list was shown then is kept (shared "pr.listed"): back from a review
   // opened from the list, the list is shown again, with the review's PR as the pick behind "Back to #n →".
   toReview(target) {
@@ -1342,11 +1384,34 @@ export default class PrReview extends View {
     setShared("goto.items.review", null);
   }
 
+  // This copy's commands (keys.json "pr-review.<name>", herdr-app do): a loop on nextCommand(). A command that throws
+  // is said in the footer and the loop goes on. One whose slice Herdr stops (a task may run about a second: 0.4 s
+  // went through, 1.5 s did not) takes the loop's task with it, and no key of the review did anything from then on:
+  // cmdAt is the time the running command started (0: none runs), and a frame that finds it older than CMD_STALE
+  // starts the loop again (stillListening). redraw: whether a command is followed by a frame.
+  listen(cx, run, redraw = true) {
+    this.cmdRun = run; this.cmdRedraw = redraw; this.cmdAt = 0;
+    cx.spawn(async (cx) => {
+      for (;;) {
+        const c = String(await nextCommand());
+        this.cmdAt = Date.now();
+        try { run(c, cx); } catch (e) { this.note = `The command "${c.split(":")[0]}" failed: ${String(e).replace(/^Error: /, "")}`; }
+        this.cmdAt = 0;
+        if (redraw) cx.notify();
+      }
+    });
+  }
+  stillListening(cx) { if (this.cmdAt && Date.now() - this.cmdAt > CMD_STALE) this.listen(cx, this.cmdRun, this.cmdRedraw); }
+
   render(cx) {
+    this.stillListening(cx);
     if (this.announces && !shared("goto.handlers.review") && !this.announceQueued) {
       this.announceQueued = true;
       cx.timer.after(0, () => { this.announceQueued = false; this.publishGoto(); });
     }
+    // The small copies read Herdr's live data for the big ones (live.js). A terminal the review shows the state of
+    // changed: one shared write makes the review draw.
+    if ((this.part === "mini" || this.part === "bar") && feed() && !this.liveQueued) { this.liveQueued = true; cx.timer.after(0, () => { this.liveQueued = false; setShared("review.watched", Date.now()); }); }
     if (this.part === "bar") return this.renderBar(cx);
     if (this.part === "reviews") return renderReviews();
     if (this.part === "agentbar") return renderAgentBar();
@@ -1373,7 +1438,7 @@ export default class PrReview extends View {
           this.toReview(r ? r.target ?? r : { url: ref.url, repo: ref.repo, number: Number(ref.number), source: "open" });
         });
       }
-      return renderMini();
+      return renderMini(this.miniRun ?? null);
     }
     if (this.part === "review") {
       // Go to hands PRs over through "pr.goto"; the panel isn't mounted while the review layout shows, so take it here.
@@ -1385,13 +1450,12 @@ export default class PrReview extends View {
         this.finishQueued = true;
         cx.timer.after(0, (cx) => { this.finishQueued = false; setShared("pr.finish", null); if (this.reviewKey === fin.url && !this.finishOpen) { this.command("finish", cx); cx.notify(); } });
       }
-      // drawing: archL leaves a big map's layout for after the frame (firstLayouts), a frame has about 50 ms.
-      // Still set from the frame before: Herdr stopped that one before its end (not even a finally runs then).
+      // drawing: still set from the frame before when Herdr stopped that one before its end (not even a finally runs then).
       this.frameCut(Boolean(this.drawing));
       this.drawing = true;
       let el;
       try { el = this.renderReview(cx); } finally { this.drawing = false; } // an exception is not a stopped frame
-      this.firstLayouts(cx); this.layoutSoon(cx);
+      layoutPump(cx); // the pictures laid out in this frame: the search for their better layout after it (stack.js), a timer only when one was
       return el;
     }
     if (this.view === "walk" && this.walkModel && walkModel() !== this.walkModel && !this.walkBusy) this.openWalk(cx, false); // picker changed: that model's cache
@@ -1443,6 +1507,7 @@ export default class PrReview extends View {
           .hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("All PRs").on_click(back).child("←"))
         .child(div().id(`pr-title-${this.uid}`).tooltip(title).flex_1().min_w(150).max_h(36).overflow_hidden().whitespace_normal().line_height(1.35).font_semibold().child(title)) // two lines, then cut
         .child(pill(`pr-reload-${this.uid}`, t, this.loading && !this.quietLoad ? "…" : "↻", (_e, cx) => { if (this.prSel) this.heads.delete(this.prSel.url); this.refresh(cx, true); }, false, "Reload this PR's diff and details", "Reload PR"))
+        .children(editorLink(this, t, `hd-${this.uid}`, { root: this.checkoutRoot(), foreign: this.editorForeign() }, cx)) // the PR's checkout (a trusted PR), or the branch's repo
         .when(Boolean(named?.url), (e) => e.child(pill("pr-web", t, "GitHub ↗", () => openUrl(named.url), false, "Open this PR on GitHub in the browser")))
         // The way into the review is the header's one filled button; Resume once this PR's review was started.
         .when(Boolean(this.pr?.url), (e) => e.child(div().id(`pr-rv-${this.uid}`).tooltip(resume ? "Continue this review where you left it" : "Open this PR in the review layout").flex_none().px(12).h(26).flex().items_center().rounded(6)
@@ -1468,8 +1533,9 @@ export default class PrReview extends View {
       .when(tab === "diff" && this.files.length > 0, (e) => e.child(pill(`pr-wrap-${this.uid}`, t, shared("review.wrap") === true ? "Wrap on" : "Wrap off", () => setShared("review.wrap", shared("review.wrap") !== true), false,
         "Long lines wrap, or are cut at the panel's edge. The review's Line wrap switch is the same setting.")))
       .when(tab === "diff" && Boolean(this.open && !this.patch), (e) => e
-        .child(pill(`mode-${this.uid}`, t, this.mode === "file" ? "Diff view" : "File view", (_e, cx) => this.setMode(this.mode === "file" ? "diff" : "file", cx), false, "Switch between the diff and the whole file"))
-        .child(pill(`vscode-${this.uid}`, t, "VS Code ↗", () => exec("code", ["-g", `${this.root}/${this.open}:${(this.sel !== null && this.rows[this.sel]?.number) || 1}`]), false, "Open this file at the selected line in VS Code")));
+        .child(pill(`mode-${this.uid}`, t, this.mode === "file" ? "Diff view" : "File view", (_e, cx) => this.setMode(this.mode === "file" ? "diff" : "file", cx), false, "Switch between the diff and the whole file")))
+      // The open file at the picked line, in the person's editor: for a branch, and for a PR whose checkout the review made.
+      .children(tab === "diff" && this.open ? editorLink(this, t, `file-${this.uid}`, { root: this.checkoutRoot(), file: this.open, line: (this.sel !== null && this.rows[this.sel]?.number) || this.rows.find((r) => r.number)?.number || null, foreign: this.editorForeign(), where: this.prSel ? "in the checkout of this PR" : "in this checkout" }, cx) : []);
     // Picking: reviews in progress and the sources' list in one scroll, so nothing stacks over anything.
     // The bodies are built only when they are shown (pickBody, files, diffBody are asked for below): a frame with a
     // PR chosen built the whole list of PRs before, and one with the list shown every file and diff line.

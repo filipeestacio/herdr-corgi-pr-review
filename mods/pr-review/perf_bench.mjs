@@ -95,6 +95,7 @@ export async function openPanel({ diff }, prsN = 40) {
   S.spaces = [{ id: "sA", active: true, folder: "/h/a" }];
   S.exec = async (cmd, args) => { N.exec++; return cmd === "gh" && args[1] === "diff" ? { code: 0, stdout: diff, stderr: "" } : { code: 1, stdout: "", stderr: "stub" }; };
   const v = new PrReview(); v.init({}, cx); await settle();
+  v.setupFirst = false; // not the first-run Setup page (nothing is installed in the stand-ins): it would cover the list and the diff
   v.spaceSlug = { root: "/h/a", slug: "saefty/corgi-demo" };
   return { v, prs };
 }
@@ -110,7 +111,7 @@ export function frame(v, rows = 60) {
   if (S.errs.length) throw new Error(S.errs.join("\n"));
   return { ms: performance.now() - t0, el: S.n.el - n0.el, call: S.n.call - n0.call, items };
 }
-// What the frames left for after them, run now: a big map's layout (firstLayouts), the syntax colours, a focus.
+// What the frames left for after them, run now: a slice of a map's layout (stack.js layoutPump), the syntax colours, a focus.
 export function later() { for (const f of timers.splice(0)) f(cx); }
 // Frames until none leaves anything for later: the state as it stands once the window is quiet.
 export function settled(v) { for (let k = 0; k < 8; k++) { frame(v); if (!timers.length) return; later(); } timers.length = 0; }

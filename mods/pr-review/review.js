@@ -11,7 +11,8 @@
 // submit popover: one GitHub review (gh api) or, for a PR with an agent session, the prompt to that session.
 import { div } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, TextView, v_virtual_list, VirtualListScrollHandle, ScrollHandle, Textarea, TextareaState, Input, InputState, HoverCard } from "gpui-base";
-import { exec, hc, run, spaces, agents, terminals, focused, pickFolder, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, nextCommand, watchFolder, openOverlay, closeOverlay, props, home } from "herdr";
+import { exec, hc, run, focused, pickFolder, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, nextCommand, watchFolder, openOverlay, closeOverlay, props, home } from "herdr";
+import { spaces, agents, terminals, watch } from "./live.js"; // never straight from Herdr (live.js says why)
 import { parseReports, findingStatus, mergeFindings, findingCounts, countLine, runsOf, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
 import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig } from "./setup-view.js";
@@ -21,7 +22,7 @@ import { withProof, PROOF_WORDS } from "./pr.js"; // Verify with an agent
 import { overviewMd, findingMd, findingsMd, layerMd, architectureMd, securityMd, verifyContextMd, resilienceMd } from "./markdown.js"; // Copy this page as Markdown
 import { mdParts, mdJoin, mdHead, mdLines, codeStats } from "./markdown.js"; // its preview: the text in sections, the code context counted
 import { highlightJob, highlightStep, highlightLines, langOf, firstLineOf, colors, renderLine, refAt } from "./syntax.js";
-import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js";
+import { lookup, warm, contents, where, setTrusted } from "./defs.js";
 import { recommendModel, tierSteps } from "./pr.js";
 import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf, codeModel, priceOf, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch, withSecurity, securityStart } from "./pr.js";
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
@@ -29,18 +30,19 @@ import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview,
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible, pastTop } from "./views.js";
 import { worst, byFocus, layerAccess, analysisAge, stateHints, noteRule, mergeGroups, mergeFirst, mergeHeld, runLabel, byCause, sessionCost, sessionDir, fixEstimate, fixCostLine } from "./views.js";
 import { archView, archLegend, visualsCard, visualCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR, bulletChart } from "./stack.js";
-import { visualPlan } from "./stack.js";
+import { visualPlan, laidOut } from "./stack.js";
 import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCALE } from "./views.js";
 import { ghMd, mdBlocks } from "./views.js"; // GitHub comments as GitHub shows them
 import { wrapCode, codeCols, sliceSpans } from "./views.js"; // long lines wrap
-import { rowMarks, riskOfCounts } from "./views.js"; // the minimized chip's mark, from the registry entry
+import { rowMarks, riskOfCounts, placeOf, patchSymlink } from "./views.js"; // the minimized chip's mark, from the registry entry; a card's place
+import { editorFor, editorMark, editorLink, editorCommand, openEditorMenu, editorFull } from "./editor-view.js"; // "Open in <Editor>"
 import { pageBadge, signOf, signEl, markLabel } from "./views.js"; // one sign for severity and certainty: nav rows, the bar, rows, chips
 import { pairRows, pairSide, HALF_GUTTER, diffModeOf, oneSided, stackOf, chipAt, textW } from "./views.js"; // side by side; the bar's stack
 import { mdTarget, secPicture, secBlast, resNoPicture } from "./views.js"; // Copy as Markdown: what it copies on each page; the Security page's picture and lines
 const MD_W = textW("⧉ Copy as Markdown…", TYPE.small) + 22; // the button's width on a layer's head, where clicks are placed by x
 import { plainText } from "./pr.js";
 import { pollDue, pollAfter, windowActive } from "./pr.js"; // background fetches (ghTick)
-import { hasSources, archLayout, archSearch, archBands } from "./arch.js";
+import { hasSources, archBands, widthAt } from "./arch.js";
 import { archMarks, transitionText, MARK_CARD_ROWS } from "./arch.js";
 import { markRoom, FIT as ARCH_FIT, ARCH as ARCH_SIZE } from "./arch.js"; // a card's mark takes the lines its finding needs
 import { resStartOf, resPicture, budgetBar, resCardOf, resSentence, resMarksOn } from "./views.js";
@@ -63,6 +65,8 @@ import { scopeTable, scopeConflicts, runSummary, AREA_NAME, areaFindings, surfac
 import * as TH from "./threads.js";
 import { leftWidth, rowClick, CHIP_W, ASK_W, keyRoute, scopeLine, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf, rangeLabel, pinAnchor, pinAdd, pinDrop, pinsOf, pinsOn, codePins, drillPush, drillTo, crumbs, drillKey, cachePut, mapDrill, exploreId, exploreIndex, exploreAi, pathOf, lineOf, repoOfRemote, exploreTrust, layersForNode } from "./explore.js";
 import { TYPE } from "./views.js"; // the text sizes (U34)
+import { isIac, dirOf, infraModel, infraPicture } from "./infra.js"; // "Infrastructure changes" on the Architecture page
+import { infraSection } from "./infra-view.js";
 
 const LEVEL = { high: "ansi1", medium: "ansi3", low: "ansi4", skim: "muted" };
 const COVER = { seen: ["done", "ansi2"], partly: ["partly", "ansi3"], absent: ["missing", "ansi1"], extra: ["extra (not asked)", "ansi4"] };
@@ -75,6 +79,7 @@ const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "�
 const FOLD_MARGIN = 1500 * 22; // px: open the files around the view again this close to a folded one
 const SPLIT = 6, ROW = 22, GUTTER = 4 + 48 + 48 + 22, GAP_SEG = 110, BTN = 110, BTN_GAP = 8, ACT = 44;
 const FILE_CHEV = 30, FILE_SEEN = 100, FILE_WHOLE = 124;
+const FILE_EDIT = 124, FILE_EDIT_MORE = 24; // a file head's "IntelliJ ↗" (or "Opening IntelliJ …") and its ▾: zones after "Whole file" (a list row holds no handler)
 const MORE = 20; // lines per ↑/↓ click
 const ONE_LINE = [0]; // a code line that fits: one visual line from its start (wrapsOf)
 // A fenced block in a GitHub comment (codeView): font size, line height, padding; GH_GAP between a comment's blocks (as
@@ -94,7 +99,8 @@ const jsonOf = (o) => {
 // resilienceStart reads every added line of the diff: once per patch (securityNow asks on every read of a file).
 const resStartMemo = new WeakMap();
 const resStartOfPatch = (patch) => { if (!resStartMemo.has(patch)) resStartMemo.set(patch, resilienceStart(patch)); return resStartMemo.get(patch); };
-const LAYOUT_IN_FRAME = 20; // cards a map may have to be laid out while a frame is drawn (archL)
+const STEP_LINES = 3000; // diff lines the Walkthrough lists at once (stepsItems): 4 000 took 23 ms per frame in Herdr on a busy machine (load 10 to 17), a frame is stopped at about 50
+const LEAN_MS = 5 * 60000; // how long a view draws less after its frames were stopped (frameCut), before it tries all of it again
 const NO_HUNKS = []; // a file outside the diff has no hunks: always this array, so memoRows sees the same input (rowsFor)
 // A patch's file by its path (the first with it, as find gives): a Map per patch array, since rowsFor asks per finding.
 const byPath = new WeakMap();
@@ -114,6 +120,11 @@ const MAX_PROGRESS = 100;
 // shared("review.open") is this file's in-progress and sent entries: [{url, number, repo, title, context, startedAt,
 // lastTouched, headSha, status, progress: {stepsChecked, steps, filesViewed, files, comments, findingsOpen}, target}].
 const openFile = () => `${appHome()}/pr-data/open-reviews.json`;
+// A shared value written only when it is another one: every write redraws every mod of the window and writes the
+// whole shared.json again (about 100 KB with a few reviews in it), and the review published the same value several
+// times while it opened.
+const putShared = (key, value) => { if (JSON.stringify(shared(key) ?? null) !== JSON.stringify(value ?? null)) setShared(key, value); };
+const TOUCH_MS = 5 * 60000; // a review's "last touched" on file may be this old before a visit alone writes it again (registerReview)
 // shared("review.registry") is every entry, done ones too, with {at}: for plug-ins that mirror reviews elsewhere
 // (PROVIDERS.md). Written on each registry change, 1.5 s after the last edit.
 // The AI analysis' model: any value the claude CLI offers (models.py), Sonnet until one is picked.
@@ -281,7 +292,8 @@ export async function startReview(target) {
 
 // Opens Explore in the review layout (pr-review.explore, the panel's "Explore a topic…", the review's ⋯ menu): a topic
 // walked through in existing code, no PR. root: the repo to explore (default: the active space's repo, chosen there).
-export async function startExplore(root = null) {
+// resume: the page as it was minimized (review.minimized.explore): it opens again with its topic, its run, its result.
+export async function startExplore(root = null, resume = null) {
   const dir = `${appHome()}/layouts`, read = (name) => readTextFile(`${dir}/${name}.json`).catch(() => null);
   const plan = layoutPlan(await read("review"), await read("pr-review"));
   if (plan.write) {
@@ -291,7 +303,8 @@ export async function startExplore(root = null) {
   const back = shared("layout");
   if (back && back !== plan.name) setShared("review.back", back);
   setShared("review.layout", plan.name);
-  setShared("review.explore", { start: true, root, space: focused()?.space ?? null, at: Date.now() });
+  setShared("review.explore", resume ? { ...resume, at: Date.now() } : { start: true, root, space: focused()?.space ?? null, at: Date.now() });
+  if (resume) setShared("review.minimized", null); // back in it: no entry
   run("layout.switch", { name: plan.name });
 }
 // Leaving hands the review's PR to the panel (shared "pr.fromReview"): back there it shows this PR, whichever way the
@@ -300,8 +313,10 @@ const leave = () => { const pr = shared("review.target"); if (pr?.url) setShared
 // Minimize: back to the previous layout with the review kept as one entry (part "mini", a float in the main layout):
 // Open brings it back where it was, ✕ drops it. One at a time: minimizing another review replaces it.
 const minimize = () => { const pr = shared("review.target"); if (pr) setShared("review.minimized", { target: pr, at: Date.now() }); leave(); };
-export function renderMini() {
-  const t = theme(), pr = shared("review.minimized")?.target;
+// run: what became of a minimized Explore run ({id, state: "done" | "failed"}; main.js miniPoll reads its status file).
+export function renderMini(run = null) {
+  const t = theme(), pr = shared("review.minimized")?.target, ex = shared("review.minimized")?.explore;
+  if (ex) return miniExplore(t, ex, run);
   if (!pr) return div();
   const open = (shared("review.open") ?? []).find((r) => r.url === pr.url); // the review's own count, as the panel shows it
   // A small chip, so it covers little of the terminal under it: the PR number, its full title in the tooltip.
@@ -319,6 +334,30 @@ export function renderMini() {
       .tooltip("Back to the review, where you left it").on_click(() => startReview(pr)).child("Resume"))
     .child(div().id("rv-mini-x").w(22).h(22).flex().items_center().justify_center().rounded_full().cursor_pointer().text_color(t.muted).hover((x) => x.bg(t.hover))
       .tooltip("Remove this chip. The review stays in progress with its comments; the panel's In progress resumes it.").accessibility_label("Remove the minimized review's chip").on_click(() => setShared("review.minimized", null)).child("✕"));
+}
+
+// Explore, minimized: what it is about (the topic, else "Explore: <repo>"), a run that is going or has ended meanwhile,
+// Resume (the page again with its topic, its run and its result) and ✕.
+export const miniExploreText = (ex, run = null, now = Date.now()) => {
+  const repo = ex.repo ?? ex.exRoot?.repo ?? (ex.root ?? ex.exRoot?.root ?? "").split("/").pop() ?? "", topic = String(ex.topic ?? ex.busy?.topic ?? ex.draft ?? "").trim();
+  const ended = ex.busy && run?.id === ex.busy.id ? run.state : null;
+  return { head: topic ? "Explore" : `Explore${repo ? `: ${repo}` : ""}`, topic, repo,
+    state: !ex.busy ? (ex.err ? "failed" : null) : ended === "done" ? "done" : ended === "failed" ? "failed" : "running",
+    text: !ex.busy ? (ex.err ? "the run failed" : "") : ended === "done" ? "the walkthrough is ready" : ended === "failed" ? "the run failed" : `running · ${clock(now - ex.busy.started)}` };
+};
+function miniExplore(t, ex, run) {
+  const m = miniExploreText(ex, run);
+  return h_flex().id("rv-mini").h(28).pl(10).pr(3).gap(6).items_center().rounded_full().border_1().border_color(t.border).bg(t.popover)
+    .text_size(TYPE.small).text_color(t.foreground).tooltip([m.topic || "Explore a topic", m.repo, m.state === "running" ? "The run goes on while this is minimized." : null].filter(Boolean).join("\n"))
+    .on_mouse_down("left", (_e, cx) => cx.stop_propagation()) // a press the mod doesn't stop would drag the float
+    .child(div().flex_none().font_semibold().child(m.head))
+    .when(Boolean(m.topic), (e) => e.child(div().flex_none().max_w(260).truncate().text_color(t.muted).child(m.topic)))
+    .when(m.state === "running", (e) => e.child(div().flex_none().text_color(t.muted).child(SPIN[0]).frames(SPIN, 90)))
+    .when(Boolean(m.text), (e) => e.child(div().id("rv-mini-run").flex_none().text_color(m.state === "failed" ? t.ansi1 : m.state === "done" ? t.ansi2 : t.muted).child(m.text)))
+    .child(div().id("rv-mini-open").px(8).h(22).flex().items_center().rounded_full().cursor_pointer().text_color(t.accent).hover((x) => x.bg(t.hover))
+      .tooltip("Back to Explore: the topic, the run and its result as you left them").on_click(() => startExplore(ex.root ?? null, ex)).child("Resume"))
+    .child(div().id("rv-mini-x").w(22).h(22).flex().items_center().justify_center().rounded_full().cursor_pointer().text_color(t.muted).hover((x) => x.bg(t.hover))
+      .tooltip("Remove this chip. A run that is going finishes anyway; its walkthrough is then listed under Explorations.").accessibility_label("Remove the minimized Explore chip").on_click(() => setShared("review.minimized", null)).child("✕"));
 }
 
 const pill = (id, t, label, click, on = false, color) => div().id(id).flex_none().whitespace_nowrap().px(9).h(26).flex().items_center().rounded(6).border_1()
@@ -438,12 +477,13 @@ export const ReviewMode = {
     this.fh.focus();
     cx.timer.after(400, () => this.fh.focus());
     // Commands for keys.json ("pr-review.files") and scripts (herdr-app do pr-review.step:2).
-    cx.spawn(async (cx) => { for (;;) { const c = await nextCommand(); this.command(String(c), cx); cx.notify(); } });
+    this.listen(cx, (c, cx) => this.command(c, cx)); // main.js: goes on after a command that threw or was stopped
   },
 
   command(c, cx) {
     const [name, ...rest] = c.split(":"), arg = rest.join(":");
     this.note = null; // the next action ends a note that stays (an error); its own note follows
+    if (editorCommand(this, c, cx, copyText)) return cx.notify(); // editor:<path>[:<line>], and the ▾ menu's entries
     if (name === "steps" || name === "files" || name === "findings" || name === "comments") this.tab = name;
     else if (name === "analysis") this.tab = "steps"; // the tab's name; "steps" stays valid
     else if (name === "def") this.defineAt(arg, cx);
@@ -505,6 +545,7 @@ export const ReviewMode = {
     else if (name === "fix") this.fixComments(arg ? arg.split(",") : this.selected(), cx); // fix:<comment id>[,<id>…], else the selected ones (the preview opens)
     else if (name === "fix-target") this.fixTarget(arg); // sub | main, in the open preview
     else if (name === "explore") startExplore(arg || null);
+    else if (name === "explore-min") this.minimizeExplore(); // the Explore bar's "Minimize"
     else if (name === "explore-open") this.openExploration(arg, cx);
     else if (name === "trust-repo") { // the explored repo, or the folder when it has no github.com remote
       const key = this.ex?.repo ? "pr-review.trustedRepos" : "pr-review.trustedRoots", v = this.ex?.repo ?? this.ex?.root;
@@ -598,9 +639,9 @@ export const ReviewMode = {
     this.reviewKey = null; this.ai = null; this.aiError = null; this.aiModel = null; this.cur = 0; this.focusHunk = null; this.fsel = null; this.sug = null;
     this.composing = false; this.editing = null; this.finishOpen = false; this.posted = null; this.gh = []; this.route = null; this.event = null;
     this.full = {}; this.gaps = {}; this.whole = new Set(); this.collapsed = new Set(); this.hunks = null;
-    this.rowsMemo = null; this.ghMemo = null; this.fitMemos = null; this.layQueue = null; this.kept = null; this.openH = null; this.leanBy = null; this.cut = 0; // what was computed for the PR before goes with it
+    this.rowsMemo = null; this.ghMemo = null; this.fitMemos = null; this.kept = null; this.openH = null; this.leanBy = null; this.cut = 0; // what was computed for the PR before goes with it
     this.ctx = null; this.since = null; this.sinceOn = false; this.lastReviewed = null; this.page = "overview"; this.aiFile = null; this.needClone = null;
-    this.resumed = null; this.resumeIn = null; this.pendingScroll = null;
+    this.resumed = null; this.resumeIn = null; this.pendingScroll = null; this.infra = null; this.infraMemo = null;
   },
 
   // A new diff: its hunks, progress and the cached analysis, if any.
@@ -637,6 +678,7 @@ export const ReviewMode = {
     const reg = JSON.parse(await readTextFile(openFile()).catch(() => null) ?? "[]").find((r) => r.url === url);
     this.lastReviewed = reg?.reviewed ?? null;
     this.makeWorktree(cx);
+    this.loadInfra(cx);
     this.loadAi(cx, "cache"); // never runs by itself: Analyze is a click
     await this.loadFindings(cx);
     this.registerReview(cx); // opened: an open review from now on
@@ -690,7 +732,7 @@ export const ReviewMode = {
     if (this.wtIn === job) return; // the same checkout is being made
     this.worktree = null;
     if (this.prSel.space && this.root) {
-      this.worktree = { url, head: this.head, path: this.root, local: true }; setShared("review.worktree", this.worktree); this.applyTrust();
+      this.worktree = { url, head: this.head, path: this.root, local: true }; putShared("review.worktree", this.worktree); this.applyTrust();
       this.loadSince(cx); this.loadContext(cx); return;
     }
     // A PR you didn't open may use the active space's checkout of its repo (cwd); your own PRs keep the dedicated clones.
@@ -714,11 +756,11 @@ export const ReviewMode = {
       const w = JSON.parse(r.stdout);
       this.head ??= w.head;
       this.worktree = { url, head: w.head, path: w.path };
-      setShared("review.worktree", this.worktree);
+      putShared("review.worktree", this.worktree);
       if (!shared("gh.login")) exec("gh", ["api", "user", "--jq", ".login"]).then((r) => { if (r.code === 0) { setShared("gh.login", r.stdout.trim()); this.applyTrust(); } }).catch(() => null);
       this.applyTrust();
       if (this.pendingRun) { this.pendingRun = false; this.loadAi(cx, "run"); }
-      this.loadSince(cx); this.loadContext(cx);
+      this.loadSince(cx); this.loadContext(cx); this.loadInfra(cx);
       cx.notify();
     });
   },
@@ -848,9 +890,13 @@ export const ReviewMode = {
       this.regExtra = {};
       const prs = JSON.parse(await readTextFile(`${appHome()}/pr-data/prs.json`).catch(() => null) ?? "{}").prs ?? [];
       for (let attempt = 0; attempt < 3; attempt++) {
-        const before = await readTextFile(openFile()).catch(() => null);
-        entry.reviewed = markReviewed((before ? JSON.parse(before) : []).find((r) => r.url === pr.url)?.reviewed, this.worktree?.head ?? this.head, how, Date.now());
-        const list = expireReviews(touchReview(before ? JSON.parse(before) : [], entry, Date.now()), prs, Date.now());
+        const before = await readTextFile(openFile()).catch(() => null), old = before ? JSON.parse(before) : [], was = old.find((r) => r.url === pr.url), now = Date.now();
+        entry.reviewed = markReviewed(was?.reviewed, this.worktree?.head ?? this.head, how, now);
+        const list = expireReviews(touchReview(old, entry, now), prs, now);
+        // Nothing but the time of the last touch is new, and the one on file is young: no write. Every tab, page,
+        // layer and line picked comes here (saveProgress), and each time the file, "review.open" and
+        // "review.registry" were written: 45 KB of shared state, twice the whole shared.json, two frames of every mod.
+        if (was && now - was.lastTouched < TOUCH_MS && JSON.stringify(list.map((r) => (r.url === pr.url ? { ...r, lastTouched: was.lastTouched } : r))) === JSON.stringify(old)) return;
         try {
           await writeTextFile(openFile(), JSON.stringify(list, null, 1), before);
           setShared("review.open", list.filter((r) => r.status !== "done"));
@@ -1004,7 +1050,7 @@ export const ReviewMode = {
   // What the bar shows: the analysis on screen, or the one running.
   publish() {
     const a = this.ai;
-    setShared("review.meta", { url: this.prSel?.url ?? null, pending: this.comments?.length ?? 0, selected: this.prSel ? this.selected().length : 0, model: this.aiModel, busy: this.aiBusy?.model ?? null, error: this.aiError,
+    putShared("review.meta", { url: this.prSel?.url ?? null, pending: this.comments?.length ?? 0, selected: this.prSel ? this.selected().length : 0, model: this.aiModel, busy: this.aiBusy?.model ?? null, error: this.aiError,
       shown: a ? { model: a.model, model_id: a.model_id, cost: a.cost, exact: a.exact, mergeRisk: a.mergeRisk, effort: a.effort } : null,
       checks: this.prSel ? this.checksNow().reduce((n, c) => ({ ok: n.ok + (c.ok === true), fail: n.fail + (c.ok === false) }), { ok: 0, fail: 0 }) : null,
       // For the bar's "Dry run" chip and the "Run review" popup (findings: all, and the analysis' own).
@@ -1145,8 +1191,14 @@ export const ReviewMode = {
   // Every 20 s while a sub-agent fix runs: its cost so far from its session log (views.js sessionCost) in the context's
   // config folder, the newest log there written since the job started (an earlier fix in the same folder has its own).
   fixCostTick(cx) {
-    const running = this.prSel ? this.fixes().filter((j) => j.state === "running" && j.target === "sub" && j.path) : [];
-    if (!running.length || this.fixCostBusy || !windowActive()) return; // nobody reads the cost behind another window; a job left "running" would list and read logs every 20 s for good
+    // A job stays "running" until it is applied or discarded, also long after its agent ended: its cost is read once
+    // more after the agent's terminal is gone (as fixView looks for it), then it is left alone (it listed and read
+    // session logs every 20 s for as long as the review was open). Nobody reads the cost behind another window either.
+    const done = (this.fixCostDone ??= new Set());
+    const live = (j) => Boolean(j.terminal) && (agents().some((a) => a.address === j.terminal) || terminals().some((x) => x.address === j.terminal && x.state === "live"));
+    const running = this.prSel && windowActive() ? this.fixes().filter((j) => j.state === "running" && j.target === "sub" && j.path && (live(j) ? (done.delete(j.id), true) : !done.has(j.id))) : [];
+    if (!running.length || this.fixCostBusy) return;
+    for (const j of running) if (!live(j)) done.add(j.id);
     const cfg = String(C.infoOf(ctxDoc(), this.ctxId()).env?.CLAUDE_CONFIG_DIR ?? `${home()}/.claude`).replace(/^~(?=\/|$)/, home());
     this.fixCostBusy = true;
     cx.spawn(async (cx) => {
@@ -1181,7 +1233,7 @@ export const ReviewMode = {
     const d = doc ? JSON.parse(doc) : {};
     this.find = { ...this.find, list: withThreats(d.findings ?? [], d.security), runs: runsOf(d.runs), status: d.status ?? {}, reports: parseReports(rep), security: d.security ?? null, resilience: d.resilience ?? null, loaded: url };
     for (const r of Object.values(this.find.runs)) if (r.busy && Date.now() - Date.parse(r.started) > 30 * 60000) { r.busy = false; r.state = "failed"; r.error = "Stopped without a result"; }
-    setShared("review.reviewers", this.find.runs);
+    putShared("review.reviewers", this.find.runs);
     this.securityNow(cx);
     cx.notify();
   },
@@ -1477,7 +1529,7 @@ export const ReviewMode = {
           .child(div().w(40).flex_none().pr(8).text_right().text_color(t.muted).child(String(first + i))).children(renderLine(div, l, spans[i] ?? [], c)))))
       .child(h_flex().gap(BTN_GAP)
         .child(div().id("rv-di-go").tooltip("Open the file that defines this in the review").w(BTN + 40).h(26).flex().items_center().justify_center().rounded(6).border_1().border_color(def ? t.accent : t.border).text_size(TYPE.small).text_color(def ? t.foreground : t.muted).child("Go to definition"))
-        .child(div().id("rv-di-code").tooltip("Open the defining file in VS Code").w(BTN + 40).h(26).flex().items_center().justify_center().rounded(6).border_1().border_color(t.border).text_size(TYPE.small).text_color(def ? t.foreground : t.muted).child("Open in VS Code"))
+        .child(div().id("rv-di-code").tooltip(this.edOn ? "Open the defining file in your editor" : "No editor was found to open the file in").w(BTN + 40).h(26).flex().items_center().justify_center().rounded(6).border_1().border_color(t.border).text_size(TYPE.small).text_color(def && this.edOn ? t.foreground : t.muted).child(this.edOn ? "Open in editor" : "No editor"))
         .child(div().id("rv-di-x").tooltip("Close this definition preview").px(10).h(26).flex().items_center().text_size(TYPE.small).text_color(t.muted).child("Close"))));
   },
 
@@ -1487,7 +1539,8 @@ export const ReviewMode = {
     return v_flex().flex_1().min_h(0)
       .child(h_flex().flex_none().h(40).px(12).gap(10).items_center().bg(t.raised).border_b(1).border_color(t.border).text_size(TYPE.body)
         .child(pill("rv-def-back", t, this.exMode ? "← Back" : "← Back to the diff", (_e, cx) => { this.defFile = null; this.defAt = null; cx.notify(); }).tooltip("Return to the previous view (Esc)"))
-        .child(div().flex_1().min_w(0).truncate().font_family(mono).font_semibold().child(`${f.path}:${f.line}`)))
+        .child(div().flex_1().min_w(0).truncate().font_family(mono).font_semibold().child(`${f.path}:${f.line}`))
+        .children(editorLink(this, t, "def", { root: this.lspRoot(), file: f.path, line: f.line, foreign: this.editorForeign(), where: "in the checkout this view reads" }, null))) // the same root this view reads from
       .when(Boolean(this.defAt?.inView), (e) => { const d = this.defAt, def = d.res?.definitions?.[0];
         return e.child(h_flex().flex_none().px(12).py(6).gap(8).items_center().border_b(1).border_color(t.border).bg(t.surface).text_size(TYPE.small)
           .child(div().flex_1().min_w(0).truncate().child(!d.res ? `Looking up ${d.name}…` : def ? `${d.name} → ${where(def)}` : `${d.name}: ${this.defMessage(d.res)}`))
@@ -1577,11 +1630,12 @@ export const ReviewMode = {
 
   // ---- the diff as list items (one virtual list per tab)
 
-  pushRows(items, at, rows, path, hunkOf) {
+  // room: the caller decided (stepsItems gives the open layer its room first): true, or the note to show instead.
+  pushRows(items, at, rows, path, hunkOf, room) {
     // ponytail: gpui-kit's virtual list holds at most 10000 items; past the budget a file's lines fold to one note
     // (collapse other files to open it) instead of crashing the render. A paged list would lift the limit.
     const cap = this.rowCap ?? this.rowsCap(9000);
-    if (items.length + rows.length > cap) { items.push({ t: "note", text: `${rows.length} lines not shown: the view holds about ${cap} lines at once. Collapse other files (click their header) to open this one.` }); return []; }
+    if (room === undefined ? items.length + rows.length > cap : room !== true) { items.push({ t: "note", text: room ?? `${rows.length} lines not shown: the view holds about ${cap} lines at once. Collapse other files (click their header) to open this one.` }); return []; }
     const sugs = this.openSugs(path), cms = this.comments.filter((c) => c.file === path), used = new Set();
     const finds = this.findings().filter((f) => f.file === path && OPEN_ST.includes(this.fstatus(f))); // a fix sent stays here until it is verified
     // A card sits under the first code line of its finding's range; an open one marks the range in the gutter.
@@ -1675,8 +1729,14 @@ export const ReviewMode = {
     const items = [], at = {};
     // Its own number of lines, every time: it used to take what the Files list had left (2 500), or 9 000 when that
     // list was never drawn, and 9 000 lines take 40 to 50 ms per frame in Herdr (a frame is stopped at about 50).
-    // 5 000 take about 23 ms; when frames are stopped all the same, it halves (rowsCap).
-    this.rowCap = this.rowsCap(5000);
+    // STEP_LINES take about half of what a frame may; when frames are stopped all the same, it halves (rowsCap).
+    // The open layer's hunks get the room first, then the layers after it, then the ones before: the layer you read
+    // always has its lines, whatever stands above it.
+    const cap = this.rowCap = this.rowsCap(STEP_LINES), cur = Math.min(this.cur ?? 0, steps.length - 1), fits = new Set();
+    let left = cap;
+    for (const i of steps.map((_s, k) => k).sort((a, b) => (a >= cur ? a - cur : steps.length + cur - a) - (b >= cur ? b - cur : steps.length + cur - b))) {
+      for (const id of this.present(steps[i])) { const n = this.byId.get(id).rows.length; if (n <= left) { fits.add(`${i}|${id}`); left -= n; } }
+    }
     steps.forEach((s, i) => {
       at[`s${i}`] = items.length;
       items.push({ t: "step", s, i }, ...(s.visuals ?? []).flatMap((v, k) => this.visItems(v, i, k)));
@@ -1691,7 +1751,7 @@ export const ReviewMode = {
         const more = seen.has(h.path) ? 0 : (this.hunks ?? []).filter((x) => x.path === h.path && !present.includes(x.id)).length;
         seen.add(h.path);
         if (more) items.push({ t: "more", path: h.path, n: more, text: `more|${i}|${h.path}` });
-        this.pushRows(items, at, h.rows, h.path, () => id);
+        this.pushRows(items, at, h.rows, h.path, () => id, fits.has(`${i}|${id}`) || `${h.rows.length} lines not shown: the view holds about ${cap} lines at once.${i === cur ? "" : " Open this layer to see them."}`);
       }
     });
     return { items, at };
@@ -1822,7 +1882,7 @@ export const ReviewMode = {
       const d = it.d.res?.definitions?.[0];
       if (which === 2) this.defAt = null;
       else if (d && which === 0) this.goDef(d, cx);
-      else if (d && which === 1) { const a = vscodeArgs(this.lspRoot(), d); if (a) exec("code", a); else this.note = "Could not open: the definition is not a local file"; }
+      else if (d && which === 1) { if (d.inRoot && this.lspRoot() && this.edOn) this.openEditor({ root: this.lspRoot(), file: d.path, line: d.line, foreign: this.editorForeign() }, cx); else this.note = this.edOn ? "Could not open: the definition is not a file of this checkout" : "No editor was found to open the file in"; }
     } else if (it.t === "fact") {
       const b = x - GUTTER - 12, which = Math.floor(b / (BTN + BTN_GAP)), inside = b >= 0 && b % (BTN + BTN_GAP) < BTN;
       if (inside && which === 0) this.findingComment(it.f, cx);
@@ -1844,6 +1904,8 @@ export const ReviewMode = {
       this.fileFocus = p;
       if (x >= FILE_CHEV && x < FILE_CHEV + FILE_SEEN) this.toggleSeen(p, cx);
       else if (x >= FILE_CHEV + FILE_SEEN && x < FILE_CHEV + FILE_SEEN + FILE_WHOLE && this.shown().fileHunks?.has(p)) this.toggleWhole(p, cx);
+      else if (this.fileEditMark(it.f) && x >= FILE_CHEV + FILE_SEEN + FILE_WHOLE && x < FILE_CHEV + FILE_SEEN + FILE_WHOLE + FILE_EDIT) this.openEditor(this.fileEditTarget(it.f), cx);
+      else if (this.fileEditMark(it.f) && x >= FILE_CHEV + FILE_SEEN + FILE_WHOLE + FILE_EDIT && x < FILE_CHEV + FILE_SEEN + FILE_WHOLE + FILE_EDIT + FILE_EDIT_MORE) openEditorMenu(this, this.fileEditTarget(it.f));
       else if (this.collapsed.has(p) || this.overBudget?.has(p)) this.unfold(p); else this.collapsed.add(p);
     } else if (it.t === "fold") this.unfold(it.path);
     else if (it.t === "step") {
@@ -1980,6 +2042,10 @@ export const ReviewMode = {
     if (!key) return;
     const [doc, rep] = await Promise.all([readTextFile(threadsFile()).catch(() => null), readTextFile(this.repliesFile()).catch(() => null)]);
     if (this.threadKey() !== key) return;
+    // The same two texts as read last for this PR: nothing to parse and no frame (the watch on the replies folder and
+    // every GitHub poll come through here).
+    if (this.threadsRead?.key === key && this.threadsRead.doc === doc && this.threadsRead.rep === rep) return;
+    this.threadsRead = { key, doc, rep };
     this.threadDoc = doc ? JSON.parse(doc) : {}; this.replies = TH.parseReplies(rep);
     cx.notify();
   },
@@ -2993,7 +3059,7 @@ export const ReviewMode = {
           const st = this.fstatus(f), settled = ["fixed", "dismissed"].includes(st);
           return h_flex().id(`${p}-f-${n}-${k}`).tooltip(`${this.sourcesOf(f)}: open this finding in the Findings tab`).gap(8).items_center().text_size(TYPE.body).cursor_pointer()
             .on_click((_e, cx) => { this.openFinding(f); cx.stop_propagation(); cx.notify(); })
-            .child(badge(t, f.severity, t[SEV[f.severity]]))
+            .child(badge(t, f.severity, t[SEVERITY_COLOR[f.severity]] ?? t.accent)) // also "critical", which SEV does not have: without a colour the element, and with it the frame, failed
             .child(div().flex_1().min_w(0).truncate().text_color(settled ? t.muted : t.foreground).child(f.title))
             .child(div().flex_none().text_size(TYPE.small).text_color(t.muted).child(f.sources.length === 1 ? this.sourcesOf(f) : `${f.sources.length} sources`))
             .when(st !== "open", (e) => e.child(div().flex_none().text_size(TYPE.small).text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(FSTATUS[st]?.[0] ?? st)));
@@ -3324,7 +3390,7 @@ export const ReviewMode = {
     const more = () => visualsCard(this.ai.visuals, t, "rv-arch-vis", (at, cx) => this.jumpTo(at, cx), this.archVisTab ?? 0, (k, cx) => { this.archVisTab = k; cx.notify(); }, this.wrapX());
     const out = (list) => (parts ? list : v_flex().gap(12).children(list.map(([, el]) => el)));
     if (!a) return out([["head", this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams")], ["none", div().text_size(TYPE.body).text_color(t.muted).child(this.ai ? "This analysis has no architecture picture (older analysis, or the PR touches no architecture). Re-analyze for one." : "No analysis yet: Analyze in the left column.")],
-      ...this.impactParts(t), ...this.schemaParts(t), ...(this.ai?.visuals?.length > 0 ? [["views", div().w_full().child(more())]] : [])]);
+      ...this.impactParts(t), ...this.infraPart(t), ...this.schemaParts(t), ...(this.ai?.visuals?.length > 0 ? [["views", div().w_full().child(more())]] : [])]);
     const groups = new Set(a.nodes.map((n) => n.group)).size, L = this.archL(), fit = this.archFitOn(), marks = this.archMarksNow();
     // The first time, and after Fit changed the layout, the picture starts at the way in (the Internet card), wherever
     // the layout put it. Not before the view is measured: Fit switches itself on then, and the cards move.
@@ -3333,7 +3399,7 @@ export const ReviewMode = {
     const opts = { ...this.archOpts("arch"), marks, zoom: settings().zoom || 1, zones: a.zones ?? [], effective: this.effZones(a) }, count = (...st) => L.nodes.filter((n) => st.includes(n.status)).length; // of the cards shown (Before hides the added ones)
     const head = ["head", h_flex().gap(12).items_center().flex_wrap().child(div().text_size(TYPE.page).font_semibold().child("Architecture impact")).child(this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams"))
         .when(this.drawerState() !== "open", (e) => e.child(pill("rv-ask-open", t, "Ask", (_e, cx) => this.setDrawer("open", cx, null)).tooltip("Ask one model question about the architecture picture")))];
-    if (!L) return out([head]); // a big map, laid out right after this frame (archL): the page without its picture until then
+    if (!L) return out([head]); // no map
     return out([
       head,
       ["switches", h_flex().w_full().gap(12).items_center().flex_wrap() // wraps onto two rows when narrow
@@ -3361,8 +3427,49 @@ export const ReviewMode = {
         .when(Boolean(this.fold.archCalls), (e) => e.child(archLegend(L, t, "rv-arch-edges", "Calls without their whole text in the picture", opts)))]] : []),
       ...((this.ai.components ?? []).length ? [["components", this.componentsTable(t, a)]] : []),
       ...this.impactParts(t),
+      ...this.infraPart(t),
       ...this.schemaParts(t),
       ...(this.ai?.visuals?.length > 0 ? [["views", v_flex().gap(12).child(div().pt(6).text_size(TYPE.body).font_semibold().text_color(t.muted).child("More views")).child(div().w_full().child(more()))]] : [])]);
+  },
+
+  // The infrastructure files of the patch with their text at the PR head, for "Infrastructure changes" (infra.js: static,
+  // no model). Without a checkout: what the patch itself holds (added and deleted files). With one: the changed
+  // files and, for Terraform, the other .tf files of their folders, read from the checkout. Which of them exist is
+  // asked through safegit.py (ls-files -s: tracked regular files only, so a link out of the checkout is not followed).
+  loadInfra(cx) {
+    const url = this.prSel?.url, patch = this.patch ?? [], w = this.worktree, files = patch.filter((f) => isIac(f.path) && !f.binary);
+    this.infra = files.length ? infraModel(files) : null; this.infraMemo = null;
+    if (!files.length || !w?.path) return;
+    cx.spawn(async (cx) => {
+      const tf = [...new Set(files.filter((f) => /\.tf(vars)?$/.test(f.path)).map((f) => dirOf(f.path)))], want = files.filter((f) => f.status !== "added" && f.status !== "deleted").map((f) => f.path);
+      if (!tf.length && !want.length) return;
+      const r = await exec("python3", [`${appHome()}/mods/pr-review/safegit.py`, w.path, "ls-files", "-s", "--", ...tf.map((d) => `${d ? `${d}/` : ""}*.tf`), ...want], { timeout: 30000 }).catch(() => null);
+      if (r?.code !== 0 || this.prSel?.url !== url || this.patch !== patch) return;
+      const listed = r.stdout.split("\n").map((l) => /^100\d+ \S+ \d\t(.+)$/.exec(l)?.[1]).filter((p) => p && !p.startsWith('"')), texts = new Map();
+      // ponytail: at most 200 files (Terraform first), one after the other, and one parse in one slice (about 50 ms
+      // for a megabyte of .tf): a module larger than that is read in part; split the parse over timers if it matters.
+      for (const p of listed.filter((x) => want.includes(x) || (/\.tf$/.test(x) && tf.includes(dirOf(x)))).sort((x, y) => /\.tf$/.test(y) - /\.tf$/.test(x)).slice(0, 200)) { const text = await readTextFile(`${w.path}/${p}`).catch(() => null); if (typeof text === "string") texts.set(p, text); }
+      if (this.prSel?.url !== url || this.patch !== patch) return;
+      this.infra = infraModel(files.map((f) => ({ ...f, head: texts.get(f.path) })), [...texts].filter(([p]) => !files.some((f) => f.path === p)).map(([path, text]) => ({ path, text })));
+      this.infraMemo = null; cx.notify();
+    });
+  },
+  // "Infrastructure changes" as a part of the Architecture page, only when the diff has infrastructure code. A click on
+  // a card leads to the resource in the diff (no panel of its own), a finding's mark to the finding.
+  infraPart(t) {
+    const m = this.exMode ? null : this.infra;
+    if (!m) return [];
+    const fs = this.openFindings(), key = fs.map((f) => `${f.id}|${f.severity}`).join();
+    if (m.cards.length && (this.infraMemo?.model !== m || this.infraMemo.key !== key)) {
+      // As archL (stack.js laidOut): what a frame can afford now, the better layout after it; a picture too big for
+      // the frame comes with the first slice after it (until then the section without its picture, or with the one
+      // from before when only the findings changed).
+      const pic = infraPicture(m, fs, false, false), before = this.infraMemo?.model === m ? this.infraMemo.pic.L : null;
+      this.infraMemo = { model: m, key, pic: laidOut(pic.args, pic, () => this.infraMemo?.pic, { wait: true, before }) };
+    }
+    const o = this.archOpts("infra");
+    return [["infra", infraSection(t, { model: m, pic: m.cards.length && this.infraMemo?.model === m && this.infraMemo.pic.L ? this.infraMemo.pic : null, onJump: (at, cx) => this.jumpTo(at, cx), edit: (id, at) => this.editAt(t, id, at), hl: o.hl, onHl: o.onHl,
+      canvas: (L, decorate, marks) => this.archCanvas(t, L, { ...o, onFocus: null, marks, zoom: settings().zoom || 1 }, { id: "rv-infra-canvas", pic: "rv-infra", wrap: false, decorate, notes: false }) })]];
   },
 
   // The picture: wider than the view and Wrap on (archWrapOn, off by default), in bands stacked top to bottom (arch.js
@@ -3425,7 +3532,7 @@ export const ReviewMode = {
         .child(div().text_size(TYPE.title).font_semibold().child(n.label ?? n.id))
         .child(div().text_size(TYPE.small).text_color(t.muted).child([g?.label, n.type, n.status === "new" ? "added" : n.status].filter(Boolean).join(" · ")))
         .child(div().flex_1())
-        .when(Boolean(at), (e) => e.child(pill("rv-arch-card-open", t, "Show in diff ↗", (_e, cx) => this.jumpTo(at, cx)).tooltip(`Show ${at} in the diff`)))
+        .when(Boolean(at), (e) => e.child(pill("rv-arch-card-open", t, "Show in diff ↗", (_e, cx) => this.jumpTo(at, cx)).tooltip(`Show ${at} in the diff`)).children(this.editAt(t, "rv-arch-card-ed", at)))
         .child(pill("rv-arch-card-explain", t, paid ? "Look inside" : `Look inside (${price})`, (_e, cx) => this.showDetails(item, `arch:${n.id}`, cx, false, true), false, n.details ? null : t.foreground)
           .tooltip(paid ? "Show what the model found inside this card (already paid for)" : `One ${modelLabel(model())} call reads the code: what this does overall, what the PR changes in it, and a picture of its inside`))
         .when(this.drawerState() !== "open", (e) => e.child(pill("rv-arch-card-ask", t, "Ask", (_e, cx) => this.setDrawer("open", cx, null)).tooltip("Ask one model question about this card")))
@@ -3542,10 +3649,18 @@ export const ReviewMode = {
   setArchWrap(on) { setShared("review.archWrap", on); this.hsOf("rv-arch-canvas").x = 0; },
   // Fit (narrow cards, never rows): the person's choice when there is one; else on as soon as the usual cards are wider
   // than the view, so more of the picture is in sight (the view's width is known after the first layout: until then, off).
-  archFitOn() {
+  // Fit until it is chosen: on when the picture with the usual cards is wider than the view. Only one of the two
+  // pictures is laid out to find out, the one a guess shows (narrow cards for a map of more than 8 cards: those are the
+  // wide ones); the other's width follows from it (arch.js widthAt), and it is laid out only when the guess was wrong
+  // or Fit is switched.
+  // lay(fit): the layout of the map that asks (the Resilience map has its own).
+  archFitOn(lay = (fit) => this.archL(fit)) {
     if (typeof this.archFit === "boolean") return this.archFit;
-    const s = this.hsOf("rv-arch-canvas"), L = s.viewW ? this.archL(false) : null;
-    return Boolean(L) && L.width + 44 > hsVisible(s.viewW / (settings().zoom || 1), this.drawerCover());
+    const s = this.hsOf("rv-arch-canvas"), guess = (this.ai?.arch?.nodes.length ?? 0) > 8;
+    if (!s.viewW) return false;
+    const L = lay(guess);
+    if (!L) return guess; // its layout comes after the frame (a big map): the guess stands until then
+    return widthAt(L, guess, false) + 44 > hsVisible(s.viewW / (settings().zoom || 1), this.drawerCover());
   },
   // The picture shown: its layout with the calls' texts on their lines, a row in a card and above a call for the
   // findings there, normal or narrow cards (Fit). Memoized: the page renders often.
@@ -3560,66 +3675,29 @@ export const ReviewMode = {
     if (!(slot in memo) && Object.keys(memo).length >= 8) delete memo[Object.keys(memo)[0]]; // a layout per kind of map shown, the oldest goes
     if (memo[slot]?.key !== key) {
       const args = [mapArch(a, this.ai?.access, this.ai?.bypasses ?? []), this.archMode, (n) => (m.nodes.has(n.id) ? markRoom(m.nodes.get(n.id), (fit ? ARCH_FIT.W : ARCH_SIZE.W) - 20).rows : 0) + (more?.has(n.id) ? resMarkRows(more.get?.(n.id) ?? 1) : 0), fit, { labels: true, labelPx: labelPx ?? undefined, marked: (es) => es.some((i) => m.edges.has(i)) }];
-      const make = () => { memo[slot] = this.layoutLater({ key, L: archLayout(...args) }, args, () => memo[slot]); };
-      // A map of more cards than LAYOUT_IN_FRAME takes longer to lay out than a frame may take, even once (measured in
-      // Herdr: 20 cards 20 ms, 40 cards 49 ms, 80 cards 208 ms; a render is stopped after about 50 ms and starts over
-      // the next time, so the page never came). While a frame is drawn it is only queued (firstLayouts lays it out
-      // right after the frame, then draws again); the frame gets the layout from before, or none: the page without
-      // its picture.
-      if (!this.drawing || a.nodes.length <= LAYOUT_IN_FRAME) make();
-      else { (this.layQueue ??= new Map()).set(String(slot), make); return memo[slot]?.L ?? null; }
+      // What a frame can afford now, the better layout after it (stack.js laidOut). A map too big even for a rough
+      // pass in the frame keeps the layout from before while its own is searched (new marks; not another view of the
+      // map), else the page is drawn without its picture until the first slice after the frame.
+      memo[slot] = laidOut(args, { key, mode: this.archMode }, () => memo[slot], { wait: true, before: memo[slot]?.mode === this.archMode ? memo[slot].L : null });
     }
     return memo[slot].L;
   },
   // Herdr stops a frame that takes longer than about 50 ms and keeps showing the one before, under "This view could
   // not be re-rendered"; the next frame takes as long, so the view would stay there. cut: frames stopped in a row on
-  // one tab and page. After two the view draws less there (leanLevel): no map picture but a sentence (archCanvas),
-  // and half the lines in the list per level (rowsCap). It stays so for this PR; "Draw it again" takes it back.
+  // one tab and page. After three (two happen on a busy machine to a frame that takes half the time) the view draws
+  // less there (leanLevel): no map picture but a sentence (archCanvas), and half the lines in the list per level
+  // (rowsCap). After LEAN_MS it tries all of it again; "Draw it again" does so at once.
   frameCut(was) {
     const key = `${this.tab}|${this.page ?? ""}`;
     this.cut = was ? (this.cutKey === key ? (this.cut ?? 0) + 1 : 1) : 0; this.cutKey = key;
-    if (this.cut >= 2) { (this.leanBy ??= new Map()).set(key, this.leanLevel() + 1); this.cut = 0; }
+    if (this.cut >= 3) { (this.leanBy ??= new Map()).set(key, { level: this.leanLevel() + 1, at: Date.now() }); this.cut = 0; }
   },
-  leanLevel() { return this.leanBy?.get(`${this.tab}|${this.page ?? ""}`) ?? 0; },
+  leanLevel() { const x = this.leanBy?.get(`${this.tab}|${this.page ?? ""}`); return x && Date.now() - x.at < LEAN_MS ? x.level : 0; },
   rowsCap(lines) { return Math.max(250, lines >> this.leanLevel()); },
   leanNote(t, id, cards) {
     return v_flex().id(`${id}-lean`).w_full().gap(8).p(12).rounded(8).border_1().border_color(t.border).text_size(TYPE.body).text_color(t.muted)
       .child(div().whitespace_normal().child(`The picture of ${cards} ${cards === 1 ? "card" : "cards"} is left out: drawing this page took longer than a frame may take (about 50 ms), twice in a row. Copy as Markdown has the picture as a diagram.`))
       .child(h_flex().child(pill(`${id}-again`, t, "Draw it again", (_e, cx) => { this.leanBy?.delete(`${this.tab}|${this.page ?? ""}`); this.cut = 0; cx.notify(); }).tooltip("Try to draw the picture again")));
-  },
-  // The big maps the last frame asked for and left for later (archL): one per task, so no task runs longer than one
-  // layout, then a redraw, which finds it in the memo (and may ask for the next: Fit is decided from the first).
-  firstLayouts(cx) {
-    if (!this.layQueue?.size || this.layBusy) return;
-    this.layBusy = true;
-    cx.timer.after(0, (cx) => {
-      const [slot, make] = this.layQueue?.entries().next().value ?? [];
-      if (make) { this.layQueue.delete(slot); make(); }
-      this.layBusy = false; cx.notify();
-    });
-  },
-  // A map's better layout (arch.js archSearch: long lines through the picture, cards at the place that suits them) takes
-  // a full layout per try, more than a render may (Herdr stops a script slice after ~50 ms): the memo shows archLayout's
-  // picture at once, and the search runs after the render, a few tries per slice (layoutMore). The picture changes once,
-  // when the search is through and found a better one. live(): the memo's entry now; a replaced one is not searched on.
-  layoutLater(entry, args, live) { (this.layoutJobs ??= []).push({ entry, args, live }); return entry; },
-  // The maps laid out in the last render: their search after it, queued once, and only when a map was laid out (a
-  // timer on every frame would run for nothing while the review is left alone). main.js calls this after the frame.
-  layoutSoon(cx) { if (this.layoutJobs?.length && !this.layoutTick) { this.layoutTick = true; cx.timer.after(0, (cx) => { this.layoutTick = false; this.layoutMore(cx); }); } },
-  layoutMore(cx) {
-    if (this.layoutBusy || !this.layoutJobs?.length) return;
-    this.layoutBusy = true;
-    cx.spawn(async (cx) => {
-      try {
-        for (let job, t = Date.now(); (job = this.layoutJobs.shift());) {
-          for (let g = null, r = null; job.live() === job.entry;) {
-            if (Date.now() - t > 12) { await new Promise((res) => cx.timer.after(0, res)); t = Date.now(); continue; } // a fresh slice
-            r = (g ??= archSearch(...job.args)).next();
-            if (r.done) { if (JSON.stringify(r.value) !== JSON.stringify(job.entry.L)) { job.entry.L = r.value; cx.notify(); } break; }
-          }
-        }
-      } finally { this.layoutBusy = false; }
-    });
   },
   // ---- sideways scrollers inside the scrolling page (the architecture canvas, the flow, state-machine and blast
   // pictures): clipped at their box, the content moved by left(-x); wheel and trackpad through wheelStep (one axis per
@@ -3788,12 +3866,31 @@ export const ReviewMode = {
     if (!this.exMode) { this.prAiSaved = this.ai; this.exMode = true; }
     this.exStart = ex; this.ai = this.exAi ?? null;
     if (!this.exIndex) { this.exIndex = []; cx.timer.after(0, (cx) => this.loadExploreIndex(cx)); }
+    // Back from the minimized chip: the repo, the topic typed, the last error, and a run that went on meanwhile (its
+    // status file is read at once: it may have ended). Once per entry (its `at`): shared state comes as a new object
+    // with every read, so this runs in every render.
+    if (ex.exRoot && !this.exRoot) this.exRoot = ex.exRoot;
+    if (this.exTaken !== ex.at) {
+      this.exTaken = ex.at;
+      if (typeof ex.draft === "string" && ex.draft && !this.exTopic.value()) this.exTopic.set_value(ex.draft);
+      if (ex.err && !this.exErr && !this.exBusy) { this.exErr = ex.err; this.exDetail = ex.detail ?? null; }
+      if (ex.busy && !this.exBusy) { this.exBusy = ex.busy; this.exErr = null; this.pollExplore(cx, 0); }
+    }
     if (ex.start && !this.exRoot) {
       cx.timer.after(0, (cx) => cx.spawn(async (cx) => {
         const dir = ex.root ?? spaces().find((x) => x.id === ex.space)?.folder ?? spaces().find((x) => x.active)?.folder ?? null;
         this.exRoot = await this.exploreRoot(dir); cx.notify();
       }));
     }
+  },
+  // Minimize in Explore, as in a review: back to the chats with the page kept as one entry at the top. What only this
+  // view holds goes into the entry: the topic typed, the repo, a run that is going (it is its own process and goes
+  // on), the last error. Resume (the chip) opens the page with all of it.
+  minimizeExplore() {
+    const ex = shared("review.explore");
+    if (!ex) return;
+    setShared("review.minimized", { explore: { ...ex, draft: this.exTopic.value(), exRoot: this.exRoot ?? null, busy: this.exBusy ?? null, err: this.exErr ?? null, detail: this.exDetail ?? null }, at: Date.now() });
+    leave();
   },
   leaveExplore() { if (this.exMode) { this.exMode = false; this.ai = this.prAiSaved ?? null; this.defFile = null; this.drills = null; } },
   chooseExploreRepo(cx) {
@@ -3805,7 +3902,7 @@ export const ReviewMode = {
     const id = exploreId(r.root, topic), out = `${exploreDir()}/${id}.json`, status = `${out}.status`;
     const ctx = C.spaceContext(ctxDoc(), this.exStart?.space ?? focused()?.space);
     const req = { root: r.root, repo: r.repo, topic, model: m, context: this.ctxReq(ctx), out, status };
-    this.exBusy = { id, topic, model: m, started: Date.now(), status, out, ctx }; this.exErr = null;
+    this.exBusy = { id, topic, model: m, started: Date.now(), status, out, ctx }; this.exErr = null; this.exDetail = null; this.exDetailOpen = false;
     cx.spawn(async (cx) => {
       await exec("mkdir", ["-p", exploreDir()]).catch(() => null);
       const reqFile = `${out}.req.json`, before = await readTextFile(reqFile).catch(() => null);
@@ -3815,14 +3912,14 @@ export const ReviewMode = {
     });
     cx.notify();
   },
-  pollExplore(cx) {
-    cx.timer.after(5000, (cx) => cx.spawn(async (cx) => {
+  pollExplore(cx, wait = 5000) {
+    cx.timer.after(wait, (cx) => cx.spawn(async (cx) => {
       const b = this.exBusy;
       if (!b) return;
       const st = JSON.parse(await readTextFile(b.status).catch(() => null) ?? "null");
       if (!st || st.busy) { cx.notify(); return this.pollExplore(cx); }
       this.exBusy = null;
-      if (st.error) { this.exErr = st.error; return cx.notify(); }
+      if (st.error) { this.exErr = st.error; this.exDetail = st.detail ?? null; return cx.notify(); } // the sentence (llm.py failure); what the CLI printed behind "Details"
       const entry = { id: b.id, topic: b.topic, root: this.exRoot.root, repo: this.exRoot.repo, model: b.model, ctx: b.ctx, at: Date.now() };
       const before = await readTextFile(`${exploreDir()}/index.json`).catch(() => null), next = exploreIndex(before ? JSON.parse(before) : [], entry);
       await writeTextFile(`${exploreDir()}/index.json`, JSON.stringify(next.list, null, 1), before).catch(() => null);
@@ -3863,6 +3960,8 @@ export const ReviewMode = {
     const t = theme(), title = ex.topic ? `Explore: ${ex.topic}` : "Explore a topic", trusted = this.exploreTrusted(ex);
     return h_flex().id("rv-bar").size_full().pl(84).pr(16).gap(12).items_center().bg(t.chrome).text_color(t.foreground).text_size(TYPE.body)
       .child(pill("rv-back", t, "← Back", () => { setShared("review.explore", null); if (!shared("review.target")) leave(); }).tooltip("Leave Explore and return to the previous layout (Esc)").flex_none())
+      .child(pill("rv-min", t, "▁ Minimize", () => run("pr-review.explore-min")).flex_none()
+        .tooltip("Go back to your chats and keep this page as one entry at the top: the topic, a run that is going and its result stay; open it from there"))
       .child(div().id("rv-title").flex_1().min_w(0).truncate().font_semibold().text_size(TYPE.title).tooltip(title).child(title))
       .when(Boolean(ex.repo), (e) => e.child(div().id("rv-ex-repo").tooltip("The repository being explored").flex_none().text_size(TYPE.small).text_color(t.muted).child(ex.repo)))
       .when(Boolean(ex.id) && !trusted, (e) => e.child(div().id("rv-ex-trust-wrap").flex_none().tooltip("Restricted Mode: language servers run nothing from this code, so go-to-definition may find less. Trust it only if it is yours.")
@@ -3960,7 +4059,17 @@ export const ReviewMode = {
             .cursor_pointer().on_click((_e, cx) => this.runExplore(cx)).child(busy ? "Exploring…" : "Explore")))
         .when(Boolean(busy), (e) => e.child(h_flex().gap(8).items_center().text_size(TYPE.body).text_color(t.muted).child(div().child(SPIN[0]).frames(SPIN, 90))
           .child(`${modelLabel(busy.model)} is reading the code · ${clock(Date.now() - busy.started)} · cap $${CAP[tierOf(busy.model)]}`)))
-        .when(Boolean(this.exErr), (e) => e.child(div().text_size(TYPE.small).text_color(t.ansi1).whitespace_normal().child(this.exErr)))
+        // A run that gave no answer: what happened and what to do, in one sentence (llm.py failure), with Retry and
+        // the model's choice beside it; what the CLI printed only behind "Details".
+        .when(Boolean(this.exErr), (e) => e.child(v_flex().id("rv-ex-err").gap(8).p(12).rounded(8).border_1().border_color(t.ansi1 + "66").bg(t.ansi1 + "10")
+          .child(div().text_size(TYPE.body).text_color(t.foreground).whitespace_normal().line_height(1.45).child(String(this.exErr).replace(/^Explore: walkthrough: /, "")))
+          .child(h_flex().flex_wrap().gap(8).items_center()
+            .child(pill("rv-ex-retry", t, "Retry", (_e, cx) => this.runExplore(cx), false, t.foreground).tooltip("Run it again, with the model chosen here"))
+            .child(modelPills(t, "rv-ex-m2"))
+            .child(div().flex_1())
+            .when(Boolean(this.exDetail), (x) => x.child(pill("rv-ex-detail", t, this.exDetailOpen ? "Hide details" : "Details", (_e, cx) => { this.exDetailOpen = !this.exDetailOpen; cx.notify(); }).tooltip("What the claude command printed"))))
+          .when(Boolean(this.exDetail) && Boolean(this.exDetailOpen), (x) => x.child(div().id("rv-ex-raw").max_h(160).overflow_y_scroll().p(8).rounded(6).bg(t.raised).font_family(settings().font_family ?? "JetBrains Mono")
+            .text_size(TYPE.small).text_color(t.muted).whitespace_normal().child(this.exDetail)))))
         .when((this.exIndex ?? []).length > 0, (e) => e.child(div().pt(10).text_size(TYPE.small).font_semibold().text_color(t.muted).child(`EXPLORATIONS · ${this.exIndex.length}`))
           .children(this.exIndex.map((x) => h_flex().id(`rv-exi-${x.id}`).tooltip("Open this saved exploration").gap(8).px(8).h(32).items_center().rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
             .on_click((_e, cx) => this.openExploration(x.id, cx))
@@ -4201,9 +4310,10 @@ export const ReviewMode = {
       const marks = { nodes: new Map([...marksAll.nodes].filter(([id]) => nodes.has(id))), edges: new Map() };
       // Fit: narrow cards, so the zones fit the page's width more often (the Data column was cut off).
       const args = [{ groups, nodes: [...nodes.values()], edges }, "diff", (n) => (marks.nodes.has(n.id) ? MARK_CARD_ROWS : 0) + (eff.has(n.id) ? 1 : 0), true, { labels: true, lines: () => true }];
-      this.secMemo = this.layoutLater({ key, marks, L: archLayout(...args) }, args, () => this.secMemo); // the search for the better layout: after the render
+      this.secMemo = laidOut(args, { key, marks }, () => this.secMemo, { wait: true, before: this.secMemo?.L }); // what a frame can afford now, the better layout after it (stack.js)
     }
     const { L, marks } = this.secMemo;
+    if (!L) return null; // a map too big for the frame: there after its first slice
     // keep: the way of the kind of data chosen under the map (sec-view.js), lit; the rest dimmed.
     const opts = { ...this.archOpts("blast"), marks, numbers: false, zoom: settings().zoom || 1, keep: this.secDataLit(ctx.crossings), onFocus: (id, cx) => { this.fh.focus(); this.secCard(id, cx); } };
     const deco = (n) => (eff.has(n.id) ? [h_flex().flex_none().h(15).child(chip(t, eff.get(n.id).cond ? `${eff.get(n.id).trust[0].toUpperCase()}${eff.get(n.id).trust.slice(1)} if ${eff.get(n.id).cond.replace(/^if crossing /, "")}` : `Reachable as ${eff.get(n.id).trust}`, t.ansi3, false, `rv-sec-eff-${n.id}`, `Drawn in ${eff.get(n.id).zone.name ?? eff.get(n.id).drawn} (${eff.get(n.id).drawn}), but ${eff.get(n.id).why}${eff.get(n.id).cond ? `: reachable as ${eff.get(n.id).trust} ${eff.get(n.id).cond}` : ""}.`))] : []);
@@ -4385,6 +4495,7 @@ export const ReviewMode = {
         .child(div().flex_1().min_w(0).text_size(TYPE.title).font_semibold().whitespace_normal().line_height(1.4).child(plain(f.title)))
         .when(Boolean(cr), (e) => e.child(div().id(`rv-sec-card-${f.id}`).flex_none().text_size(TYPE.small).text_color(t.accent).cursor_pointer().hover((x) => x.underline()).tooltip("Open its crossing in the table above").on_click((_e, cx) => ctx.show(cr.key, cx)).child(`Crossing ${n} ↑`)))
         .child(div().id(`rv-sec-at-${f.id}`).flex_none().text_size(TYPE.small).text_color(t.accent).cursor_pointer().hover((x) => x.underline()).tooltip("Show this line in the diff").on_click((_e, cx) => this.jumpTo(at, cx)).child(`${f.file.split("/").pop()}:${f.line} ↗`))
+        .children(this.editAt(t, `rv-sec-ed-${f.id}`, at))
         .child(div().flex_none().text_size(TYPE.small).font_semibold().text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(FSTATUS[st]?.[0] ?? st)))
       .child(v_flex().gap(3).children(facts.map(([label, text]) => h_flex().gap(8).items_start().text_size(TYPE.small).line_height(1.5)
         .child(div().w(98).flex_none().text_color(t.muted).child(label)).child(div().flex_1().min_w(0).whitespace_normal().child(text)))))
@@ -4534,10 +4645,15 @@ export const ReviewMode = {
   resMap(t, a, p, start) {
     // Every card any path marks keeps room for its longest marks (wrapped into the card: views.js resMarkLines), so
     // the cards do not grow from path to path; before the run, a line for the ○.
-    const cardW = (this.archFitOn() ? ARCH_FIT.W : ARCH_SIZE.W) - 24, marked = new Map((start ?? []).map((id) => [id, 1]));
-    for (const x of this.resNow()?.paths ?? []) for (const [id, text] of resMarksOn(x.marks, a, true)) marked.set(id, Math.max(marked.get(id) ?? 1, resMarkLines(text, cardW).length));
-    const L = this.archL(this.archFitOn(), 13, marked), on = new Set(p ? (Array.isArray(p.reach) ? p.reach : (p.steps ?? []).map((s) => resCardOf(s, a)).filter(Boolean)) : start); // pr.js reachOf, else places light the card of their file
-    if (!L) return v_flex().id("rv-res-map"); // a big map, laid out right after this frame (archL)
+    const markedAt = (f) => {
+      const w = (f ? ARCH_FIT.W : ARCH_SIZE.W) - 24, m = new Map((start ?? []).map((id) => [id, 1]));
+      for (const x of this.resNow()?.paths ?? []) for (const [id, text] of resMarksOn(x.marks, a, true)) m.set(id, Math.max(m.get(id) ?? 1, resMarkLines(text, w).length));
+      return m;
+    };
+    // Fit is decided from this map's own layout, so the plain map is not laid out for it.
+    const fit = this.archFitOn((f) => this.archL(f, 13, markedAt(f))), cardW = (fit ? ARCH_FIT.W : ARCH_SIZE.W) - 24, marked = markedAt(fit);
+    const L = this.archL(fit, 13, marked), on = new Set(p ? (Array.isArray(p.reach) ? p.reach : (p.steps ?? []).map((s) => resCardOf(s, a)).filter(Boolean)) : start); // pr.js reachOf, else places light the card of their file
+    if (!L) return v_flex().id("rv-res-map"); // no map
     for (const id of resTwice(p, this.resNow(), a)) on.add(id); // an effect done twice: every way to it lit (views.js resTwice)
     const fs = p ? this.openFindings().filter((f) => (p.findings ?? []).some((id) => (f.ids ?? [f.id]).includes(id))) : [];
     // R-D marksOf: a call's marks on the call (resEdgeMarks), a queue's at the queue, a place's on the card of its file.
@@ -4892,6 +5008,7 @@ export const ReviewMode = {
       extra: ["+", "extra", t.ansi4, "The diff does this, but the task did not ask for it"] };
     const place = (id, at) => div().id(id).tooltip("Jump to this line in the diff").flex_none().text_size(TYPE.small).text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.accent))
       .on_click((_e, cx) => { this.jumpTo(at, cx); cx.stop_propagation(); }).child(`${at.split("/").pop()} ↗`);
+    const placeEd = (id, at) => this.editAt(t, `${id}-ed`, at);
     // How sure a finding is, as words: a security finding in two parts (the flaw in the code, the way from outside),
     // another one only when it rests on an assumption.
     // The words of the Findings tab ("derived") and of the verdict line ("assumed reachable"), not a second pair.
@@ -4905,7 +5022,7 @@ export const ReviewMode = {
         .child(f.security ? rowSign(t, "⛨", [f]) : div().w(SIGN_W).flex_none())
         .child(div().flex_1().min_w(0).truncate().text_color(settled ? t.muted : t.foreground).child(f.title))
         .when(Boolean(note), (e) => e.child(div().flex_none().text_size(TYPE.small).text_color(t.muted).child(note)))
-        .child(place(`${id}-at`, `${f.file}:${f.line}`));
+        .child(place(`${id}-at`, `${f.file}:${f.line}`)).children(placeEd(`${id}-at`, `${f.file}:${f.line}`));
     };
     // A criterion: symbol, short name and how many findings break it; one not met has its reason under it. A click
     // unfolds the whole wording, the reason and the findings.
@@ -4943,7 +5060,7 @@ export const ReviewMode = {
         .child(div().flex_1().min_w(0).truncate().child(r.kind === "ask" ? `${r.title}: ${r.ask.state === "not_done" ? "not done" : r.ask.state}` : r.title))
         .when(breaks.length > 0 && r.kind !== "ask", (e) => e.child(div().flex_none().max_w(200).truncate().text_size(TYPE.small).text_color(t.muted).child(`breaks ${breaks[0]}${breaks.length > 1 ? ` +${breaks.length - 1}` : ""}`)))
         .when(Boolean(f && sure(f)), (e) => e.child(div().flex_none().text_size(TYPE.small).text_color(t.muted).child(sure(f))))
-        .when(Boolean(r.where), (e) => e.child(place(`${id}-at`, r.where)));
+        .when(Boolean(r.where), (e) => e.child(place(`${id}-at`, r.where)).children(placeEd(`${id}-at`, r.where)));
     };
     const head = (id, title, tip, right = null) => h_flex().id(id).tooltip(tip).pb(6).gap(8).items_center()
       .child(div().flex_1().min_w(0).text_size(TYPE.body).font_semibold().text_color(t.foreground).child(title)).when(Boolean(right), (e) => e.child(right));
@@ -5309,6 +5426,9 @@ export const ReviewMode = {
         .child(div().id(`rv-fh-seen-${f.path}`).tooltip("Mark this file as viewed; it collapses and counts in your progress").accessibility_label("Viewed").w(FILE_SEEN).flex_none().flex().items_center().text_size(TYPE.small).text_color(seen ? t.ansi2 : t.muted).child(fileAct(t).child(viewedBox(t, seen)).child("Viewed")))
         .child(div().id(`rv-fh-whole-${f.path}`).when(this.shown().fileHunks?.has(f.path), (e) => e.tooltip("Show the whole file instead of only the changed hunks")).w(FILE_WHOLE).flex_none().flex().items_center().text_size(TYPE.small).text_color(whole ? t.foreground : t.muted).children(this.shown().fileHunks?.has(f.path) ? [fileAct(t).child(tickBox(t, whole)).child("Whole file")] : []))
 
+        // "IntelliJ ↗" and its ▾ as zones of fixed width (onItem finds them by x); "Opening IntelliJ …" for three seconds after a click.
+        .children(((m) => (m ? [div().id(`rv-fh-ed-${f.path}`).tooltip(m.tip).accessibility_label(`Open in ${editorFull(m.id)}`).w(FILE_EDIT).flex_none().truncate().text_size(TYPE.small).text_color(m.busy ? t.dim : t.muted).child(m.text),
+          div().id(`rv-fh-edm-${f.path}`).tooltip("Other editors, Copy path, Look again").accessibility_label("Other editors").w(FILE_EDIT_MORE).flex_none().text_size(TYPE.small).text_color(t.muted).child("▾")] : []))(this.fileEditMark(f)))
         .child(div().id(`rv-fh-st-${f.path}`).tooltip(`File ${f.status} (${letter} in the file tree)`).w(70).flex_none().text_size(TYPE.small).font_semibold().text_color(t[col]).child(`${String(f.status ?? "")[0]?.toUpperCase() ?? ""}${String(f.status ?? "").slice(1)}`))
         .child(mono(div()).flex_1().min_w(0).truncate().font_semibold().text_size(TYPE.body).child(f.status === "renamed" ? `${f.from} → ${f.path}` : f.path))
         .when(n > 0, (e) => e.child(div().id(`rv-fh-cm-${f.path}`).tooltip(`${n} pending comments in this file`).px(8).text_size(TYPE.small).text_color(t.accent).child(`● ${n}`)))
@@ -5388,9 +5508,13 @@ export const ReviewMode = {
   // sees a slice busy for more than HL_STALE and starts the queue again. The job that was running then (it never got
   // to clear `running`) is dropped, and so is one that throws: its file stays plain (its spans stay empty and it is
   // not queued again), the files behind it get their colors.
+  // A slice asks for no frame of its own (a frame draws the whole window, and a big review took 13 to 17 of them to
+  // get its colors). The files on screen go first, and a frame is asked for once they are all colored; the files
+  // off screen get theirs without one (the list reads the spans when it scrolls to them). One last frame follows when
+  // the queue is empty, and while a long queue runs there is one every HL_FRAME ms at most.
   drainHighlight(cx) {
-    const start = this.hlBusy = Date.now();
-    for (const [k, job] of this.hlQueue ?? []) {
+    const start = this.hlBusy = Date.now(), queue = this.hlQueue ?? new Map(), seen = this.shownSpans();
+    for (const [k, job] of seen.size ? [...queue].sort(([a], [b]) => (seen.has(b) ? 1 : 0) - (seen.has(a) ? 1 : 0)) : [...queue]) {
       if (job.running) { this.hlQueue.delete(k); continue; }
       let out = null;
       job.running = true;
@@ -5402,11 +5526,19 @@ export const ReviewMode = {
       if (!out) break;
       job.inf.spans = out;
       this.hlQueue.delete(k);
+      if (seen.has(k)) this.hlSeen = true; else this.hlUnseen = true; // colored since the last frame: on screen, off screen
       if (Date.now() - start > 12) break;
     }
     this.hlBusy = 0;
-    if (this.hlQueue?.size) { this.hlBusy = Date.now(); cx.timer.after(0, (cx) => this.drainHighlight(cx)); }
-    cx.notify();
+    if (queue.size) { this.hlBusy = Date.now(); cx.timer.after(0, (cx) => this.drainHighlight(cx)); }
+    const some = this.hlSeen || this.hlUnseen, waiting = [...seen].some((inf) => queue.has(inf)); // a file on screen is still without its colors
+    if ((this.hlSeen && !waiting) || (some && (!queue.size || Date.now() - (this.hlDrawn ?? 0) > HL_FRAME))) { this.hlSeen = this.hlUnseen = false; this.hlDrawn = Date.now(); cx.notify(); }
+  },
+  // The span holders (spanMap's values) of the files whose lines the list drew in its last frame: what a person sees.
+  shownSpans() {
+    const v = this.codeShown ? this.visCode : null, seen = new Set();
+    if (v && this.items) for (let k = v.start; k < v.end && k < this.items.length; k++) { const inf = this.items[k].t === "row" && this.spanMap?.get(this.items[k].src); if (inf) seen.add(inf); }
+    return seen;
   },
   // A row's code, highlighted (syntax.js); spans per row array are computed once per render (spanMap).
   // a, b: one visual line of a wrapped line (its columns a..b of the tab-expanded text, b undefined: to the end).
@@ -5476,6 +5608,7 @@ export const ReviewMode = {
 
   renderReview(cx) {
     const t = theme(), target = shared("review.target") ?? null, ex = shared("review.explore");
+    this.edOn = Boolean(editorFor({ root: this.checkoutRoot() ?? this.lspRoot() }, cx)); // an editor is installed (the first ask looks, by reading files); the links of this frame name theirs
     if (ex) {
       if (this.exStart !== ex) { if (ex.start && this.exStart?.at !== ex.at) this.exRoot = null; this.enterExplore(ex, cx); }
       const root = v_flex().id("rv-root").size_full().bg(t.background).text_color(t.foreground).text_size(TYPE.body)
@@ -5487,6 +5620,11 @@ export const ReviewMode = {
     }
     this.leaveExplore();
     if (target?.url !== this.prSel?.url) { this.prSel = target; this.resetReview(); }
+    // The terminals whose state this review shows (a fix's agent, a check, a probe): the bar's copy tells when one of
+    // them changed (live.js), so this copy is not drawn for every other agent's status.
+    watch([...this.fixes().filter((j) => j.state === "running" && j.terminal).map((j) => j.terminal),
+      ...Object.values(this.find.status ?? {}).filter((x) => x?.proof?.state === "running" && x.proof.terminal).map((x) => x.proof.terminal),
+      ...Object.values(this.deep?.probes ?? {}).filter((x) => x?.state === "running" && x.terminal).map((x) => x.terminal)]);
     // After a refresh for the previous target ended; queued, since refresh() notifies and render may not.
     if (!this.refreshQueued && this.prSel && this.key() !== this.context) {
       this.refreshQueued = true;
@@ -5548,9 +5686,10 @@ export const ReviewMode = {
       if (lang) (this.hlQueue ??= new Map()).set(inf, { shown, lang, hkey: `${head}:${it.path}`, inf });
     }
     // A slice busy for longer than HL_STALE was stopped (or its timer never fired): the queue starts again.
-    if (this.hlQueue?.size && (!this.hlBusy || Date.now() - this.hlBusy > HL_STALE)) { this.hlBusy = Date.now(); cx.timer.after(0, (cx) => this.drainHighlight(cx)); }
+    if (this.hlQueue?.size && (!this.hlBusy || Date.now() - this.hlBusy > HL_STALE)) { this.hlBusy = Date.now(); if (!this.hlSeen && !this.hlUnseen) this.hlDrawn = Date.now(); cx.timer.after(0, (cx) => this.drainHighlight(cx)); }
     if (items.length > 9990) items.length = 9990; // the virtual list's hard limit is 10000
     const keys = itemKeys(items), sizes = items.map((it) => this.sizeOf(it)), hcode = this.codeScroll(listShown ? items : []);
+    this.codeShown = listShown; // for drainHighlight: whether lines of code are on screen at all
     if (listShown) { this.items = items; this.at = at; this.byKey = new Map(keys.map((k, i) => [k, items[i]])); }
     if (heads) this.layFiles(items, keys, sizes, heads.filter((h) => h < items.length));
     if (listShown) this.settleTop(this.tab === "steps" ? "steps" : "files", at, sizes, cx);
@@ -5781,7 +5920,7 @@ export const ReviewMode = {
       findings: () => findingsMd(findings, { ...base, statusOf, asks, notes: this.openSugs(), sources: this.findingSources().map((x) => x.text) }),
       layer: () => layerMd(layer, { ...base, n: this.cur + 1, files: this.filesOf(layer), findings: this.layerFindings(layer), statusOf, open: this.openFindings(), deps: this.stepDeps(layer).map(([d]) => plain(d.title)),
         access: layerAccess(ai?.access, this.filesOf(layer))?.text ?? null, hunks: this.present(layer).map((id) => this.byId.get(id)).filter(Boolean).map((h) => ({ path: h.path, rows: h.rows })) }),
-      arch: () => architectureMd({ ...base, ai, findings, statusOf, impact: this.impactNow(), schema: this.schemaNow(), layersOf: (n) => this.cardLayerList(n).map((s) => plain(s.title)),
+      arch: () => architectureMd({ ...base, ai, findings, statusOf, impact: this.impactNow(), infra: this.exMode ? null : this.infra, schema: this.schemaNow(), layersOf: (n) => this.cardLayerList(n).map((s) => plain(s.title)),
         placesIn: (path) => [...(this.fileHunks ?? new Map())].filter(([p]) => p === path || p.endsWith(`/${path}`) || path.endsWith(`/${p}`)).flatMap(([, h]) => h).length }),
       blast: () => securityMd({ ...base, ai, findings, statusOf, runs: this.find.runs, eff: ai?.arch ? this.effZones(ai.arch) : null, extra: this.secExtra(crossingsOf({ arch: ai?.arch ?? null, access: ai?.access ?? [], threats: ai?.threats ?? [], gates: ai?.gates ?? [], bypasses: ai?.bypasses ?? [], findings: this.openFindings() })) }),
       res: () => resilienceMd({ ...base, res: this.resNow(), arch: ai?.arch ?? null, names: new Map((ai?.arch?.nodes ?? []).map((n) => [n.id, n.label ?? n.id])), findings, statusOf, probes: this.resNow() ? this.probesNow() : null,
@@ -6070,13 +6209,16 @@ export const ReviewMode = {
       this.ghBusy = false;
       this.ghPoll = pollAfter(this.ghPoll, gh !== false && (sha !== null || !pr.url.startsWith("https://")), Date.now());
       if (this.prSel?.url !== pr.url) return;
-      if (gh) this.gh = gh;
+      // A frame only for something new (a frame of the review redraws the whole window): the same comments again
+      // keep the list they are in, and loadThreads draws when its files changed.
+      const fresh = Boolean(gh) && JSON.stringify(gh) !== JSON.stringify(this.gh);
+      if (fresh) this.gh = gh;
       await this.loadThreads(cx);
       if (sha && !known) this.heads.set(pr.url, { at: Date.now(), sha });
       if (sha && sha !== this.prSel.headSha) { this.prSel = { ...this.prSel, headSha: sha }; this.refresh(cx, true); }
-      cx.notify();
+      if (fresh || force) cx.notify();
     });
-    cx.notify();
+    if (force) cx.notify();
   },
   // The Overview's "GitHub read … ago ↻": how old the GitHub facts on this page are (CI checks, mergeability, related PRs),
   // and the way to fetch them again, instead of asking GitHub on a timer.
@@ -6085,6 +6227,24 @@ export const ReviewMode = {
     const label = busy ? "Reading GitHub…" : Date.now() - at < 60000 ? "GitHub read just now ↻" : `GitHub read ${ago(this.ctx.at)} ↻`; // it names what is as old as it says
     return fact("rv-ov-fresh", label, "When CI checks, mergeability and related PRs were read from GitHub. New commits and review comments are checked every 5 minutes while this window is in front. Click to read all of it again now.",
       busy ? null : (_e, cx) => { this.ghTick(cx, true); cx.stop_propagation(); });
+  },
+
+  // ---- "Open in <Editor>" in the review (editor-view.js; main.js checkoutRoot, editorForeign, openEditor)
+  // A file head's target: the file in the review's checkout at the topmost line of it the list shows (else its first
+  // changed line). Null without a checkout, for a file the PR deletes and for a symlink the PR adds or changes.
+  fileEditTarget(f) {
+    const root = this.checkoutRoot();
+    if (!root || f.status === "deleted" || patchSymlink(f.lines)) return null;
+    const seen = (this.items ?? []).slice(this.vis?.start ?? 0, this.vis?.end ?? 0).find((it) => it.t === "row" && it.path === f.path && it.src?.[it.ri]?.n);
+    const line = seen?.src[seen.ri].n ?? (this.shown().fileHunks?.get(f.path)?.[0]?.rows ?? []).find((r) => r.kind === "+" && r.n)?.n ?? null;
+    return { root, file: f.path, line, foreign: this.editorForeign(), where: "in the checkout of this PR" };
+  },
+  fileEditMark(f) { const target = this.edOn ? this.fileEditTarget(f) : null; return target ? editorMark(target, null) : null; },
+  // The monogram next to a place that jumps inside the mod ("file:line"): the same line in the person's editor.
+  // Nothing without a checkout or an editor.
+  editAt(t, id, at) {
+    const root = this.checkoutRoot(), place = placeOf(at);
+    return root && this.edOn && place ? editorLink(this, t, id, { root, ...place, foreign: this.editorForeign(), where: "in the checkout of this PR" }, null, true) : [];
   },
 
   // ---- fix worktrees left on disk (~/.herdr/worktrees/<repo>/fix-…): nothing removes them by age, because one may
@@ -6178,6 +6338,7 @@ function certaintyWord(t, f, id) {
   const reach = f?.certainty === "derived" && f.path_certainty === "assumed";
   return f?.security && CERT_TIP[f.certainty] ? div().id(id).tooltip(`${CERT_TIP[f.certainty]}${reach ? ". That an attacker gets there is assumed" : ""}`).flex_none().text_size(TYPE.small).text_color(t.muted).child(reach ? "assumed reachable" : certaintyText(f)) : null;
 }
+const HL_FRAME = 250; // ms between two frames asked for while the queue of files to color runs
 const HL_STALE = 2000; // ms a highlight slice may be busy before it counts as stopped (Herdr stops one after ~50 ms)
 // A row's sign (views.js signOf, signEl): the kind's glyph in the color of the highest severity behind the row, on
 // a filled ground when that is confirmed, in a dashed frame with "?" when it is only assumed. The column has one

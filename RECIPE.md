@@ -119,6 +119,13 @@ title bar (traffic lights at 12, 16):
   mode: one call ("Review diagrams") that redraws only the pictures for today's diff and merges them into the
   cached analysis. While it runs the button reads "Refreshing…". When it finishes, the pictures say "updated for
   <head>", or "diagrams from an older diff" when the head moved since.
+- **Infrastructure changes** (Architecture impact, only when the diff has Terraform or a CloudFormation/SAM template;
+  infra.js, no model and no `terraform` call): a card per resource that is added, changed, removed or may be replaced
+  (dashed; only for arguments known to force a new resource, such as `name` or `function_name`), with its changed
+  arguments, and an arrow to what it refers to. Unchanged resources show only when a reference connects them to a
+  changed one; a removed resource that is still referenced says so. A changed backend or provider stands above the
+  picture, changed variables, locals and outputs under it. A value whose name looks like a secret is never written
+  out. The line under the title says it is derived from the diff, not from a plan.
 - A layer can carry several `visuals`; more than two show as tabs. A `state_machine` is drawn top to bottom
   (arch.js stateLayout): a start dot, states by layer, an end ring. A choice forks into columns, and Parallel/Map
   branches sit side by side in their block. Transitions back go up a rounded return lane on the left. Self-loops
@@ -187,7 +194,8 @@ big PRs into cohort passes and a merge pass under one cap.
 - `mods/pr-review`: `main.js` (the panel; mixes in `review.js` for the layout parts and the `reviews` popup and
   `agentbar` window title), `pr.js` (pure: diff parsing, prompts, registry, triage, pre-merge checks),
   `arch.js` (pure: the diagram layout with lanes, ports, hops and badges), `stack.js` (diagram and card
-  drawing), `syntax.js` (highlighting), `defs.js` + `lsp_bridge.py` (go-to-definition through language
+  drawing), `infra.js` + `infra-view.js` (pure: resources and references read from Terraform and CloudFormation files
+  of both sides of the diff; and their part of the Architecture page), `syntax.js` (highlighting), `defs.js` + `lsp_bridge.py` (go-to-definition through language
   servers kept warm by one local bridge), `impact.js` + `impact-view.js` (the Impact picture: changed functions
   and their callers, from the bridge's `/symbols` and `/references`), `context.js` (optional contexts), `setup.js` + `setup-view.js`
   (Setup), and Python helpers: `prs.py` (PRs from Claude transcripts + `gh pr view`), `worktree.py` (a reusable

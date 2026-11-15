@@ -864,6 +864,6 @@ if __name__ == "__main__":
     try:
         main(sys.argv[1])
     except Exception as e:  # noqa: BLE001 - the panel shows the reason
-        merge(pathlib.Path(req["file"]), req["kind"], req["head"], None, {"state": "failed", "error": str(e)[:400], "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "head": req["head"], "allowed": allowed(req), **auto})
+        merge(pathlib.Path(req["file"]), req["kind"], req["head"], None, {"state": "failed", **llm.failed(e, 400), "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "head": req["head"], "allowed": allowed(req), **auto})
         print(str(e), file=sys.stderr)
         sys.exit(1)
