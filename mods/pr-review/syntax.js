@@ -111,8 +111,19 @@ const isIdStart = (c) => (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 
 const pascal = (w) => /^[A-Z][A-Z0-9]*[a-z]/.test(w);
 const allCaps = (w) => w.length > 1 && /^[A-Z][A-Z0-9_]*$/.test(w);
 
-/** One line -> {spans, state}. `state` is null at the start of a file (or after a gap). */
+// Every scanner's loop starts a pass with `i = forward(i, at); at = i;`: a pass that did not move on (a pattern that
+// matched nothing and left the position where it was, or put it back to the start of the line) takes one character as
+// plain text and goes on. So a line of n characters takes at most n passes, whatever a branch does wrong, and no line
+// can keep its slice for ever (Herdr stops such a slice, and the file's colors with it).
+export const forward = (i, at) => (i > at ? i : at + 1);
+
+/** One line -> {spans, state}. `state` is null at the start of a file (or after a gap). A scanner that throws leaves
+ *  its line plain and starts the next one afresh, instead of taking the file's colors with it. */
 export function tokenize(line, lang, state = null) {
+  try { return tokenizeStrict(line, lang, state); } catch { return { spans: [], state: null }; }
+}
+/** As tokenize, but a scanner's exception comes through: how the tests get to see one. */
+export function tokenizeStrict(line, lang, state = null) {
   if (lang === "markdown") return markdown(line, state);
   if (lang === "dockerfile") return dockerfile(line, state);
   if (lang === "shell") return shell(line, state, 0, []);
@@ -153,7 +164,9 @@ function scan(line, spec, state, from, spans) {
     }
   }
   let prevWord = "", prevChar = 0;
-  while (i < n) {
+  for (let at = i - 1; i < n;) {
+    i = forward(i, at); at = i;
+    if (i >= n) break;
     const c = line.charCodeAt(i);
     if (isSpace(c)) { i++; continue; }
     const ch = line[i];
@@ -276,7 +289,9 @@ function shell(line, state, from, spans) {
   // names a function ("f") or a loop variable ("v"). wantIn: a "for" or "case" waits for its "in". pattern: a case
   // pattern may start here.
   let first = !state?.k, again = -1, decl = false, name = "", wantIn = "", pattern = open.length === 0 && first;
-  while (i < n) {
+  for (let at = i - 1; i < n;) {
+    i = forward(i, at); at = i;
+    if (i >= n) break;
     const top = open.length ? open[open.length - 1] : "", c = line.charCodeAt(i);
     if (top === "'" || top === "$") { // a quote from an earlier line
       let j = i;
@@ -472,7 +487,7 @@ function makeText(line, a, b, out, base) {
   let at = a;
   for (let j = line.indexOf("$", a); j >= 0 && j < b; j = line.indexOf("$", j)) {
     const tmp = [], end = makeRef(line, j, b, tmp, false);
-    if (end === j) { j++; continue; }
+    if (end <= j) { j++; continue; }
     if (base && j > at) out.push({ start: at, end: j, kind: base });
     for (const s of tmp) out.push(s);
     at = j = end;
@@ -483,7 +498,7 @@ const makeRefs = (line, from, own) => {
   const ranges = [];
   for (let j = line.indexOf("$", from); j >= 0; j = line.indexOf("$", j)) {
     const end = makeRef(line, j, line.length, own, true);
-    if (end === j) j++; else { ranges.push([j, end]); j = line.charCodeAt(j + 1) === 36 ? j + 2 : end; } // "$$": the second "$" is the shell's
+    if (end <= j) j++; else { ranges.push([j, end]); j = line.charCodeAt(j + 1) === 36 ? j + 2 : end; } // "$$": the second "$" is the shell's
   }
   return ranges;
 };
@@ -578,7 +593,9 @@ const GHA_CTX = words("github env vars job jobs steps runner secrets strategy ma
 const GHA_ID = /[A-Za-z_][\w-]*/y, GHA_OP = /[=!<>]=|&&|\|\||[!<>]/y;
 // A GitHub Actions expression from a to b: contexts (github, secrets, matrix), functions, strings, numbers, operators.
 function ghaExpr(line, a, b, out) {
-  for (let i = a; i < b;) {
+  for (let i = a, at = a - 1; i < b;) {
+    i = forward(i, at); at = i;
+    if (i >= b) break;
     const c = line.charCodeAt(i);
     if (c === 39) { let j = i + 1; while (j < b && (line.charCodeAt(j) !== 39 || line.charCodeAt(++j) === 39)) j++; out.push({ start: i, end: Math.min(j, b), kind: "string" }); i = Math.min(j, b); continue; }
     if (isDigit(c)) { let j = i; while (j < b && (isDigit(line.charCodeAt(j)) || line.charCodeAt(j) === 46)) j++; out.push({ start: i, end: j, kind: "number" }); i = j; continue; }
@@ -642,7 +659,9 @@ function yaml(line, state, flavor) {
   // What follows a key or a "- ": scalars, quotes, anchors, tags, a flow collection, a comment. Returns the state.
   const value = (from) => {
     let depth = 0;
-    for (let j = from; j < n;) {
+    for (let j = from, at = from - 1; j < n;) {
+      j = forward(j, at); at = j;
+      if (j >= n) break;
       const c = line.charCodeAt(j);
       if (isSpace(c)) { j++; continue; }
       if (c === 35 && (j === 0 || isSpace(line.charCodeAt(j - 1)))) { push(j, n, "comment"); return null; }
@@ -769,7 +788,9 @@ function toml(line, state) {
     while (i < n && isSpace(line.charCodeAt(i))) i++;
     if (line.charCodeAt(i) === 91) { const e = line.lastIndexOf("]", line.includes("#") ? line.indexOf("#") : n); if (e > i) { push(i, e + 1, "type"); i = e + 1; } } // [table], [[array]]
   }
-  while (i < n) {
+  for (let at = i - 1; i < n;) {
+    i = forward(i, at); at = i;
+    if (i >= n) break;
     const c = line.charCodeAt(i);
     if (isSpace(c)) { i++; continue; }
     if (c === 35) { push(i, n, "comment"); break; }
@@ -857,6 +878,7 @@ const INLINE = /(`+)(.+?)\1|!?\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)|\[([^\]]+
 function inline(line, from, spans) {
   INLINE.lastIndex = from;
   for (let m; (m = INLINE.exec(line));) {
+    if (!m[0]) { INLINE.lastIndex++; continue; } // an empty match would be found again at the same place
     const s = m.index, e = s + m[0].length;
     if (m[1]) spans.push({ start: s, end: e, kind: "string" });
     else if (m[4] !== undefined) {

@@ -730,7 +730,14 @@ function* layoutSteps(arch, view, extra, fit, opts) {
 // over the picture (in the window about 10 ms for 55 lines and 30 ms for 119, where archLayout would by that factor
 // take 150 ms and 800 ms): more crossings, but every card and line is there. The search (layoutJob) starts from archLayout's picture
 // either way and replaces the rough one when it is through (after about 0.7 s and 1.8 s for those two).
+// A layout's width with the other card size (fit: the narrow cards): the columns, lanes and texts are the same, only
+// each column's cards are wider or narrower. from, to: the layout's own Fit and the one asked for.
+export const widthAt = (L, from, to) => L.width + (from === to ? 0 : (to ? -1 : 1) * (Math.max(-1, ...L.nodes.map((n) => n.col)) + 1) * (ARCH.W - FIT.W));
 export const QUICK_LINES = 16;
+// Past FRAME_LINES calls even the rough pass is too much to add to a frame (in the window it took about 10 ms for 55
+// lines and 30 ms for 119, on a machine that was not busy; a frame of a big review takes 25 to 45 ms without it): a
+// view that can draw its page without the picture for a moment lays such a map out after the frame (stack.js laidOut).
+export const FRAME_LINES = 40;
 export const archQuick = (arch, view = "diff", extra = () => 0, fit = false, opts = {}) => archLayout(arch, view, extra, fit, (arch?.edges?.length ?? 0) > QUICK_LINES ? { ...opts, rough: true } : opts);
 
 // The search for a better layout than archLayout's as a job that keeps its place (like syntax.js highlightJob and

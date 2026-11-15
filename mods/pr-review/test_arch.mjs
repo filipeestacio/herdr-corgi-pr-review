@@ -1,7 +1,7 @@
 // Run: node test_arch.mjs  (the architecture / blast radius layout: columns, lanes, ports, fans, stubs, hops, badges,
 // card sizes, focus, orchestrator states)
 import assert from "node:assert/strict";
-import { archLayout, archBands, archFocus, archMarks, pathMark, labelLines, zoneArch, stateLayout, sourceStyle, hasSources, crossings, lineStats, layoutJob, layoutStep, archBest, archQuick, QUICK_LINES, clampText, wrapLines, bundleChips, markRoom, MARK_CARD_H, ARCH, LABEL } from "./arch.js";
+import { archLayout, archBands, archFocus, archMarks, pathMark, labelLines, zoneArch, stateLayout, sourceStyle, hasSources, crossings, lineStats, layoutJob, layoutStep, archBest, archQuick, QUICK_LINES, widthAt, clampText, wrapLines, bundleChips, markRoom, MARK_CARD_H, ARCH, LABEL } from "./arch.js";
 import { overlapsOf, transitionLabel, SM } from "./arch.js";
 import { blastArch } from "./pr.js";
 
@@ -816,6 +816,8 @@ console.log("ok");
     // Each map as a render gets it at once, and after its search.
     const m = mapArch(a, ai.access, ai.bypasses), maps = { sec: [archLayout(...secArgs), sec], wide: [false].flatMap((fit) => [archLayout(m, "diff", () => 0, fit, { labels: true }), archBest(m, "diff", () => 0, fit, { labels: true })]),
       fit: [true].flatMap((fit) => [archLayout(m, "diff", () => 0, fit, { labels: true }), archBest(m, "diff", () => 0, fit, { labels: true })]) };
+    // The width with the other card size follows from either layout: the review lays out only the one it shows.
+    assert.deepEqual([widthAt(maps.fit[0], true, false), widthAt(maps.wide[0], false, true), widthAt(maps.fit[0], true, true)], [maps.wide[0].width, maps.fit[0].width, maps.fit[0].width]);
     for (const [k, Ls] of Object.entries(maps)) for (const L of Ls) {
       const s = lineStats(L), now = [s.crossings + s.overlaps, s.bends, s.length, s.around];
       now.forEach((v, i) => assert.ok(v <= was[k][i], `${k}: ${now} was ${was[k]}`));
@@ -852,7 +854,8 @@ console.log("ok");
       assert.ok(tangle(best) <= tangle(still), `${tangle(best)} was ${tangle(still)}`);
       assert.equal(best.hops.length, lineStats(best).crossings, "every crossing that stays has its hop");
       assert.ok(job.n > 100 * (2 + Math.floor(400 / best.paths.length)), `${job.n} steps in ${slices} slices: no step is a whole layout`);
-      if (frames === 6) assert.deepEqual(archBest(...args), best, "in one go: the same layout");
+      assert.deepEqual(archBest(...args), best, "in one go: the same layout");
+      assert.equal(widthAt(best, true, false), archQuick(arch, "diff", () => 0, false, opts).width, "the width with the usual cards, without laying them out");
       // What a render gets for it at once (archQuick, past QUICK_LINES calls): the rough pass, with every card and line
       // there, no card on another, each crossing with its hop; the search's layout replaces it.
       const rough = archQuick(...args), boxes = rough.nodes.map((n) => ({ x: n.x, y: n.y, w: n.w, h: n.h }));
