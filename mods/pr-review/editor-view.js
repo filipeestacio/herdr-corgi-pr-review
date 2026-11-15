@@ -6,8 +6,10 @@ import { h_flex } from "gpui-base";
 import { exec, shared, setShared, readTextFile, openOverlay, home, notify } from "herdr";
 import * as E from "./editor.js";
 import { TYPE } from "./views.js";
+import { readConfig } from "./setup-view.js";
 
-const KEY = "pr-review.editors", DAY = 86400000, CHOICE = "editor.choice", OPENING_MS = 3000;
+const KEY = "pr-review.editors", DAY = 86400000, NONE_MS = 10 * 60000, CHOICE = "editor.choice", OPENING_MS = 3000;
+let dryRuns = []; // what the clicks of a dry run would have started (pr-review.config.json "dryRun": true), newest last
 let known = null, looking = null, asked = false, extra = []; // {at, found}; the lookup under way; one was queued; the settings' own editors
 const roots = new Map(); // checkout root → {marks, common, linked}: its project marks and its `.git` (file reads, once per root)
 const opening = new Map(); // a target's key → until when its link says "Opening …" and takes no click
@@ -17,19 +19,21 @@ const os = () => shared("pr-review.setup")?.os ?? "darwin";
 
 export const setEditors = (list) => { extra = E.extraEditors(list); }; // pr-review.config.json "editors"
 const stored = () => { if (!known) { try { known = JSON.parse(store()?.getItem(KEY) ?? "null"); } catch { known = null; } } return known; };
-export const forgetEditors = () => { known = null; looking = null; asked = false; roots.clear(); reads.clear(); opening.clear(); extra = []; try { store()?.removeItem(KEY); } catch { /* none */ } }; // tests
+export const dryOpened = () => dryRuns;
+export const forgetEditors = () => { known = null; looking = null; asked = false; roots.clear(); reads.clear(); opening.clear(); extra = []; dryRuns = []; try { store()?.removeItem(KEY); } catch { /* none */ } }; // tests
 
 // Finds the installed editors by reading the files that say so (editor.js candidates): no process. Within a day the
 // remembered answer is taken (force: the menu's "Look again", and after an editor could not be started).
+// "None found" may be a bad moment (the system not known yet at start): it holds for ten minutes and is not stored.
 export function lookForEditors(force = false) {
-  const s = stored();
-  if (!force && s && Date.now() - s.at < DAY) return Promise.resolve(s.found);
+  const s = stored(), none = s && !Object.keys(s.found ?? {}).length;
+  if (!force && s && Date.now() - s.at < (none ? NONE_MS : DAY)) return Promise.resolve(s.found);
   return (looking ??= (async () => {
     const cands = E.candidates(home(), os()), present = await Promise.all(cands.map((c) => readTextFile(c.path).then((x) => x !== null).catch(() => false)));
-    known = { at: Date.now(), found: E.foundFrom(cands, present) }; looking = null;
-    try { store()?.setItem(KEY, JSON.stringify(known)); } catch { /* kept in memory */ }
+    known = { at: Date.now(), found: E.foundFrom(cands, present) };
+    try { if (Object.keys(known.found).length) store()?.setItem(KEY, JSON.stringify(known)); else store()?.removeItem(KEY); } catch { /* kept in memory */ }
     return known.found;
-  })());
+  })().finally(() => { looking = null; })); // also after a failure: the next ask looks again
 }
 
 // A redraw once something read in the background is there. Herdr's cx is valid only inside the call that got it: the
@@ -82,8 +86,12 @@ export async function openIn(target, id = null) {
   const found = await lookForEditors();
   await rootRead(target.root); // a folder no link has shown yet: its kind of project and its `.git` first, then the editor
   const use = id ?? editorFor(target, null)?.id;
-  const argv = use ? E.openArgv(use, found[use], target.file ? { file: E.safeFile(target.root, target.file), line: target.line ?? null } : { dir: target.root }, extra) : null;
+  // The settings are read before anything starts (also for a click that comes before the mod's own read of them):
+  // with "dryRun": true nothing leaves the mod, so no editor is started; what would have run is kept (dryOpened).
+  const cfg = await readConfig(), more = cfg.editors ? E.extraEditors(cfg.editors) : extra;
+  const argv = use ? E.openArgv(use, found[use], target.file ? { file: E.safeFile(target.root, target.file), line: target.line ?? null } : { dir: target.root }, more) : null;
   if (!argv) return "No editor to open this in was found.";
+  if (cfg.dryRun === true) { dryRuns = [...dryRuns.slice(-19), { at: Date.now(), argv: [argv[0], ...argv[1]] }]; notify({ title: "Dry run: no editor started", body: [argv[0], ...argv[1]].join(" "), level: "info" }); return null; }
   const r = await exec(argv[0], argv[1], { timeout: 20000 }).catch((e) => ({ code: 1, stderr: String(e) }));
   if (r.code === 0) return null;
   known = null; try { store()?.removeItem(KEY); } catch { /* none */ } // it may be gone: look again the next time

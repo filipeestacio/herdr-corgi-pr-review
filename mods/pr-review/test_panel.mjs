@@ -570,6 +570,24 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
     v.editorTarget = { root: "/wt2" }; S.files.set("/wt2/.git", "gitdir: /clones/z/.git/worktrees/w\n"); v.panelCommand("editor-use:idea", cx); await settle(); await settle();
     assert.deepEqual(S.store.get("editor.choice")?.repos, { "/clones/z/.git": { worktree: "idea" } }, "and a pick for a folder not shown yet lands under its project, as a worktree's");
   }
+  // "dryRun": true in the mod's settings (every test home has it): a click starts nothing and keeps what it would
+  // have run, also when it comes before the mod read its settings.
+  {
+    EV.forgetEditors(); S.files.set("/h/pr-review.config.json", JSON.stringify({ dryRun: true })); S.toasts.length = 0;
+    timers.length = 0; runs.length = 0; v.panelCommand("editor:build.gradle:4", cx); await settle(); await settle();
+    assert.deepEqual([opens(), EV.dryOpened().map((d) => d.argv), S.toasts.map((t) => t.level)], [[], [["open", `idea://open?file=${encodeURIComponent("/gradle/build.gradle")}&line=4`]], ["info"]], "no process; the arguments are kept and said");
+    S.files.delete("/h/pr-review.config.json");
+  }
+  // "None found" is not kept for a day: it may have been a bad moment. Ten minutes later the files are read again;
+  // a lookup that failed does not block the next one.
+  {
+    EV.forgetEditors(); for (const app of [VS, IJ]) S.files.delete(`${app}/Contents/Info.plist`);
+    assert.deepEqual(await EV.lookForEditors(), {}); S.files.set(`${VS}/Contents/Info.plist`, "<plist/>");
+    assert.deepEqual(await EV.lookForEditors(), {}, "within ten minutes: the answer from before");
+    const real = Date.now; Date.now = () => real() + 11 * 60000;
+    try { assert.deepEqual(Object.keys(await EV.lookForEditors()), ["vscode"], "after ten minutes: looked again, and found"); } finally { Date.now = real; }
+    for (const app of [VS, IJ]) S.files.set(`${app}/Contents/Info.plist`, "<plist/>");
+  }
   // No editor installed: no link anywhere.
   EV.forgetEditors(); for (const app of [VS, IJ]) S.files.delete(`${app}/Contents/Info.plist`);
   EV.editorFor({ root: "/co/r" }, cx); await flush(); await flush();

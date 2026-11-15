@@ -166,7 +166,8 @@ folder goes by the kind of project. The ▾ next to the link picks another edito
 shared with the other Corgi mods. For a PR from someone else that you have not trusted, only single files are
 opened, never the folder and never a build or workspace file, because an editor can run a project's code when it
 opens those. More editors: `"editors": [{"id", "name", "folder": [argv…], "file": [argv…]}]` in
-`pr-review.config.json`, with `{dir}`, `{file}` and `{line}`.
+`pr-review.config.json`, with `{dir}`, `{file}` and `{line}`. With `"dryRun": true` no editor is started either: the
+click says what it would have run.
 
 Language servers are optional. Each turns on go-to-definition, hover and the Architecture page's Impact picture
 (who calls what the PR changes) for its language. Without one, those three are off for that language and nothing
