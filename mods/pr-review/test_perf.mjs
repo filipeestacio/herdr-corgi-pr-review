@@ -4,7 +4,7 @@
 // it so must give what a fresh computation gives after everything that changes their inputs. Counts, not times: the
 // one time check is generous and takes the best of three. perf_bench.mjs prints the numbers.)
 import assert from "node:assert/strict";
-import { hasFixtures, openReview, PR2, BIG, STATES, measure, counted, frame, later, settled, quiet, cx, settle } from "./perf_bench.mjs";
+import { hasFixtures, openReview, PR2, BIG, STATES, measure, counted, frame, later, settled, quiet, cx, settle, N } from "./perf_bench.mjs";
 import { S } from "./render_stub.mjs";
 
 if (!hasFixtures) {
@@ -92,6 +92,22 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   globalThis.window.is_window_active = () => true;
   v.fixCostTick(cx); await settle();
   assert.equal(execs, 1, "in front, a running fix's log is looked for");
+  // The job's agent is gone (no terminal of that name): read that once, then never again; alive again, read again.
+  v.fixCostTick(cx); await settle(); v.fixCostTick(cx); await settle();
+  assert.equal(execs, 1, "a job whose agent ended is not asked about every 20 s");
+  v.threadDoc = { ...v.threadDoc, [key]: { ...v.threadDoc[key], fixes: [{ ...v.threadDoc[key].fixes[0], terminal: "t9" }] } }; S.terminals = [{ address: "t9", state: "live" }];
+  v.fixCostTick(cx); await settle(); v.fixCostTick(cx); await settle();
+  assert.equal(execs, 3, "a job whose agent's terminal is live is asked about on every tick");
+  S.terminals = null; v.fixCostTick(cx); await settle(); v.fixCostTick(cx); await settle();
+  assert.equal(execs, 4, "and once more after it ended");
+  // GitHub's poll and the threads' files: a frame only for something new.
+  const comment = JSON.stringify({ id: 1, path: "library/loans.py", line: 3, side: "RIGHT", user: "anna", user_type: "User", body: "Why?", at: "2026-11-15T10:00:00Z" });
+  S.exec = async (cmd, args) => (args.includes("graphql") ? { code: 0, stdout: "", stderr: "" } : args.some((a) => /pulls\/2\/comments/.test(String(a))) ? { code: 0, stdout: comment, stderr: "" } : { code: 1, stdout: "", stderr: "stub" });
+  v.cfg = { ...v.cfg, dryRun: false };
+  const polled = async () => { v.ghPoll = null; v.ghIn = null; const n0 = N.notify; v.ghTick(cx); await settle(); return N.notify - n0; };
+  assert.ok((await polled()) > 0 && v.gh.length === 1, "a new comment from GitHub is drawn");
+  const list = v.gh;
+  assert.deepEqual([await polled(), v.gh === list], [0, true], "the same comments again: no frame, and the list stays the one it was");
   globalThis.window.is_window_active = active; S.exec = null;
 }
 

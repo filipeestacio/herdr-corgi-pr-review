@@ -1146,8 +1146,14 @@ export const ReviewMode = {
   // Every 20 s while a sub-agent fix runs: its cost so far from its session log (views.js sessionCost) in the context's
   // config folder, the newest log there written since the job started (an earlier fix in the same folder has its own).
   fixCostTick(cx) {
-    const running = this.prSel ? this.fixes().filter((j) => j.state === "running" && j.target === "sub" && j.path) : [];
-    if (!running.length || this.fixCostBusy || !windowActive()) return; // nobody reads the cost behind another window; a job left "running" would list and read logs every 20 s for good
+    // A job stays "running" until it is applied or discarded, also long after its agent ended: its cost is read once
+    // more after the agent's terminal is gone (as fixView looks for it), then it is left alone (it listed and read
+    // session logs every 20 s for as long as the review was open). Nobody reads the cost behind another window either.
+    const done = (this.fixCostDone ??= new Set());
+    const live = (j) => Boolean(j.terminal) && (agents().some((a) => a.address === j.terminal) || terminals().some((x) => x.address === j.terminal && x.state === "live"));
+    const running = this.prSel && windowActive() ? this.fixes().filter((j) => j.state === "running" && j.target === "sub" && j.path && (live(j) ? (done.delete(j.id), true) : !done.has(j.id))) : [];
+    if (!running.length || this.fixCostBusy) return;
+    for (const j of running) if (!live(j)) done.add(j.id);
     const cfg = String(C.infoOf(ctxDoc(), this.ctxId()).env?.CLAUDE_CONFIG_DIR ?? `${home()}/.claude`).replace(/^~(?=\/|$)/, home());
     this.fixCostBusy = true;
     cx.spawn(async (cx) => {
@@ -1988,6 +1994,10 @@ export const ReviewMode = {
     if (!key) return;
     const [doc, rep] = await Promise.all([readTextFile(threadsFile()).catch(() => null), readTextFile(this.repliesFile()).catch(() => null)]);
     if (this.threadKey() !== key) return;
+    // The same two texts as read last for this PR: nothing to parse and no frame (the watch on the replies folder and
+    // every GitHub poll come through here).
+    if (this.threadsRead?.key === key && this.threadsRead.doc === doc && this.threadsRead.rep === rep) return;
+    this.threadsRead = { key, doc, rep };
     this.threadDoc = doc ? JSON.parse(doc) : {}; this.replies = TH.parseReplies(rep);
     cx.notify();
   },
@@ -6077,13 +6087,16 @@ export const ReviewMode = {
       this.ghBusy = false;
       this.ghPoll = pollAfter(this.ghPoll, gh !== false && (sha !== null || !pr.url.startsWith("https://")), Date.now());
       if (this.prSel?.url !== pr.url) return;
-      if (gh) this.gh = gh;
+      // A frame only for something new (a frame of the review redraws the whole window): the same comments again
+      // keep the list they are in, and loadThreads draws when its files changed.
+      const fresh = Boolean(gh) && JSON.stringify(gh) !== JSON.stringify(this.gh);
+      if (fresh) this.gh = gh;
       await this.loadThreads(cx);
       if (sha && !known) this.heads.set(pr.url, { at: Date.now(), sha });
       if (sha && sha !== this.prSel.headSha) { this.prSel = { ...this.prSel, headSha: sha }; this.refresh(cx, true); }
-      cx.notify();
+      if (fresh || force) cx.notify();
     });
-    cx.notify();
+    if (force) cx.notify();
   },
   // The Overview's "GitHub read … ago ↻": how old the GitHub facts on this page are (CI checks, mergeability, related PRs),
   // and the way to fetch them again, instead of asking GitHub on a timer.
