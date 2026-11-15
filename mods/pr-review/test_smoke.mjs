@@ -16,7 +16,7 @@ if (!existsSync(FIXTURES)) {
 }
 
 const { default: PrReview } = await import("./main.js");
-const { splitPatch, hunksOf, diffRows, hash, mapReview, lineKey } = await import("./pr.js");
+const { splitPatch, hunksOf, diffRows, hash, mapReview, lineKey, reviewRequest } = await import("./pr.js");
 const { langOf } = await import("./syntax.js");
 const { foldOnOpen, resWatch } = await import("./views.js");
 const R = await import("./review.js");
@@ -104,6 +104,10 @@ async function open({ diff, analysis = null, findings = null, ctx = null, pr = 2
   v.ctx = ctx ? JSON.parse(ctx) : null; v.head = v.ctx?.head ?? null;
   await v.loadFindings(cx);
   if (analysis) v.ai = v.mapSaved(JSON.parse(analysis), true);
+  // The analysis also where the first frame asks for it (renderReview: loadAi reads the picked model's cached one,
+  // the exact file and the newest). Without the files that read took the analysis away at the first settle(), and
+  // what a tour draws after it (the previews, the popups, the card menus, Ask and Look inside) had none.
+  if (analysis) { const job = reviewRequest({ url, pr: url, worktree: null, files: v.patch, hunks: v.hunks, model: "sonnet", context: v.ctxReq(), dir: "/h/pr-data/cache" }); S.files.set(job.out, analysis); S.files.set(job.latest, analysis); }
   v.securityNow(cx); v.publish();
   await settle();
   return v;
@@ -111,7 +115,7 @@ async function open({ diff, analysis = null, findings = null, ctx = null, pr = 2
 
 // Everything one review shows.
 async function tour(v, name) {
-  const at = (x) => `${name}: ${x}`;
+  const at = (x) => `${name}: ${x}`, had = Boolean(v.ai);
   for (const tab of ["files", "steps", "comments", "findings"]) act(v, tab, at(`tab ${tab}`));
   // Syntax colors: once the queue is drained, a line of code that starts with a keyword has spans. It keeps them with a
   // line selected (the row arrays stay the same ones), with line wrap on, and gets them again with the whole file
@@ -274,6 +278,7 @@ async function tour(v, name) {
   }
   await deep(v, at);
   await settle();
+  assert.equal(Boolean(v.ai), had, at("the analysis is there to the tour's end (or was never there)"));
 }
 
 const PR2 = { diff: fx("pr2.diff"), ctx: fx("ctx.json"), impact: fx("impact.json") };
