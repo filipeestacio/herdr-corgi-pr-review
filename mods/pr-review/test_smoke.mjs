@@ -86,6 +86,7 @@ async function open({ diff, analysis = null, findings = null, ctx = null, pr = 2
   if (findings) S.files.set(`/h/pr-data/findings/${hash(url)}.json`, findings);
   const v = new PrReview(); v.init({}, cx);
   v.prSel = target; v.patch = splitPatch(diff);
+  await v.applyResume(cx); assert.equal(v.resumed, url, "where you were is read: frames are no longer held");
   v.hunks = hunksOf(v.patch).map((h) => ({ ...h, rows: diffRows(h.lines) }));
   v.byId = new Map(v.hunks.map((h) => [h.id, h])); v.fileHunks = new Map();
   for (const h of v.hunks) v.fileHunks.set(h.path, [...(v.fileHunks.get(h.path) ?? []), h]);

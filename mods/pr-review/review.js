@@ -545,6 +545,7 @@ export const ReviewMode = {
     this.composing = false; this.editing = null; this.finishOpen = false; this.posted = null; this.gh = []; this.route = null; this.event = null;
     this.full = {}; this.gaps = {}; this.whole = new Set(); this.collapsed = new Set(); this.hunks = null;
     this.ctx = null; this.since = null; this.sinceOn = false; this.lastReviewed = null; this.page = "overview"; this.aiFile = null; this.needClone = null;
+    this.resumed = null; this.resumeIn = null; this.pendingScroll = null;
   },
 
   // A new diff: its hunks, progress and the cached analysis, if any.
@@ -562,21 +563,19 @@ export const ReviewMode = {
       if (hs.length) fileHunks.set(f.path, hs);
       if (Date.now() - t > 12) { await new Promise((r) => cx.timer.after(0, r)); t = Date.now(); if (this.patch !== patch) return; }
     }
+    // Progress, folds and where you were before the list exists: the first frame with the diff has the viewed files
+    // folded and stands where you left (it used to come after the threads were read, half a second of the top of Files).
+    const p = await this.resumeOf(url);
+    this.resumeIn = null; // a later load (a new head) reads what was saved since
+    if (this.patch !== patch) return;
+    this.prog = { visited: new Set(p.visited ?? []), checked: p.checked ?? {}, handled: p.handled ?? {}, seen: new Set(p.seen ?? []) };
+    this.collapsed = new Set([...this.prog.seen, ...foldOnOpen(this.patch)]);
+    this.takeResume(url, p);
     this.hunks = hunks; this.fileHunks = fileHunks;
     this.byId = new Map(this.hunks.map((h) => [h.id, h]));
     this.diffLines = diffLines(this.hunks);
     this.loadGhComments(cx);
     await this.loadThreads(cx);
-    const p = JSON.parse(await readTextFile(progressFile()).catch(() => null) ?? "{}")[url] ?? {};
-    this.prog = { visited: new Set(p.visited ?? []), checked: p.checked ?? {}, handled: p.handled ?? {}, seen: new Set(p.seen ?? []) };
-    this.collapsed = new Set([...this.prog.seen, ...foldOnOpen(this.patch)]);
-    const back = resumeFields(p.ui);
-    if (back) { // resume: where you were
-      Object.assign(this, back.fields);
-      if (back.model && codeModel(back.model) !== shared("review.model")) setShared("review.model", codeModel(back.model));
-      if (back.values !== undefined && back.values !== valuesOn()) setShared("review.values", back.values);
-      this.pendingScroll = back.scroll;
-    }
     this.uiSaved = JSON.stringify(this.uiState());
     this.head = this.prSel.headSha ?? null; // from prs.json (prs.py) or the branch's gh pr view; else asked when a file is opened
     // Since your last review: the mark before this visit (registerReview moves it to this head as "seen" afterwards).
@@ -711,6 +710,30 @@ export const ReviewMode = {
       exec("python3", [`${appHome()}/mods/pr-review/prs.py`, "--prune"]).catch(() => null); // bounds the cache folder
       this.publish(); cx.notify();
     });
+  },
+
+  // Where you were in this PR's review (review-progress.json), read once as soon as the PR is known: render holds its
+  // frame for that read (a few ms), so the first frame drawn is on the tab and page you left, and the list scrolls to
+  // your place in the frame it first appears (pendingScroll). Taken once per PR: a later load keeps what you did since.
+  resumeOf(url) {
+    if (this.resumeIn?.url !== url) this.resumeIn = { url, p: readTextFile(progressFile()).then((x) => JSON.parse(x ?? "{}")[url] ?? {}).catch(() => ({})) };
+    return this.resumeIn.p;
+  },
+  takeResume(url, p) {
+    if (this.prSel?.url !== url || this.resumed === url) return;
+    this.resumed = url;
+    const back = resumeFields(p.ui);
+    if (!back) return;
+    Object.assign(this, back.fields);
+    if (back.model && codeModel(back.model) !== shared("review.model")) setShared("review.model", codeModel(back.model));
+    if (back.values !== undefined && back.values !== valuesOn()) setShared("review.values", back.values);
+    this.pendingScroll = back.scroll;
+  },
+  async applyResume(cx) {
+    const url = this.prSel?.url;
+    if (!url || this.resumed === url) return;
+    this.takeResume(url, await this.resumeOf(url));
+    cx.notify();
   },
 
   // Progress and where you were (tab, file, hunk, step, order, selection, model, values) for resuming; the oldest
@@ -5148,6 +5171,11 @@ export const ReviewMode = {
         .child(div().child(other ? `This PR belongs to ${C.nameOf(ctxDoc(), prCtx(target))}, which the current view hides.`
           : 'No PR selected: click "Review" on a PR in the PR panel.'))
         .child(pill("rv-empty-back", t, "← Back (Esc)", () => leave()).tooltip("Leave the review (Esc)"));
+    }
+    // Where you were is not read yet (applyResume): hold the frame, so the first one drawn stands there.
+    if (this.resumed !== this.prSel?.url) {
+      if (!this.resumeQueued) { this.resumeQueued = true; cx.timer.after(0, (cx) => { this.resumeQueued = false; this.applyResume(cx); }); }
+      return root;
     }
     // A page (Overview, Architecture…) or a definition covers the list: skip building it (a big PR's diff is the bulk
     // of a render, and a picture's sideways scroll renders per wheel event); this.items/at/byKey keep the last list.

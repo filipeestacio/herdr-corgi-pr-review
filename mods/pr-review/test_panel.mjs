@@ -152,4 +152,25 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   const w = new PrReview(); w.init({}, cx); await flush();
   assert.equal(w.prSel?.url, x.url, "and again after the next remount");
 }
+
+// ---- resuming a review: the first frame drawn stands on the tab and page you left, the list scrolls there when it comes
+{
+  const { splitPatch } = await import("./pr.js");
+  const target = { url: "https://github.com/o/r/pull/3", repo: "o/r", number: 3, title: "t", headSha: "abc", base: "main" };
+  const diff = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1,2 +1,2 @@\n def a():\n-    return 1\n+    return 2\ndiff --git a/b.py b/b.py\n--- a/b.py\n+++ b/b.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n";
+  S.files.set("/h/pr-data/review-progress.json", JSON.stringify({ [target.url]: { seen: ["a.py"], ui: { tab: "steps", page: null, fileFocus: "b.py", cur: 1, order: "reading" } } }));
+  Map.prototype.set.call(S.store, "review.target", target); S.props = { part: "review" };
+  S.exec = async (cmd, args) => (cmd === "gh" && args[1] === "diff" ? { code: 0, stdout: diff, stderr: "" } : { code: 1, stdout: "", stderr: "stub" });
+  const seen = []; // what each frame would show: held frames draw nothing of the review
+  const v = new PrReview(); v.init({}, cx);
+  for (let k = 0; k < 40 && !(v.hunks && v.resumed); k++) { v.render(cx); seen.push(v.resumed === target.url ? [v.tab, v.order, Boolean(v.hunks)] : "held"); for (const fn of timers.splice(0)) fn(cx); await new Promise((r) => setImmediate(r)); }
+  assert.ok(seen.includes("held") || seen.length, "frames are held until the place is read");
+  assert.deepEqual(seen.filter((x) => x !== "held").map((x) => `${x[0]}/${x[1]}`).filter((x) => x !== "steps/reading"), [], "no frame on another tab or order than the one you left");
+  await flush(); v.patch ??= splitPatch(diff);
+  assert.deepEqual([v.tab, v.order, v.resumed, [...v.collapsed].includes("a.py")], ["steps", "reading", target.url, true], "the tab, the order and the folded viewed file are back");
+  // What you did since stays when the diff loads again (a new head).
+  v.tab = "files"; await v.onSource(cx);
+  assert.equal(v.tab, "files", "a later load does not put the old place back");
+  S.exec = null; S.props = {};
+}
 console.log("panel ok");
