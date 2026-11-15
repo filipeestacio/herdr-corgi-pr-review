@@ -1517,3 +1517,7 @@ export function leftNow(before, left) {
   const moved = (left ?? []).filter((r) => before?.has(r.url));
   return moved.length ? moved.map((r) => `#${r.number} left In progress: its PR was ${r.state}.`).join(" ") : null;
 }
+
+// The review's own risk signal from its finding counts (pr.js findingCounts: unresolved ones by severity, security by
+// cause), in riskSignal's shape. It goes into the registry entry, so the minimized chip shows the mark the review shows.
+export const riskOfCounts = (c) => ({ top: c?.high ? "high" : c?.medium ? "medium" : c?.low ? "low" : null, open: c?.unresolved ?? 0, security: Boolean(c?.security) });

@@ -151,6 +151,23 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   assert.deepEqual([v.prSel?.url, S.store.get("pr.fromReview"), S.store.get("pr.selected")["all@s1"]], [x.url, null, x.url], "the panel shows the review's PR and remembers it for this space");
   const w = new PrReview(); w.init({}, cx); await flush();
   assert.equal(w.prSel?.url, x.url, "and again after the next remount");
+  // The review was opened from the list (a row's Resume): back from it the list is shown again, at once, with the
+  // review's PR as the pick behind "Back to #n →". Opened with a PR chosen (the header's button): that PR's diff.
+  S.files.set("/h/mods/pr-review/review-layout.json", "{}");
+  w.picking = true; await w.toReview(y); assert.equal(S.store.get("pr.listed"), true, "opened from the list");
+  Map.prototype.set.call(S.store, "pr.fromReview", y);
+  const l = new PrReview(); l.init({}, cx); l.render(cx);
+  assert.deepEqual([l.picking, Boolean(l.restoring)], [true, false], "the list in the first frame, nothing held back");
+  await flush();
+  assert.deepEqual([l.picking, l.prSel?.url, S.store.get("pr.listed"), S.store.get("pr.fromReview")], [true, y.url, null, null], "the list stays; the review's PR is the pick");
+  l.picking = false; await l.toReview(y); assert.equal(S.store.get("pr.listed"), false, "opened with the PR chosen");
+  Map.prototype.set.call(S.store, "pr.fromReview", y);
+  const c = new PrReview(); c.init({}, cx); await flush();
+  assert.deepEqual([c.picking, c.prSel?.url], [false, y.url], "back from it: the PR, not the list");
+  // The registry entry's risk mark for the minimized chip: the review's own counts.
+  const { riskOfCounts, rowMarks } = await import("./views.js");
+  assert.deepEqual(rowMarks(riskOfCounts({ unresolved: 5, high: 2, medium: 3, low: 0, security: 1 }), null), [{ text: "⛨ high", security: true, kind: "risk" }]);
+  assert.deepEqual([rowMarks(riskOfCounts({ unresolved: 1, high: 0, medium: 1, security: 0 }), null)[0].text, rowMarks(riskOfCounts({}), null)], ["medium", []]);
 }
 
 // ---- resuming a review: the first frame drawn stands on the tab and page you left, the list scrolls there when it comes
