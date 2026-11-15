@@ -42,13 +42,13 @@ import { pollDue, pollAfter, windowActive } from "./pr.js"; // background fetche
 import { hasSources, archLayout, archBands } from "./arch.js";
 import { archMarks, transitionText, MARK_CARD_ROWS } from "./arch.js";
 import { markRoom, FIT as ARCH_FIT, ARCH as ARCH_SIZE } from "./arch.js"; // a card's mark takes the lines its finding needs
-import { resStartOf, resOrder, resPicture, budgetBar, resPathView, resCardOf, resSentence, resMarksOn } from "./views.js";
+import { resStartOf, resPicture, budgetBar, resCardOf, resSentence, resMarksOn } from "./views.js";
 import { resWord, resToolText, resVerdict, resWatch, resTwice, PROBE_TYPICAL, resEdgeMarks, resByProbe, RES_MARK_ROW, resMarkRows, resMarkLines, resVerdictParts, resStartCard } from "./views.js";
 import { withProbes, certaintyText, probedText } from "./views.js"; // wave C2 V3: a reproduced probe confirms its findings // wave R2: words, verdict, watch, doubled ways
 import { withThreats, secNote, secByEffect, secWhy } from "./pr.js"; // the Security page: one count, and a run from before its current rules
 import { withResilience, resilienceStart, RUN_TYPICAL } from "./pr.js"; // the Resilience run's data // the Resilience page
 import { keepLast } from "./views.js"; // every cache has a limit
-import { resDepRows, resMeta, resFade } from "./views.js"; // Resilience: dependencies that fail or are overloaded; a path's second line; readable dimming
+import { resDepRows, resMeta, resFade, resShown, resRefs } from "./views.js"; // Resilience: dependencies that fail or are overloaded; a path's second line; readable dimming
 import { wayOf, wayText, passZones, runsIn } from "./views.js"; // panel round 3: ways through every gate, zones passed on
 import { transitionMarks, effectiveFrom, inProcess, mapArch, crossingsOf, crossingChanged, secSentence, TRUST_ORDER, asideOf, threatCited, blastOf, skipText, guardLine } from "./views.js";
 import { trustLegend, hasTrust } from "./stack.js";
@@ -4185,7 +4185,7 @@ export const ReviewMode = {
         .when(run?.state === "failed", (e) => e.child(div().text_size(TYPE.small).text_color(t.ansi1).whitespace_normal().child(`The last run failed: ${run.error || "no error text"}.`)))],
         ...(a ? [["map", this.resMap(t, a, null, start.nodes ?? [])]] : [])];
     }
-    const paths = resOrder((res.paths ?? []).map((p) => resPathView(p, res))), blockers = paths.filter((p) => p.blocker), cur = this.resPathOf(paths), now = this.worktree?.head ?? this.head;
+    const listed = resShown(res), paths = listed.paths, blockers = paths.filter((p) => p.blocker), cur = this.resPathOf(paths), now = this.worktree?.head ?? this.head;
     const stale = Boolean(res.older) || Boolean(res.head && now && res.head !== now), short = (h) => String(h ?? "").slice(0, 7);
     const clean = (res.checks ?? []).filter((c) => c.result === "clean").length, nc = (res.checks ?? []).filter((c) => c.result === "not_checkable").length + (res.not_checked ?? []).length;
     const vp = resVerdictParts(paths); // wave C2 V2: a short sentence, the reasons counted under it
@@ -4200,7 +4200,7 @@ export const ReviewMode = {
     head.when(stale, (e) => e.child(h_flex().gap(8).items_center().text_size(TYPE.small).child(div().text_color(t.ansi3).child(`Analysis of ${short(res.head)}; the PR is at ${short(now)}.`))
       .child(pill("rv-res-rerun", t, `Re-run (${this.runPrice("resilience", this.runTier("resilience").chosen ?? this.runTier("resilience").tier)})`, (_e, cx) => this.runReviewer("resilience", cx, null, this.runTier("resilience").chosen ?? this.runTier("resilience").tier)))));
     const shown = this.resAll ? paths : paths.slice(0, 5);
-    this.resNums = new Map(paths.map((p, k) => [p.id, k + 1])); // "same cause as path 2" by the number shown
+    this.resNums = listed.nums; // "same cause as path 2", "Path 6: lit on the map": by the number shown, never the run's id
     const deps = this.resDeps(t, res, paths, cur, stale);
     return [["head", head], ["top", top], ...(a ? [["map", this.resMap(t, a, cur, [])]] : []), ...(deps ? [["deps", deps]] : []),
       // The paths: their head, then each path a part of the page of its own ("p:<id>"), so a click on a dependency's
@@ -4300,7 +4300,7 @@ export const ReviewMode = {
     const deco = (n) => (byNode.has(n.id) ? [v_flex().id(`rv-res-mk-${n.id}`).flex_none().mb(RES_MARK_ROW.below).text_size(TYPE.body).font_semibold().tooltip(byNode.get(n.id)).children(markLines(n.id))]
       : !p && on.has(n.id) ? [div().id(`rv-res-st-${n.id}`).flex_none().h(RES_MARK_ROW.h).mb(RES_MARK_ROW.below).flex().items_center().text_size(TYPE.body).text_color(t.muted).child("○ the run starts here")] : []);
     return v_flex().id("rv-res-map").gap(6)
-      .child(div().text_size(TYPE.small).text_color(t.muted).child(p ? `Path ${p.id}: lit on the map, the rest dimmed.` : start.length ? "○: where the run would start." : "Open a path to light it on the map."))
+      .child(div().text_size(TYPE.small).text_color(t.muted).child(p ? `Path ${this.resNums?.get(p.id) ?? p.id}: lit on the map, the rest dimmed.` : start.length ? "○: where the run would start." : "Open a path to light it on the map."))
       .child(this.archCanvas(t, L, opts, { id: "rv-res-canvas", pic: "rv-res-pic", decorate: deco, notes: false }));
   },
   // One path: line 1 trigger and end with the verdict (reason) and its evidence as symbol and word; line 2 in the
@@ -4445,13 +4445,13 @@ export const ReviewMode = {
     const NAME = { cors: "CORS", cache_control: "Cache-Control", rollback: "Rollback", limits: "Limits", cardinality: "Metric cardinality", clocks: "Clocks", health: "Health", shutdown: "Shutdown", alarms: "Alarms" };
     const link = (at, id) => div().id(id).flex_none().text_color(t.accent).cursor_pointer().on_click((_e, cx) => this.jumpTo(at, cx)).child(`${at} ↗`);
     const row = (c, k) => h_flex().id(`rv-res-c-${k}`).gap(10).items_start().text_size(TYPE.small).child(div().w(150).flex_none().font_semibold().child(NAME[c.check] ?? resWord(c.check).replace(/^./, (ch) => ch.toUpperCase())))
-      .child(div().w(100).flex_none().text_color(WORD[c.result]?.[1] ?? t.muted).child(WORD[c.result]?.[0] ?? resWord(c.result))).child(div().flex_1().min_w(0).whitespace_normal().text_color(t.muted).child(c.why ?? ""))
+      .child(div().w(100).flex_none().text_color(WORD[c.result]?.[1] ?? t.muted).child(WORD[c.result]?.[0] ?? resWord(c.result))).child(div().flex_1().min_w(0).whitespace_normal().text_color(t.muted).child(resRefs(c.why, this.resNums)))
       .when(Boolean(c.at), (e) => e.child(link(c.at, `rv-res-c-at-${k}`)));
     const label = (s) => div().w(170).flex_none().text_size(TYPE.body).font_semibold().child(s);
     const lines = (id, items, none) => v_flex().id(id).flex_1().min_w(0).gap(3).text_size(TYPE.small).children(items.length ? items.map((x, k) => h_flex().id(`${id}-${k}`).gap(10).items_start()
       .child(div().flex_1().min_w(0).whitespace_normal().child(x.text)).when(Boolean(x.at), (e) => e.child(link(x.at, `${id}-${k}-at`)))) : [div().text_color(t.muted).child(none)]);
-    const nc = [...checks.filter((c) => c.result === "not_checkable").map((c) => ({ text: `${NAME[c.check] ?? resWord(c.check).replace(/^./, (ch) => ch.toUpperCase())}: ${c.why ?? ""}`, at: c.at })),
-      ...(res.not_checked ?? []).filter((s) => !resToolText(s)).map((s) => ({ text: s }))];
+    const nc = [...checks.filter((c) => c.result === "not_checkable").map((c) => ({ text: `${NAME[c.check] ?? resWord(c.check).replace(/^./, (ch) => ch.toUpperCase())}: ${resRefs(c.why, this.resNums)}`, at: c.at })),
+      ...(res.not_checked ?? []).filter((s) => !resToolText(s)).map((s) => ({ text: resRefs(s, this.resNums) }))];
     // Without blind spots or calls (an older block) the run's own watch list stays.
     const w = resWatch(res, this.ai?.arch), watch = w.watch.length || w.before.length || (res.blind_spots ?? []).length ? w.watch : (res.watch ?? []).map((s) => ({ text: s }));
     return v_flex().id("rv-res-rest").gap(12).pt(8)

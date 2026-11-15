@@ -569,6 +569,22 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   const one = drawn(["reported", "evidence", "sent", "verified", "in_pr"].map((k) => () => { v.fstep = { id: f.id, key: k }; }), () => v.findingsPane(tt)).filter((x) => !all.includes(x));
   check("an open finding", one, {}); v.fstep = null;
 }
+// The acceptance round's corrections, each on the drawn page.
+{
+  const doc = JSON.parse(fx("findings-s.json")); doc.resilience = JSON.parse(fx("resilience-r2.json"));
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify(doc) }), tt = S.theme;
+  const texts = (part) => { S.texts = new Set(); S.lists.length = 0; part(); for (let k = 0; k < S.lists.length && k < 200; k++) S.lists[k].render({ start: 0, end: S.lists[k].n }, cx); const got = [...S.texts]; S.texts = null; S.lists.length = 0; return got; };
+  // UX 1: the Resilience page and its Markdown say the number the list shows, never the run's id of a path or finding.
+  v.command("page:res", cx); v.command("res-more", cx); v.command("res-clean", cx);
+  const listed = v.resNow().paths.map((p) => p.id), ID = /\b(?:Path p\d+:|r_f\d+\b)|\(p\d+\)/;
+  for (const id of listed) {
+    v.command(`res-path:${id}`, cx);
+    const got = texts(() => v.pageView(tt));
+    assert.deepEqual(got.filter((x) => ID.test(x)), [], `Resilience, path ${id} open: an id of the run is shown`);
+    assert.ok(got.some((x) => /^Path \d+: lit on the map/.test(x)), `Resilience, path ${id} open: the line over the map names its number`);
+  }
+  assert.ok(!ID.test(v.mdText(true)), "the Resilience Markdown names no id of the run");
+}
 await settle();
 assert.deepEqual(late, [], "a spawned task threw");
 console.log(`smoke ok: ${shown} frames`);

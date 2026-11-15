@@ -1562,3 +1562,19 @@ export const riskOfCounts = (c) => ({ top: c?.high ? "high" : c?.medium ? "mediu
 // between micro and small, because its rows and buttons are laid out for it. Code is not on the ladder and keeps its
 // sizes: in the diff (the probe that measures a character's width is drawn in it) and in the panel's narrow diff.
 export const TYPE = Object.freeze({ micro: 10.5, panel: 11, small: 12, body: 13.5, title: 15, page: 22, code: 13, codePanel: 11 });
+
+// ---- Resilience: the run's own ids out of its sentences (acceptance, UX 1). A path's id (p5) reads as the number the
+// list shows ("path 6"; the list is sorted, blockers first, so the two differ); a ref the run gave one of its findings
+// (r_f1: it is not stored, so nothing can show which finding it was) goes. nums: Map(path id -> number shown). Pure.
+// ponytail: a word like "p5" in a sentence is read as the path with that id; the run writes its ids no other way.
+export function resRefs(text, nums) {
+  return String(text ?? "").replace(/\s*\((?:see\s+)?r_f\d+(?:(?:,|\s+and)\s*r_f\d+)*\)/g, "").replace(/[;,]?\s*\bsee r_f\d+(?:(?:,|\s+and)\s*r_f\d+)*/g, "")
+    .replace(/\b(?:paths?\s+)?(p\d+)\b/g, (all, id) => (nums?.has(id) ? `path ${nums.get(id)}` : all));
+}
+// The paths as the page and its Markdown list them: in the page's order, each in the page's shape, their sentences
+// (note, why not today, the race's note) with the numbers shown. -> {paths, nums, say}; say(text) does the same for
+// another sentence of the run (a check's reason).
+export function resShown(res) {
+  const paths = resOrder((res?.paths ?? []).map((p) => resPathView(p, res ?? {}))), nums = new Map(paths.map((p, k) => [p.id, k + 1])), say = (s) => (s ? resRefs(s, nums) : s);
+  return { nums, say, paths: paths.map((p) => ({ ...p, note: say(p.note), wired: p.wired && { ...p.wired, today: say(p.wired.today) }, race: p.race && { ...p.race, note: say(p.race.note) } })) };
+}

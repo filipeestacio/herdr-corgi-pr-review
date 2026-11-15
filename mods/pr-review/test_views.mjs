@@ -1124,3 +1124,19 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   }
   console.log("ok text sizes");
 }
+
+// Acceptance, UX 1: the Resilience page says the number its list shows, never the run's id; a ref of a finding that is
+// not stored goes.
+{
+  const { resRefs, resShown } = await import("./views.js");
+  const res = { paths: [{ id: "p1", result: "mitigated", steps: [], findings: [] }, { id: "p2", result: "finding", steps: [], findings: [], wired: { why: "load grows", today: "not possible today: no caller (r_f1) and no SQS publisher (p5)." } },
+    { id: "p5", result: "finding", blocker: { why: "an effect is lost" }, steps: [], findings: [], note: "See path p2; p99 stays." }] };
+  const s = resShown(res);
+  assert.deepEqual(s.paths.map((p) => [p.id, s.nums.get(p.id)]), [["p5", 1], ["p2", 2], ["p1", 3]], "numbered in the page's order");
+  assert.equal(s.paths[1].wired.today, "not possible today: no caller and no SQS publisher (path 1).");
+  assert.equal(s.paths[0].note, "See path 2; p99 stays.", "an id of no path stays, 'path p2' is not said twice");
+  assert.equal(s.say("Exact-day equality and a UTC date; see r_f5."), "Exact-day equality and a UTC date.");
+  assert.equal(resRefs("Nothing publishes (p5), see r_f1 and r_f2.", new Map([["p5", 6]])), "Nothing publishes (path 6).");
+  assert.equal(resShown(null).paths.length, 0);
+  console.log("ok resilience ids as numbers");
+}

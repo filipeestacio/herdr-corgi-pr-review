@@ -5,13 +5,13 @@
 // GitHub draws it. A security finding is in here in full: this is for the person's own use, nothing is posted.
 import { taskList, taskHead, verdictParts, findingCounts, componentLine, CERTAINTY, SEVERITY_SCALE, levels, isGuard } from "./pr.js";
 import { transitionText } from "./arch.js";
-import { resPathView, asideOf, threatCited, skipText, guardLine } from "./views.js";
+import { asideOf, threatCited, skipText, guardLine } from "./views.js";
 import { resWord, resToolText, resVerdict, resWatch } from "./views.js"; // wave R2: the page's words, verdict and watch list
 // The pages' own sources, so a page and its Markdown say the same: the crossings and their picture, the scope table,
 // the map as the Architecture page draws it, the paths' order and verdict, a finding's facts.
-import { crossingsOf, crossingChanged, secSentence, wayOf, wayText, secPicture, secBlast, scopeTable, scopeConflicts, AREA_NAME, mapArch, resOrder, resVerdictParts, resCardOf, factRows } from "./views.js";
+import { crossingsOf, crossingChanged, secSentence, wayOf, wayText, secPicture, secBlast, scopeTable, scopeConflicts, AREA_NAME, mapArch, resVerdictParts, resCardOf, factRows } from "./views.js";
 import { archMarks } from "./arch.js";
-import { transitionMarks, surfaceOf, reachLevel, secOrder, EXPOSURE, inProcess, resNoPicture } from "./views.js";
+import { transitionMarks, surfaceOf, reachLevel, secOrder, EXPOSURE, inProcess, resNoPicture, resShown } from "./views.js";
 import { doesList, surfaceLine, countLine, funnelShort, funnel as funnelOf, findingSteps } from "./pr.js";
 import { resDepRows } from "./views.js"; // Resilience: dependencies that fail or are overloaded
 
@@ -662,7 +662,7 @@ export function resilienceMd({ pr, head, res = null, names = new Map(), arch = n
   if (!res) return doc(prLine({ pr, head }), "", "# Resilience", "", "The resilience review has not run on this PR.");
   const cx = codeContext(code), nm = (id) => flat(names.get(id) ?? arch?.nodes?.find((n) => n.id === id)?.label ?? id);
   const byId = (id) => findings.find((f) => (f.ids ?? [f.id]).includes(id)), titles = (ids) => [...new Set((ids ?? []).map(byId).filter(Boolean))];
-  const order = resOrder((res.paths ?? []).map((p) => resPathView(p, res))), num = (id) => order.findIndex((p) => p.id === id) + 1;
+  const listed = resShown(res), order = listed.paths, num = (id) => listed.nums.get(id) ?? 0, say = listed.say; // the run's ids as the numbers shown
   const probeOf = (p) => (probes ?? res.probes ?? []).find((x) => x.id === p.probe || x.of === p.id);
   // The cards a path passes, in the order of its steps: a card, a call (both ends), a place (the card of its file).
   const edgeAt = (s) => { const e = /^e(\d+)$/.exec(String(s)); return e ? arch?.edges?.[Number(e[1])] ?? null : null; };
@@ -719,9 +719,9 @@ export function resilienceMd({ pr, head, res = null, names = new Map(), arch = n
   };
   const parts = resVerdictParts(order), paths = res.paths ?? [], checks = res.checks ?? [], clean = checks.filter((c) => c.result === "clean"), ncheck = checks.filter((c) => c.result === "not_checkable");
   const other = checks.filter((c) => c.result !== "clean" && c.result !== "not_checkable");
-  const check = (c) => `- ${flat(resWord(c.check))}${c.result !== "clean" && c.result !== "not_checkable" ? ` (${resWord(c.result)})` : ""}: ${flat(c.why ?? "")}${c.at ? ` (\`${c.at}\`)` : ""}${titles(c.findings).length ? `. Findings: ${titles(c.findings).map((f) => flat(f.title)).join("; ")}` : ""}`;
+  const check = (c) => `- ${flat(resWord(c.check))}${c.result !== "clean" && c.result !== "not_checkable" ? ` (${resWord(c.result)})` : ""}: ${flat(say(c.why) ?? "")}${c.at ? ` (\`${c.at}\`)` : ""}${titles(c.findings).length ? `. Findings: ${titles(c.findings).map((f) => flat(f.title)).join("; ")}` : ""}`;
   const w = resWatch(res, arch), watch = w.watch.length || w.before.length || (res.blind_spots ?? []).length ? w.watch.map((x) => `${flat(x.text)}${x.at ? ` (\`${x.at}\`)` : ""}`) : (res.watch ?? []).map(flat);
-  const nc = [...ncheck.map((c) => `${flat(resWord(c.check))}: ${flat(c.why ?? "")}`), ...(res.not_checked ?? []).filter((x) => !resToolText(x)).map(flat)];
+  const nc = [...ncheck.map((c) => `${flat(resWord(c.check))}: ${flat(say(c.why) ?? "")}`), ...(res.not_checked ?? []).filter((x) => !resToolText(x)).map((x) => flat(say(x)))];
   const adds = res.additions ?? [];
   const add = (x) => [`- **${flat(x.what)}**${x.kind ? ` (${flat(x.kind)})` : ""}${x.at ? ` at \`${x.at}\`` : ""}: ${ADD_RESULT[x.result] ?? flat(x.result)}`,
     Boolean(x.purpose) && `  - For: ${flat(x.purpose)}`, Boolean(x.solves) && `  - Solves: ${dot(x.solves)}${x.likelihood ? ` (${resWord(x.likelihood)})` : ""}.`,
