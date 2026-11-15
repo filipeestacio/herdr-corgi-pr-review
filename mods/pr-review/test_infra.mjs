@@ -315,12 +315,20 @@ test("the Terraform fixture end to end: from the patch and the files at the head
   assert.deepEqual(texts(card(m, "aws_secretsmanager_secret_version.mailer")), ["secret_string: changed"]);
   assert.deepEqual(m.notices.map(noticeText), ["terraform block of main.tf changed in stacks/orders/main.tf:1: backend s3: changed"]);
   const md = infraMd(m, { table, flow: mermaidFlow, findings: [{ id: "f", file: "stacks/orders/queue.tf", line: 4, severity: "high", title: "The queue lost its dead-letter queue" }] }).join("\n");
-  assert.match(md, /^## Infrastructure changes \(10\)\n\nDerived from the diff; no terraform plan was run, so replacements and computed values are estimates\.\n\n- terraform block of main\.tf changed/);
+  assert.match(md, /^## Infrastructure changes \(10\)\n\nDerived from the diff; no terraform plan was run, so replacements and computed values are estimates\.\n\n- `terraform block of main\.tf changed/);
   assert.match(md, /```mermaid\nflowchart LR\n {2}subgraph group0\["stacks\/orders \(Terraform\)"\]/);
   assert.ok(md.includes('["aws_sqs_queue orders_dlq, still referenced"]:::removed') && md.includes('["aws_lambda_function worker, may be replaced"]:::changed') && md.includes('["aws_sqs_queue orders (high: 1 finding)"]:::changed'));
-  assert.ok(md.includes("| aws_sqs_queue orders_dlq | removed; Still referenced by dlq_depth, worker_queue |"));
-  assert.ok(md.includes("| aws_sqs_queue orders | changed | visibility_timeout_seconds: 30 → 60; redrive_policy: removed |  | `stacks/orders/queue.tf:2` | high: The queue lost its dead-letter queue |"));
-  assert.ok(md.includes("### Variables, outputs and other values (2)\n\n- var.retention_days changed · default: 14 → 30 · used by aws_cloudwatch_log_group.worker (`stacks/orders/variables.tf:10`)"));
+  // What comes from the PR (addresses, values, paths, and the sentences made of them) is a code span each.
+  assert.ok(md.includes("| `aws_sqs_queue orders_dlq` | removed; `Still referenced by dlq_depth, worker_queue` |"));
+  assert.ok(md.includes("| `aws_sqs_queue orders` | changed | `visibility_timeout_seconds: 30 → 60; redrive_policy: removed` |  | `stacks/orders/queue.tf:2` | high: The queue lost its dead-letter queue |"));
+  assert.ok(md.includes("### Variables, outputs and other values (2)\n\n- `var.retention_days changed · default: 14 → 30 · used by aws_cloudwatch_log_group.worker` (`stacks/orders/variables.tf:10`)"));
+  // A value written as Markdown (a link, a mention, a backtick) is inert in the copied text: inside one code span.
+  { const tf = (v) => `output "o" {\n  value = ${v}\n}\nresource "aws_s3_bucket" "b" {\n  bucket = ${v}\n}`, was = tf('"b"'), now = tf('"[click](https://example.invalid) @octo-org/everyone `x`"');
+    const f = { path: "main.tf", status: "modified", head: now, lines: ["@@ -1,6 +1,6 @@", ...was.split("\n").map((l) => `-${l}`), ...now.split("\n").map((l) => `+${l}`)] };
+    const out = infraMd(infraModel([f]), { table, flow: mermaidFlow }), hit = out.filter((l) => l.includes("@octo-org"));
+    assert.ok(hit.length >= 2, "the value is in the row and in the table");
+    for (const l of hit) assert.match(l, /^(- |\| )`[^`]*`/, `inert: ${l}`);
+    assert.ok(out.includes("- `output.o changed · \"b\" → \"[click](https://example.invalid) @octo-org/everyone 'x'\"` (`main.tf:1`)")); }
   assert.ok(!md.includes("placeholder"), "the secret's value is in no line");
   const P = infraPicture(m);
   assert.deepEqual([P.L.nodes.length, P.L.groups.length, P.arch.folded], [13, 1, null]);
@@ -340,4 +348,28 @@ test("over 40 cards, the resources of one type in a group are one card with thei
   assert.equal(infraMarks(m, [{ file: "iam.tf", line: 2, severity: "low", title: "t" }], a.alias).nodes.get(a.nodes[0].id).n, 1, "a finding at one of them sits at their card");
   assert.ok(infraMd(m, { table, flow: mermaidFlow }).join("\n").includes(`Over ${INFRA_MAX} cards: ${n} resources of 1 type are one card per type.`));
   assert.equal(infraArch(model({ "iam.tf": [null, head] }), 100).folded, null);
+});
+
+// A file of the PR written to break the reader: it never throws and never takes long, the file is named as not read
+// (or read, where it is only big), and the other files of the PR are still in the picture.
+test("a file written to break the reader costs that file, not the section", () => {
+  const added = (path, text) => ({ path, status: "added", lines: ["@@ -0,0 +1,1 @@", ...text.split("\n").map((l) => `+${l}`)] });
+  const good = added("infra/ok.tf", 'resource "aws_sqs_queue" "q" {\n  name = "q"\n}\n');
+  const timed = (what, f, ms = 500) => { const t = performance.now(), out = f(); assert.ok(performance.now() - t < ms, `${what}: ${Math.round(performance.now() - t)} ms`); return out; };
+  const unread = (what, text) => { const m = timed(what, () => infraModel([good, added("infra/x.tf", text)])); assert.deepEqual([m.cards.map((c) => c.addr), m.unread.map((u) => u.path)], [["aws_sqs_queue.q"], ["infra/x.tf"]], what); };
+  unread("templates in strings, 6000 deep", `resource "a_b" "c" {\n  x = ${'"${'.repeat(6000)}\n}\n`);
+  // Blocks in blocks, 3000 deep: the resource is there, its nested block is "not understood" below the limit.
+  { const text = `resource "a_b" "c" {\n${"a {\n".repeat(3000)}${"}\n".repeat(3000)}}\n`, m = timed("blocks in blocks", () => infraModel([good, added("infra/x.tf", text)]));
+    assert.deepEqual([m.cards.map((c) => c.addr), readTerraform(text, "x.tf").items[0].ok], [["aws_sqs_queue.q", "a_b.c"], false]); }
+  unread("80 000 lines of a comment that never closes", "/* x\n".repeat(80000));
+  unread("a file over the size limit", `# ${"x".repeat(2000001)}\n`);
+  // Real nesting is read as before: a string in a template in a string, blocks four deep.
+  const deep = readTerraform('resource "a_b" "c" {\n  x = "a-${lookup(m, "k-${var.v}", "d")}"\n  l1 {\n    l2 {\n      l3 {\n        l4 = 1\n      }\n    }\n  }\n}\n', "a.tf");
+  assert.deepEqual([deep.ok, deep.items[0].ok, deep.items[0].args.get("x").text], [true, true, '"a-${lookup(m, "k-${var.v}", "d")}"']);
+  // CloudFormation: one key with 200 000 lines is a value like another.
+  const y = `AWSTemplateFormatVersion: "2010-09-09"\nResources:\n  A:\n    Type: AWS::SQS::Queue\n    Properties:\n      Big:\n${"        - x\n".repeat(200000)}`;
+  assert.equal(timed("a YAML key with 200 000 lines", () => readCloudFormation(y, "t.yaml"), 2000).items[0].args.get("Big").text.split("\n").length, 200000);
+  // A modified file of 200 000 lines: its text before the PR, without the lines as one call's arguments.
+  const big = Array.from({ length: 200000 }, (_x, k) => `l${k}`);
+  assert.equal(timed("baseText of 200 000 lines", () => baseText(big.join("\n"), ["@@ -199999,2 +199999,2 @@", " l199998", "-old", "+l199999"]), 2000).split("\n").at(-1), "old");
 });

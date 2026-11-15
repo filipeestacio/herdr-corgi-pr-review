@@ -761,7 +761,10 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
       : { status: "ok", references: [{ path: "library/api.py", line: 3, character: 0, end: 3, text: "send_reminders(store, mailer)" }], outside: 0, more: 0 }) }; };
   try {
     v.worktree = { url: v.prSel.url, head: v.head, path: "/h/w" }; v.impactSt = { key: v.impactKey(), state: "idle" };
+    // The result is saved over what the file held (a model of an older version): Herdr writes over a file only when told its text.
+    S.writes = true; S.files.set(v.impactFile(v.impactKey()), '{"v":0}');
     draw(v, "Impact: about to start"); v.impactRun(cx); draw(v, "Impact: started"); await settle(); await settle(); draw(v, "Impact: its own result");
+    S.writes = false; assert.equal(JSON.parse(S.files.get(v.impactFile(v.impactKey()))).functions?.[0]?.name, "send_reminders", "the run's result replaced the older file");
     assert.deepEqual(v.impactNow()?.functions.map((f) => [f.name, Boolean(f.sig), f.callers.map((c) => [c.path, c.mark])]), [["send_reminders", true, [["library/api.py", "outside"]]]], "the run asks the bridge and keeps what it finds");
     assert.ok(asked.includes("references library/reminders.py") && asked.every((x) => !x.includes("template.yaml")), "only files with a language server are asked");
     // Someone else's PR: nothing starts by itself; the button does.
@@ -931,7 +934,7 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     parts("Schema changes: back on the page"); click("rv-schema-risk0", "the first risk hint"); draw(w, "Schema changes: a risk clicked");
     assert.ok(w.page === null && w.fsel?.path === "db/migrations/V6__members_and_shelves.sql" && w.fsel.a === "+6", "a risk hint leads to its line: DROP TABLE shelves");
     assert.deepEqual([...w.schemaSt.pic.marks.nodes].map(([id, k]) => [id, k.n, k.severity]), [["sql:db/migrations|loans", 1, "high"]], "the review's finding at a line of the migration stands at the loans card");
-    assert.match(text, /\| loans \| high: Notes longer than 80 characters are cut \|/, "and in the text");
+    assert.match(text, /\| `loans` \| high: Notes longer than 80 characters are cut \|/, "and in the text");
   }
 }
 // The acceptance round's corrections, each on the drawn page.
@@ -1037,7 +1040,11 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   const EV = await import("./editor-view.js"); EV.forgetEditors();
   const started = [];
   for (const app of ["/Applications/Visual Studio Code.app", "/Applications/IntelliJ IDEA.app"]) S.files.set(`${app}/Contents/Info.plist`, "<plist/>");
-  S.exec = async (cmd, args = []) => { if (cmd === "open") { started.push(args); return { code: 0, stdout: "", stderr: "" }; } throw new Error("stub"); };
+  // safegit.py regular-file for a PR that is not trusted: `is` says what the asked path is in its checkout.
+  let is = "file", asked = 0;
+  S.exec = async (cmd, args = []) => { if (cmd === "open") { started.push(args); return { code: 0, stdout: "", stderr: "" }; }
+    if (cmd === "python3" && args[0].endsWith("/safegit.py") && args[2] === "regular-file") { asked++; return is === "file" ? { code: 0, stdout: `/real${args[1]}/${args[3]}`, stderr: "" } : { code: 1, stdout: "", stderr: "" }; }
+    throw new Error("stub"); };
   for (const trusted of [true, false]) {
     const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json"), trusted }), who = trusted ? "your PR" : "someone else's PR";
     EV.forgetEditors(); // also the first round's "Opening …"
@@ -1052,13 +1059,27 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     for (const pg of ["overview", "blast", "arch"]) act(v, `page:${pg}`, `editor, ${who}: page ${pg} with the monogram`);
     for (const nd of (v.ai?.arch?.nodes ?? []).slice(0, 3)) act(v, `card:${nd.id}`, `editor, ${who}: card ${nd.id}`);
     started.length = 0; v.command(`editor:${v.patch[0].path}:3`, cx); await settle();
-    assert.deepEqual(started, [[`vscode://file/h/w/${v.patch[0].path}:3`]], `${who}: the file at its line, one process`);
+    assert.deepEqual(started, [[`vscode://file${trusted ? "" : "/real"}/h/w/${v.patch[0].path}:3`]], `${who}: the file at its line, one editor process${trusted ? "" : " (the path as the disk has it, not the clicked text)"}`);
     act(v, "files", `editor, ${who}: the link says Opening`); assert.equal(v.fileEditMark(v.patch[0]) && EV.isOpening({ root: "/h/w", file: v.patch[0].path, line: 3 }), true);
     started.length = 0; v.command("editor:", cx); await settle();
     assert.equal(started.length, trusted ? 1 : 0, `${who}: its folder ${trusted ? "opens" : "does not open"}`);
-    EV.openEditorMenu(v, v.fileEditTarget(v.patch[0])); v.command("editor-use:idea", cx); await settle(); draw(v, `editor, ${who}: another editor picked for the project`);
+    // What the path is in the checkout decides for a PR that is not trusted, whatever its text: a symlink the PR
+    // added, a submodule and a folder named like a file start nothing and say why. Your own PR is not asked about.
+    if (!trusted) for (const [kind, path] of [["a symlink", "docs/link"], ["a folder", "src/"], ["a folder", "library"]]) {
+      is = kind; started.length = 0; S.toasts = []; v.command(`editor:${path}`, cx); await settle();
+      assert.deepEqual([started, S.toasts.map((x) => /not a regular file of its checkout/.test(x.body))], [[], [true]], `${who}: ${path} (${kind}) is not opened`);
+    }
+    is = "file"; S.toasts = null; assert.equal(asked > 0, !trusted, `${who}: git is ${trusted ? "not " : ""}asked what the path is`); asked = 0;
+    // The menu's commands carry its token: a pick of a menu that is not this copy's open one does nothing (a menu closed
+    // with Esc leaves its target behind, and every copy gets every command).
+    EV.openEditorMenu(v, v.fileEditTarget(v.patch[0])); const stale = v.editorTarget.token;
+    EV.openEditorMenu(v, v.fileEditTarget(v.patch[0])); started.length = 0;
+    v.command(`editor-use:${stale}:idea`, cx); v.command("editor-use:idea", cx); v.command(`editor-copy:${stale}`, cx); await settle();
+    assert.deepEqual([started.length, S.store.get("editor.choice")?.repos?.["/h/w/.git"]?.main ?? null, Boolean(v.editorTarget)], [0, null, true], `${who}: another menu's pick is not taken`);
+    v.command(`editor-use:${v.editorTarget.token}:idea`, cx); await settle(); draw(v, `editor, ${who}: another editor picked for the project`);
     assert.equal(S.store.get("editor.choice")?.repos?.["/h/w/.git"]?.main, "idea");
-    S.props = {}; const panel = new PrReview(); panel.init({}, cx); await settle(); panel.prSel = v.prSel; panel.context = panel.key(); panel.patch = v.patch; panel.files = v.patch; panel.open = v.patch[0].path; draw(panel, `editor, ${who}: the panel's head and its file link`);
+    S.props = {}; const panel = new PrReview(); panel.init({}, cx); await settle(); panel.prSel = v.prSel; panel.context = panel.key(); panel.patch = v.patch; panel.files = v.patch; panel.open = v.patch[0].path; S.ids = new Set(); draw(panel, `editor, ${who}: the panel's head and its file link`);
+    { const ids = [...S.ids]; S.ids = null; assert.ok(ids.includes(`ed-file-${panel.uid}`) && ids.includes(`ed-file-${panel.uid}-more`), `${who}: the open file's row carries the link and its ▾`); }
     S.props = null; S.store.set("editor.choice", null);
   }
   EV.forgetEditors(); S.exec = null;

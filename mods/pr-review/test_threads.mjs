@@ -89,7 +89,11 @@ fx = TH.addThreads(fx, "pr", [{ id: "c2", file: "b.py", end: 1, text: "u" }], { 
 assert.deepEqual(TH.selectedOf(fx, "pr"), ["c1", "p9"], "adding threads keeps the selection");
 assert.equal(TH.fixBranch(7, ["mwb8736v"]), "fix/7-mwb8736v");
 assert.equal(TH.fixBranch(7, ["a", "b", "c"]), "fix/7-a-and-2");
-assert.equal(TH.fixPath("/h", "acme/bookshelf", "fix/7-a"), "/h/.herdr/worktrees/bookshelf/fix-7-a");
+// Worktrees go to Herdr's folder for them: settings.json's worktrees.directory (absolute, ~ or ~/…), else ~/.herdr/worktrees.
+assert.equal(TH.fixPath(TH.worktreesDir(null, "/h"), "acme/bookshelf", "fix/7-a"), "/h/.herdr/worktrees/bookshelf/fix-7-a");
+assert.equal(TH.fixPath(TH.worktreesDir('{"worktrees":{"directory":"~/Developer/worktrees/"}}', "/h"), "acme/bookshelf", "fix/7-a"), "/h/Developer/worktrees/bookshelf/fix-7-a");
+assert.deepEqual(['{"worktrees":{"directory":"/srv/wt"}}', '{"worktrees":{"directory":"~"}}', '{"worktrees":{"directory":"relative/wt"}}', '{"worktrees":{"directory":7}}', '{"zoom":1}', "{ broken"].map((x) => TH.worktreesDir(x, "/h")),
+  ["/srv/wt", "/h", "/h/.herdr/worktrees", "/h/.herdr/worktrees", "/h/.herdr/worktrees", "/h/.herdr/worktrees"]);
 const job = { id: "j1", branch: "fix/7-c1", path: "/w", base: "/repo", head: "abc", items: [{ kind: "comment", id: "c1" }, { kind: "finding", id: "f1" }], target: "sub", state: "running" };
 fx = TH.addFix(fx, "pr", job, 6);
 assert.equal(TH.fixFor(fx, "pr", "f1").id, "j1");
@@ -465,8 +469,10 @@ console.log("threads ok");
   const out = ["worktree /code/demo\nHEAD 111\nbranch refs/heads/main", "worktree /h/.herdr/worktrees/demo/fix-2-a1\nHEAD 222\nbranch refs/heads/fix/2-a1",
     "worktree /h/.herdr/worktrees/demo/verify-2-a1\nHEAD 333\nbranch refs/heads/verify/2-a1", "worktree /h/.herdr/worktrees/demo/mine\nHEAD 444\nbranch refs/heads/feature",
     "worktree /h/.herdr/worktrees/other/fix-9-x\nHEAD 555\nbranch refs/heads/fix/9-x", "worktree /h/.herdr/worktrees/demo/loose\nHEAD 666\ndetached"].join("\n\n") + "\n";
-  assert.deepEqual(leftWorktrees(out, "/h", "o/demo"), [{ path: "/h/.herdr/worktrees/demo/fix-2-a1", branch: "fix/2-a1" }, { path: "/h/.herdr/worktrees/demo/verify-2-a1", branch: "verify/2-a1" }]);
-  assert.deepEqual(leftWorktrees("", "/h", "o/demo"), []);
+  assert.deepEqual(leftWorktrees(out, ["/h/.herdr/worktrees"], "o/demo"), [{ path: "/h/.herdr/worktrees/demo/fix-2-a1", branch: "fix/2-a1" }, { path: "/h/.herdr/worktrees/demo/verify-2-a1", branch: "verify/2-a1" }]);
+  assert.deepEqual(leftWorktrees("", ["/h/.herdr/worktrees"], "o/demo"), []);
+  // Another folder set in Herdr's settings: fixes made there and the ones left in the default folder are both listed.
+  assert.deepEqual(leftWorktrees(`${out}\n\nworktree /wt/demo/fix-2-b2\nHEAD 3\nbranch refs/heads/fix/2-b2`, ["/wt", "/h/.herdr/worktrees"], "o/demo").map((w) => w.branch), ["fix/2-a1", "verify/2-a1", "fix/2-b2"]);
   const w = { branch: "fix/2-a1", only: 0, dirty: false, unknown: false };
   assert.deepEqual([w, { ...w, only: 2 }, { ...w, dirty: true }, { ...w, unknown: true }].map(worktreeRisky), [false, true, true, true]);
   assert.equal(worktreeLine(w), "Remove fix/2-a1 · nothing only there");

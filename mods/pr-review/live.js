@@ -16,10 +16,12 @@ const FED = { at: 0, direct: false, waiting: [], spaces: [], panes: [], agents: 
 const MOD = (() => { try { return new URL(import.meta.url).pathname.split("/").slice(-2)[0] || "pr-review"; } catch { return "pr-review"; } })();
 export const FEEDERS = ["mini", "bar"]; // the parts whose frame calls feed()
 
-// Whether the layout has a copy that feeds: a block or float of this mod with one of those parts, anywhere in the tree.
+// Whether the layout has a copy that feeds: a block or float of this mod with one of those parts, anywhere in the tree
+// but not inside a hidden node: a copy that is not shown draws no frame, so it feeds nothing (or nothing new), and
+// the readers would keep an empty or an old answer. Then Herdr is asked, as without a feeding copy.
 export function feederIn(tree, mod = MOD) {
   if (Array.isArray(tree)) return tree.some((x) => feederIn(x, mod));
-  if (!tree || typeof tree !== "object") return false;
+  if (!tree || typeof tree !== "object" || tree.hidden === true) return false;
   if (tree.mod === mod && FEEDERS.includes(tree.props?.part)) return true;
   return Object.values(tree).some((v) => v && typeof v === "object" && feederIn(v, mod));
 }

@@ -385,10 +385,19 @@ const M = schemaModel(fxPatch, fxOthers);
   const md = schemaMd(M, { table, findings: [{ id: "f1", file: "db/migrations/V5__loan_renewals.sql", line: 3, severity: "medium", title: "Notes longer than 80 characters are cut" }] }), text = md.join("\n");
   assert.deepEqual(md.slice(0, 4), ["## Schema changes (5)", "", SCHEMA_SOURCE, ""], "the section says where it comes from");
   assert.match(text, /\n5 tables: 1 added, 3 changed, 1 removed\. 1 unchanged one is related to what changed\. A table's and a column's state is a comment in the diagram;/);
-  for (const want of ["| loans | changed | note varchar(80) | changed: varchar(200) → varchar(80) | may be risky | `db/migrations/V5__loan_renewals.sql:3` |", "| loans | changed |  | added index loans_due_idx (due_date) | may be risky | `db/migrations/V5__loan_renewals.sql:7` |", "| loans | changed |  | + 5 unchanged |  |  |",
-    "| reservations | added | book_id bigint foreign key not null |  | may be risky | `db/migrations/V4__reservations.sql:5` |", "| shelves | removed |  | Dropped with its 2 columns | may be risky | `db/migrations/V6__members_and_shelves.sql:6` |", "| loans | medium: Notes longer than 80 characters are cut |",
-    "### Relations (6)", "- reservations (book_id) → books (id), n to 1, added (`db/migrations/V4__reservations.sql:5`)", "### May be risky for live data (10)", "From fixed rules over the changes above, not from a review.", "- Column loans.note narrows from varchar(200) to varchar(80): existing values may not fit. (`db/migrations/V5__loan_renewals.sql:3`)"])
+  // What comes from the PR (names, types, values, paths, and the sentences made of them) is a code span each.
+  for (const want of ["| `loans` | changed | `note varchar(80)` | `changed: varchar(200) → varchar(80)` | may be risky | `db/migrations/V5__loan_renewals.sql:3` |", "| `loans` | changed |  | `added index loans_due_idx (due_date)` | may be risky | `db/migrations/V5__loan_renewals.sql:7` |", "| `loans` | changed |  | `+ 5 unchanged` |  |  |",
+    "| `reservations` | added | `book_id bigint foreign key not null` |  | may be risky | `db/migrations/V4__reservations.sql:5` |", "| `shelves` | removed |  | `Dropped with its 2 columns` | may be risky | `db/migrations/V6__members_and_shelves.sql:6` |", "| `loans` | medium: Notes longer than 80 characters are cut |",
+    "### Relations (6)", "- `reservations (book_id) → books (id), n to 1, added` (`db/migrations/V4__reservations.sql:5`)", "### May be risky for live data (10)", "From fixed rules over the changes above, not from a review.", "- `Column loans.note narrows from varchar(200) to varchar(80): existing values may not fit.` (`db/migrations/V5__loan_renewals.sql:3`)"])
     assert.ok(md.includes(want), `the Markdown has: ${want}`);
+  // A name and a value written to break out of it: a table name with a line break, a fence, an image and a mention
+  // stays one comment line inside the Mermaid block and one code span in the table; nothing of it is live Markdown.
+  { const evil = 'CREATE TABLE "t\n```\n\n![x](https://example.invalid/p.png) @octo-org/everyone\n\n```mermaid" (id int PRIMARY KEY, "c\n```\nINJ" int DEFAULT 7);';
+    const out = schemaMd(schemaModel([added("db/migrate/V1__a.sql", evil)]), { table });
+    assert.deepEqual(out.filter((l) => /^ {0,3}```/.test(l)), ["```mermaid", "```"], "the only fences are the diagram's own");
+    const from = out.indexOf("```mermaid"), to = out.indexOf("```");
+    for (const [k, l] of out.entries()) if (/@octo-org|!\[x\]|INJ/.test(l)) assert.ok((k > from && k < to && !/[`"]/.test(l)) || /^(\| |- )`[^`]*`/.test(l), `inert: ${l}`);
+    assert.ok(out.some((l) => l.startsWith("| `t ''' ![x](https://example.invalid/p.png) @octo-org/everyone '''mermaid` | added | ")), "the name is one code span, its backticks gone"); }
   // The diagram as Mermaid reads an erDiagram: tables with "type name keys comment", relations between tables it has.
   const er = schemaMermaid(M), names = new Set();
   assert.equal(er[0], "erDiagram");
@@ -402,6 +411,6 @@ const M = schemaModel(fxPatch, fxOthers);
     ["erDiagram", "  %% my table: added", "  my_table {", "    int id PK", "    numeric(10_2) amount", "    timestamp_with_time_zone a_b", "    int other_id FK, UK", "  }"], "names and types as Mermaid takes them; a table's key to itself is a mark, not a line");
   assert.deepEqual(schemaMd(null, { table }), []);
   const notes = schemaMd(schemaModel(fxPatch), { table }).join("\n");
-  assert.match(notes, /\n- The earlier migrations of db\/migrations are not loaded yet, so a table shows only what this PR changes\.\n/);
+  assert.match(notes, /\n- `The earlier migrations of db\/migrations are not loaded yet, so a table shows only what this PR changes\.`\n/);
 }
 console.log("schema: ok");

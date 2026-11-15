@@ -16,17 +16,17 @@
 // follows its rules; a picked one is kept in shared "pr.picked" so the selection survives remounts.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, Editor, EditorState, TextView, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
-import { focused, exec, hc, run, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, home, layout, props, watchFolder, nextCommand } from "herdr";
+import { focused, exec, hc, run, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, home, layout, props, watchFolder, nextCommand, checking } from "herdr";
 import { spaces, panes, agents, terminals, feed, whenFed } from "./live.js"; // never straight from Herdr: one read and this copy is drawn on every agent's status change
 import { diffRows, buildPrompt, splitPatch, selection, nextChange, lineLabel, anchorRow, buildReview, hunksOf, hash, uiLine, reviewRequest, mapReview, triageOf, isSecurity, withThreats, knownOf } from "./pr.js";
-import { parsePrRef, ghTarget, pruneSources, codeModel, windowActive, pollDue, pollAfter } from "./pr.js";
+import { parsePrRef, ghTarget, pruneSources, codeModel, windowActive, pollDue, pollAfter, tabName } from "./pr.js";
 import * as C from "./context.js";
 import { tabArgs } from "./threads.js"; // a new Claude tab with the PR's text: no MCP servers
 import { loadDiff, saveDiff } from "./diffcache.js";
 import { setupBanner, renderSetup, loadSetup, runSetup, openUrl, readConfig } from "./setup-view.js";
 import { chip, PRIORITY_TIP, layoutPump } from "./stack.js";
 import { panelState, bodyTab, DONE_DAYS, diffTooLarge, filesToDiff, isOpenPr, byState, listRows, riskSignal, progressText, pendingText, rowMarks, mineGroups, progressRows, removedText, withPick, openSig, panelShown, byRef, fileRisk, leftNow, wrapCode, codeCols, sliceSpans, markLabel, textW, panelButtons, panelHit, panelPress, PANEL_EDGE, spaceFolders, headBranch, spaceBranches, branchPrQuery, branchPrs, spaceOrder, focusedPr, spaceEmpty, worktreePrs } from "./views.js";
-import { keepLast } from "./views.js"; // every cache has a limit
+import { keepLast, dragPath } from "./views.js"; // every cache has a limit; a file head's path to drag
 import { ReviewMode, startReview, startExplore, saveKey, flowCard, modelPills, modelLabel, renderReviews, renderAgentBar, renderKeys, renderCardMenu, renderMini } from "./review.js";
 import { highlightJob, highlightStep, langOf, firstLineOf, colors, renderLine, editorSyntax } from "./syntax.js";
 import { TYPE } from "./views.js"; // the text sizes (U34)
@@ -160,6 +160,9 @@ export default class PrReview extends View {
     // Speed: every spawn costs 0.3-0.5 s here. Repos and PR info are remembered; memo keeps the last MEMO contexts
     // (diff, open file, selection) so going back to one shows it with no exec; watchFolder marks a repo dirty.
     this.repos = REPOS; this.prInfo = new Map(); this.memo = new Map(); this.dirty = new Set(); this.watching = new Map(); this.heads = HEADS;
+    // `herdr-app check` runs init for real (always the panel: a check has no props). What is set above is enough for
+    // its one frame: no command loop, no task (setup check, prs.py, prs.lock) and no timer starts there.
+    if (checking()) return;
     if (this.part === "review") return this.initReview(cx);
     // The pick from before (shared "pr.selected") is known at once: the list is not drawn (nor fetched) while prs.json
     // is read, and the branch's diff is only made when the branch is what the panel shows.
@@ -302,14 +305,17 @@ export default class PrReview extends View {
   }
 
   // Watches a shown repo (at most WATCHES; the oldest is let go). A change that matters marks it dirty; shown, it
-  // refreshes once a second later.
+  // refreshes once a second later. The map keeps each repo's pending watch (Herdr's FolderWatch): a repo let go, and
+  // every repo when this copy closes, is cancelled, which frees its place among Herdr's watched folders at once and
+  // ends its loop (a cancelled watch resolves with []).
   watch(root, cx) {
     if (this.watching.has(root)) { const v = this.watching.get(root); this.watching.delete(root); this.watching.set(root, v); return; }
-    this.watching.set(root, true);
-    if (this.watching.size > WATCHES) this.watching.delete(this.watching.keys().next().value);
+    this.watching.set(root, null);
+    if (this.watching.size > WATCHES) { const [old, w] = this.watching.entries().next().value; this.watching.delete(old); w?.cancel(); }
     cx.spawn(async (cx) => {
       while (this.watching.has(root)) {
-        const paths = await watchFolder(root);
+        const w = watchFolder(root); this.watching.set(root, w);
+        const paths = await w;
         if (!this.watching.has(root) || !paths.some((p) => !IGNORED.test(p))) continue;
         const was = this.dirty.has(root);
         this.dirty.add(root);
@@ -641,7 +647,8 @@ export default class PrReview extends View {
   }
 
   // Sends a prompt: a picked PR goes to its session (live agent, else `claude --resume` in a new tab, else a fresh
-  // Claude when its folder is gone); the branch diff to this space's agent or a new Claude tab.
+  // Claude when its folder is gone); the branch diff to this space's agent or a new Claude tab. Sending goes there:
+  // the agent's tab is selected, and a new tab takes the focus (Herdr's default) the same way.
   deliver(prompt, cx, what, done) {
     const { space } = location(), origin = this.prSel;
     if (!space || this.sending || !(this.root || this.pr)) return;
@@ -656,10 +663,10 @@ export default class PrReview extends View {
           this.note = `${what} sent to ${agent.tab_name || "agent"}`;
         } else if (origin?.session && this.root) {
           // The session lives in the config folder it ran under (sessionContext), which the rules' context may not be.
-          run("tab.new", { space: this.spaceFor(ctx, origin.cwd, this.root), folder: origin.cwd, name: `PR #${origin.number}`, argv: [...this.ctxEnv(origin.sessionContext ?? ctx), "claude", "--resume", origin.session], task: prompt });
+          run("tab.new", { space: this.spaceFor(ctx, origin.cwd, this.root), folder: origin.cwd, name: tabName(origin.repo, `PR #${origin.number}`), argv: [...this.ctxEnv(origin.sessionContext ?? ctx), "claude", "--resume", origin.session], task: prompt });
           this.note = `${what}: resumed the PR's session in a new tab`;
         } else {
-          run("tab.new", { space: this.spaceFor(ctx, this.root), folder: this.root ?? location().cwd, name: "PR-Review", argv: tabArgs({ env: this.ctxEnv(ctx), model: walkModel() }), task: prompt });
+          run("tab.new", { space: this.spaceFor(ctx, this.root), folder: this.root ?? location().cwd, name: tabName(origin?.repo ?? this.root, origin ? `PR #${origin.number}` : "review"), argv: tabArgs({ env: this.ctxEnv(ctx), model: walkModel() }), task: prompt });
           this.note = `${what}: started a new Claude tab`;
         }
         done(cx);
@@ -1342,6 +1349,8 @@ export default class PrReview extends View {
     const pr = this.part === "mini" ? shared("review.minimized")?.target : this.prSel, w = shared("review.worktree");
     return pr ? (w?.url === pr.url ? w.path ?? null : null) : !this.part && this.branchPicked ? this.root ?? null : null;
   }
+  // A file head's path to drag onto a terminal: the file in that checkout, or null (views.js dragPath).
+  fileDragPath(f) { return dragPath(this.checkoutRoot(), f); }
   // A PR from a source that is not trusted: a click opens the file alone, never its folder.
   editorForeign() { const pr = this.part === "mini" ? shared("review.minimized")?.target : this.prSel; return pr ? !this.trustedPr(pr) : false; }
   // A click: one process; the link says "Opening …" for three seconds, a failure is a toast (editor-view.js startOpen).
@@ -1379,6 +1388,11 @@ export default class PrReview extends View {
   // Removed or closed: Go to stops offering "Review PR" (a stale handler would hand PRs to nobody). Another copy
   // that still runs announces them again on its next render.
   async close() {
+    // The folders this copy watched are let go: the shown repos (watch) and the review's findings and replies.
+    this.closed = true;
+    const watches = [this.findWatch, this.replyWatch, ...(this.watching?.values() ?? [])];
+    this.watching?.clear();
+    for (const w of watches) w?.cancel();
     if (!this.announces) return;
     setShared("goto.handlers.review", null);
     setShared("goto.items.review", null);
@@ -1533,9 +1547,10 @@ export default class PrReview extends View {
       .when(tab === "diff" && this.files.length > 0, (e) => e.child(pill(`pr-wrap-${this.uid}`, t, shared("review.wrap") === true ? "Wrap on" : "Wrap off", () => setShared("review.wrap", shared("review.wrap") !== true), false,
         "Long lines wrap, or are cut at the panel's edge. The review's Line wrap switch is the same setting.")))
       .when(tab === "diff" && Boolean(this.open && !this.patch), (e) => e
-        .child(pill(`mode-${this.uid}`, t, this.mode === "file" ? "Diff view" : "File view", (_e, cx) => this.setMode(this.mode === "file" ? "diff" : "file", cx), false, "Switch between the diff and the whole file")))
-      // The open file at the picked line, in the person's editor: for a branch, and for a PR whose checkout the review made.
-      .children(tab === "diff" && this.open ? editorLink(this, t, `file-${this.uid}`, { root: this.checkoutRoot(), file: this.open, line: (this.sel !== null && this.rows[this.sel]?.number) || this.rows.find((r) => r.number)?.number || null, foreign: this.editorForeign(), where: this.prSel ? "in the checkout of this PR" : "in this checkout" }, cx) : []);
+        .child(pill(`mode-${this.uid}`, t, this.mode === "file" ? "Diff view" : "File view", (_e, cx) => this.setMode(this.mode === "file" ? "diff" : "file", cx), false, "Switch between the diff and the whole file")));
+    // The open file at the picked line, in the person's editor: for a branch, and for a PR whose checkout the review
+    // made. It stands at the file's name in the list (the open file's row), its ▾ at the link.
+    const fileLink = () => editorLink(this, t, `file-${this.uid}`, { root: this.checkoutRoot(), file: this.open, line: (this.sel !== null && this.rows[this.sel]?.number) || this.rows.find((r) => r.number)?.number || null, foreign: this.editorForeign(), where: this.prSel ? "in the checkout of this PR" : "in this checkout" }, cx);
     // Picking: reviews in progress and the sources' list in one scroll, so nothing stacks over anything.
     // The bodies are built only when they are shown (pickBody, files, diffBody are asked for below): a frame with a
     // PR chosen built the whole list of PRs before, and one with the list shown every file and diff line.
@@ -1566,10 +1581,12 @@ export default class PrReview extends View {
     const allFiles = this.files.length <= FILES_MAX || this.moreFiles === this.files || this.files.findIndex((f) => f.path === this.open) >= FILES_MAX, listed = allFiles ? this.files : this.files.slice(0, FILES_MAX);
     const files = () => div().flex_none().h(Math.max(44, Math.min(this.files.length * 28 + 12, Math.max(200, Math.floor((this.panelH ?? 0) * 0.4))))).relative() // every file, up to 40 % of the panel.border_b(1).border_color(t.border)
       .child(v_flex().id(`pr-files-${this.uid}`).absolute().inset_0().overflow_y_scroll().p(6).children(listed.map((f) => {
-        const parts = f.path.split("/"), name = parts.pop(), n = this.comments.filter((c) => c.file === f.path).length;
-        return h_flex().id(`f-${f.path}`).h(28).flex_none().px(8).gap(8).items_center().rounded(7).cursor_pointer().tooltip(f.path)
+        const parts = f.path.split("/"), name = parts.pop(), n = this.comments.filter((c) => c.file === f.path).length, drag = this.fileDragPath(f);
+        return h_flex().id(`f-${f.path}`).h(28).flex_none().px(8).gap(8).items_center().rounded(7).cursor_pointer().tooltip(drag ? `${f.path}. Drag it onto a terminal to paste its path.` : f.path)
+          .when(Boolean(drag), (e) => e.drag_paths([drag])) // a click still picks the file
           .when(this.open === f.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.fh.focus(); this.askTop = false; this.pick(f.path, cx); })
-          .child(h_flex().flex_1().min_w(0).child(div().text_color(t.dim).truncate().child(parts.length ? parts.join("/") + "/" : "")).child(div().min_w(0).truncate().child(name)))
+          .child(h_flex().flex_1().min_w(0).items_center().child(div().text_color(t.dim).truncate().child(parts.length ? parts.join("/") + "/" : "")).child(div().min_w(0).truncate().child(name))
+            .when(this.open === f.path, (e) => e.child(h_flex().flex_none().ml(8).children(fileLink()))))
           .children(rowMarks(this.fileMarks?.get(f.path), null).map((m) => chip(t, markLabel(div, t, m), t[m.color] ?? t.muted, m.security, `f-r-${f.path}`,
             `The highest severity among this file's unresolved findings, from the cached analysis and reviews${m.words ? `: ${m.words}` : ""}. Open the review to see them.`)))
           .when(n > 0, (e) => e.child(div().id(`f-c-${f.path}`).tooltip(`${n} pending ${n === 1 ? "comment" : "comments"} on this file`).text_size(TYPE.micro).text_color(t.accent).child(`● ${n}`)))

@@ -10,6 +10,10 @@ assert.equal(L.feederIn(tree(["mini"])), true, "the chip feeds");
 assert.equal(L.feederIn(tree(["bar"])), true, "the review's bar feeds");
 assert.equal(L.feederIn(tree([null, "review"])), false, "the panel and the review do not; another mod's bar is not ours");
 assert.equal(L.feederIn(null), false);
+// A feeding copy in a hidden node (itself, or a column around it) draws no frame: it does not count.
+{ const t = tree(["mini"]), own = structuredClone(t), around = structuredClone(t);
+  own.children[1].floating[0].hidden = true; around.children[1].hidden = true;
+  assert.deepEqual([L.feederIn(own), L.feederIn(around), L.feederIn({ ...t, hidden: false })], [false, false, true]); }
 
 // In a copy's init there is no layout yet: nothing is asked then either.
 S.layout = null; S.spaces = [{ id: "s0", active: true }];

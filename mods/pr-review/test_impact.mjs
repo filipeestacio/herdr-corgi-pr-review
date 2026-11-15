@@ -64,6 +64,18 @@ const moved = fileChanges([hunk("a.py", 4, ["-def total(items):", "+def total(it
 assert.equal(changedSymbols("a.py", [sym("total", "function", 4, 9)], moved)[0].sig, null);
 const multi = fileChanges([hunk("a.py", 5, ["     items,", "+    rate,", " ):"])]).get("a.py");
 assert.ok(changedSymbols("a.py", [sym("total", "function", 4, 12, { sigEnd: 7 })], multi)[0].sig, "a parameter added on a line of its own");
+// A symbol's name is the PR's text and is looked for as written, never read as a pattern: Go's method names and C++
+// operators have ( ) * +, a name that is no pattern at all does not throw, and one built to make a pattern search
+// for seconds ((a+)+b against a long line of a's) is found, or not, at once.
+{
+  const decl = (name, old, now) => changedSymbols("a.go", [sym(name, "function", 4, 9)], fileChanges([hunk("a.go", 4, [`-${old}`, `+${now}`, "+  x"])]).get("a.go"))[0].sig;
+  assert.deepEqual(decl("(*Server).Handle", "func (*Server).Handle(w) {", "func (*Server).Handle(w, r) {"), { old: "func (*Server).Handle(w) {", now: "func (*Server).Handle(w, r) {" });
+  assert.deepEqual(decl("operator++", "T& operator++() {", "T& operator++(int) {"), { old: "T& operator++() {", now: "T& operator++(int) {" });
+  assert.equal(decl("(*Server).Handle", "func xServeryHandle(w) {", "func (*Server).Handle(w, r) {").old, null, "the dot and the star are themselves, not any character");
+  assert.equal(decl("foo(", "func other() {", "func foo(() {").old, null, "a name that is no pattern does not throw");
+  const t = performance.now(), slow = decl("(a+)+b", `func ${"a".repeat(40)}c() {`, "func (a+)+b() {");
+  assert.ok(slow.old === null && performance.now() - t < 200, `a name built as a slow pattern: ${Math.round(performance.now() - t)} ms`);
+}
 
 // ---- callers and their marks
 assert.ok(isTestPath("shop/tests/test_price.py") && isTestPath("src/test/java/A.java") && isTestPath("web/cart.spec.ts") && isTestPath("pkg/cart_test.go") && !isTestPath("shop/price.py") && !isTestPath("src/contest/a.py"));

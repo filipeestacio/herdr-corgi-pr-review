@@ -4,7 +4,7 @@
 
 <p align="center"><img src="preview.png" width="88%" alt="The review layout's overview of a demo PR" /></p>
 
-<p align="center"><sub>✓&nbsp;Free,&nbsp;MIT &nbsp;·&nbsp; ✓&nbsp;Runs&nbsp;locally &nbsp;·&nbsp; ✓&nbsp;herdr-app&nbsp;0.1.14+</sub></p>
+<p align="center"><sub>✓&nbsp;Free,&nbsp;MIT &nbsp;·&nbsp; ✓&nbsp;Runs&nbsp;locally &nbsp;·&nbsp; ✓&nbsp;herdr-app&nbsp;0.1.16+</sub></p>
 
 Part of [Corgi](https://github.com/saefty/herdr-corgi), a set of Herdr mods that plug into each other.
 
@@ -218,10 +218,19 @@ yet, so a file may open one line off there (one number, `LINE_BASE` in `editor.j
 open in IntelliJ IDEA and the rest in VS Code; a
 folder goes by the kind of project. The ▾ next to the link picks another editor for that project, and the pick is
 shared with the other Corgi mods. For a PR from someone else that you have not trusted, only single files are
-opened, never the folder and never a build or workspace file, because an editor can run a project's code when it
-opens those. More editors: `"editors": [{"id", "name", "folder": [argv…], "file": [argv…]}]` in
+opened, never the folder: before the click starts the editor, git and the disk are asked what the path is in the
+checkout, and only a tracked regular file is opened, by its real path, not a folder, a symlink or a submodule (also
+not where two names of the PR are one name on a disk that ignores case). A build, project or workspace file
+(any Gradle script, `pom.xml`, `build.xml`, `Makefile`, `package.json`, `.iml`, `.ipr`, `.code-workspace`, and what
+lies in `.vscode/`, `.idea/` or `.devcontainer/`) is not opened either, and no other build script (`.kts`,
+`.groovy`) goes to IntelliJ IDEA, because an editor can run a project's code when it opens those. More editors: `"editors": [{"id", "name", "folder": [argv…], "file": [argv…]}]` in
 `pr-review.config.json`, with `{dir}`, `{file}` and `{line}`. With `"dryRun": true`, or with a file `editor.dry-run` in the
 Herdr home, no editor is started: the click says what it would have run.
+
+**Drag a file onto a terminal.** A file's name in the big diff's file head and a file's row in the panel can be
+dragged onto a terminal: Herdr types the file's path in the local checkout there, quoted and without Enter. A click
+does what it did before. Nothing drags without a local checkout, for a file the PR deletes, or for a symlink the PR
+adds or changes.
 
 Language servers are optional. Each turns on go-to-definition, hover and the Architecture page's Impact picture
 (who calls what the PR changes) for its language. Without one, those three are off for that language and nothing
@@ -283,9 +292,27 @@ Optional, in `~/.config/herdr-app/pr-review.config.json`:
 { "language": "English", "cloneRoot": "~/code", "globalRules": "PR titles follow Conventional Commits.", "ledger": null, "dryRun": false }
 ```
 
-`language` is what the AI writes in; `cloneRoot` is where PR checkouts are cloned on request; `globalRules` are
-conventions every PR is checked against; `ledger` is a folder for a JSONL usage ledger of every LLM call; `dryRun`
-makes "Submit review" write the GitHub payload to `pr-data/review-dry-run.json` instead of posting it.
+`language` is what the AI writes in; `cloneRoot` is the folder where a PR's repository is looked for and, when you
+click "Clone to …", cloned into (default `~/code`; with `"cloneRoot": "~/Work/Claude"` a clone goes to
+`~/Work/Claude/<repo>`); `globalRules` are conventions every PR is checked against; `ledger` is a folder for a JSONL
+usage ledger of every LLM call; `dryRun` makes "Submit review" write the GitHub payload to
+`pr-data/review-dry-run.json` instead of posting it.
+
+### Where checkouts go
+
+The mod makes no folder inside your repositories. The checkout of the PR head that a review reads, and the checkout
+of every fix, verify and probe agent, are git worktrees in Herdr's folder for worktrees, the one its own New worktree
+uses: `<worktrees.directory>/<repo>/<branch>`, with a `-` for every `/` in the branch name. The review's checkout
+sits on no branch and is called `pr-review`. The folder is set in Herdr's `settings.json` and defaults to
+`~/.herdr/worktrees`:
+
+```json
+{ "worktrees": { "directory": "~/Developer/worktrees" } }
+```
+
+A review checkout that an earlier version made at `<clone>/.worktrees/review` is still used and is never removed by
+the mod. To have that repository's review checkout in the folder above, remove the old one yourself:
+`git -C <clone> worktree remove .worktrees/review`.
 
 ## Customize
 

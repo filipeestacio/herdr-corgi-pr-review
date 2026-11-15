@@ -35,12 +35,12 @@ import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCAL
 import { ghMd, mdBlocks } from "./views.js"; // GitHub comments as GitHub shows them
 import { wrapCode, codeCols, sliceSpans } from "./views.js"; // long lines wrap
 import { rowMarks, riskOfCounts, placeOf, patchSymlink } from "./views.js"; // the minimized chip's mark, from the registry entry; a card's place
-import { editorFor, editorMark, editorLink, editorCommand, openEditorMenu, editorFull } from "./editor-view.js"; // "Open in <Editor>"
+import { editorFor, editorMark, editorLink, editorCommand, openEditorMenu, editorFull, editorMenuTip } from "./editor-view.js"; // "Open in <Editor>"
 import { pageBadge, signOf, signEl, markLabel } from "./views.js"; // one sign for severity and certainty: nav rows, the bar, rows, chips
 import { pairRows, pairSide, HALF_GUTTER, diffModeOf, oneSided, stackOf, chipAt, textW } from "./views.js"; // side by side; the bar's stack
 import { mdTarget, secPicture, secBlast, resNoPicture } from "./views.js"; // Copy as Markdown: what it copies on each page; the Security page's picture and lines
 const MD_W = textW("⧉ Copy as Markdown…", TYPE.small) + 22; // the button's width on a layer's head, where clicks are placed by x
-import { plainText } from "./pr.js";
+import { plainText, tabName } from "./pr.js";
 import { pollDue, pollAfter, windowActive } from "./pr.js"; // background fetches (ghTick)
 import { hasSources, archBands, widthAt } from "./arch.js";
 import { archMarks, transitionText, MARK_CARD_ROWS } from "./arch.js";
@@ -432,7 +432,7 @@ export const ReviewMode = {
     // Reviewer runs and the fixing agent's reports land in pr-data/findings: follow that folder.
     cx.spawn(async (cx) => {
       await exec("mkdir", ["-p", findDir()]).catch(() => null);
-      for (;;) { await watchFolder(findDir()).catch(() => null); await this.loadFindings(cx); }
+      while (!this.closed) { this.findWatch = watchFolder(findDir()); await this.findWatch.catch(() => null); await this.loadFindings(cx); } // close() cancels it (main.js)
     });
     this.press = { x: 0, w: 0, shift: false }; this.items = []; this.at = {};
     // The inline composer (one at a time, under the selection) and the Finish-your-review popover's summary.
@@ -450,7 +450,7 @@ export const ReviewMode = {
     this.replyIn.on("submit", (_e, cx) => this.followup(cx));
     cx.spawn(async (cx) => {
       await exec("mkdir", ["-p", repliesDir()]).catch(() => null);
-      for (;;) { await watchFolder(repliesDir()).catch(() => null); await this.loadThreads(cx); }
+      while (!this.closed) { this.replyWatch = watchFolder(repliesDir()); await this.replyWatch.catch(() => null); await this.loadThreads(cx); }
     });
     this.ghPoll = pollAfter(null, true, Date.now()); // opening asks GitHub (onSource, refresh): the first tick is GH_MS later
     cx.timer.every(60000, (cx) => this.ghTick(cx)); // a time check; GitHub at most every GH_MS (ghTick)
@@ -685,7 +685,8 @@ export const ReviewMode = {
     this.publish(); cx.notify();
   },
 
-  // The PR head as files (worktree.py: a detached worktree of a dedicated clone under the clone root), for reviewers,
+  // The PR head as files (worktree.py: a detached worktree of a dedicated clone under the clone root, kept in Herdr's
+  // folder for worktrees: <worktrees.directory>/<repo>/pr-review, never inside the clone), for reviewers,
   // whole files and the LSP bridge: shared("review.worktree") = {url, head, path}. The current branch: its repo root.
   // clone: the "Clone to …" click; never otherwise (worktree.py exits 3 with the folder it would use).
   // Someone else's PR is untrusted: its language servers run in safe mode (no build scripts, proc macros, project
@@ -727,6 +728,9 @@ export const ReviewMode = {
     if (yes) warm(w.path, (this.patch ?? []).map((f) => f.path)); // Java needs ~25 s cold
   },
 
+  // Herdr's folder for worktrees as its settings.json has it now (read when a checkout is made, as Herdr does).
+  async wtDir() { return TH.worktreesDir(await readTextFile(`${appHome()}/settings.json`).catch(() => null), home()); },
+
   makeWorktree(cx, clone = false) {
     const url = this.prSel.url, want = this.prSel.headSha ?? null, job = `${url}|${want}|${clone}`;
     if (this.wtIn === job) return; // the same checkout is being made
@@ -741,7 +745,7 @@ export const ReviewMode = {
     this.wtIn = job;
     cx.spawn(async (cx) => {
       const roots = C.cloneRoots(ctxDoc(), this.ctxId(), this.cfg?.cloneRoot ?? "~/code").flatMap((d) => ["--root", d.replace(/^~(?=\/|$)/, home())]);
-      const env = this.ctxEnv(this.ctxId()), argv = [...env, "python3", `${appHome()}/mods/pr-review/worktree.py`, url, ...roots, ...local, ...(clone ? ["--clone"] : [])];
+      const env = this.ctxEnv(this.ctxId()), argv = [...env, "python3", `${appHome()}/mods/pr-review/worktree.py`, url, ...roots, "--worktrees", await this.wtDir(), ...local, ...(clone ? ["--clone"] : [])];
       // The checkout from last time still at this head (its HEAD file says so): no fetch, no checkout. A new head
       // (checkHead) comes back here with another sha and runs worktree.py.
       const had = shared("review.worktree"), same = !clone && want && had?.url === url && had.head === want && !had.local && await worktreeAt(had.path, want);
@@ -1398,14 +1402,18 @@ export const ReviewMode = {
         return cx.notify(); // a question changes nothing about the finding: it stays unresolved
       }
       if (plan.kind === "new" && plan.where) {
-        run("tab.new", { space: this.spaceFor(this.ctxId(), origin?.cwd, this.root), folder: plan.where, name: `Ask · PR #${origin?.number ?? ""}`,
+        // Asked from the review, which shows no terminals: the tab starts in the background (focus: false), so the
+        // space and tab shown before the review are still the ones shown after it. Its name says where to find it.
+        const name = tabName(origin?.repo ?? this.root, origin?.number ? `ask PR #${origin.number}` : "ask");
+        run("tab.new", { space: this.spaceFor(this.ctxId(), origin?.cwd, this.root), folder: plan.where, name, focus: false,
           argv: TH.tabArgs({ env: this.ctxEnv(this.ctxId()), model: model(), ask: true, trusted: this.trustedPr() }), task: text });
-        this.note = "Started a new agent tab with your question. The finding stays as it is.";
+        this.note = `Started the agent tab "${name}" in the background with your question. The finding stays as it is.`;
         return cx.notify();
       }
       await copyText(text);
       if (!agent) {
-        if (plan.kind === "resume") run("tab.new", { space: this.spaceFor(this.ctxId(), origin.cwd), folder: origin.cwd, name: `PR #${origin.number}`,
+        // Resumed to paste the finding there: this tab takes the focus, so leaving the review lands on it.
+        if (plan.kind === "resume") run("tab.new", { space: this.spaceFor(this.ctxId(), origin.cwd), folder: origin.cwd, name: tabName(origin.repo, `PR #${origin.number}`),
           argv: [...this.ctxEnv(origin.sessionContext ?? this.ctxId()), "claude", "--resume", origin.session] });
         this.note = plan.kind === "resume" ? "Resumed the PR's session in a new tab; the finding is on the clipboard (⌘V)" : "No checkout to start an agent in: the finding is on the clipboard";
         return cx.notify();
@@ -2155,8 +2163,9 @@ export const ReviewMode = {
   // The preview with the target choice; prompt(sub) gives the text for a sub-agent (sub: {branch, path, head}: its
   // worktree and the PR head it starts from) or, with null, for the main agent.
   previewFix(cx, { what, own, ownLabel, items, labels, prompt, sent, pool = null, alone = 0, target = null }) {
-    const ids = items.map((x) => x.id), branch = TH.fixBranch(this.prSel?.number, ids), path = TH.fixPath(home(), this.prSel?.repo, branch), base = this.fixBase();
+    const ids = items.map((x) => x.id), branch = TH.fixBranch(this.prSel?.number, ids), repo = this.prSel?.repo, base = this.fixBase();
     cx.spawn(async (cx) => {
+      const path = TH.fixPath(await this.wtDir(), repo, branch);
       const at = base ? (await exec("git", ["-C", base, "rev-parse", "HEAD"], { timeout: 20000 }).catch(() => null))?.stdout?.trim() || null : null;
       const head = TH.fixStart({ local: Boolean(this.worktree?.local), prHead: this.headNow(), checkoutHead: at });
       const { label } = this.sendAgent(), sub = { branch, path, head };
@@ -3436,11 +3445,17 @@ export const ReviewMode = {
   // no model). Without a checkout: what the patch itself holds (added and deleted files). With one: the changed
   // files and, for Terraform, the other .tf files of their folders, read from the checkout. Which of them exist is
   // asked through safegit.py (ls-files -s: tracked regular files only, so a link out of the checkout is not followed).
+  // The files are the PR's own text, read in a task of its own: a file the reader fails on (or one written to make
+  // it fail) costs this section, never the opening of the PR (onSource goes on to the analysis and the findings).
   loadInfra(cx) {
     const url = this.prSel?.url, patch = this.patch ?? [], w = this.worktree, files = patch.filter((f) => isIac(f.path) && !f.binary);
-    this.infra = files.length ? infraModel(files) : null; this.infraMemo = null;
-    if (!files.length || !w?.path) return;
+    const model = (...a) => { try { return infraModel(...a); } catch { return null; } };
+    this.infra = null; this.infraMemo = null;
+    if (!files.length) return;
     cx.spawn(async (cx) => {
+      if (this.prSel?.url !== url || this.patch !== patch) return;
+      this.infra = model(files); this.infraMemo = null; cx.notify();
+      if (!w?.path) return;
       const tf = [...new Set(files.filter((f) => /\.tf(vars)?$/.test(f.path)).map((f) => dirOf(f.path)))], want = files.filter((f) => f.status !== "added" && f.status !== "deleted").map((f) => f.path);
       if (!tf.length && !want.length) return;
       const r = await exec("python3", [`${appHome()}/mods/pr-review/safegit.py`, w.path, "ls-files", "-s", "--", ...tf.map((d) => `${d ? `${d}/` : ""}*.tf`), ...want], { timeout: 30000 }).catch(() => null);
@@ -3450,7 +3465,7 @@ export const ReviewMode = {
       // for a megabyte of .tf): a module larger than that is read in part; split the parse over timers if it matters.
       for (const p of listed.filter((x) => want.includes(x) || (/\.tf$/.test(x) && tf.includes(dirOf(x)))).sort((x, y) => /\.tf$/.test(y) - /\.tf$/.test(x)).slice(0, 200)) { const text = await readTextFile(`${w.path}/${p}`).catch(() => null); if (typeof text === "string") texts.set(p, text); }
       if (this.prSel?.url !== url || this.patch !== patch) return;
-      this.infra = infraModel(files.map((f) => ({ ...f, head: texts.get(f.path) })), [...texts].filter(([p]) => !files.some((f) => f.path === p)).map(([path, text]) => ({ path, text })));
+      this.infra = model(files.map((f) => ({ ...f, head: texts.get(f.path) })), [...texts].filter(([p]) => !files.some((f) => f.path === p)).map(([path, text]) => ({ path, text })));
       this.infraMemo = null; cx.notify();
     });
   },
@@ -4953,7 +4968,7 @@ export const ReviewMode = {
       busy.delete(id);
       const doc = { ...modelsDoc(), [id]: { at: Date.now(), claude: out.claude ?? [], codex: out.codex ?? [] } };
       setShared("review.models", doc);
-      writeTextFile(modelsFile(), JSON.stringify(doc)).catch(() => null);
+      readTextFile(modelsFile()).catch(() => null).then((before) => writeTextFile(modelsFile(), JSON.stringify(doc), before)).catch(() => null); // over the list from before (told nothing, writeTextFile leaves an existing file as it is)
       cx.notify();
     });
   },
@@ -5428,9 +5443,12 @@ export const ReviewMode = {
 
         // "IntelliJ ↗" and its ▾ as zones of fixed width (onItem finds them by x); "Opening IntelliJ …" for three seconds after a click.
         .children(((m) => (m ? [div().id(`rv-fh-ed-${f.path}`).tooltip(m.tip).accessibility_label(`Open in ${editorFull(m.id)}`).w(FILE_EDIT).flex_none().truncate().text_size(TYPE.small).text_color(m.busy ? t.dim : t.muted).child(m.text),
-          div().id(`rv-fh-edm-${f.path}`).tooltip("Other editors, Copy path, Look again").accessibility_label("Other editors").w(FILE_EDIT_MORE).flex_none().text_size(TYPE.small).text_color(t.muted).child("▾")] : []))(this.fileEditMark(f)))
+          div().id(`rv-fh-edm-${f.path}`).tooltip(editorMenuTip).accessibility_label("Other editors").w(FILE_EDIT_MORE).flex_none().text_size(TYPE.small).text_color(t.muted).child("▾")] : []))(this.fileEditMark(f)))
         .child(div().id(`rv-fh-st-${f.path}`).tooltip(`File ${f.status} (${letter} in the file tree)`).w(70).flex_none().text_size(TYPE.small).font_semibold().text_color(t[col]).child(`${String(f.status ?? "")[0]?.toUpperCase() ?? ""}${String(f.status ?? "").slice(1)}`))
-        .child(mono(div()).flex_1().min_w(0).truncate().font_semibold().text_size(TYPE.body).child(f.status === "renamed" ? `${f.from} → ${f.path}` : f.path))
+        // The name drags as the file's path in the checkout (main.js fileDragPath); a click on it still folds the file.
+        .child(((drag) => mono(div()).flex_1().min_w(0).truncate().font_semibold().text_size(TYPE.body)
+          .when(Boolean(drag), (e) => e.id(`rv-fh-path-${f.path}`).tooltip("Drag this onto a terminal to paste the file's path.").drag_paths([drag]))
+          .child(f.status === "renamed" ? `${f.from} → ${f.path}` : f.path))(this.fileDragPath(f)))
         .when(n > 0, (e) => e.child(div().id(`rv-fh-cm-${f.path}`).tooltip(`${n} pending comments in this file`).px(8).text_size(TYPE.small).text_color(t.accent).child(`● ${n}`)))
         .child(div().id(`rv-fh-ad-${f.path}`).tooltip(`${f.add} lines added`).px(4).text_size(TYPE.small).text_color(t.ansi2).child(`+${f.add}`)).child(div().id(`rv-fh-dl-${f.path}`).tooltip(`${f.del} lines removed`).pl(2).pr(16).text_size(TYPE.small).text_color(t.ansi1).child(`−${f.del}`));
     }
@@ -6015,8 +6033,9 @@ export const ReviewMode = {
   verifyAgent(list, cx) {
     list = (list ?? []).filter(Boolean);
     if (!list.length || !this.prSel) return;
-    const ids = list.map((f) => f.id), branch = TH.verifyBranch(this.prSel.number, ids), path = TH.fixPath(home(), this.prSel.repo, branch), base = this.fixBase();
+    const ids = list.map((f) => f.id), branch = TH.verifyBranch(this.prSel.number, ids), repo = this.prSel.repo, base = this.fixBase();
     cx.spawn(async (cx) => {
+      const path = TH.fixPath(await this.wtDir(), repo, branch);
       const at = base ? (await exec("git", ["-C", base, "rev-parse", "HEAD"], { timeout: 20000 }).catch(() => null))?.stdout?.trim() || null : null;
       const head = TH.fixStart({ local: Boolean(this.worktree?.local), prHead: this.headNow(), checkoutHead: at });
       const context = verifyContextMd(list, { pr: this.prSel, head: head ?? "", ai: this.ai, statusOf: (f) => this.fstatus(f), threats: this.ai?.threats ?? this.find.runs?.security?.threats ?? null });
@@ -6118,11 +6137,11 @@ export const ReviewMode = {
   startProbe(p, cx) {
     const base = this.fixBase();
     if (!base) { this.note = "Not started: the PR has no local checkout to make the probe's checkout from"; return cx.notify(); }
-    const branch = TH.probeBranch(this.prSel.number, p.id), path = TH.fixPath(home(), this.prSel.repo, branch), key = this.probeKey(p.id); // one branch per start
+    const branch = TH.probeBranch(this.prSel.number, p.id), repo = this.prSel.repo, key = this.probeKey(p.id); // one branch per start
     this.updateDeep(cx, (d) => ({ ...d, probes: { ...(d.probes ?? {}), [key]: { state: "running", at: Date.now() } } }));
     cx.notify();
     cx.spawn(async (cx) => {
-      const git = (args) => exec("git", ["-C", base, ...args], { timeout: 60000 });
+      const git = (args) => exec("git", ["-C", base, ...args], { timeout: 60000 }), path = TH.fixPath(await this.wtDir(), repo, branch);
       try {
         await git(["worktree", "prune"]); // worktrees of starts that were cut off (their folders are gone)
         const { head } = await this.addWorktree(base, { branch, path, head: this.headNow() });
@@ -6248,7 +6267,7 @@ export const ReviewMode = {
     return root && this.edOn && place ? editorLink(this, t, id, { root, ...place, foreign: this.editorForeign(), where: "in the checkout of this PR" }, null, true) : [];
   },
 
-  // ---- fix worktrees left on disk (~/.herdr/worktrees/<repo>/fix-…): nothing removes them by age, because one may
+  // ---- fix worktrees left on disk (<Herdr's worktrees folder>/<repo>/fix-…): nothing removes them by age, because one may
   // hold a fix that exists nowhere else. "Fix worktrees…" lists them with what would be lost; a click removes one,
   // and one with commits or changes only there asks for a second click.
   listWorktrees(cx, at = null) {
@@ -6256,7 +6275,7 @@ export const ReviewMode = {
     if (!base) { this.note = "This PR has no local checkout, so there are no fix worktrees to list."; return cx.notify(); }
     const git = (cwd, args) => exec("git", ["-C", cwd, ...args], { timeout: 30000 }).catch(() => ({ code: 1, stdout: "" }));
     cx.spawn(async (cx) => {
-      const list = TH.leftWorktrees((await git(base, ["worktree", "list", "--porcelain"])).stdout, home(), this.prSel?.repo);
+      const list = TH.leftWorktrees((await git(base, ["worktree", "list", "--porcelain"])).stdout, [...new Set([await this.wtDir(), `${home()}/.herdr/worktrees`])], this.prSel?.repo);
       this.wts = await Promise.all(list.map(async (w) => {
         // Commits of its branch that no other branch, tag or remote has (not --all: that counts this worktree's own
         // HEAD as a ref, and nothing would ever be "only there"); changes not committed.

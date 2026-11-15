@@ -845,6 +845,11 @@ export function schemaPicture(model, findings = [], fit = false, lay = true) {
 
 // ---- Copy as Markdown: the section's lines. table(head, rows) is markdown.js's own, handed in so this file stays below it.
 
+// A text from the PR in the copied Markdown: one line, as a code span. Pasted into GitHub, a code span is inert: no
+// mention notifies anyone, no image is fetched, no heading or fence starts, whatever a name or a value in the PR says.
+const mdCode = (x) => { const s = squash(x ?? "").replace(/`/g, "'"); return s ? `\`${s}\`` : ""; };
+// … and inside the Mermaid block: one line, no backtick (a fence would end the block) and no double quote.
+const mmText = (x) => squash(x ?? "").replace(/[`"]/g, "'");
 const erWord = (x, fallback) => String(x ?? "").replace(/[^A-Za-z0-9_()[\]-]+/g, "_").replace(/^[^A-Za-z_]+/, "") || fallback;
 const erName = (x) => String(x).replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^[^A-Za-z_]+/, "") || "table";
 /** The tables as a Mermaid erDiagram: a table's and a column's state is a comment, as erDiagram has no classes. */
@@ -852,28 +857,28 @@ export function schemaMermaid(model) {
   const name = new Map(model.cards.map((c) => [c.id, erName(c.name)])), out = ["erDiagram"];
   for (const c of model.cards) {
     const cols = c.cols.filter((x) => c.status === "added" || x.status !== "unchanged" || x.flags.pk || x.flags.fk), rest = c.cols.length - cols.length;
-    out.push(`  %% ${c.name}: ${c.status}${c.was ? `, renamed from ${c.was}` : ""}${rest > 0 ? `, ${rest} unchanged columns left out` : ""}`);
+    out.push(`  %% ${mmText(c.name)}: ${c.status}${c.was ? `, renamed from ${mmText(c.was)}` : ""}${rest > 0 ? `, ${rest} unchanged columns left out` : ""}`);
     if (!cols.length) { out.push(`  ${name.get(c.id)}`); continue; }
     out.push(`  ${name.get(c.id)} {`);
-    for (const x of cols) { const keys = [x.flags.pk && "PK", x.flags.fk && "FK", x.flags.unique && "UK"].filter(Boolean).join(", "), say = c.status === "added" || x.status === "unchanged" ? "" : [x.status, colDetail(x)].filter(Boolean).join(": ").replace(/"/g, "'");
+    for (const x of cols) { const keys = [x.flags.pk && "PK", x.flags.fk && "FK", x.flags.unique && "UK"].filter(Boolean).join(", "), say = c.status === "added" || x.status === "unchanged" ? "" : mmText([x.status, colDetail(x)].filter(Boolean).join(": "));
       out.push(`    ${erWord(x.type, "unknown")} ${erWord(x.name, "column")}${keys ? ` ${keys}` : ""}${say ? ` "${say}"` : ""}`); }
     out.push("  }");
   }
-  for (const e of model.edges) out.push(`  ${name.get(e.from)} ${e.how === "n to m" ? "}o" : e.how === "1 to 1" ? "|o" : "}o"}${e.status === "removed" ? ".." : "--"}${e.how === "n to m" ? "o{" : "||"} ${name.get(e.to)} : "${e.label.replace(/"/g, "'")}"`);
+  for (const e of model.edges) out.push(`  ${name.get(e.from)} ${e.how === "n to m" ? "}o" : e.how === "1 to 1" ? "|o" : "}o"}${e.status === "removed" ? ".." : "--"}${e.how === "n to m" ? "o{" : "||"} ${name.get(e.to)} : "${mmText(e.label)}"`);
   return out;
 }
 export function schemaMd(model, { table, findings = [], h = "##" } = {}) {
   if (!model) return [];
   const arch = schemaArch(model), own = schemaMarks(model, findings).nodes, name = new Map(model.cards.map((c) => [c.id, c.name])), found = (c) => { const m = own.get(c.id); return m ? `${m.severity}: ${m.findings.map((f) => squash(f.title)).join("; ")}` : ""; };
   // Every row a card can show, in full: its state, the column with its type and marks, what changed, the place.
-  const rowsOf = (c) => cardRows(c, model.risks, Infinity).filter((r) => r.kind !== "head").map((r) => [c.name, c.status, r.kind === "col" ? [r.name, r.type, ...r.marks.map((m) => SCHEMA_MARKS.find(([k]) => k === m)[1])].filter(Boolean).join(" ") : "",
-    r.kind === "col" ? [r.state, r.text].filter(Boolean).join(": ") : [r.state, r.text].filter(Boolean).join(" "), r.risk?.length ? "may be risky" : "", r.at ? `\`${r.at}\`` : ""]);
+  const rowsOf = (c) => cardRows(c, model.risks, Infinity).filter((r) => r.kind !== "head").map((r) => [mdCode(c.name), c.status, mdCode(r.kind === "col" ? [r.name, r.type, ...r.marks.map((m) => SCHEMA_MARKS.find(([k]) => k === m)[1])].filter(Boolean).join(" ") : ""),
+    mdCode(r.kind === "col" ? [r.state, r.text].filter(Boolean).join(": ") : [r.state, r.text].filter(Boolean).join(" ")), r.risk?.length ? "may be risky" : "", mdCode(r.at)]);
   return [`${h} Schema changes (${model.total})`, "", SCHEMA_SOURCE, "",
     ...(model.cards.length ? [`${schemaSummary(model)}${arch.folded ? ` ${foldText(arch.folded)}` : ""} A table's and a column's state is a comment in the diagram; a line points from a foreign key to the table it references.`, "", "```mermaid", ...schemaMermaid(model), "```", "",
       ...table(["Table", "State", "Column", "Change", "Risk", "Where"], model.cards.flatMap(rowsOf)),
-      ...(model.cards.some(found) ? [...table(["Table", "Unresolved findings"], model.cards.filter(found).map((c) => [c.name, found(c)]))] : []),
-      ...(model.edges.length ? [`${h}# Relations (${model.edges.length})`, "", ...model.edges.map((e) => `- ${edgeText(e, (id) => name.get(id))} (\`${e.at}\`)`), ""] : [])] : []),
-    ...(model.notes.length ? [...model.notes.map((n) => `- ${n}`), ""] : []),
-    ...(model.unread.length ? [...model.unread.map((u) => `- ${unreadText(u)}`), ""] : []),
-    ...(model.risks.length ? [`${h}# May be risky for live data (${model.risks.length})`, "", "From fixed rules over the changes above, not from a review.", "", ...model.risks.map((r) => `- ${r.text} (\`${r.at}\`)`), ""] : [])];
+      ...(model.cards.some(found) ? [...table(["Table", "Unresolved findings"], model.cards.filter(found).map((c) => [mdCode(c.name), found(c)]))] : []),
+      ...(model.edges.length ? [`${h}# Relations (${model.edges.length})`, "", ...model.edges.map((e) => `- ${mdCode(edgeText(e, (id) => name.get(id)))} (${mdCode(e.at)})`), ""] : [])] : []),
+    ...(model.notes.length ? [...model.notes.map((n) => `- ${mdCode(n)}`), ""] : []),
+    ...(model.unread.length ? [...model.unread.map((u) => `- ${mdCode(unreadText(u))}`), ""] : []),
+    ...(model.risks.length ? [`${h}# May be risky for live data (${model.risks.length})`, "", "From fixed rules over the changes above, not from a review.", "", ...model.risks.map((r) => `- ${mdCode(r.text)} (${mdCode(r.at)})`), ""] : [])];
 }

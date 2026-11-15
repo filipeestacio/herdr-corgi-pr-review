@@ -37,7 +37,7 @@ export function baseText(head, lines) {
   let at = 0, body = false;
   for (const l of lines) {
     const m = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(l);
-    if (m) { const to = Number(m[1]) - (m[2] === "0" ? 0 : 1); if (to < at || to > src.length) return null; out.push(...src.slice(at, to)); at = to; body = true; continue; }
+    if (m) { const to = Number(m[1]) - (m[2] === "0" ? 0 : 1); if (to < at || to > src.length) return null; for (; at < to; at++) out.push(src[at]); body = true; continue; } // a loop: a file's lines as arguments of one call overflow the stack
     if (!body || l[0] === "\\") continue;
     if (l[0] === "-") { out.push(l.slice(1)); continue; }
     if (src[at] !== l.slice(1)) return null;
@@ -59,22 +59,28 @@ export function sidesOf(f) {
 // ---- Terraform
 
 const liner = (s) => { const nl = []; for (let i = s.indexOf("\n"); i >= 0; i = s.indexOf("\n", i + 1)) nl.push(i); return (i) => { let a = 0, b = nl.length; while (a < b) { const m = (a + b) >> 1; if (nl[m] < i) a = m + 1; else b = m; } return a + 1; }; };
-// The quote that closes the string opened at i (a template ${…} or %{…} may hold strings of its own); -1: none on its line.
-function strEnd(s, i) {
+// A file of the PR may be written to break the reader, so nothing in it follows the file's own depth or size without
+// a limit: strings in templates in strings and blocks in blocks are followed DEEP levels down (real code has a
+// handful; deeper reads as "not understood"), and a file over MAX_BYTES is named as not read.
+const DEEP = 40, MAX_BYTES = 2000000;
+// The quote that closes the string opened at i (a template ${…} or %{…} may hold strings of its own); -1: none on its
+// line, or nested deeper than DEEP (deep: how many strings and templates this one is inside).
+function strEnd(s, i, deep = 0) {
+  if (deep > DEEP) return -1;
   for (let j = i + 1; j < s.length; j++) {
     const c = s[j];
     if (c === "\\") j++;
     else if (c === '"') return j;
     else if (c === "\n") return -1;
-    else if ((c === "$" || c === "%") && s[j + 1] === "{" && s[j - 1] !== c) { j = tplEnd(s, j + 1); if (j < 0) return -1; }
+    else if ((c === "$" || c === "%") && s[j + 1] === "{" && s[j - 1] !== c) { j = tplEnd(s, j + 1, deep + 1); if (j < 0) return -1; }
   }
   return -1;
 }
 // The brace that closes the template whose "{" is at i.
-function tplEnd(s, i) {
+function tplEnd(s, i, deep = 0) {
   for (let j = i + 1, d = 1; j < s.length; j++) {
     const c = s[j];
-    if (c === '"') { j = strEnd(s, j); if (j < 0) return -1; } else if (c === "{") d++; else if (c === "}" && --d === 0) return j;
+    if (c === '"') { j = strEnd(s, j, deep + 1); if (j < 0) return -1; } else if (c === "{") d++; else if (c === "}" && --d === 0) return j;
   }
   return -1;
 }
@@ -109,14 +115,26 @@ function valueText(s, a, sp) {
   out += s.slice(at, sp.end);
   return sp.here || !out.trim().includes("\n") ? out.trim() : squash(out);
 }
-const SKIP = /(?:\s+|#[^\n]*|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*/y, KEY = /([A-Za-z_][\w.-]*|"[^"\n]*")[ \t]*/y, LABELS = /((?:(?:"[^"\n]*"|[A-Za-z_][\w-]*(?![\w-]))[ \t]*)*)\{/y; // (?!…): a name is taken whole, so a long line without "{" fails at once
+const WS = /\s*/y;
+// Past the white space and the comments from i; -1: a /* that never closes (asked once, so a file of them is read
+// in one pass: the pattern this replaces looked for the end again from every line).
+function skip(s, i) {
+  for (;;) {
+    WS.lastIndex = i; WS.exec(s); i = WS.lastIndex;
+    if (s[i] === "#" || (s[i] === "/" && s[i + 1] === "/")) { const n = s.indexOf("\n", i); if (n < 0) return s.length; i = n; }
+    else if (s[i] === "/" && s[i + 1] === "*") { const n = s.indexOf("*/", i + 2); if (n < 0) return -1; i = n + 2; }
+    else return i;
+  }
+}
+const KEY = /([A-Za-z_][\w.-]*|"[^"\n]*")[ \t]*/y, LABELS = /((?:(?:"[^"\n]*"|[A-Za-z_][\w-]*(?![\w-]))[ \t]*)*)\{/y; // (?!…): a name is taken whole, so a long line without "{" fails at once
 // A block's body between lo and hi: its arguments [{name, text, line}] and its blocks [{type, labels, line, end, lo,
 // hi: its own body, from}]. ok false: something in it is neither.
 function hclBody(s, lo, hi, lineAt) {
   const attrs = [], blocks = [];
   let ok = true, i = lo;
   while (i < hi) {
-    SKIP.lastIndex = i; SKIP.exec(s); i = SKIP.lastIndex;
+    i = skip(s, i);
+    if (i < 0) { ok = false; break; }
     if (i >= hi) break;
     KEY.lastIndex = i;
     const k = KEY.exec(s), at = k ? KEY.lastIndex : i;
@@ -140,7 +158,8 @@ function hclBody(s, lo, hi, lineAt) {
 export function readTerraform(text, file) {
   const s = String(text ?? ""), lineAt = liner(s), top = hclBody(s, 0, s.length, lineAt), items = [], moved = [], imports = [], dropped = [];
   let ok = top.ok;
-  const canon = (lo, hi) => { const b = hclBody(s, lo, hi, lineAt), inner = b.blocks.map((x) => [x, canon(x.lo, x.hi)]);
+  const canon = (lo, hi, deep = 0) => { if (deep > DEEP) return null; // blocks in blocks without end: not understood
+    const b = hclBody(s, lo, hi, lineAt), inner = b.blocks.map((x) => [x, canon(x.lo, x.hi, deep + 1)]);
     return b.ok && inner.every(([, c]) => c !== null) ? [...b.attrs.map((a) => `${a.name} = ${a.text}`), ...inner.map(([x, c]) => `${[x.type, ...x.labels.map((q) => `"${q}"`)].join(" ")} {\n${c}\n}`)].join("\n") : null; };
   const entity = (b, kind, addr, type, name) => {
     const body = hclBody(s, b.lo, b.hi, lineAt), args = new Map();
@@ -207,7 +226,7 @@ function yamlKids(lines, lo, hi) {
 // A key's value as text: what follows the colon and its body without the indentation, blank lines and comments
 // between keys. (A comment inside a value counts: it may be a script's line.)
 function yamlText(lines, k) {
-  const own = indentOf(lines[k.line - 1]), body = lines.slice(k.lo, k.hi).filter((l) => l.trim() && !(l.trim()[0] === "#" && indentOf(l) <= own)), cut = Math.min(...body.map(indentOf));
+  const own = indentOf(lines[k.line - 1]), body = lines.slice(k.lo, k.hi).filter((l) => l.trim() && !(l.trim()[0] === "#" && indentOf(l) <= own)), cut = body.reduce((m, l) => Math.min(m, indentOf(l)), Infinity); // not Math.min(...): a value of 200 000 lines overflows the stack as arguments
   const first = /["']/.test(k.value) ? k.value : k.value.replace(/(^|\s+)#.*$/, "");
   return [first, ...body.map((l) => l.slice(cut).trimEnd())].filter(Boolean).join("\n");
 }
@@ -320,6 +339,7 @@ export function infraModel(files, others = []) {
     const sides = sidesOf(f), from = f.from ?? f.path;
     if (tf) kinds.add("Terraform");
     if (!sides) { unread.push({ path: f.path, why: typeof f.head === "string" ? "the patch does not fit the file at the PR head" : "the file at the PR head is not loaded" }); if (!tf) kinds.add("CloudFormation"); continue; }
+    if ((sides.head?.length ?? 0) > MAX_BYTES || (sides.base?.length ?? 0) > MAX_BYTES) { unread.push({ path: f.path, why: "it is too large to read here" }); continue; }
     if (tf) {
       const h = sides.head === null ? null : readTerraform(sides.head, f.path), b = sides.base === null ? null : readTerraform(sides.base, from);
       if ((h && !h.ok) || (b && !b.ok)) { unread.push({ path: f.path, why: "the reader does not understand a part of it" }); continue; }
@@ -458,6 +478,9 @@ export function infraPicture(model, findings = [], fit = false, lay = true) {
 
 // ---- Copy as Markdown: the section's lines. table(head, rows) and flow(picture, opts) are markdown.js's own (its
 // table and mermaidFlow), handed in so this file stays below it.
+// A text from the PR in the copied Markdown: one line, as a code span. Pasted into GitHub, a code span is inert: no
+// mention notifies anyone, no image is fetched, no heading or fence starts, whatever a name or a value in the PR says.
+const mdCode = (x) => { const s = squash(x ?? "").replace(/`/g, "'"); return s ? `\`${s}\`` : ""; };
 export function infraMd(model, { table, flow, findings = [], h = "##" } = {}) {
   if (!model) return [];
   const arch = infraArch(model), marks = infraMarks(model, findings, arch.alias), card = new Map(model.cards.map((c) => [c.id, c]));
@@ -466,11 +489,11 @@ export function infraMd(model, { table, flow, findings = [], h = "##" } = {}) {
   const own = infraMarks(model, findings).nodes, found = (c) => { const m = own.get(c.id); return m ? `${m.severity}: ${m.findings.map((f) => squash(f.title)).join("; ")}` : ""; };
   const notes = (c) => cardLines(c, 0).filter((l) => !/^and \d+ more$/.test(l.text)).map((l) => l.text);
   return [`${h} Infrastructure changes (${model.total})`, "", infraSource(model), "",
-    ...(model.notices.length ? [...model.notices.map((n) => `- ${noticeText(n)}`), ""] : []),
+    ...(model.notices.length ? [...model.notices.map((n) => `- ${mdCode(noticeText(n))}`), ""] : []),
     ...(model.cards.length ? [`${infraSummary(model)}${arch.folded ? ` ${foldText(arch.folded)}` : ""} A card's class in the diagram is its state; an arrow points at what a resource refers to.`, "", ...flow({ groups: arch.groups, nodes, edges: arch.edges }, { systems: true, marks }), "",
-      ...table(["Resource", "State", "Changed arguments", "Depends on", "Where", "Unresolved findings"], model.cards.map((c) => [`${c.kind === "data" ? "data " : ""}${c.type} ${c.name}`, [STATE[c.status], ...notes(c)].join("; "), c.changes.map((x) => x.text).join("; "), c.deps.join(", "), `\`${c.file}:${c.line}\``, found(c)]))] : []),
-    ...(model.rows.length ? [`${h}# Variables, outputs and other values (${model.rows.length})`, "", ...model.rows.map((r) => `- ${rowText(r)} (\`${r.file}:${r.line}\`)`), ""] : []),
-    ...(model.unread.length ? [...model.unread.map((u) => `- ${unreadText(u)}`), ""] : [])];
+      ...table(["Resource", "State", "Changed arguments", "Depends on", "Where", "Unresolved findings"], model.cards.map((c) => [mdCode(`${c.kind === "data" ? "data " : ""}${c.type} ${c.name}`), [STATE[c.status], mdCode(notes(c).join("; "))].filter(Boolean).join("; "), mdCode(c.changes.map((x) => x.text).join("; ")), mdCode(c.deps.join(", ")), mdCode(`${c.file}:${c.line}`), found(c)]))] : []),
+    ...(model.rows.length ? [`${h}# Variables, outputs and other values (${model.rows.length})`, "", ...model.rows.map((r) => `- ${mdCode(rowText(r))} (${mdCode(`${r.file}:${r.line}`)})`), ""] : []),
+    ...(model.unread.length ? [...model.unread.map((u) => `- ${mdCode(unreadText(u))}`), ""] : [])];
 }
 export const foldText = (f) => `Over ${INFRA_MAX} cards: ${f.cards} resources of ${f.types} ${f.types === 1 ? "type" : "types"} are one card per type.`;
 export const unreadText = (u) => `${u.path} is not in the picture: ${u.why}.`;

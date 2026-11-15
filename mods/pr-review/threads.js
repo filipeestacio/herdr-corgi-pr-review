@@ -147,8 +147,16 @@ export const fixFor = (doc, key, id) => [...fixesOf(doc, key)].reverse().find((f
 
 // A fix branch per job: fix/<pr number>-<first item>.
 export const fixBranch = (number, ids) => `fix/${number ?? "pr"}-${String(ids[0] ?? "x").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 12)}${ids.length > 1 ? `-and-${ids.length - 1}` : ""}`;
-// Where its worktree goes (Herdr's convention for worktrees): ~/.herdr/worktrees/<repo>/<branch with - for />.
-export const fixPath = (home, repo, branch) => `${home}/.herdr/worktrees/${String(repo ?? "repo").split("/").pop()}/${branch.replace(/\//g, "-")}`;
+// Herdr's folder for worktrees: `worktrees.directory` of its settings.json (the file's text; an absolute path, `~` or
+// `~/…`), else ~/.herdr/worktrees. The same folder Herdr's own New worktree uses, so every checkout sits in one place.
+export function worktreesDir(settingsText, home) {
+  let dir = null;
+  try { dir = JSON.parse(settingsText ?? "null")?.worktrees?.directory; } catch { /* a broken file: the default */ }
+  dir = typeof dir === "string" ? dir.trim().replace(/^~(?=\/|$)/, home).replace(/(?<=.)\/+$/, "") : "";
+  return dir.startsWith("/") ? dir : `${home}/.herdr/worktrees`;
+}
+// Where its worktree goes (Herdr's convention for worktrees): <worktrees folder>/<repo>/<branch with - for />.
+export const fixPath = (dir, repo, branch) => `${dir}/${String(repo ?? "repo").split("/").pop()}/${branch.replace(/\//g, "-")}`;
 
 // Where a fix branch starts: at the PR's head (the commit the review shows), not at whatever the local clone has
 // checked out, which may be another branch. A space's own branch diff has no head apart from its checkout.
@@ -597,12 +605,13 @@ export const CODEX_ASK = `This PR is by someone else. Codex would send its code 
 
 
 // ---- fix worktrees left on disk (review.js "Fix worktrees…": listed on a click, removed on a click, never on their own)
-// `git worktree list --porcelain` → the worktrees under Herdr's folder for this repo (<home>/.herdr/worktrees/<repo>/)
-// that sit on a fix/ or verify/ branch: [{path, branch}].
-export function leftWorktrees(porcelain, home, repo) {
-  const root = `${home}/.herdr/worktrees/${String(repo ?? "").split("/").pop()}/`;
+// `git worktree list --porcelain` → the worktrees under Herdr's folders for this repo (<dir>/<repo>/ for each of
+// dirs: the folder set now and the default one, where earlier fixes may sit) that are on a fix/ or verify/ branch:
+// [{path, branch}].
+export function leftWorktrees(porcelain, dirs, repo) {
+  const roots = dirs.map((d) => `${d}/${String(repo ?? "").split("/").pop()}/`);
   return String(porcelain ?? "").split(/\n\n+/).map((b) => ({ path: /^worktree (.+)$/m.exec(b)?.[1], branch: /^branch refs\/heads\/(.+)$/m.exec(b)?.[1] }))
-    .filter((w) => w.path?.startsWith(root) && /^(fix|verify)\//.test(w.branch ?? ""));
+    .filter((w) => roots.some((r) => w.path?.startsWith(r)) && /^(fix|verify)\//.test(w.branch ?? ""));
 }
 // Removing it would lose work: commits no other branch or remote has (only), changes not committed (dirty), or git
 // could not say (unknown). Such a worktree takes a second click.

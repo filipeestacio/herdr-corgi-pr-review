@@ -302,8 +302,11 @@ def walk(root, depth):
 
 
 def throwaway(root):
-    # ponytail: the pr-review agent's review worktree lives at <clone>/.worktrees/review; caches may go inside it.
-    return f"{os.sep}.worktrees{os.sep}" in root + os.sep
+    # ponytail: the review worktree (worktree.py) is the linked worktree <worktrees>/<repo>/pr-review, or, from
+    # earlier versions, <clone>/.worktrees/review; caches may go inside it. A person's own worktree of a branch
+    # named pr-review would count too: worktree.py refuses to use that one, so the review never runs there.
+    root = root.rstrip(os.sep)
+    return f"{os.sep}.worktrees{os.sep}" in root + os.sep or (os.path.basename(root) == "pr-review" and os.path.isfile(os.path.join(root, ".git")))
 
 
 class Server:

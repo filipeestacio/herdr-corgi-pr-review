@@ -181,7 +181,7 @@ about and file:line evidence; a short thread per PR is kept in pr-data/deep.json
 note on its card, edge or lines; notes never go out. Show details (one call, "Review: drill down") draws a card or a
 layer from the inside, cached per card path and diff head. Explore (one call, "Explore: walkthrough", read-only tools
 in the repo) keeps the newest 20 explorations. Every send to an agent opens a preview first. Fix starts a sub-agent
-(`hc run --parent <PR agent>`) in a worktree on fix/<pr>-<id>, started at the PR head. The sub-agent commits there and stops: it cannot
+(`hc run --parent <PR agent>`) in a worktree on fix/<pr>-<id> (in Herdr's folder for worktrees, `<worktrees.directory>/<repo>/<branch>`), started at the PR head. The sub-agent commits there and stops: it cannot
 push and hands its fix to nobody. Apply to PR cherry-picks onto a clean checkout of the PR's branch (Hand over… asks the PR agent instead). The
 GitHub submit posts only the ticked items. The analysis writes every hunk to its run folder with an index and splits
 big PRs into cohort passes and a merge pass under one cap.
@@ -199,7 +199,7 @@ big PRs into cohort passes and a merge pass under one cap.
   servers kept warm by one local bridge), `impact.js` + `impact-view.js` (the Impact picture: changed functions
   and their callers, from the bridge's `/symbols` and `/references`), `context.js` (optional contexts), `setup.js` + `setup-view.js`
   (Setup), and Python helpers: `prs.py` (PRs from Claude transcripts + `gh pr view`), `worktree.py` (a reusable
-  checkout of the PR head), `review.py` (the analysis), `reviewers.py`, `verify.py`, `triage.py`, `related.py`
+  checkout of the PR head, `<worktrees.directory>/<repo>/pr-review`, never a folder inside the clone), `review.py` (the analysis), `reviewers.py`, `verify.py`, `triage.py`, `related.py`
   (related PRs, CI checks, mergeability), `llm.py` (`claude -p` with a JSON schema and a budget cap, optional
   ledger).
 - `herdr`: `exec`, `hc send`, `run` (`tab.new`, `tab.select`, `layout.switch`, `pane.focus`,
