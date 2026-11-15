@@ -24,7 +24,7 @@ import { tabArgs } from "./threads.js"; // a new Claude tab with the PR's text: 
 import { loadDiff, saveDiff } from "./diffcache.js";
 import { setupBanner, renderSetup, loadSetup, runSetup, openUrl, readConfig } from "./setup-view.js";
 import { chip, PRIORITY_TIP } from "./stack.js";
-import { panelState, bodyTab, DONE_DAYS, diffTooLarge, filesToDiff, isOpenPr, byState, listRows, riskSignal, progressText, pendingText, rowMarks, mineGroups, progressRows, removedText, withPick, openSig, panelShown, byRef, fileRisk, leftNow, wrapCode, codeCols, sliceSpans } from "./views.js";
+import { panelState, bodyTab, DONE_DAYS, diffTooLarge, filesToDiff, isOpenPr, byState, listRows, riskSignal, progressText, pendingText, rowMarks, mineGroups, progressRows, removedText, withPick, openSig, panelShown, byRef, fileRisk, leftNow, wrapCode, codeCols, sliceSpans, markLabel } from "./views.js";
 import { keepLast } from "./views.js"; // every cache has a limit
 import { ReviewMode, startReview, startExplore, saveKey, flowCard, modelPills, modelLabel, renderReviews, renderAgentBar, renderKeys, renderCardMenu, renderMini } from "./review.js";
 import { highlightJob, highlightStep, langOf, firstLineOf, colors, renderLine, editorSyntax } from "./syntax.js";
@@ -908,9 +908,14 @@ export default class PrReview extends View {
   // A PR row's risk signal as chips (views.js riskSignal): the highest severity among its open findings, and
   // security's own mark. Nothing without a cached analysis or findings file.
   riskChips(t, url, id) {
-    // One mark (views.js rowMarks): "⛨ high" in red when an open finding is about security, else the severity in grey.
-    return rowMarks(this.risk?.get(url), null).map((m) => chip(t, m.text, m.security ? t.ansi1 : t.muted, m.security, `${id}-sev`,
-      `The highest severity among this PR's open findings, from the cached analysis and reviews${m.security ? `; ${SEC_MARK}: at least one of them is about security` : ""}`));
+    // One mark (views.js rowMarks): "⛨ high" when an open finding is about security, in the severity's color, on a
+    // filled ground when that is confirmed and in a dashed frame with "?" when it is only assumed (as in the review);
+    // else the severity in grey.
+    // A review in progress has its own mark in the registry (review.js riskOfCounts: with what its probes and checks
+    // confirmed): the row shows that one, so it agrees with the minimized chip.
+    const own = (shared("review.open") ?? []).find((r) => r.url === url)?.risk;
+    return rowMarks(own?.top ? own : this.risk?.get(url), null).map((m) => chip(t, markLabel(div, t, m), t[m.color] ?? t.muted, m.security, `${id}-sev`,
+      `The highest severity among this PR's open findings, from the cached analysis and reviews${m.security ? `; ${SEC_MARK}: at least one of them is about security` : ""}${m.words ? `.\n${m.words}` : ""}`));
   }
 
   // The list of the shown source, one row per PR: the ones under "In progress" are not repeated, open PRs come first
@@ -1269,8 +1274,8 @@ export default class PrReview extends View {
         return h_flex().id(`f-${f.path}`).h(28).flex_none().px(8).gap(8).items_center().rounded(7).cursor_pointer().tooltip(f.path)
           .when(this.open === f.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.fh.focus(); this.askTop = false; this.pick(f.path, cx); })
           .child(h_flex().flex_1().min_w(0).child(div().text_color(t.dim).truncate().child(parts.length ? parts.join("/") + "/" : "")).child(div().min_w(0).truncate().child(name)))
-          .children(rowMarks(this.fileMarks?.get(f.path), null).map((m) => chip(t, m.text, m.security ? t.ansi1 : t.muted, m.security, `f-r-${f.path}`,
-            "The highest severity among this file's unresolved findings, from the cached analysis and reviews. Open the review to see them.")))
+          .children(rowMarks(this.fileMarks?.get(f.path), null).map((m) => chip(t, markLabel(div, t, m), t[m.color] ?? t.muted, m.security, `f-r-${f.path}`,
+            `The highest severity among this file's unresolved findings, from the cached analysis and reviews${m.words ? `: ${m.words}` : ""}. Open the review to see them.`)))
           .when(n > 0, (e) => e.child(div().id(`f-c-${f.path}`).tooltip(`${n} pending ${n === 1 ? "comment" : "comments"} on this file`).text_size(TYPE.micro).text_color(t.accent).child(`● ${n}`)))
           .when(f.add > 0, (e) => e.child(div().id(`f-a-${f.path}`).tooltip("Lines added in this file").text_size(TYPE.panel).text_color(t.ansi2).child(`+${f.add}`)))
           .when(f.del > 0, (e) => e.child(div().id(`f-d-${f.path}`).tooltip("Lines removed in this file").text_size(TYPE.panel).text_color(t.ansi1).child(`−${f.del}`)));

@@ -39,7 +39,9 @@ export function riskSignal({ analysis = null, findings = null, status = null } =
   if (!analysis && !findings) return null;
   const open = [...(findings ?? []), ...(analysis?.steps ?? []).flatMap((s) => s.findings ?? [])].filter((f) => !["fixed", "dismissed"].includes(status?.[f.id]?.s));
   return { top: SEVERITIES.find((s) => open.some((f) => f.severity === s)) ?? null, open: open.length,
-    security: open.some(isSecurity) }; // as the review's ⛨ (pr.js isSecurity): what it does, not who found it
+    security: open.some(isSecurity), // as the review's ⛨ (pr.js isSecurity): what it does, not who found it
+    // The mark's form: how sure the security findings are while there is one (the ⛨ speaks of them), else all of them.
+    form: signOf(open.some(isSecurity) ? open.filter(isSecurity) : open).form, words: signWords(open) };
 }
 
 // "0/6 layers · 2/9 files · 1 comment · 11 unresolved findings" for a review in progress (open-reviews.json `progress`,
@@ -179,7 +181,8 @@ export function worst(findings) {
   for (const f of findings) n[f.severity] = (n[f.severity] ?? 0) + 1;
   const order = [...SEVERITIES, ...Object.keys(n).filter((k) => !SEVERITIES.includes(k))].filter((k) => n[k]);
   return { severity: order[0], count: n[order[0]], total: findings.length, label: `${n[order[0]]} ${order[0]}`,
-    words: order.map((k) => `${n[k]} ${k}`).join(", "), security: findings.filter((f) => f.security).length };
+    words: order.map((k) => `${n[k]} ${k}`).join(", "), security: findings.filter((f) => f.security).length,
+    sign: signOf(findings.filter((f) => f.security)), signWords: signWords(findings.filter((f) => f.security)) }; // the ⛨ of a layer's or a file's row
 }
 
 // Merge blockers for "Needs your attention": by severity, security first within one severity, else in their order.
@@ -523,7 +526,9 @@ export function solidOver(base, over) {
 // finding is about security (one mark, the only red one), then the priority, then the type. Effort is left out: the
 // review itself has no "Review effort" either.
 export function rowMarks(risk, tri) {
-  return [risk?.top && { text: `${risk.security ? "⛨ " : ""}${risk.top}`, security: Boolean(risk.security), kind: "risk" },
+  // The risk mark carries its sign: glyph and word apart, the severity's color and the certainty's form (signEl).
+  return [risk?.top && { text: `${risk.security ? "⛨ " : ""}${risk.top}`, security: Boolean(risk.security), kind: "risk", glyph: risk.security ? "⛨" : "", word: risk.top,
+    color: risk.security ? SIGN_COLOR[risk.top] ?? "ansi1" : "muted", form: risk.form ?? "plain", words: risk.words ?? "" },
     tri && { text: `P${tri.priority}`, kind: "priority" }, tri?.type && { text: tri.type, kind: "type" }].filter(Boolean).slice(0, 3);
 }
 
@@ -1554,7 +1559,9 @@ export function leftNow(before, left) {
 
 // The review's own risk signal from its finding counts (pr.js findingCounts: unresolved ones by severity, security by
 // cause), in riskSignal's shape. It goes into the registry entry, so the minimized chip shows the mark the review shows.
-export const riskOfCounts = (c) => ({ top: c?.high ? "high" : c?.medium ? "medium" : c?.low ? "low" : null, open: c?.unresolved ?? 0, security: Boolean(c?.security) });
+// open: the unresolved findings themselves, for the mark's form and its words (signOf, signWords).
+export const riskOfCounts = (c, open = null) => ({ top: c?.high ? "high" : c?.medium ? "medium" : c?.low ? "low" : null, open: c?.unresolved ?? 0, security: Boolean(c?.security),
+  ...(open ? { form: signOf(open.some((f) => f.security) ? open.filter((f) => f.security) : open).form, words: signWords(open) } : {}) });
 
 // ---- the text sizes (U34): named steps instead of fifteen sizes, in px at 100 % zoom. micro: text inside a picture
 // (a call's text, a chip on a line); small: what is glanced at (meta lines, group headings, chips); body: what is
@@ -1562,3 +1569,57 @@ export const riskOfCounts = (c) => ({ top: c?.high ? "high" : c?.medium ? "mediu
 // between micro and small, because its rows and buttons are laid out for it. Code is not on the ladder and keeps its
 // sizes: in the diff (the probe that measures a character's width is drawn in it) and in the panel's narrow diff.
 export const TYPE = Object.freeze({ micro: 10.5, panel: 11, small: 12, body: 13.5, title: 15, page: 22, code: 13, codePanel: 11 });
+
+// ---- one sign for what stands behind a page, a row or a chip (the nav rows of Analysis, the bar's excerpt, the rows
+// of "Needs your attention" and "Before merge", the panel's PR row, the minimized chip). The color says the highest
+// severity among what is unresolved there, the form how sure that is, and the tip says both in words; the number
+// stays beside the sign, so nothing is said by color alone.
+const SIGN_SEV = ["critical", "high", "medium", "low"], SIGN_COLOR = { critical: "ansi1", high: "ansi1", medium: "ansi3", low: "ansi4" };
+// How sure one finding is, in three steps: confirmed (something that ran shows it, also a probe: withProbes), derived
+// (read from the code; also a finding from before the field existed), assumed (its certainty, or only its reach).
+export const sureOf = (f) => (f?.certainty === "confirmed" ? "confirmed" : f?.certainty === "assumed" || f?.path_certainty === "assumed" ? "assumed" : "derived");
+const sureWords = (f) => (f.certainty === "confirmed" ? `confirmed by a ${f.probed ? "probe" : "run"}${certaintyText(f).includes("modeled") ? ", platform modeled" : ""}`
+  : f.certainty !== "assumed" && f.path_certainty === "assumed" ? "assumed reachable" : certaintyText(f));
+// The sign of a set of unresolved findings: {top: the highest severity or null, color: a theme key, form}. form:
+// "filled" when one of the top severity is confirmed, "plain" when the surest is derived, "open" when all of them
+// are assumed, "quiet" when there is none.
+export function signOf(findings) {
+  const top = SIGN_SEV.find((s) => (findings ?? []).some((f) => f.severity === s)) ?? ((findings ?? []).length ? "low" : null);
+  if (!top) return { top: null, color: "muted", form: "quiet" };
+  const sure = new Set(findings.filter((f) => f.severity === top || !SIGN_SEV.includes(f.severity)).map(sureOf));
+  return { top, color: SIGN_COLOR[top], form: sure.has("confirmed") ? "filled" : sure.has("derived") ? "plain" : "open" };
+}
+// "1 high, confirmed by a probe · 2 medium, assumed reachable": the same findings in words, worst and surest first.
+export function signWords(findings) {
+  const by = new Map();
+  for (const f of findings ?? []) { const k = [f.severity ?? "low", sureWords(f)].filter(Boolean).join(", "); by.set(k, { n: (by.get(k)?.n ?? 0) + 1, sev: SIGN_SEV.indexOf(f.severity), sure: ["confirmed", "derived", "assumed"].indexOf(sureOf(f)) }); }
+  return [...by].sort(([, a], [, b]) => (a.sev < 0 ? 9 : a.sev) - (b.sev < 0 ? 9 : b.sev) || a.sure - b.sure).map(([k, v]) => `${v.n} ${k}`).join(" · ");
+}
+// A page's sign. kind: overview | arch | security | resilience. findings: the unresolved findings behind the page.
+// run: {state: done | running | failed | null (a run that is optional and did not run), n: the page's own number
+// where it counts something else (security: causes, resilience: paths that block) with `unit`, its words ("paths
+// block the merge"), more: a sentence for the tip
+// ("1 path blocks once it is wired."), unsure: what stayed unchecked although the run is done ("1 path not assessed")}.
+// -> {glyph, color (theme key), form (signOf's, or "quiet"), n, tip, state: open | clean | quiet | none | running}.
+// clean: checked and nothing unresolved (a small ✓); quiet: nothing unresolved, yet not all of it checked; none: not run.
+export const PAGE_SIGN = { overview: ["!", "Overview"], arch: ["!", "Architecture impact"], security: ["⛨", "Security"], resilience: ["↯", "Resilience"] };
+export function pageBadge(kind, findings, run = {}) {
+  const [glyph, name] = PAGE_SIGN[kind] ?? ["!", String(kind)], list = findings ?? [], more = run.more ? ` ${run.more}` : "";
+  if (list.length) {
+    const s = signOf(list), n = run.n ?? list.length, own = run.unit ? `${n} ${run.unit}. ` : "";
+    return { glyph, color: s.color, form: s.form, n, state: "open", tip: `${name}: ${own}${signWords(list)}.${run.unsure ? ` ${run.unsure[0].toUpperCase()}${run.unsure.slice(1)}.` : ""}${run.state === "failed" ? ` The last ${name} run failed.` : run.state === null ? ` The ${name} run did not run.` : ""}${more}` };
+  }
+  const quiet = (g, state, tip) => ({ glyph: g, color: "dim", form: "quiet", n: run.n || 0, state, tip: `${name}: ${tip}${more}` });
+  if (run.state === "running") return quiet("⋯", "running", "the run is going.");
+  if (run.state === null || run.state === "failed") return quiet("○", "none", run.state === "failed" ? "the run failed, so nothing is known." : "not run.");
+  if (run.unsure || run.n) return quiet(glyph, "quiet", `no unresolved finding${run.unsure ? `; ${run.unsure}` : ""}.`);
+  return quiet("✓", "clean", "checked, nothing unresolved.");
+}
+// The sign as an element. div: gpui-kit's (passed in, so this module stays pure). Filled: the color is the ground;
+// open: a dashed frame with "?" at reduced strength; else the glyph in its color.
+export function signEl(div, t, sign, glyph = sign.glyph) {
+  const c = t[sign.color] ?? t.muted, e = div().flex_none().px(3).rounded(4);
+  return sign.form === "filled" ? e.bg(c).text_color(t.background).child(glyph) : sign.form === "open" ? e.border_1().border_dashed().border_color(c + "aa").text_color(c + "cc").child(`${glyph}?`) : e.text_color(c).child(glyph);
+}
+// A risk mark's label for a chip (rowMarks): the ⛨ as a sign before the word, or the text alone.
+export const markLabel = (div, t, m) => (m.glyph ? div().flex().items_center().gap(3).child(signEl(div, t, m, m.glyph)).child(m.word) : m.text);

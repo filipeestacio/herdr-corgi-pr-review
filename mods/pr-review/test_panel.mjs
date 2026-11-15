@@ -166,7 +166,7 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   assert.deepEqual([c.picking, c.prSel?.url], [false, y.url], "back from it: the PR, not the list");
   // The registry entry's risk mark for the minimized chip: the review's own counts.
   const { riskOfCounts, rowMarks } = await import("./views.js");
-  assert.deepEqual(rowMarks(riskOfCounts({ unresolved: 5, high: 2, medium: 3, low: 0, security: 1 }), null), [{ text: "⛨ high", security: true, kind: "risk" }]);
+  assert.deepEqual(rowMarks(riskOfCounts({ unresolved: 5, high: 2, medium: 3, low: 0, security: 1 }), null).map(({ text, security, kind }) => ({ text, security, kind })), [{ text: "⛨ high", security: true, kind: "risk" }]);
   assert.deepEqual([rowMarks(riskOfCounts({ unresolved: 1, high: 0, medium: 1, security: 0 }), null)[0].text, rowMarks(riskOfCounts({}), null)], ["medium", []]);
 }
 
