@@ -101,4 +101,35 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   assert.equal(asks, 1, "the second copy takes the head the first one asked for");
   S.exec = null;
 }
+
+// ---- a scan for session PRs that cannot reach GitHub waits longer each time (prs.py exit 3)
+{
+  let code = 3, runs = 0;
+  S.exec = async (cmd, args) => { if (cmd === "python3" && String(args[0]).endsWith("prs.py")) { runs++; return { code, stdout: "", stderr: "" }; } return { code: 1, stdout: "", stderr: "stub" }; };
+  S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: "2020-01-01T00:00:00Z", prs: [] }));
+  const v = new PrReview(); v.init({}, cx); await flush();
+  assert.deepEqual([runs, v.scanPoll.fails], [1, 1], "the scan at mount failed");
+  v.scanPoll.at = Date.now() - 6 * 60000; assert.ok(!v.scanDue(), "six minutes after a failed scan: not yet");
+  v.scanPoll.at = Date.now() - 11 * 60000; assert.ok(v.scanDue(), "eleven minutes after: due");
+  code = 2; v.scanIfDue(cx); await flush();
+  assert.deepEqual([runs, v.scanPoll.fails], [2, 0], "one PR that cannot be read is not an outage");
+  S.exec = null;
+}
+
+// ---- the review's "Fix worktrees…": a worktree with work only there is removed on the second click, never the first
+{
+  const calls = [];
+  S.exec = async (cmd, args) => { calls.push([cmd, ...args].join(" ")); return { code: 0, stdout: "", stderr: "" }; };
+  S.props = { part: "review" };
+  const v = new PrReview(); v.init({}, cx); await flush();
+  v.prSel = { url: "https://github.com/o/demo/pull/2", repo: "o/demo", number: 2, cwd: "/code/demo" };
+  v.wts = [{ path: "/h/.herdr/worktrees/demo/fix-2-a1", branch: "fix/2-a1", only: 2, dirty: false, unknown: false }, { path: "/h/.herdr/worktrees/demo/fix-2-b2", branch: "fix/2-b2", only: 0, dirty: false, unknown: false }];
+  calls.length = 0; v.removeWorktree(0, cx); await flush();
+  assert.deepEqual([calls.filter((c) => c.includes("worktree remove")), /Nothing was removed/.test(v.note)], [[], true], "the first click on one with commits only there removes nothing");
+  v.removeWorktree(0, cx); await flush();
+  assert.deepEqual(calls.filter((c) => /worktree remove|branch -D/.test(c)), ["git -C /code/demo worktree remove --force /h/.herdr/worktrees/demo/fix-2-a1", "git -C /code/demo branch -D fix/2-a1"], "the second click removes it and its branch");
+  calls.length = 0; v.removeWorktree(1, cx); await flush();
+  assert.equal(calls.filter((c) => c.includes("worktree remove")).length, 1, "one with nothing only there goes at once");
+  S.exec = null; S.props = {};
+}
 console.log("panel ok");

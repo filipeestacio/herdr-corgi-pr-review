@@ -294,7 +294,20 @@ export function seqLayout(v, width) {
 export const MD = { GAP: 10, CODE_LH: 24, CODE_PAD: 48, CODE_CH: 8.8, CODE_IN: 32, ITEM_IN: 24, ITEM_GAP: 4, HEAD: 1.5, HEADS: [1.5, 1.35, 1.2, 1.1, 1.1, 1.1], ROW_PAD: 13, CELL_PAD: 24, QUOTE_IN: 20 };
 const codeWide = (line) => line.replace(/`([^`]*)`/g, (_m, code) => `aa${code.replace(/\S/g, "a")}`);
 const codeRows = (line, width) => { const n = (line.length * MD.CODE_CH) / Math.max(40, width - MD.CODE_IN); return n <= 1 ? 1 : Math.ceil(n * 1.15); }; // it wraps at words
+// Remembered per text and place: a list asks for every visible card's height on each render (the count is in
+// mdHeight.counted, for the test). ponytail: one map emptied at MD_KEPT entries, no LRU.
+const MD_KEPT = 2000, mdSeen = new Map();
 export function mdHeight(text, width, lh = 21, size = 13.5) {
+  const key = `${width}|${lh}|${size}|${text ?? ""}`, hit = mdSeen.get(key);
+  if (hit !== undefined) return hit;
+  if (mdSeen.size >= MD_KEPT) mdSeen.clear();
+  const h = mdCount(text, width, lh, size);
+  mdSeen.set(key, h);
+  return h;
+}
+mdHeight.counted = 0;
+function mdCount(text, width, lh, size) {
+  mdHeight.counted++;
   const lines = String(text ?? "").replace(/\r/g, "").split("\n"), blocks = [];
   // A paragraph's lines join (soft breaks), except after a hard break (two spaces or a backslash at the end); a link
   // counts its text, not its address; emphasis marks take no room.

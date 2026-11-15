@@ -18,7 +18,7 @@ import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, Editor, EditorState, TextView } from "gpui-base";
 import { spaces, panes, focused, agents, exec, hc, run, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, home, layout, props, watchFolder, nextCommand } from "herdr";
 import { diffRows, buildPrompt, splitPatch, selection, nextChange, lineLabel, anchorRow, buildReview, hunksOf, hash, uiLine, reviewRequest, mapReview, triageOf, isSecurity } from "./pr.js";
-import { parsePrRef, ghTarget, pruneSources, codeModel, windowActive } from "./pr.js";
+import { parsePrRef, ghTarget, pruneSources, codeModel, windowActive, pollDue, pollAfter } from "./pr.js";
 import * as C from "./context.js";
 import { tabArgs } from "./threads.js"; // a new Claude tab with the PR's text: no MCP servers
 import { loadDiff, saveDiff } from "./diffcache.js";
@@ -199,7 +199,8 @@ export default class PrReview extends View {
   }
 
   // prs.py (about 20 s) only when prs.json is older than PRS_MS, and in one copy at a time: prs.lock holds the start
-  // time, taken and given back by compare-and-swap (writeTextFile with the text read). True when it ran.
+  // time, taken and given back by compare-and-swap (writeTextFile with the text read). True when it ran, "failed" when
+  // it could not run or reached GitHub for none of the PRs it asked about (prs.py exit 3).
   async scanPrs(cx) {
     const doc = await this.loadPrs(cx), lock = `${appHome()}/pr-data/prs.lock`;
     if (this.scanning || Date.now() - Date.parse(doc?.generated ?? 0) < PRS_MS) return false;
@@ -208,19 +209,25 @@ export default class PrReview extends View {
     try { await writeTextFile(lock, mine, held); } catch { return false; }
     this.scanning = true; if (!this.prs.length) cx.notify(); // the empty list says it is searching
     const req = { dirs: C.claudeDirs(ctxDoc(), home()), rules: ctxDoc()?.rules ?? [], titles: this.cfg?.sessionTitles ?? null };
-    try { await exec("python3", [`${appHome()}/mods/pr-review/prs.py`, JSON.stringify(req)], { timeout: 600000 }); } catch {}
+    const r = await exec("python3", [`${appHome()}/mods/pr-review/prs.py`, JSON.stringify(req)], { timeout: 600000 }).catch(() => null);
     this.scanning = false; if (!this.prs.length) cx.notify();
     await writeTextFile(lock, "0", mine).catch(() => null);
     await this.loadPrs(cx);
-    return true;
+    return r && r.code !== 3 && (r.code === 0 || r.code === 2) ? true : "failed";
   }
 
   // prs.py only while someone can see the list: the panel shown (or placed in a layout without it) and the window in
-  // front. Hidden or behind other windows it asks nothing; shown again, it asks once the last try is PRS_MS old.
+  // front. Hidden or behind other windows it asks nothing; shown again, it asks once the last try is PRS_MS old. After
+  // a scan that failed the wait doubles each time, up to half an hour (pr.js pollDue), until one works again.
+  scanDue() { return visible() && windowActive() && pollDue(this.scanPoll, Date.now(), PRS_MS); }
   scanIfDue(cx) {
-    if (!visible() || !windowActive() || Date.now() - (this.scanAt ?? 0) < PRS_MS) return;
-    this.scanAt = Date.now();
-    cx.spawn(async (cx) => { if (await this.scanPrs(cx) && this.prSel && inView()) this.refresh(cx); });
+    if (!this.scanDue()) return;
+    this.scanPoll = { at: Date.now(), fails: this.scanPoll?.fails ?? 0 };
+    cx.spawn(async (cx) => {
+      const ran = await this.scanPrs(cx);
+      this.scanPoll = pollAfter(this.scanPoll, ran !== "failed", this.scanPoll.at);
+      if (ran === true && this.prSel && inView()) this.refresh(cx);
+    });
   }
 
   // A folder's repo: {root, gitdir, base: origin's default branch}, one spawn per folder; null outside a repo.
@@ -1095,7 +1102,7 @@ export default class PrReview extends View {
     // shared() hands out a new object each time: compared by what the items are made of (views.js openSig), not by identity.
     if (openSig(shared("review.open")) !== this.gotoSig) { this.gotoSig = openSig(shared("review.open")); cx.timer.after(0, () => this.publishGoto()); }
     if (this.spaceSeen !== undefined && location().space !== this.spaceSeen) { this.spaceSeen = location().space; cx.timer.after(0, (cx) => this.onSpace(cx)); }
-    if (!this.scanQueued && visible() && windowActive() && Date.now() - (this.scanAt ?? 0) >= PRS_MS) { this.scanQueued = true; cx.timer.after(0, (cx) => { this.scanQueued = false; this.scanIfDue(cx); }); }
+    if (!this.scanQueued && this.scanDue()) { this.scanQueued = true; cx.timer.after(0, (cx) => { this.scanQueued = false; this.scanIfDue(cx); }); }
     // The selection is never dropped here: a PR the view hides gets a banner instead.
     // refresh() notifies, which render may not: queue it once, right after this render.
     // Only for what is shown: behind the list nothing is diffed (a focus change or a file written there costs nothing).
