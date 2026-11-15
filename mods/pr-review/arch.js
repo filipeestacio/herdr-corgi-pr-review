@@ -672,7 +672,7 @@ export function archBands(L, viewW) {
 // and the gap to its text; TEXT: the widest label.
 export const SM = { NODE: 150, H: 28, NOTE_H: 48, DOT: 14, GAP_X: 18, GAP_Y: 28, LANE: 12, PORT: 12, LEVEL: 6, ROW: 14, BAND: 16, HEAD: 12, LOOP: 20, CHILD_W: 108, CHILD_H: 24, STUB: 10, CHIP: 96, TEXT: 160 };
 // A label's width in the picture, 6 px a character.
-export const stateTextW = (s) => Math.min(SM.TEXT, String(s ?? "").length * 6 + 4);
+const stateTextW = (s) => Math.min(SM.TEXT, String(s ?? "").length * 6 + 4);
 
 // A transition's text: "event [guard] / action" when given, else its label.
 export const transitionText = (e) => (`${e.event ?? ""}${e.guard ? ` [${e.guard}]` : ""}${e.action ? ` / ${e.action}` : ""}`.trim() || String(e.label ?? "").trim());
@@ -700,7 +700,7 @@ const isError = (e) => e.error === "catch" || e.error === "retry" || (!e.event &
 // get a row beside the card, with room kept free to its right, so several never stack and none runs into a lane.
 // v: {nodes: [{id, label, type, changed, note, at, parent, branch}], edges | transitions: [{from, to, label | event,
 // guard, action, changed, error: "catch" | "retry", short: the text when the picture is wider than `room`, pad: px
-// kept free after the label (a finding's chip)}]}. width: the least width; room: the width the picture has.
+// kept free after the text (a finding's chip), part of the label's width}]}. width: the least width; room: the width the picture has.
 // Returns {nodes, edges, backs, loops, stubs, width, height}.
 export function stateLayout(v, width = 0, room = Infinity) {
   const L = stateLay(v, width, false);
@@ -838,7 +838,7 @@ function stateLay(v, width, brief) {
   });
   const flags = (e) => ({ text: e.text, changed: Boolean(e.changed) || e.status === "new" || e.status === "changed", source: e.source ?? null, dashed: e.source === "spec", evidence: e.evidence ?? null, pad: e.pad });
   const edges = links.map((e) => {
-    const s = at.get(e.a), t = at.get(e.b), sx = exitX.get(e), tx = entryX.get(e), y0 = s.y + s.h, mid = levelY.get(e), w = stateTextW(e.text);
+    const s = at.get(e.a), t = at.get(e.b), sx = exitX.get(e), tx = entryX.get(e), y0 = s.y + s.h, mid = levelY.get(e), w = labelW(e);
     let segments, labelAt = null;
     if (!sideOf.has(e)) {
       segments = sx === tx ? [{ x1: sx, y1: y0, x2: sx, y2: t.y }] : [{ x1: sx, y1: y0, x2: sx, y2: mid }, { x1: sx, y1: mid, x2: tx, y2: mid }, { x1: tx, y1: mid, x2: tx, y2: t.y }];
@@ -851,16 +851,16 @@ function stateLay(v, width, brief) {
     }
     return { key: `f${e.i}:${e.a}>${e.b}`, from: e.a, to: e.b, ...flags(e), lane: sideOf.get(e) ?? 0, segments, arrow: { x: tx, y: t.y }, labelAt };
   });
-  // A label in the gap's row is as wide as the room up to the nearest other line beside it (at most TEXT): right of
+  // A label in the gap's row (its text and the room for a chip) is as wide as the room up to the nearest other line beside it: right of
   // its line, or left of it (right-aligned) when its text doesn't fit on the right and the left has more room.
   for (const e of edges) {
     const l = e.labelAt;
     if (!l || l.on) continue;
     const line = l.x - 5, inBand = (y1, y2) => Math.max(y1, y2) > l.y && Math.min(y1, y2) < l.y + 13;
     const xs = edges.filter((o) => o !== e).flatMap((o) => o.segments).filter((x) => x.x1 === x.x2 && inBand(x.y1, x.y2)).map((x) => x.x1);
-    const right = Math.min(SM.TEXT, ...xs.filter((x) => x > line).map((x) => x - l.x - 4));
-    const left = Math.min(SM.TEXT, line - 5 - lanesLeft, ...xs.filter((x) => x < line).map((x) => line - 5 - x - 4));
-    const need = stateTextW(e.text) + e.pad;
+    const most = SM.TEXT + e.pad, right = Math.min(most, ...xs.filter((x) => x > line).map((x) => x - l.x - 4));
+    const left = Math.min(most, line - 5 - lanesLeft, ...xs.filter((x) => x < line).map((x) => line - 5 - x - 4));
+    const need = labelW(e);
     if (right < need && left > right) Object.assign(l, { x: line - 5 - Math.max(24, Math.min(left, need)), w: Math.max(24, Math.min(left, need)), left: true });
     else l.w = Math.max(24, right);
   }
@@ -872,14 +872,14 @@ function stateLay(v, width, brief) {
     [...outs, ...ins].forEach((e, j, list) => (j < outs.length ? leaveY : enterY).set(e, Math.round(n.y + (n.h * (j + 1)) / (list.length + 1))));
   }
   const backs = back.map((e) => {
-    const s = at.get(e.a), t = at.get(e.b), X = laneX(e), sy = leaveY.get(e), ty = enterY.get(e), w = stateTextW(e.text);
+    const s = at.get(e.a), t = at.get(e.b), X = laneX(e), sy = leaveY.get(e), ty = enterY.get(e), w = labelW(e);
     return { key: `b${e.i}`, from: e.a, to: e.b, ...flags(e), laneX: X, sx: s.x, sy, tx: t.x, ty,
       segments: [{ x1: s.x, y1: sy, x2: X, y2: sy }, { x1: X, y1: ty, x2: X, y2: sy }, { x1: X, y1: ty, x2: t.x, y2: ty }],
       labelAt: e.text ? { x: s.x - 6 - w, y: sy - 7, w, left: true, on: true } : null };
   });
   // Side rows, centred on the card: its self-loops first (x: the card's edge, the text LOOP further), then its stubs.
   const rowY = (id, k) => { const n = at.get(id); return Math.round(n.y + n.h / 2 + (k - (side(id) - 1) / 2) * 20); };
-  const loops = ids.flatMap((id) => loopsOf(id).map((e, k) => ({ key: `l${e.i}`, id, ...flags(e), x: at.get(id).x + at.get(id).w - 1, y: rowY(id, k) - 6, w: stateTextW(e.text) })));
+  const loops = ids.flatMap((id) => loopsOf(id).map((e, k) => ({ key: `l${e.i}`, id, ...flags(e), x: at.get(id).x + at.get(id).w - 1, y: rowY(id, k) - 6, w: labelW(e) })));
   const stubs = ids.flatMap((id) => stubsOf(id).map((e, k) => {
     const n = at.get(id), y0 = rowY(id, loopsOf(id).length + k), retry = e.error === "retry" || /^retry/i.test(String(e.label ?? ""));
     const name = byId.get(e.to)?.label ?? e.to;
@@ -890,8 +890,8 @@ function stateLay(v, width, brief) {
   const out = [...at.values()].map((n) => (n.id.startsWith("\0") ? { ...n, kind: n.id === "\0start" ? "start" : "end" }
     : { ...byId.get(n.id), ...n, kind: box.get(n.id).br ? "block" : "state", children: kids(n.id), changed: Boolean(byId.get(n.id).changed) }));
   // As wide and as high as what is drawn: the cards, the side rows, the lanes and the labels right of the cards.
-  const right = Math.max(width, ...out.map((n) => n.x + n.w), ...stubs.map((s) => s.chip.x + s.chip.w), ...loops.map((l) => l.x + SM.LOOP + (l.text ? l.w + l.pad : 0)),
-    ...edges.flatMap((e) => [...e.segments.map((g) => Math.max(g.x1, g.x2) + 4), ...(e.text && e.labelAt && !e.labelAt.left ? [e.labelAt.x + Math.min(e.labelAt.w, stateTextW(e.text) + e.pad)] : [])]));
+  const right = Math.max(width, ...out.map((n) => n.x + n.w), ...stubs.map((s) => s.chip.x + s.chip.w), ...loops.map((l) => l.x + SM.LOOP + l.w),
+    ...edges.flatMap((e) => [...e.segments.map((g) => Math.max(g.x1, g.x2) + 4), ...(e.text && e.labelAt && !e.labelAt.left ? [e.labelAt.x + Math.min(e.labelAt.w, labelW(e))] : [])]));
   return { nodes: out, edges, backs, loops, stubs, width: Math.ceil(right + 2), height, shorter: !brief && all.some((e) => e.short != null) };
 }
 

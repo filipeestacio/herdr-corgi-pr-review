@@ -445,11 +445,11 @@ export function stateView(L, t, id, onJump, marks = null) {
   const tipOf = (e, none = "") => [e.tip || e.text || none, sourceStyle(e.source).tip, e.evidence].filter(Boolean).join("\n") + findTip(mk(e));
   const chip = (key, c, tip, text) => div().id(key).flex_none().px(4).h(16).flex().items_center().rounded(4).border_1().border_color(c).bg(t.background).text_size(TYPE.micro).text_color(t.foreground).tooltip(tip).child(text);
   // A transition's text with its finding's chip behind it (stateLayout keeps `pad` free for it), so the chip stands
-  // at the transition and off the state. at: {x, y, w, left}: from x to the right, or right-aligned so that the text
-  // ends at x + w and the chip stands before it.
+  // at the transition and off the state. at: {x, y, w, left}: w wide from x to the right, or right-aligned so that
+  // the text ends at x + w and the chip stands before it.
   const label = (key, e, at = e.labelAt) => {
     const m = mk(e), text = div().min_w(0).truncate().text_color(col(e)).child(e.text), parts = m ? [text, chip(`${key}-m`, col(e), tipOf(e), markText(m))] : [text];
-    return jump(h_flex().id(key).absolute().top(at.y - (m ? 1.5 : 0)).h(m ? 16 : 13).px(2).gap(4).items_center().max_w(at.w + 4 + (m ? markW(m) + 4 : 0)).bg(t.surface).text_size(TYPE.micro).tooltip(tipOf(e))
+    return jump(h_flex().id(key).absolute().top(at.y - (m ? 1.5 : 0)).h(m ? 16 : 13).px(2).gap(4).items_center().max_w(at.w + 4).bg(t.surface).text_size(TYPE.micro).tooltip(tipOf(e))
       .when(Boolean(at.left), (x) => x.right(L.width - at.x - at.w - 2)).when(!at.left, (x) => x.left(at.x - 2)).children(at.left ? parts.reverse() : parts), e.at ?? e.evidence);
   };
   L.edges.forEach((e, i) => {

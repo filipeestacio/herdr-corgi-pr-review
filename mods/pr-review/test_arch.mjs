@@ -425,7 +425,8 @@ assert.deepEqual(clampText("short", 10, 3), { text: "short", lines: 1, cut: fals
   // A finding's chip gets room after its label (pad): the lanes start right of it.
   const P = stateLayout(numbered(loan, (k) => (k === 1 ? 90 : 0)));
   clean(P, "loan with a chip");
-  assert.ok(edge(A, 2).labelAt.x + edge(A, 2).labelAt.w + 90 > edge(A, 2).segments[2].x1 && edge(P, 2).labelAt.x + edge(P, 2).labelAt.w + 90 < edge(P, 2).segments[2].x1);
+  assert.equal(edge(P, 2).labelAt.w, edge(A, 2).labelAt.w + 90);
+  assert.ok(edge(A, 2).labelAt.x + edge(P, 2).labelAt.w > edge(A, 2).segments[2].x1 && edge(P, 2).labelAt.x + edge(P, 2).labelAt.w < edge(P, 2).segments[2].x1);
   // No room for the texts: the numbers alone, as before, on the same lines.
   const N = stateLayout(numbered(loan), 0, A.width - 1);
   clean(N, "loan, numbers");
