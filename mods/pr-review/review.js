@@ -26,7 +26,7 @@ import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf,
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState, codeOf, isStale } from "./pr.js";
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible, pastTop } from "./views.js";
-import { worst, byFocus, layerAccess, analysisAge, stateHints, noteRule, mergeGroups, mergeFirst, runLabel } from "./views.js";
+import { worst, byFocus, layerAccess, analysisAge, stateHints, noteRule, mergeGroups, mergeFirst, runLabel, byCause, sessionCost, sessionDir, fixEstimate, fixCostLine } from "./views.js";
 import { archView, archLegend, visualsCard, visualCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR, bulletChart } from "./stack.js";
 import { visualPlan } from "./stack.js";
 import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCALE } from "./views.js";
@@ -367,6 +367,7 @@ export const ReviewMode = {
     });
     this.ghPoll = pollAfter(null, true, Date.now()); // opening asks GitHub (onSource, refresh): the first tick is GH_MS later
     cx.timer.every(60000, (cx) => this.ghTick(cx)); // a time check; GitHub at most every GH_MS (ghTick)
+    cx.timer.every(20000, (cx) => this.fixCostTick(cx)); // a running fix agent's cost so far, from its session log
     cx.timer.every(10000, (cx) => { this.proofTick(cx); this.probeTick(cx); }); // Verify with an agent and the probes: their answer files, while one runs
     for (const [st, k] of [[this.draft, "draft"], [this.summary, "summary"], [this.itemEdit, "item"], [this.sendText, "send"]]) {
       st.on("focus", (_e, cx) => { this.typing = k; cx.notify(); });
@@ -1022,7 +1023,30 @@ export const ReviewMode = {
       ["Commit", r?.commit ? String(r.commit).slice(0, 8) : "none reported yet"],
       r && ["Report", `${r.status === "fixed" ? "The agent reports it fixed" : "The agent declined"}${r.note ? `: ${r.note}` : "."}`],
       ["Check", TH.checkText(v)],
+      this.fixCost?.[job?.id] && ["Cost", fixCostLine(this.fixCost[job.id].usd, tierOf(this.fixCost[job.id].model ?? model()), job.items?.length ?? 1).text],
     ].filter(Boolean);
+  },
+  // Every 20 s while a sub-agent fix runs: its cost so far from its session log (views.js sessionCost) in the context's
+  // config folder, the newest log there written since the job started (an earlier fix in the same folder has its own).
+  fixCostTick(cx) {
+    const running = this.prSel ? this.fixes().filter((j) => j.state === "running" && j.target === "sub" && j.path) : [];
+    if (!running.length || this.fixCostBusy) return;
+    const cfg = String(C.infoOf(ctxDoc(), this.ctxId()).env?.CLAUDE_CONFIG_DIR ?? `${home()}/.claude`).replace(/^~(?=\/|$)/, home());
+    this.fixCostBusy = true;
+    cx.spawn(async (cx) => {
+      try {
+        for (const j of running) {
+          const r = await exec("sh", ["-c", 'ls -t "$0"/*.jsonl 2>/dev/null | head -3', sessionDir(cfg, j.path)]).catch(() => null);
+          for (const f of (r?.stdout ?? "").split("\n").filter(Boolean)) {
+            const text = await readTextFile(f).catch(() => null), first = /"timestamp":"([^"]+)"/.exec(text ?? "")?.[1];
+            if (!text || Date.parse(first) < j.at - 60000) continue; // a log of an earlier fix in the same folder
+            const c = sessionCost(text);
+            if (this.fixCost?.[j.id]?.usd !== c.usd) { this.fixCost = { ...this.fixCost, [j.id]: c }; cx.notify(); }
+            break;
+          }
+        }
+      } finally { this.fixCostBusy = false; }
+    });
   },
   // The same in one line, for a card in the diff: "sub-agent t12 · fix/2-x · commit 22e31c88 · agent reports fixed · not verified".
   fixLine(f) {
@@ -2501,7 +2525,7 @@ export const ReviewMode = {
   sendPopover(t) {
     const p = this.sendP, fix = p.fix, sub = fix?.target === "sub", kind = fix ? fix.target : p.verify ? "verify" : p.ask?.kind ?? null, short = (x) => (x ? String(x).replace(home(), "~") : null);
     const live = this.sendAgent().agent, name = live ? p.agent.split(" · ")[0] : null;
-    const facts = kind ? TH.sendFacts({ kind, account: accountOf(this.ctxId()), trusted: this.trustedPr(), branch: fix?.branch ?? p.verify?.branch, name: p.ask?.name ?? name, chat: p.ask?.chat, where: short(p.ask?.where), model: modelLabel(model()) }) : [];
+    const facts = kind ? TH.sendFacts({ kind, account: accountOf(this.ctxId()), trusted: this.trustedPr(), branch: fix?.branch ?? p.verify?.branch, name: p.ask?.name ?? name, chat: p.ask?.chat, where: short(p.ask?.where), model: modelLabel(model()), estimate: kind === "sub" ? fixEstimate(tierOf(model())) : null }) : [];
     const picking = Boolean(fix?.pool), n = fix?.items.length ?? 0, some = !picking || n > 0, ready = !this.sending && some, text = this.sendText.value();
     const go = this.sending ? "Sending…" : p.verify ? "Start verify agent" : sub ? (picking && n ? `Start fix agent for ${n} ${n === 1 ? "finding" : "findings"}` : "Start fix agent") : fix ? "Send to main agent"
       : p.ask ? { new: "Start agent", resume: "Resume its session", live: p.ask.chat ? "Draft in chat" : "Paste to agent" }[p.ask.kind] : "Send to agent";
@@ -4542,7 +4566,7 @@ export const ReviewMode = {
     const mergeRow = (r, k) => {
       const f = r.finding, id = `rv-bm-${k}`, [sym, col] = SYM[r.kind] ?? ["·", t.muted], breaks = r.asks.map((a) => a.short || plain(a.text));
       const click = (_e, cx) => { this.goMergeRow(r, cx); cx.notify(); };
-      return h_flex().id(id).tooltip([r.title, r.why, breaks.length && `Breaks: ${breaks.join("; ")}`, f && certaintyLine(f)].filter(Boolean).join("\n")).gap(8).items_center().pl(10).pr(6).py(3).rounded(4).border_l(3)
+      return h_flex().id(id).tooltip([r.title, r.why, breaks.length && `Breaks: ${breaks.join("; ")}`, f && certaintyLine(f), r.also && `Same cause also at ${r.also.join(", ")}`].filter(Boolean).join("\n")).gap(8).items_center().pl(10).pr(6).py(3).rounded(4).border_l(3)
         .border_color(f ? t[SEV[f.severity]] ?? t.muted : t.border).cursor_pointer().hover((s) => s.bg(t.hover)).on_click(click)
         .child(div().w(16).flex_none().font_semibold().text_color(col).child(sym))
         .child(div().flex_1().min_w(0).truncate().child(r.kind === "ask" ? `${r.title}: ${r.ask.state === "not_done" ? "not done" : r.ask.state}` : r.title))
@@ -5191,7 +5215,8 @@ export const ReviewMode = {
     const cur = this.resNow(), lineOf = (p) => [p.blocker.at, ...(p.steps ?? [])].find((s) => /:\d+$/.test(String(s ?? ""))) ?? null;
     const res = [...(cur?.paths ?? []).filter((p) => p.blocker).map((p) => ({ kind: "resilience", title: resSentence(p), why: `Blocker: ${p.blocker.reason ?? p.blocker.why}`, path: p.id, where: lineOf(p), asks: [] })),
       ...(cur ? resWatch(cur, this.ai?.arch).before : []).map((b) => ({ kind: "resilience", title: b.text, why: "Not observable after the merge: no alarm, log line or metric shows it", path: null, where: b.at ?? null, asks: [] }))];
-    const rows = beforeMerge({ list: this.taskNow(), findings: this.findings(), statusOf: (f) => this.fstatus(f), blockers: this.blockersNow() }), sec = rows.filter((r) => r.kind === "security").length;
+    // One row per cause: a later finding of a cause whose first is still open stands at that first row (views.js byCause).
+    const rows = byCause(beforeMerge({ list: this.taskNow(), findings: this.findings(), statusOf: (f) => this.fstatus(f), blockers: this.blockersNow() }), this.openFindings()), sec = rows.filter((r) => r.kind === "security").length;
     return [...rows.slice(0, sec), ...res, ...rows.slice(sec)]; // after the security rows: a way a failure grows without limit is as urgent
   },
   // What the AI runs on this PR cost, summed (pr.js costLine): the analysis, the reviewers, Look inside and Ask.

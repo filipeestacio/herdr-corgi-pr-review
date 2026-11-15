@@ -249,6 +249,24 @@ assert.equal(pendingText([{ file: "a.py" }, { file: "a.py" }, { file: "b.py" }])
   assert.deepEqual(mergeFirst(bm.slice(2), 5).map((r) => bm.slice(2).indexOf(r)), [0, 3, 4, 7, 8]);
   assert.deepEqual(mergeFirst(bm.slice(0, 3), 5).length, 3);
   assert.deepEqual(mergeGroups(bm.slice(7), [bm[6]]).map((g) => g.text), ["1 criterion", "1 check", "2 high", "1 fix to verify"], "the criteria a shown row breaks are not counted again");
+  // By cause: the later finding of a cause goes while the first is open, and the first row names its place.
+  const { byCause } = await import("./views.js");
+  const tok = { id: "a1", ids: ["a1"] }, tpl = { id: "a2", ids: ["a2"], same_cause: "a1" }, other = { id: "a3", ids: ["a3"] };
+  const cr = [{ kind: "security", finding: tok, where: "handler.py:9" }, { kind: "finding", finding: tpl, where: "template.yaml:14" }, { kind: "finding", finding: other, where: "x.py:1" }];
+  assert.deepEqual(byCause(cr, [tok, tpl, other]).map((r) => [r.where, r.also ?? null]), [["handler.py:9", ["template.yaml:14"]], ["x.py:1", null]]);
+  assert.equal(byCause(cr, [tpl, other]).length, 3, "the first one fixed: the later one stands for the cause again");
+  // A session log priced once per reply (a reply spans lines), cache reads at a tenth; a fix's estimate and cost so far.
+  const { sessionCost, sessionDir, fixEstimate, fixCostLine } = await import("./views.js");
+  const msg = (id, ts, u) => JSON.stringify({ type: "assistant", timestamp: ts, message: { id, model: "claude-sonnet-5-5", usage: u } });
+  const log = [msg("m1", "2026-11-15T00:00:00Z", { input_tokens: 1000, output_tokens: 1000 }), msg("m1", "2026-11-15T00:00:00Z", { input_tokens: 1000, output_tokens: 1000 }),
+    msg("m2", "2026-11-15T00:01:00Z", { cache_read_input_tokens: 1000000 }), "not json", JSON.stringify({ type: "user" })].join("\n");
+  const sc = sessionCost(log);
+  assert.deepEqual([Number(sc.usd.toFixed(4)), sc.ms, sc.replies], [0.212, 60000, 2], "1000 in at $2 + 1000 out at $10 + 1M cache reads at $0.20");
+  assert.equal(sessionDir("/h/.claude-private", "/h/.herdr/worktrees/x/fix-2-ab"), "/h/.claude-private/projects/-h--herdr-worktrees-x-fix-2-ab");
+  assert.equal(fixEstimate("sonnet"), "about $0.15 and 1 min");
+  assert.match(fixEstimate("opus"), /, estimated from Sonnet runs$/);
+  assert.deepEqual([fixCostLine(0.12, "sonnet").text, fixCostLine(0.31, "sonnet").over, fixCostLine(0.31, "sonnet", 2).over], ["$0.12 so far", true, false]);
+  assert.equal(fixCostLine(0.31, "sonnet").text, "$0.31 so far · above the usual cost; stop it in its tab");
   // A finished run is offered as Re-run with its age and head, not as a first Run.
   const { runLabel } = await import("./views.js");
   assert.equal(runLabel(null, "about $0.27, 1 min"), "Run (about $0.27, 1 min)");

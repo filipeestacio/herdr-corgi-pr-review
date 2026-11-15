@@ -1,7 +1,7 @@
 // Pure helpers for the panel's state (main.js) and a layer's flow picture (stack.js visualCard). No gpui imports, so
 // node tests them (test_views.mjs).
 import { transitionText } from "./arch.js";
-import { isSecurity } from "./pr.js";
+import { isSecurity, priceOf } from "./pr.js";
 
 // The panel is either picking a PR (none chosen yet, or PRs ▾ open) or showing the chosen one (its diff or walkthrough).
 // chosen: a PR, or the current branch picked from the list.
@@ -1210,4 +1210,63 @@ export function runLabel(run, price = null, age = "", short = false) {
   const p = price ? ` (${price})` : "";
   if (run?.state === "done") return short ? `Re-run${p}` : `Re-run${p} · last run${age ? ` ${age}` : ""}${run.head ? ` on ${String(run.head).slice(0, 7)}` : ""}`;
   return `${run?.state === "failed" ? "Run again" : "Run"}${p}`;
+}
+
+// "Before merge" by cause: a row whose finding is a later finding of one cause (pr.js same_cause) while that cause's
+// first finding is still open goes; the first row gets its place in `also` ("same cause at template.yaml:14").
+// open: the unresolved findings.
+export function byCause(rows, open = []) {
+  const firstOf = (f) => (f?.same_cause ? open.find((g) => g !== f && (g.id === f.same_cause || (g.ids ?? []).includes(f.same_cause))) ?? null : null);
+  const later = rows.filter((r) => firstOf(r.finding));
+  return rows.filter((r) => !later.includes(r)).map((r) => {
+    const also = later.filter((x) => firstOf(x.finding) === r.finding).map((x) => x.where).filter(Boolean);
+    return also.length ? { ...r, also } : r;
+  });
+}
+
+// ---- what an agent in a tab has cost so far (the fix agent: the CLI caps only non-interactive runs)
+
+// A Claude Code session log (its .jsonl) priced: every model reply once (a reply spans several lines, one per content
+// block, with the same message id), its tokens at pr.js priceOf; cache reads at a tenth of the input price, cache
+// writes at 1.25 times it. -> {usd, ms (first to last reply), replies, model}
+// ponytail: the 5-minute cache write price for every write; the 1 h writes cost 2x, which this undercounts a little.
+export function sessionCost(text) {
+  const seen = new Set();
+  let usd = 0, first = null, last = null, model = null;
+  for (const line of String(text ?? "").split("\n")) {
+    let d;
+    try { d = JSON.parse(line); } catch { continue; }
+    const m = d?.type === "assistant" ? d.message : null, u = m?.usage;
+    if (!u || !m.id || seen.has(m.id) || m.model === "<synthetic>") continue;
+    seen.add(m.id);
+    const [pin, pout] = priceOf(m.model), t = Date.parse(d.timestamp);
+    usd += ((u.input_tokens ?? 0) * pin + (u.cache_read_input_tokens ?? 0) * pin * 0.1 + (u.cache_creation_input_tokens ?? 0) * pin * 1.25 + (u.output_tokens ?? 0) * pout) / 1e6;
+    if (Number.isFinite(t)) { first ??= t; last = t; }
+    model = m.model;
+  }
+  return { usd, ms: first === null ? 0 : last - first, replies: seen.size, model };
+}
+// Where Claude Code keeps the session logs of an agent started in `cwd`: <config>/projects/<cwd with every / and .
+// as ->/.
+export const sessionDir = (config, cwd) => `${config}/projects/${String(cwd).replace(/[/.]/g, "-")}`;
+
+// What one fix agent (a sub-agent on one finding) costs, measured from its session logs (sessionCost) on PR #2 of
+// the demo repo; another class is scaled by its output price and says so. usd per finding, s from first to last reply.
+// ponytail: one Sonnet run ($0.14, 72 s, PR #2) on one small PR; measure again on a bigger one when the estimate is often far off.
+export const FIX_TYPICAL = { sonnet: { usd: 0.15, s: 72, measured: true } };
+export function fixTypical(tier) {
+  if (FIX_TYPICAL[tier]) return FIX_TYPICAL[tier];
+  const base = FIX_TYPICAL.sonnet, k = priceOf(tier)[1] / priceOf("sonnet")[1];
+  return { usd: base.usd * k, s: base.s, measured: false };
+}
+// "about $0.40 and 3 min" (one finding), with "estimated from Sonnet runs" when not measured on this class.
+export function fixEstimate(tier) {
+  const t = fixTypical(tier);
+  return `about $${t.usd.toFixed(2)} and ${Math.max(1, Math.round(t.s / 60))} min${t.measured ? "" : ", estimated from Sonnet runs"}`;
+}
+// A running fix agent's cost so far, for its facts: "$0.31 so far", and past twice the usual for its findings
+// "$1.10 so far · above the usual cost; stop it in its tab". n: the findings it works on.
+export function fixCostLine(usd, tier, n = 1) {
+  const over = usd > 2 * fixTypical(tier).usd * Math.max(1, n);
+  return { over, text: `$${usd.toFixed(2)} so far${over ? " · above the usual cost; stop it in its tab" : ""}` };
 }
