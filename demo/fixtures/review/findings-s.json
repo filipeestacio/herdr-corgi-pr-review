@@ -1089,6 +1089,73 @@
      "access": "acc1"
     }
    }
+  ],
+  "data": [
+   {
+    "id": "d1",
+    "name": "bearer token (Authorization header)",
+    "kind": "credential",
+    "steps": [
+     {
+      "node": "client",
+      "at": "",
+      "protected": "",
+      "retention": ""
+     },
+     {
+      "node": "handler",
+      "at": "library/handler.py:16",
+      "protected": "TLS at the HttpApi (template.yaml:26); compared in constant time, never stored",
+      "retention": ""
+     }
+    ]
+   },
+   {
+    "id": "d2",
+    "name": "member's mail address (loan.email)",
+    "kind": "personal",
+    "steps": [
+     {
+      "node": "store",
+      "at": "library/loans.py:13",
+      "protected": "",
+      "retention": ""
+     },
+     {
+      "node": "consumer",
+      "at": "library/consumer.py:19",
+      "protected": "",
+      "retention": ""
+     },
+     {
+      "node": "mailer",
+      "at": "library/mailer.py:16",
+      "sink": "third_party",
+      "protected": "",
+      "retention": ""
+     },
+     {
+      "node": "mailer",
+      "at": "library/mailer.py:17",
+      "sink": "log",
+      "protected": "",
+      "retention": ""
+     }
+    ]
+   },
+   {
+    "id": "d3",
+    "name": "FRONT_DESK_TOKEN",
+    "kind": "secret",
+    "steps": [
+     {
+      "node": "handler",
+      "at": "library/handler.py:9",
+      "protected": "an environment variable of the function; its value is set nowhere in the repository",
+      "retention": ""
+     }
+    ]
+   }
   ]
  },
  "resilience": {

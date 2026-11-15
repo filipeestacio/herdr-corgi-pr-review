@@ -51,6 +51,7 @@ import { withResilience, resilienceStart, RUN_TYPICAL } from "./pr.js"; // the R
 import { keepLast } from "./views.js"; // every cache has a limit
 import { resDepRows, resMeta, resFade, resShown, resRefs, probeBaseWord, datedByDiff } from "./views.js"; // Resilience: dependencies that fail or are overloaded; a path's second line; readable dimming
 import { wayOf, wayText, passZones, runsIn } from "./views.js"; // panel round 3: ways through every gate, zones passed on
+import { SecPicsMode } from "./sec-view.js"; // the Security page's sections "Where sensitive data goes" and "Who may do what"
 import { ImpactMode } from "./impact-view.js"; // the Architecture page's Impact section: changed functions and their callers
 import { SchemaMode } from "./schema-view.js"; // the Architecture page's "Schema changes": tables and relations before and after
 import { transitionMarks, effectiveFrom, inProcess, mapArch, crossingsOf, crossingChanged, crossOnce, secSentence, TRUST_ORDER, asideOf, threatCited, blastOf, skipText, guardLine } from "./views.js";
@@ -549,6 +550,7 @@ export const ReviewMode = {
     else if (name === "res-time") { this.page = "res"; this.resTimeOpen = this.resTimeOpen === false; } // the picture "Timing", folded or open
     else if (name === "res-probe-open") { this.page = "res"; this.resProbeOpen = this.resProbeOpen === arg ? null : arg; } // a probe's script and output
     else if (name === "cross") { this.page = "blast"; this.tab = "steps"; if (arg === "quiet") this.crossQuiet = !this.crossQuiet; else if (arg === "unchanged") this.crossAll = !this.crossAll; else this.crossOpen = this.crossOpen === arg ? null : arg || null; } // a click on a row of "Trust boundary crossings" (its key: a:<access id> | e:<edge index>)
+    else if (name === "sec-data" || name === "sec-rights") { this.page = "blast"; this.tab = "steps"; this.secPicCommand(name, arg); } // the sections under the boundary map: fold or open; sec-data:<id> chooses a kind of data, sec-rights:all the folded rows
     else if (name === "cross-also") { this.page = "blast"; this.tab = "steps"; this.crossAlso = new Set(this.crossAlso ?? []); if (!this.crossAlso.delete(arg)) this.crossAlso.add(arg); } // a click on "2 more at this place" of a crossing (its key)
     else if (name === "vis") { this.toggleVis(arg); } // a click on a folded or open state diagram over a layer's code (vis|<layer>|<k>)
     else if (name === "run-model") { const [kind, tier] = String(arg).split(":"); if (["sonnet", "opus"].includes(tier)) this.updateDeep(cx, (d) => ({ ...d, runModels: { ...(d.runModels ?? {}), [`${this.deepKey()}|${kind}`]: tier === this.runTier(kind).tier ? null : tier } })); else this.offerMenu = this.offerMenu === kind ? null : kind; } // run-model:<kind> opens Change model, run-model:<kind>:<tier> picks one
@@ -596,7 +598,7 @@ export const ReviewMode = {
     this.reviewKey = null; this.ai = null; this.aiError = null; this.aiModel = null; this.cur = 0; this.focusHunk = null; this.fsel = null; this.sug = null;
     this.composing = false; this.editing = null; this.finishOpen = false; this.posted = null; this.gh = []; this.route = null; this.event = null;
     this.full = {}; this.gaps = {}; this.whole = new Set(); this.collapsed = new Set(); this.hunks = null;
-    this.rowsMemo = null; this.ghMemo = null; this.fitMemos = null; this.layQueue = null; this.kept = null; this.openH = null; // what was computed for the PR before goes with it
+    this.rowsMemo = null; this.ghMemo = null; this.fitMemos = null; this.layQueue = null; this.kept = null; this.openH = null; this.leanBy = null; this.cut = 0; // what was computed for the PR before goes with it
     this.ctx = null; this.since = null; this.sinceOn = false; this.lastReviewed = null; this.page = "overview"; this.aiFile = null; this.needClone = null;
     this.resumed = null; this.resumeIn = null; this.pendingScroll = null;
   },
@@ -1578,7 +1580,7 @@ export const ReviewMode = {
   pushRows(items, at, rows, path, hunkOf) {
     // ponytail: gpui-kit's virtual list holds at most 10000 items; past the budget a file's lines fold to one note
     // (collapse other files to open it) instead of crashing the render. A paged list would lift the limit.
-    const cap = this.rowCap ?? 9000;
+    const cap = this.rowCap ?? this.rowsCap(9000);
     if (items.length + rows.length > cap) { items.push({ t: "note", text: `${rows.length} lines not shown: the view holds about ${cap} lines at once. Collapse other files (click their header) to open this one.` }); return []; }
     const sugs = this.openSugs(path), cms = this.comments.filter((c) => c.file === path), used = new Set();
     const finds = this.findings().filter((f) => f.file === path && OPEN_ST.includes(this.fstatus(f))); // a fix sent stays here until it is verified
@@ -1671,6 +1673,10 @@ export const ReviewMode = {
 
   stepsItems(steps = this.steps()) {
     const items = [], at = {};
+    // Its own number of lines, every time: it used to take what the Files list had left (2 500), or 9 000 when that
+    // list was never drawn, and 9 000 lines take 40 to 50 ms per frame in Herdr (a frame is stopped at about 50).
+    // 5 000 take about 23 ms; when frames are stopped all the same, it halves (rowsCap).
+    this.rowCap = this.rowsCap(5000);
     steps.forEach((s, i) => {
       at[`s${i}`] = items.length;
       items.push({ t: "step", s, i }, ...(s.visuals ?? []).flatMap((v, k) => this.visItems(v, i, k)));
@@ -1703,7 +1709,7 @@ export const ReviewMode = {
     const items = [], at = {}, sh = this.shown();
     // 2500 lines open at most: every render walks the list's items, and Herdr stops a slice after ~50 ms; 9000 open
     // lines took that long. The virtual list's own limit (10000) leaves room for every file's header and one note.
-    const cap = this.rowCap = Math.min(2500, Math.max(1000, 9700 - 2 * sh.patch.length));
+    const cap = this.rowCap = this.rowsCap(Math.min(2500, Math.max(1000, 9700 - 2 * sh.patch.length)));
     // The virtual list holds at most 10000 items: the files around the one you read (this.center, autoFold) and the
     // ones you opened last get the room (views.js allocate); the rest fold to one item of their height (overBudget).
     const rowsOf = new Map(), open = [], heads = []; // not `rows`: the loop below has its own
@@ -3367,6 +3373,7 @@ export const ReviewMode = {
   // o: {id, pic: the canvas's and the picture's element ids, wrap, decorate: archView's, notes: pinned notes on it}.
   archCanvas(t, L, opts, o = {}) {
     const { id = "rv-arch-canvas", pic: pid = "rv-arch", wrap = this.archWrapOn(), decorate = null, notes = true } = o;
+    if (this.leanLevel()) return this.leanNote(t, id, L.nodes.length); // frames were stopped here (frameCut)
     const s = this.hsOf(id), M = 40; // the room for a turn's mark at a band's edge
     // The view is measured in logical px, the picture is drawn in the person's zoom: its width in the picture's px.
     const B = archBands(L, s.viewW && wrap ? hsVisible(s.viewW / (settings().zoom || 1), this.drawerCover()) - 4 - 2 * M : 0); // 0: not measured yet or Wrap off, one row
@@ -3563,6 +3570,22 @@ export const ReviewMode = {
       else { (this.layQueue ??= new Map()).set(String(slot), make); return memo[slot]?.L ?? null; }
     }
     return memo[slot].L;
+  },
+  // Herdr stops a frame that takes longer than about 50 ms and keeps showing the one before, under "This view could
+  // not be re-rendered"; the next frame takes as long, so the view would stay there. cut: frames stopped in a row on
+  // one tab and page. After two the view draws less there (leanLevel): no map picture but a sentence (archCanvas),
+  // and half the lines in the list per level (rowsCap). It stays so for this PR; "Draw it again" takes it back.
+  frameCut(was) {
+    const key = `${this.tab}|${this.page ?? ""}`;
+    this.cut = was ? (this.cutKey === key ? (this.cut ?? 0) + 1 : 1) : 0; this.cutKey = key;
+    if (this.cut >= 2) { (this.leanBy ??= new Map()).set(key, this.leanLevel() + 1); this.cut = 0; }
+  },
+  leanLevel() { return this.leanBy?.get(`${this.tab}|${this.page ?? ""}`) ?? 0; },
+  rowsCap(lines) { return Math.max(250, lines >> this.leanLevel()); },
+  leanNote(t, id, cards) {
+    return v_flex().id(`${id}-lean`).w_full().gap(8).p(12).rounded(8).border_1().border_color(t.border).text_size(TYPE.body).text_color(t.muted)
+      .child(div().whitespace_normal().child(`The picture of ${cards} ${cards === 1 ? "card" : "cards"} is left out: drawing this page took longer than a frame may take (about 50 ms), twice in a row. Copy as Markdown has the picture as a diagram.`))
+      .child(h_flex().child(pill(`${id}-again`, t, "Draw it again", (_e, cx) => { this.leanBy?.delete(`${this.tab}|${this.page ?? ""}`); this.cut = 0; cx.notify(); }).tooltip("Try to draw the picture again")));
   },
   // The big maps the last frame asked for and left for later (archL): one per task, so no task runs longer than one
   // layout, then a redraw, which finds it in the memo (and may ask for the next: Fit is decided from the first).
@@ -4156,7 +4179,10 @@ export const ReviewMode = {
     const map = data && a && changed.length >= 3 ? this.secMap(t, a, ctx, changed) : null;
     return [["head", head], ...(data ? [] : [["empty", this.secEmpty(t)]]),
       ...(data ? [["sentence", div().id("rv-sec-sentence").text_size(TYPE.title).line_height(1.5).whitespace_normal().max_w(1000).child(secSentence(crossings, secN, cited.length, asideOf({ arch: a, access: this.ai?.access ?? [] }).guards.filter((g) => g.loosened).length))], ["crossings", this.secCrossings(t, title, crossings)]] : []),
-      ...(map ? [["map", map]] : []), ["findings", this.secIntro(t, sec, open, cited)], ...order.map(({ f }) => [`f:${f.id}`, this.secFinding(t, f, ctx)]),
+      ...(map ? [["map", map]] : []),
+      // Under the map, folded to a line each (sec-view.js): where sensitive data goes, and who may do what.
+      ...(data ? this.secPicParts(t, { rows: crossings, show: ctx.show, goTo: (f) => (_e, cx) => { const j = this.pageParts.indexOf(`f:${f.id}`); if (j >= 0) this.pageScrolls.blast.scroll_to_item(j); else { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); } cx.stop_propagation(); cx.notify(); } }) : []),
+      ["findings", this.secIntro(t, sec, open, cited)], ...order.map(({ f }) => [`f:${f.id}`, this.secFinding(t, f, ctx)]),
       ["scope", this.secScope(t, title)]];
   },
   // The crossings as a picture (from three changed ones on): the trust zones as columns, public → authenticated →
@@ -4178,7 +4204,8 @@ export const ReviewMode = {
       this.secMemo = this.layoutLater({ key, marks, L: archLayout(...args) }, args, () => this.secMemo); // the search for the better layout: after the render
     }
     const { L, marks } = this.secMemo;
-    const opts = { ...this.archOpts("blast"), marks, numbers: false, zoom: settings().zoom || 1, onFocus: (id, cx) => { this.fh.focus(); this.secCard(id, cx); } };
+    // keep: the way of the kind of data chosen under the map (sec-view.js), lit; the rest dimmed.
+    const opts = { ...this.archOpts("blast"), marks, numbers: false, zoom: settings().zoom || 1, keep: this.secDataLit(ctx.crossings), onFocus: (id, cx) => { this.fh.focus(); this.secCard(id, cx); } };
     const deco = (n) => (eff.has(n.id) ? [h_flex().flex_none().h(15).child(chip(t, eff.get(n.id).cond ? `${eff.get(n.id).trust[0].toUpperCase()}${eff.get(n.id).trust.slice(1)} if ${eff.get(n.id).cond.replace(/^if crossing /, "")}` : `Reachable as ${eff.get(n.id).trust}`, t.ansi3, false, `rv-sec-eff-${n.id}`, `Drawn in ${eff.get(n.id).zone.name ?? eff.get(n.id).drawn} (${eff.get(n.id).drawn}), but ${eff.get(n.id).why}${eff.get(n.id).cond ? `: reachable as ${eff.get(n.id).trust} ${eff.get(n.id).cond}` : ""}.`))] : []);
     return v_flex().id("rv-sec-map").gap(6)
       .child(h_flex().gap(10).items_center().flex_wrap().text_size(TYPE.small).text_color(t.muted)
@@ -6102,6 +6129,7 @@ export const ReviewMode = {
 };
 Object.assign(ReviewMode, ImpactMode);
 Object.assign(ReviewMode, SchemaMode);
+Object.assign(ReviewMode, SecPicsMode);
 
 const LAYER_FILES = 12; // an open layer lists this many of its files in the left column
 // An action in a file's header ("Viewed", "Whole file"): drawn as a button 30 px high (27 pt at the usual 90 % zoom; a

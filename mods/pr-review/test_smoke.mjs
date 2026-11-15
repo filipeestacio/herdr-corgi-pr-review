@@ -203,6 +203,7 @@ async function tour(v, name) {
   v.command("page:blast", cx);
   for (const k of ["quiet", "unchanged", ...(v.ai?.access ?? []).map((x) => `a:${x.id}`), ...(v.ai?.arch?.edges ?? []).map((_e, k) => `e:${k}`)]) act(v, `cross:${k}`, at(`Security, crossing ${k}`));
   for (const n of v.ai?.arch?.nodes ?? []) act(v, `sec-card:${n.id}`, at(`Security, card ${n.id}`));
+  for (const c of ["sec-data", ...(v.ai?.secData ?? []).map((d) => `sec-data:${d.id}`), "sec-data", "sec-rights", "sec-rights:all", "sec-rights:all", "sec-rights"]) act(v, c, at(`Security, ${c}`));
   for (const k of [...(v.ai?.scope?.checked ?? []).map((x) => x.area), "run:claude", "run:security"]) act(v, `scope-row:${k}`, at(`Security, scope row ${k}`));
   v.command("page:arch", cx);
   for (const m of ["before", "after", "diff"]) act(v, `arch-view:${m}`, at(`Architecture, ${m}`));
@@ -401,6 +402,52 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   act(v, "page:blast", "Security with a guard");
   await tour(v, "PR #2 with a guard, a right off the map and an operator's script");
 }
+// The two sections under the Security page's boundary map (sec-view.js), each folded to a line: "Where sensitive data
+// goes" (a chip per kind of data; the chosen one's steps, and its way lit on the map) and "Who may do what" (the table
+// of principals and resources). A run from before the data were named shows what its crossings say and offers a new one.
+{
+  const doc = JSON.parse(fx("findings-s.json"));
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify(doc) });
+  const rows = () => v.crossingsNow();
+  const ids = (what) => { S.ids = new Set(); draw(v, what); const got = S.ids; S.ids = null; return got; };
+  act(v, "steps", "Security sections: the Analysis tab"); act(v, "page:blast", "Security, both sections folded");
+  assert.deepEqual(v.pageParts.slice(v.pageParts.indexOf("map"), v.pageParts.indexOf("map") + 3), ["map", "data", "rights"], "both stand under the map, which stays where it was");
+  let got = ids("folded");
+  assert.ok(got.has("rv-sec-data-h") && got.has("rv-sec-rights-h") && !got.has("rv-sec-df-d1") && !got.has("rv-sec-rt"), "folded: a line each, no chips and no table");
+  assert.equal(v.secDataLit(rows()), null, "folded: nothing lit on the map");
+  click("rv-sec-data-h", "the head of the data section"); got = ids("sensitive data open");
+  assert.ok(["rv-sec-df-d1", "rv-sec-df-d2", "rv-sec-df-d3", "rv-sec-df-s-d2-4"].every((id) => got.has(id)) && !got.has("rv-sec-data-rerun"), "a chip per kind of data; the one with a mark is shown first; no re-run offered");
+  click("rv-sec-df-d1", "the bearer token's chip"); got = ids("the bearer token chosen");
+  const lit = v.secDataLit(rows()), onMap = v.secMemo.L.nodes.filter((n) => lit.has(n.id)).map((n) => n.label);
+  assert.ok(got.has("rv-sec-df-s-d1-2") && onMap.length === 2 && onMap.includes("handler (handler.py)"), `its way over the way in is lit on the map: ${onMap}`);
+  click("rv-sec-df-c-d1-2", "the step's crossing"); assert.equal(v.crossOpen, "a:acc1", "a step's crossing opens that crossing in the list"); draw(v, "after a step's crossing");
+  click("rv-sec-df-at-d1-2", "the step's line"); draw(v, "after a step's line"); v.command("steps", cx); act(v, "page:blast", "back on the Security page");
+  click("rv-sec-rights-h", "the head of the table"); got = ids("the table open");
+  assert.ok(["rv-sec-rt", "rv-sec-rt-acc1", "rv-sec-rt-acc2", "rv-sec-rt-acc3", "rv-sec-rt-acc4", "rv-sec-rt-f-acc1"].every((id) => got.has(id)) && !got.has("rv-sec-rt-all"), "a cell per right with its findings' sign; a small table folds nothing");
+  click("rv-sec-rt-acc2", "the cell of the queue right"); assert.ok(rows().some((r) => r.key === v.crossOpen && (r.aliases ?? []).includes("a:acc2")), "a cell opens the crossing its right is part of"); draw(v, "after a cell");
+  click("rv-sec-rt-f-acc1", "a cell's findings"); draw(v, "after a cell's findings");
+  // A guard stands in the cell it protects; a table over the limit folds what the PR leaves alone behind a counter.
+  const many = structuredClone(doc); many.security.access.push({ id: "acc5", resource: "QueuePolicy", kind: "queue", principal: "everyone but the FrontDesk role", principal_node: null, principal_kind: "role", node: "queue", actions: ["sqs:SendMessage"], effect: "deny", change: "narrowed",
+    public: false, auth: "resource policy", auth_kind: "iam", at: "template.yaml:30", holds_against: "Another role sends forged events." },
+    ...Array.from({ length: 10 }, (_x, k) => ({ id: `acc${k + 6}`, resource: `Bucket ${k}`, kind: "bucket", principal: `Role ${k}`, principal_node: null, principal_kind: "role", change: "unchanged", actions: [k ? "s3:GetObject" : "s3:*"], public: false, auth: "IAM role", auth_kind: "iam", at: "template.yaml:30" })));
+  const big = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify(many) });
+  act(big, "steps", "a large table: the Analysis tab"); act(big, "page:blast", "a large table, folded"); act(big, "sec-rights", "a large table, open");
+  S.ids = new Set(); draw(big, "a large table"); got = S.ids; S.ids = null;
+  assert.ok(got.has("rv-sec-rt-acc5") && got.has("rv-sec-rt-all") && !got.has("rv-sec-rt-acc6"), "the guard's cell is there, the unchanged rows are folded behind the counter");
+  click("rv-sec-rt-all", "the counter"); S.ids = new Set(); draw(big, "a large table, all of it"); assert.ok(S.ids.has("rv-sec-rt-acc6") && S.ids.has("rv-sec-rt-acc15"), "all of it on a click"); S.ids = null;
+  assert.match(big.mdText(false), /\| Role 0 \(role\) \|.*= unchanged: s3:\* \(all actions\)/, "the Markdown has every row, the wildcard in words");
+  // The older run: what its crossings say, sorted by name where the name says it, the rest counted, and a new run offered.
+  const older = structuredClone(doc); delete older.security.data;
+  const o = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify(older) });
+  act(o, "steps", "an older run: the Analysis tab"); act(o, "page:blast", "an older run, folded"); act(o, "sec-data", "an older run's data");
+  assert.ok(S.clicks.has("rv-sec-data-rerun") && S.clicks.has("rv-sec-df-n1"), "the older run offers a new one and shows the one field its name sorts");
+  assert.match(o.mdText(false), /## Where sensitive data goes \(1\)\n\n1 field sorted by name, 2 crossings carry data this run did not classify\./);
+  // No data: no section (a run that names no sensitive data and no right).
+  const bare = structuredClone(doc); bare.security.data = []; bare.security.access = []; bare.security.gates = [];
+  const b = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: JSON.stringify(bare) });
+  act(b, "steps", "no data: the Analysis tab"); act(b, "page:blast", "a run without data or rights");
+  assert.ok(!b.pageParts.includes("data") && !b.pageParts.includes("rights") && !/Where sensitive data goes|Who may do what/.test(b.mdText(false)), "no data, no section, on the page and in its Markdown");
+}
 // The Security page's map shows archLayout's picture at once; its better layout (arch.js archSearch: a full layout per
 // try, too much for a render) comes after the render, in slices (layoutMore): the memo's layout is replaced once, the
 // view is told, and the page draws with it.
@@ -505,7 +552,7 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   // dimmed with its state; ✕ removes one (its minimized chip too) and offers Undo, which puts it back.
   S.store.set("review.open", [reg(prs[0], { filesViewed: 2, files: 9, comments: 1 }), reg(prs[1], { filesViewed: 1 }, now - 1000), reg(prs[3], { stepsChecked: 1 }, now - 2000), reg(prs[2], { comments: 2 }, now - 20 * 86400000)]);
   S.store.set("review.minimized", { target: prs[0], at: now });
-  v.spaceSlug = { root: "/h/a", slug: "saefty/corgi-demo" }; v.picking = true; draw(v, "panel: In progress with more behind Show all");
+  v.spaceSlug = { root: "/h/a", slug: "saefty/corgi-demo" }; v.view = "diff"; v.picking = true; draw(v, "panel: In progress with more behind Show all"); // the list itself: it is only built while it is shown
   assert.deepEqual([v.panelProgress().shown.map((r) => r.number), v.panelProgress().more], [[2], 2]);
   v.allOpen = true; draw(v, "panel: In progress, all shown");
   // A review listed a moment ago whose PR is merged now: the line that says so, once.
@@ -721,7 +768,10 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   };
   const a = v.ai.arch, paths = v.resNow().paths, page = () => v.pageView(tt);
   v.command("page:blast", cx); v.crossAll = true;
-  const sec = check("Security", drawn(["", ...(v.ai.access ?? []).map((x) => `a:${x.id}`), ...a.edges.map((_e, k) => `e:${k}`)].map((k) => () => v.command(`cross:${k}`, cx)), page), { flowchart: 1 });
+  const sec = check("Security", drawn([...["", ...(v.ai.access ?? []).map((x) => `a:${x.id}`), ...a.edges.map((_e, k) => `e:${k}`)].map((k) => () => v.command(`cross:${k}`, cx)),
+    () => v.command("sec-rights", cx), ...(v.ai.secData ?? []).map((d) => () => v.command(`sec-data:${d.id}`, cx))], page), { flowchart: 1 + (v.ai.secData ?? []).filter((d) => d.steps.length > 1).length });
+  assert.ok((v.ai.secData ?? []).length >= 3 && /## Where sensitive data goes \(3\)[\s\S]*## Who may do what \(4\)[\s\S]*## Findings/.test(sec), "both sections stand in the Markdown under the picture, before the findings");
+  v.command("sec-rights", cx); v.command("sec-data", cx); // folded again
   // A security finding with a range of lines has those lines as code, from the diff with its marks.
   const ranged = v.findings().find((f) => f.security && f.end > f.line && v.fileHunks.has(f.file));
   assert.ok(ranged && new RegExp(`Code \`${ranged.file.replace(/[.]/g, "\\.")}:\\d+-\\d+\`:\\n\\n\`\`\`diff\\n`).test(sec), "a finding's lines stand under it as a diff block");

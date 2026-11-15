@@ -1258,3 +1258,35 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.deepEqual([probeBaseWord({ base: { status: "new_in_pr" } }, false, W).word, probeBaseWord({ base: { status: "new_in_pr" } }, true, W).word, probeBaseWord({ base: "x" }, false, W), probeBaseWord({}, false, W)], ["new in this PR", "the script could not run there", null, null]);
   console.log("ok old or new is said once");
 }
+
+// ---- the panel's diff list: a card's buttons are hit where they are drawn, at any zoom and width
+{
+  const { panelButtons, panelZones, panelHit, panelPress, PANEL_EDGE } = await import("./views.js");
+  const presets = ["Explain", "Look up docs"];
+  const cards = [["ca", { editing: false, presets }, ["cancel", "comment", "ask"]], ["ca", { editing: true, presets }, ["cancel", "comment"]], ["ch", { editing: false, presets }, ["preset:0", "preset:1"]],
+    ["ch", { editing: true, presets }, []], ["bh", { editing: false, presets }, ["edit", "delete"]]];
+  for (const [kind, o, keys] of cards) {
+    const { gap, list } = panelButtons(kind, o);
+    assert.deepEqual(list.map((b) => b.key), keys, `${kind}: its buttons, left to right`);
+    assert.ok(list.every((b) => Number.isFinite(b.w) && b.w >= 30), `${kind}: stated widths`);
+    for (const zoom of [0.9, 1, 1.25]) for (const w of [300, 380, 560]) {
+      // The layout the element gets: fixed widths in a row that ends PANEL_EDGE before the list's right edge, `gap`
+      // between them. Walked from the right here, button by button, without panelZones.
+      let right = w - PANEL_EDGE;
+      for (let k = list.length - 1; k >= 0; k--) {
+        const x1 = right, x0 = right - list[k].w, at = (x) => { const p = panelPress(x * zoom, w * zoom, zoom, 0); return panelHit(kind, p.x, p.w, o); }; // a press arrives in logical px
+        for (const x of [x0 + 0.5, (x0 + x1) / 2, x1 - 0.5]) assert.equal(at(x), list[k].key, `${kind} ${list[k].key} at ${x} of ${w}, zoom ${zoom}`);
+        assert.equal(at(x0 - gap / 2), null, `${kind}: the gap left of ${list[k].key} is no button (zoom ${zoom})`);
+        right = x0 - gap;
+      }
+      assert.equal(panelHit(kind, 20, w, o), null, "the card's label is no button");
+      assert.equal(panelHit(kind, w - PANEL_EDGE + 0.5, w, o), null, "nor is its padding at the right");
+      const z = panelZones(kind, w, o);
+      assert.ok(z.every((b, k) => b.x1 - b.x0 === list[k].w && (k === 0 || Math.abs(b.x0 - z[k - 1].x1 - gap) < 1e-9)) && (z.length === 0 || z.at(-1).x1 === w - PANEL_EDGE), `${kind}: the zones are the widths, a gap apart, flush right`);
+    }
+  }
+  assert.deepEqual(panelPress(171, 342, 0.9, 380), { x: 190, w: 380 }); // logical px at zoom 0.9 are the items' px times 0.9
+  assert.deepEqual(panelPress(undefined, undefined, undefined, 380), { x: 0, w: 380 }, "a press without a place (a command): the panel's own width");
+  console.log("ok panel zones");
+}
+

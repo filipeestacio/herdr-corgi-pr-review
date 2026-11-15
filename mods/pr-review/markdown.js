@@ -15,6 +15,8 @@ import { archMarks } from "./arch.js";
 import { transitionMarks, surfaceOf, reachLevel, secOrder, EXPOSURE, inProcess, resNoPicture, resShown, probeBaseWord, datedByDiff } from "./views.js";
 import { doesList, surfaceLine, countLine, funnelShort, funnel as funnelOf, findingSteps } from "./pr.js";
 import { resDepRows } from "./views.js"; // Resilience: dependencies that fail or are overloaded
+import { rightsOf, rightsMd } from "./rights.js"; // Security: the table "Who may do what"
+import { dataflowOf, dataflowMd } from "./dataflow.js"; // Security: "Where sensitive data goes"
 import { timelineOf, timelineMd } from "./timeline.js"; // Resilience: the picture "Timing"
 import { faultTrees, faultFlow, FAULT_NOTE } from "./faulttree.js"; // Resilience: what follows from a dependency's case, as a tree
 import { schemaMd } from "./schema.js"; // the Architecture page's "Schema changes"
@@ -508,6 +510,9 @@ export function securityMd({ pr, head, ai = null, findings = [], statusOf = () =
     picture && ["## Boundary picture", "", "Only the crossings, numbered as in the table, with what goes over them; a dashed line is not assessed. The frames are the trust zones.", "",
       ...mermaidFlow({ groups: picture.groups, nodes: picture.nodes, edges: picture.edges.map((e) => ({ from: e.from, to: e.to, label: e.label, dashed: e.dashed })) }, { marks: { nodes: picMarks.nodes } }), "",
       effLines.length > 0 && ["Cards that can be reached from further out than their zone says:", "", ...effLines, ""]],
+    // Under the picture as on the page: the ways of sensitive data over its crossings, and principals × resources.
+    dataflowMd(dataflowOf({ data: ai?.secData ?? null, arch: a, crossings: rows }), mermaidFlow, label),
+    rightsMd(rightsOf({ arch: a, access: ai?.access ?? [], crossings: rows, findings: openAll })),
     ordered.length > 0 && [`## Findings (${ordered.length}, full text)`, "",
       cited.length > 0 && `${list.length ? "" : "No unresolved finding is about access or data (⛨). "}${cited.length} unresolved ${cited.length === 1 ? "finding backs" : "findings back"} a threat named above without being about access or data: ${cited.length === 1 ? "it is" : "they are"} listed here too.`,
       ordered.length > 1 && "Ordered by how far out they can be reached from, then by whether the way crosses a trust boundary, then by severity.", "",
