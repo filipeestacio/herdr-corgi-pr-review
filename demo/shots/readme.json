@@ -161,20 +161,36 @@
     ":review",
     ":page:res",
     ":res-more",
-    ":res-path:p4",
-    ":page-part:p:p4"
+    ":res-path:p2",
+    ":page-part:p:p2"
    ],
-   "wait": 3
+   "wait": 3,
+   "step": 1.6
+  },
+  {
+   "name": "resilience-probe",
+   "do": [
+    ":back",
+    ":review",
+    ":page:res",
+    ":res-more",
+    ":res-path:p2",
+    ":res-probe-open:r1",
+    ":page-part:p:p2"
+   ],
+   "wait": 3,
+   "step": 1.6
   },
   {
    "name": "resilience-fault-tree",
    "do": [
+    ":back",
     ":review",
     ":page:res",
-    ":res-path:",
     ":res-tree:0:slow",
     ":page-part:deps"
-   ]
+   ],
+   "wait": 3
   },
   {
    "name": "resilience-timing",
@@ -187,29 +203,27 @@
    ]
   },
   {
-   "name": "resilience-probe",
-   "do": [
-    ":back",
-    ":review",
-    ":page:res",
-    ":res-more",
-    ":res-path:p4",
-    ":res-probe-open:r1",
-    ":page-part:p:p4"
-   ],
-   "wait": 3
-  },
-  {
    "name": "findings",
    "do": [
     ":review",
     ":findings",
-    ":finding:29c173706fda"
+    ":finding:aaea870fcc9c"
    ]
+  },
+  {
+   "name": "fix-preview",
+   "do": [
+    ":review",
+    ":findings",
+    ":finding:702913b183ff",
+    ":fix-finding:702913b183ff"
+   ],
+   "wait": 3
   },
   {
    "name": "diff-inline-values",
    "do": [
+    ":send-cancel",
     ":review",
     ":file:library/reminders.py"
    ]
@@ -251,6 +265,14 @@
     ":finish",
     ":explore:{home}/work/corgi-demo"
    ]
+  },
+  {
+   "name": "explore-result",
+   "do": [
+    ":explore:{home}/work/corgi-demo",
+    ":explore-open:b4167e09"
+   ],
+   "wait": 4
   },
   {
    "name": "explore-minimized",
