@@ -3,6 +3,7 @@
 // (keyword string comment function type number constant variable operator punctuation boolean). `ref: true` marks
 // names worth a go-to-definition (types, called functions, members, Markdown links). `state` carries block comments,
 // multi-line strings, heredocs and Markdown fences from one line to the next of the same file side.
+// langOf(path, first) names the language: by the path, else by the file's first line (a "#!" line).
 // Pure module: no gpui import, so `node test_syntax.mjs` can load it.
 
 const words = (s) => new Set(s.split(" ").filter(Boolean));
@@ -32,8 +33,6 @@ const SPECS = {
   hcl: { line: ["#", "//"], block: ["/*", "*/"], quotes: "\"", heredoc: true, keys: "variable", defType: "", defFn: "",
     kw: "resource data module variable output locals provider terraform for in if for_each count depends_on lifecycle dynamic content backend required_providers moved import check",
     consts: "null" },
-  shell: { line: ["#"], quotes: "'\"", vars: true, firstWordFn: true, defType: "", defFn: "function",
-    kw: "if then else elif fi for while until do done case esac in function return local export readonly declare set unset shift exit source alias break continue trap eval exec" },
   sql: { line: ["--"], block: ["/*", "*/"], quotes: "'", nocase: true, defType: "table view", defFn: "function",
     kw: "select from where and or not insert into values update set delete create table alter drop index join left right inner outer full cross on group by order having limit offset as distinct union all is in exists between like ilike case when then else end primary key foreign references default with returning begin commit rollback view if replace function returns language asc desc unique constraint add column cascade grant revoke",
     consts: "null", types: "int integer smallint bigint serial bigserial varchar char text boolean bool timestamp timestamptz date time interval uuid json jsonb numeric decimal real float double" },
@@ -50,22 +49,56 @@ for (const s of Object.values(SPECS)) {
 const EXT = { ts: "js", tsx: "js", mts: "js", cts: "js", js: "js", jsx: "js", mjs: "js", cjs: "js", py: "python", pyi: "python",
   java: "java", c: "cpp", h: "cpp", cc: "cpp", cpp: "cpp", cxx: "cpp", hpp: "cpp", hh: "cpp", hxx: "cpp", ino: "cpp", kt: "kotlin", kts: "kotlin", go: "go", rs: "rust", tf: "hcl", tfvars: "hcl", hcl: "hcl", yml: "yaml", yaml: "yaml",
   toml: "yaml", json: "json", jsonc: "json", sh: "shell", bash: "shell", zsh: "shell", md: "markdown", markdown: "markdown",
-  sql: "sql", dockerfile: "dockerfile" };
+  sql: "sql", dockerfile: "dockerfile",
+  // Shell by another name; fish, make and just are close enough for comments, strings, variables and commands.
+  ksh: "shell", fish: "shell", bats: "shell", command: "shell", mk: "shell", just: "shell", envrc: "shell", profile: "shell",
+  bashrc: "shell", zshrc: "shell", zshenv: "shell", zprofile: "shell", bash_profile: "shell", bash_aliases: "shell", bash_logout: "shell" };
+const TEMPLATE = /\.(?:tpl|tftpl|tmpl|j2|erb|in|example|sample|dist)$/; // deploy.sh.tpl is a shell script with holes
+const INTERPRETER = { sh: "shell", bash: "shell", zsh: "shell", dash: "shell", ksh: "shell", ash: "shell", fish: "shell", bats: "shell",
+  python: "python", pypy: "python", uv: "python", node: "js", nodejs: "js", deno: "js", bun: "js", tsx: "js", "ts-node": "js" };
+const HOOK_DIR = /(?:^|\/)(?:hooks|\.husky|\.githooks)\/[a-z-]+$/; // Git hooks carry no ending
 
-/** Highlighter language for a path (null: plain text). */
-export function langOf(path) {
-  const name = path.split("/").pop().toLowerCase();
+/** Highlighter language for a path (null: plain text). `first` is the file's first line where the caller has it: a
+ *  script without an ending is known by its "#!" line (firstLineOf reads it from a diff). */
+export function langOf(path, first = "") {
+  const name = path.split("/").pop().toLowerCase().replace(TEMPLATE, "");
   if (name === "dockerfile" || name.startsWith("dockerfile.") || name.endsWith(".dockerfile")) return "dockerfile";
-  if (name === "makefile" || name.endsWith(".env")) return "shell";
-  return EXT[name.includes(".") ? name.split(".").pop() : ""] ?? null;
+  if (name === "makefile" || name === "gnumakefile" || name === "justfile" || name.endsWith(".env") || name.startsWith(".env.")) return "shell";
+  const known = EXT[name.includes(".") ? name.split(".").pop() : ""];
+  if (known) return known;
+  if (first.charCodeAt(0) === 35 && first.charCodeAt(1) === 33) { // "#!/usr/bin/env -S python3 -u", "#!/bin/sh -e"
+    const [prog, ...args] = first.slice(2).trim().split(/\s+/), base = prog.split("/").pop();
+    const run = base === "env" ? args.find((a) => !a.startsWith("-") && !a.includes("=")) ?? "" : base;
+    return INTERPRETER[run.split("/").pop().replace(/[\d.]+$/, "")] ?? null;
+  }
+  return HOOK_DIR.test(path.toLowerCase()) ? "shell" : null;
 }
 
-const IDENT = /[A-Za-z_$][\w$]*/y, IDENT_NO$ = /[A-Za-z_][\w]*/y;
+/** What a file's diff says beyond its path, for langOf. `lines`: the file's part of a patch (its header lines and
+ *  hunks; splitPatch's `lines`). Line 1 where the first hunk shows it; "#!sh" for an executable file (git mode 100755)
+ *  whose line 1 the diff does not show.
+ *  ponytail: most executable files without an ending are shell scripts; reading line 1 from the checkout would say
+ *  for sure, if a Python or Ruby script coloured as shell ever matters. */
+export function firstLineOf(lines) {
+  let exec = false;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (l.charCodeAt(0) === 64) { // "@@ -1,4 +1,6 @@": the hunks come in order, so the first one decides
+      const m = /^@@ -(\d+)(?:,\d+)? \+(\d+)/.exec(l);
+      if (m && (m[1] === "1" || m[2] === "1") && lines[i + 1] !== undefined) return lines[i + 1].slice(1);
+      break;
+    }
+    if (/^(?:new file mode|deleted file mode|new mode|index \S+) 100755$/.test(l)) exec = true;
+  }
+  return exec ? "#!sh" : "";
+}
+
+const IDENT = /[A-Za-z_$][\w$]*/y;
 const NUM = /0[xX][\da-fA-F_]+n?|0[bB][01_]+n?|0[oO][0-7_]+|(?:\d[\d_]*(?:\.\d[\d_]*)?|\.\d[\d_]*)(?:[eE][+-]?\d+)?[a-zA-Z]*/y;
 const PUNCT = "{}[]();,.";
 const PYPREFIX = /[rRbBfFuU]{1,2}(?=['"])/y, RUST_CHAR = /'(?:\\.|[^'\\])'/y, RUST_LT = /'[A-Za-z_]\w*/y;
 const PREPROC = /\s*#\s*[a-z]+/y, INCLUDE = /\s*<[^>]*>/y, RAW = /R"([^(\s"\\]{0,16})\(/y;
-const HEREDOC = /<<-?([A-Z_]+)\s*$/y, SHVAR = /\$(?:\{[^}]*\}|[A-Za-z_]\w*|[0-9@*#?$!-])/y;
+const HEREDOC = /<<-?(\w+)\s*$/y, SHVAR = /\$(?:\{[^}]*\}|[A-Za-z_]\w*|[0-9@*#?$!-])/y;
 const OPS = "+-*/%=<>!&|^~?:";
 const isSpace = (c) => c === 32 || c === 9;
 const isDigit = (c) => c >= 48 && c <= 57;
@@ -77,8 +110,11 @@ const allCaps = (w) => w.length > 1 && /^[A-Z][A-Z0-9_]*$/.test(w);
 export function tokenize(line, lang, state = null) {
   if (lang === "markdown") return markdown(line, state);
   if (lang === "dockerfile") return dockerfile(line, state);
+  if (lang === "shell") return shell(line, state, 0, []);
   const spec = SPECS[lang];
   if (!spec) return { spans: [], state: null };
+  // A script's "#!/usr/bin/env node" line is no code of its language (Rust's "#![attr]" is).
+  if (line.charCodeAt(0) === 35 && line.charCodeAt(1) === 33 && line.charCodeAt(2) !== 91) return { spans: [{ start: 0, end: line.length, kind: "comment" }], state };
   return scan(line, spec, state, 0, []);
 }
 
@@ -107,8 +143,7 @@ function scan(line, spec, state, from, spans) {
       if (INCLUDE.test(line)) { push(line.indexOf("<", i), INCLUDE.lastIndex, "string"); i = INCLUDE.lastIndex; }
     }
   }
-  let prevWord = "", prevChar = 0, first = true;
-  const ident = spec.vars ? IDENT_NO$ : IDENT;
+  let prevWord = "", prevChar = 0;
   while (i < n) {
     const c = line.charCodeAt(i);
     if (isSpace(c)) { i++; continue; }
@@ -137,7 +172,7 @@ function scan(line, spec, state, from, spans) {
         const end = Math.min(j + 1, n);
         // JSON/YAML keys: a string followed by ":".
         const key = spec.keys && /^\s*:/.test(line.slice(end, end + 8));
-        push(i, end, key ? spec.keys : "string"); i = end; prevChar = 0; first = false; continue;
+        push(i, end, key ? spec.keys : "string"); i = end; prevChar = 0; continue;
       }
     }
     if (spec.rawStrings && ch === "R" && line[i + 1] === '"') { // C++ R"delim( ... )delim"
@@ -156,11 +191,7 @@ function scan(line, spec, state, from, spans) {
     }
     if (spec.heredoc && line.startsWith("<<", i)) {
       HEREDOC.lastIndex = i;
-      if (HEREDOC.test(line)) { push(i, n, "keyword"); return { spans, state: { h: /<<-?([A-Z_]+)/.exec(line.slice(i))[1] } }; }
-    }
-    if (spec.vars && ch === "$") { // shell $VAR, ${VAR}, $1
-      SHVAR.lastIndex = i;
-      if (SHVAR.test(line)) { push(i, SHVAR.lastIndex, "constant"); i = SHVAR.lastIndex; first = false; continue; }
+      if (HEREDOC.test(line)) { push(i, n, "keyword"); return { spans, state: { h: /<<-?(\w+)/.exec(line.slice(i))[1] } }; }
     }
     if (spec.decorators && ch === "@") {
       IDENT.lastIndex = i + 1;
@@ -168,12 +199,12 @@ function scan(line, spec, state, from, spans) {
     }
     if (isDigit(c) || (ch === "." && isDigit(line.charCodeAt(i + 1)))) {
       NUM.lastIndex = i;
-      if (NUM.test(line)) { push(i, NUM.lastIndex, "number"); i = NUM.lastIndex; prevChar = 0; first = false; continue; }
+      if (NUM.test(line)) { push(i, NUM.lastIndex, "number"); i = NUM.lastIndex; prevChar = 0; continue; }
     }
     if (isIdStart(c)) {
-      ident.lastIndex = i;
-      ident.test(line);
-      const end = ident.lastIndex, w = line.slice(i, end), lw = spec.nocase ? w.toLowerCase() : w;
+      IDENT.lastIndex = i;
+      IDENT.test(line);
+      const end = IDENT.lastIndex, w = line.slice(i, end), lw = spec.nocase ? w.toLowerCase() : w;
       let j = end; while (j < n && isSpace(line.charCodeAt(j))) j++;
       const next = line[j], member = prevChar === 46 || (prevChar === 58 && line[i - 2] === ":"); // "." or "::"
       let kind = null, ref = false;
@@ -185,30 +216,201 @@ function scan(line, spec, state, from, spans) {
       else if (spec.defType.has(prevWord)) { kind = "type"; ref = true; }
       else if (spec.defFn.has(prevWord)) { kind = "function"; ref = true; }
       else if (spec.macros && next === "!" && line[j + 1] !== "=") { kind = "function"; ref = true; }
-      else if (next === "(" || (spec.firstWordFn && first)) { kind = prevWord === "new" && pascal(w) ? "type" : "function"; ref = true; }
+      else if (next === "(") { kind = prevWord === "new" && pascal(w) ? "type" : "function"; ref = true; }
       else if (pascal(w)) { kind = "type"; ref = true; }
       else if (allCaps(w)) { kind = "constant"; ref = true; }
       else if (member) { kind = "variable"; ref = true; }
       if (kind) push(i, end, kind, ref ? { ref: true } : null);
-      prevWord = lw; prevChar = line.charCodeAt(end - 1); first = false; i = end; continue;
+      prevWord = lw; prevChar = line.charCodeAt(end - 1); i = end; continue;
     }
     push(i, i + 1, PUNCT.includes(ch) ? "punctuation" : OPS.includes(ch) ? "operator" : "punctuation");
-    prevChar = c; if (ch !== "." && ch !== ":") prevWord = ""; first = ch === ";" || ch === "|" || ch === "&";
+    prevChar = c; if (ch !== "." && ch !== ":") prevWord = "";
     i++;
   }
   return { spans, state: null };
 }
 
+// Shell has its own scanner: a word is a command or an argument by its place, "#" opens a comment only at the start
+// of a word, quotes hold "$var" and "$(…)", and a heredoc starts on the line after its "<<EOF".
+// state (null: nothing open): {s, h, raw, tabs, k}. s: what is still open, innermost last, one character each:
+// "'" '"' "$" ($'…') strings, "(" "`" command lists, "a" an array's words, "m" "p" arithmetic and a bracket in it.
+// h: the marker of a heredoc whose body follows (raw: quoted marker, "$" stays text; tabs: "<<-", the marker may be
+// indented). k: the line ended in "\", so the next one goes on with arguments.
+const SH_KW = words("if then else elif fi for while until do done case esac in function select time return local export readonly declare typeset set unset shift exit source alias break continue trap eval exec end begin switch");
+const SH_GOES_ON = words("if then else elif do while until time exec eval"), SH_DECL = words("local export readonly declare typeset alias");
+const SH_WORD = /(?:[^\s;|&()<>'"`$\\]|\\.)+/y, SH_ASSIGN = /[A-Za-z_]\w*(?:\[[^\]]*\])?\+?=/y, SH_FN = /[ \t]*\([ \t]*\)/y;
+const SH_REDIR = /(?:&>>?|\d*(?:>>|<<<|[<>]&|<>|>\||[<>]))[\d-]?/y, SH_HERE = /<<(-?)[ \t]*(?:(['"])([^'"]+)\2|(\\?)([\w.-]+))/y;
+const SH_PATTERN = /[ \t]*[^\s()|;&<>]+(?:[ \t]*\|[ \t]*[^\s()|;&<>]+)*\)/y; // "-h | --help)" of a case
+const SH_OPTION = /^-{1,2}[A-Za-z0-9?][\w-]*|^--$|^\+[a-z]$/, SH_NAME = /^[A-Za-z_]\w*$/, SH_NUMBER = /^(?:0x[\da-f]+|\d+(?:\.\d+)?)$/i, SH_TEST = /^[!=~+*\/%:<>-]+$/;
+function shell(line, state, from, spans) {
+  const n = line.length, push = (start, end, kind, ref) => { if (end > start) spans.push(ref ? { start, end, kind, ref: true } : { start, end, kind }); };
+  // Text of a string where "$name" and "${…}" stand out.
+  const text = (a, b) => {
+    let at = a;
+    for (let j = line.indexOf("$", a); j >= 0 && j < b; j = line.indexOf("$", j + 1)) {
+      SHVAR.lastIndex = j;
+      if (line.charCodeAt(j - 1) === 92 || !SHVAR.test(line)) continue;
+      const end = Math.min(SHVAR.lastIndex, b);
+      push(at, j, "string"); push(j, end, "constant"); at = end; j = end - 1;
+    }
+    push(at, b, "string");
+  };
+  if (state?.h) { // a heredoc's body, up to the line that is just its marker
+    if ((state.tabs ? line.trim() : line.trimEnd()) === state.h) { push(0, n, "keyword"); return { spans, state: state.s ? { s: state.s } : null }; }
+    if (state.raw) push(0, n, "string"); else text(0, n);
+    return { spans, state };
+  }
+  const open = state?.s ? state.s.split("") : [];
+  let i = from, here = null, goesOn = false;
+  // first: the next word is a command (again: it is one again after the value of NAME="…" at this depth). decl: after "local"/"export", where name=value pairs follow. name: the next word
+  // names a function ("f") or a loop variable ("v"). wantIn: a "for" or "case" waits for its "in". pattern: a case
+  // pattern may start here.
+  let first = !state?.k, again = -1, decl = false, name = "", wantIn = "", pattern = open.length === 0 && first;
+  while (i < n) {
+    const top = open.length ? open[open.length - 1] : "", c = line.charCodeAt(i);
+    if (top === "'" || top === "$") { // a quote from an earlier line
+      let j = i;
+      while (j < n && line.charCodeAt(j) !== 39) j += top === "$" && line.charCodeAt(j) === 92 ? 2 : 1;
+      if (j >= n) { push(i, n, "string"); i = n; break; }
+      push(i, j + 1, "string"); i = j + 1; open.pop(); first = false; continue;
+    }
+    if (top === '"') { // up to the closing quote, or to a "$(" or "`" whose inside is code again
+      let j = i;
+      for (;;) {
+        if (j >= n) { text(i, n); i = n; break; }
+        const d = line.charCodeAt(j);
+        if (d === 92) { j += 2; continue; }
+        if (d === 34) { text(i, j + 1); i = j + 1; open.pop(); first = false; break; }
+        if (d === 36 && line.charCodeAt(j + 1) === 40) {
+          text(i, j);
+          if (line.charCodeAt(j + 2) === 40) { push(j, j + 1, "operator"); push(j + 1, j + 3, "keyword"); open.push("m"); i = j + 3; first = false; }
+          else { push(j, j + 2, "operator"); open.push("("); i = j + 2; first = true; }
+          break;
+        }
+        if (d === 96) { text(i, j); push(j, j + 1, "operator"); open.push("`"); i = j + 1; first = true; break; }
+        if (d === 36) { SHVAR.lastIndex = j; if (SHVAR.test(line)) { j = SHVAR.lastIndex; continue; } } // a quote inside "${x:-"y"}" closes nothing
+        j++;
+      }
+      continue;
+    }
+    if (isSpace(c)) { if (again === open.length) { first = true; again = -1; } i++; continue; }
+    const math = top === "m" || top === "p";
+    if (pattern) { // "status | list)" opens a case branch: its words are no command
+      pattern = false; SH_PATTERN.lastIndex = i;
+      if (!math && c !== 35 && SH_PATTERN.test(line)) { const end = SH_PATTERN.lastIndex; push(i, end - 1, "string"); push(end - 1, end, "punctuation"); i = end; first = true; continue; }
+    }
+    if (c === 35 && !math) { push(i, n, "comment"); i = n; break; } // "#": a word never starts here with one, so it is a comment
+    if (c === 39) {
+      const end = line.indexOf("'", i + 1);
+      if (end < 0) { push(i, n, "string"); open.push("'"); i = n; break; }
+      push(i, end + 1, "string"); i = end + 1; first = false; continue;
+    }
+    if (c === 34) { push(i, i + 1, "string"); open.push('"'); i++; first = false; continue; }
+    if (c === 36) {
+      const d = line.charCodeAt(i + 1);
+      if (d === 40 && line.charCodeAt(i + 2) === 40) { push(i, i + 1, "operator"); push(i + 1, i + 3, "keyword"); open.push("m"); i += 3; first = false; continue; }
+      if (d === 40) { push(i, i + 2, "operator"); open.push("("); i += 2; first = true; continue; }
+      if (d === 39) { // $'…' with backslash escapes
+        let j = i + 2;
+        while (j < n && line.charCodeAt(j) !== 39) j += line.charCodeAt(j) === 92 ? 2 : 1;
+        if (j >= n) { push(i, n, "string"); open.push("$"); i = n; break; }
+        push(i, j + 1, "string"); i = j + 1; first = false; continue;
+      }
+      SHVAR.lastIndex = i;
+      if (SHVAR.test(line)) { push(i, SHVAR.lastIndex, "constant"); i = SHVAR.lastIndex; first = false; continue; }
+      i++; continue;
+    }
+    if (c === 96) { push(i, i + 1, "operator"); if (top === "`") { open.pop(); first = false; } else { open.push("`"); first = true; } i++; continue; }
+    if (c === 40) {
+      if (math) { open.push("p"); push(i, i + 1, "punctuation"); i++; continue; }
+      if ((first || name === "v") && line.charCodeAt(i + 1) === 40) { push(i, i + 2, "keyword"); open.push("m"); i += 2; first = false; name = ""; continue; } // (( n > 1 )), for ((…))
+      const array = line.charCodeAt(i - 1) === 61; // NAME=( … )
+      push(i, i + 1, "punctuation"); open.push(array ? "a" : "("); first = !array; i++; continue;
+    }
+    if (c === 41) {
+      if (top === "m" && line.charCodeAt(i + 1) === 41) { push(i, i + 2, "keyword"); open.pop(); i += 2; first = false; continue; }
+      push(i, i + 1, "punctuation"); i++;
+      if (top === "(" || top === "a" || top === "p") { open.pop(); first = false; } else if (!math) first = true; // no "(" before it: the end of a case pattern
+      continue;
+    }
+    if (c === 59) { // ";" ends a command, ";;" a case branch
+      const two = line.charCodeAt(i + 1) === 59;
+      push(i, i + (two ? 2 : 1), two ? "operator" : "punctuation"); i += two ? 2 : 1;
+      first = top !== "a" && !math; decl = false; name = ""; wantIn = ""; pattern = two; continue;
+    }
+    if (c === 60 && line.charCodeAt(i + 1) === 60 && line.charCodeAt(i + 2) !== 60 && !math) {
+      SH_HERE.lastIndex = i;
+      const m = SH_HERE.exec(line);
+      if (m) { push(i, SH_HERE.lastIndex, "keyword"); here = { h: m[3] ?? m[5], raw: Boolean(m[2] || m[4]), tabs: m[1] === "-" }; i = SH_HERE.lastIndex; continue; }
+    }
+    if (c === 60 || c === 62 || c === 38 || isDigit(c)) { // redirections: 2>&1, >>file, <<<"$x", &>log
+      SH_REDIR.lastIndex = i;
+      if (!math && SH_REDIR.test(line)) { push(i, SH_REDIR.lastIndex, "operator"); i = SH_REDIR.lastIndex; continue; }
+    }
+    if (c === 124 || c === 38) { // | || |& & &&: another command follows
+      const d = line.charCodeAt(i + 1), two = d === c || (c === 124 && d === 38);
+      push(i, i + (two ? 2 : 1), "operator"); i += two ? 2 : 1;
+      first = top !== "a" && !math; decl = false; continue;
+    }
+    if (c === 123 && (i + 1 >= n || isSpace(line.charCodeAt(i + 1)))) { push(i, i + 1, "punctuation"); i++; first = true; continue; } // "{ list; }"
+    if (c === 125) { push(i, i + 1, "punctuation"); i++; first = false; continue; }
+    if (c === 92 && i === n - 1) { goesOn = !first; i++; continue; } // "\" at the end: the command goes on in the next line
+    SH_WORD.lastIndex = i;
+    if (!SH_WORD.test(line)) { i++; continue; }
+    let end = SH_WORD.lastIndex;
+    const w = line.slice(i, end);
+    if (math) { if (SH_NUMBER.test(w)) push(i, end, "number"); i = end; continue; }
+    if (top === "a") { i = end; continue; }
+    if (first || decl) { // NAME=value, NAME+=value, NAME[i]=value
+      SH_ASSIGN.lastIndex = i;
+      if (SH_ASSIGN.test(line) && SH_ASSIGN.lastIndex <= end) {
+        const eq = SH_ASSIGN.lastIndex;
+        push(i, eq - 1 - (line.charCodeAt(eq - 2) === 43 ? 1 : 0), "constant"); push(eq - 1 - (line.charCodeAt(eq - 2) === 43 ? 1 : 0), eq, "operator");
+        if (eq < end && SH_NUMBER.test(line.slice(eq, end))) push(eq, end, "number");
+        if (first && eq === end) again = open.length; // a quoted value or "$(…)" follows
+        i = end; continue; // still at a command: "LANG=C sort"
+      }
+    }
+    if (first) {
+      first = false;
+      if (w === "[[" || w === "[") push(i, end, "keyword");
+      else if (w === "!") { push(i, end, "operator"); first = true; }
+      else if (SH_KW.has(w)) {
+        push(i, end, "keyword");
+        if (SH_GOES_ON.has(w)) first = true;
+        else if (SH_DECL.has(w)) decl = true;
+        else if (w === "function") name = "f";
+        else if (w === "for" || w === "select") { name = "v"; wantIn = "for"; }
+        else if (w === "case") wantIn = "case";
+      } else {
+        SH_FN.lastIndex = end;
+        if (SH_FN.test(line)) { push(i, end, "function", true); push(end, SH_FN.lastIndex, "punctuation"); end = SH_FN.lastIndex; first = true; } // name() {
+        else push(i, end, "function", true);
+      }
+    } else if (name) { push(i, end, name === "f" ? "function" : "constant", name === "f"); first = name === "f"; name = ""; }
+    else if (w === "in" && wantIn) { push(i, end, "keyword"); pattern = wantIn === "case"; wantIn = ""; }
+    else if (w === "]]" || w === "]") push(i, end, "keyword");
+    else if (decl && SH_NAME.test(w)) push(i, end, "constant"); // local name
+    else if (SH_OPTION.test(w)) { const eq = w.indexOf("="); push(i, eq < 0 ? end : i + eq, "type"); }
+    else if (SH_NUMBER.test(w)) push(i, end, "number");
+    else if (SH_TEST.test(w)) push(i, end, "operator");
+    i = end;
+  }
+  const s = open.join("");
+  if (here) return { spans, state: { ...here, s } };
+  return { spans, state: s || goesOn ? { s, k: goesOn } : null };
+}
+
 const DOCKER = /^(\s*)(FROM|RUN|CMD|COPY|ADD|ENV|ARG|WORKDIR|EXPOSE|ENTRYPOINT|USER|LABEL|VOLUME|HEALTHCHECK|SHELL|ONBUILD|STOPSIGNAL|MAINTAINER)\b/i;
 function dockerfile(line, state) {
-  if (state?.cont) { const r = scan(line, SPECS.shell, null, 0, []); return { spans: r.spans, state: /\\\s*$/.test(line) ? state : null }; }
+  if (state?.cont) { const r = shell(line, null, 0, []); return { spans: r.spans, state: /\\\s*$/.test(line) ? state : null }; }
   if (/^\s*#/.test(line)) return { spans: [{ start: 0, end: line.length, kind: "comment" }], state: null };
   const m = DOCKER.exec(line);
   if (!m) return { spans: [], state: null };
   const spans = [{ start: m[1].length, end: m[0].length, kind: "keyword" }];
   const as = / AS /i.exec(line);
   if (/^from$/i.test(m[2]) && as) spans.push({ start: as.index + 1, end: as.index + 3, kind: "keyword" });
-  else scan(line, SPECS.shell, null, m[0].length, spans);
+  else shell(line, null, m[0].length, spans);
   return { spans, state: /\\\s*$/.test(line) ? { cont: 1 } : null };
 }
 
@@ -244,7 +446,7 @@ function markdown(line, state) {
   inline(line, from, spans);
   return { spans, state: "md" };
 }
-const FENCE_LANG = { typescript: "js", javascript: "js", python: "python", golang: "go", rust: "rust", terraform: "hcl", shell: "shell", console: "shell", docker: "dockerfile" };
+const FENCE_LANG = { typescript: "js", javascript: "js", python: "python", golang: "go", rust: "rust", terraform: "hcl", shell: "shell", console: "shell", shellscript: "shell", make: "shell", makefile: "shell", docker: "dockerfile" };
 
 const INLINE = /(`+)(.+?)\1|!?\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)|\[([^\]]+)\]\[[^\]]*\]|<(https?:\/\/[^>\s]+)>|(?<!\w)(\*\*|__)(?=\S)(.+?\S)\7(?!\w)|(?<!\w)(\*|_)(?=\S)(.+?\S)\9(?!\w)|(\|)|https?:\/\/[^\s)>\]]+/g;
 function inline(line, from, spans) {
