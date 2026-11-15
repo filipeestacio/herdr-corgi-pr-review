@@ -1115,6 +1115,34 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     tab("findings", "ticked"); S.clicks.get(`rv-fbox-${f1.id}`)(null, seen); assert.deepEqual(v.pickedFindings(), [], "and unticked the same way");
   }
   v.ffocus = null;
+  // Two ticks one right after the other, nothing awaited between them: both are there at once, from what the view
+  // keeps (the file follows); each asks for one frame and publishes the number once, and the write afterwards
+  // draws nothing more.
+  { let frames = 0; const writes = [], fast = { ...cx, notify() { frames++; }, spawn(fn) { void Promise.resolve().then(() => fn(fast)).catch(() => null); } }, set = S.store.set;
+    S.store.set = function (k, val) { writes.push(k); return set.call(this, k, val); };
+    try {
+      tab("findings", "before two ticks"); S.clicks.get(`rv-fbox-${f1.id}`)(null, fast); S.clicks.get(`rv-fbox-${f2.id}`)(null, fast);
+      const meta = () => writes.filter((k) => k === "review.meta").length;
+      assert.deepEqual([v.pickedFindings().slice().sort(), frames, meta(), S.store.get("review.meta").selected], [[f1.id, f2.id].sort(), 2, 2, 2], "both ticks at once, one frame and one published number each");
+      await settle();
+      assert.deepEqual([v.pickedFindings().length, frames, meta()], [2, 2, 2], "the file's write draws and publishes nothing more");
+      const got2 = tab("findings", "two ticks drawn"); assert.ok(got2.texts.includes("Fix selected (2)…"));
+      v.command("clear-selection", fast); assert.deepEqual([v.selCount(), S.store.get("review.meta").selected], [0, 0]);
+    } finally { delete S.store.set; }
+  }
+  // A finding's card in the diff has the same box, beside the card, folded or open; one that goes alone has it switched off.
+  { S.ids = new Set(); act(v, "files", "selection: the diff with the findings' cards"); const ids = [...S.ids]; S.ids = null;
+    const cards = [...v.byKey].filter(([, it]) => it.t === "find"), pick = cards.find(([, it]) => plain.some((f) => f.id === it.f.id)), solo = cards.find(([, it]) => secByEffect(it.f) && ["open", "recheck"].includes(v.fstatus(it.f)));
+    assert.ok(pick && ids.includes(`rv-lfbox-${pick[1].f.id}`), `a finding's card in the diff has a box (${cards.length} cards: ${cards.map(([, it]) => it.f.id).join(", ")}; to tick: ${plain.map((f) => f.id).join(", ")})`);
+    const press = (key, x) => { v.press = { x, w: 900, shift: false }; v.onItem(key, cx); };
+    for (const open_ of [false, true]) {
+      (v.fopen ??= new Map()).set(pick[1].f.id, open_); draw(v, `selection: the card ${open_ ? "open" : "folded"}`);
+      press(pick[0], 122 - 20); assert.deepEqual([v.pickedFindings(), v.findOpen(pick[1].f)], [[pick[1].f.id], open_], `${open_ ? "open" : "folded"} card: ticked by its box, the card as it was`);
+      press(pick[0], 122 - 20); assert.deepEqual(v.pickedFindings(), []);
+    }
+    if (solo) { press(solo[0], 122 - 20); assert.deepEqual(v.pickedFindings(), [], "a security finding about access or data is not ticked"); }
+    v.fopen = null;
+  }
   // A pending comment of your own and someone's GitHub comment on the same line.
   const h = v.hunks[0], n = h.rows.find((r) => r.kind === "+").n;
   v.command(`comment:${h.path}:${n}`, cx); v.command("draft:Rename this.", cx); v.command("add", cx); await settle();

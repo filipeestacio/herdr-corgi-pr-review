@@ -159,7 +159,7 @@ whether it can happen today.
   or to the main agent. The sub-agent never pushes: the PR's agent gets a note when it starts and, when it is done,
   its commit to cherry-pick, test and push. Apply to PR (secondary) cherry-picks onto a clean checkout without pushing.
 - One selection for a fix: tick comments (your own, sent ones, and other people's GitHub comments, in the Comments tab
-  or at their card in the diff) and findings (under "No fix sent" in the Findings tab), and "Fix selected (n)" hands all
+  or at their card in the diff) and findings (under "No fix sent" in the Findings tab, or at their card in the diff), and "Fix selected (n)" hands all
   of them to one fix agent after a preview that lists both. The number is the same in the bar, over the diff and in the
   Findings tab. A security finding about access or data is fixed one at a time, so its box is off. A GitHub comment
   sent to a fix becomes a thread in the review; nothing is written to GitHub for it.

@@ -4,7 +4,7 @@
 
 ### Fixes
 
-- review: one selection for comments and findings with one number everywhere, a finding's box works on a folded row, and GitHub comments can be ticked and fixed too
+- review: one selection for comments and findings with one number everywhere; a tick shows at once (one frame, the file follows); GitHub comments and a finding's card in the diff can be ticked too
 
 ## 0.12.0 (2026-11-15)
 

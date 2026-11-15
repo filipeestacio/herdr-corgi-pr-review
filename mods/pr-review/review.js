@@ -181,7 +181,13 @@ const COMPOSE_TIP = { insertSuggestion: "Insert the selected lines as a GitHub s
 const STATE_TIP = { pending: "Pending: written by you, not sent yet", waiting: "Sent to agent: no reply yet", replied: "Agent replied, or someone answered on GitHub", fixed: "Reported fixed: the agent says it is done; nothing has checked it", declined: "Declined: the agent chose not to change it", github: "A comment from GitHub", note: "A pinned note, private to you" };
 const STALE_TIP = "The code here changed since this comment was written";
 const CARD_W = 720, CARD_MIN = 420, CARD_HEAD = 32, CARD_REPLY = 34, CARD_GAP = 6;
-const GH_BOX = [GUTTER - 30, GUTTER - 4]; // a GitHub comment's box: its zone, x from the list's left edge (in the gutter, left of the card)
+// The "select to fix" box of a card that is one item of the list (a finding's card, a GitHub comment): it stands in
+// the gutter, left of the card's head, because a press on an item is known by its x only. Its zone, x from the list's
+// left edge; sideBox draws it (off: a security finding about access or data, which goes alone).
+const SIDE_BOX = [GUTTER - 30, GUTTER - 4];
+const sideBox = (t, id, top, { sel = false, off = false, lit = false, tip }) => div().id(id).tooltip(tip).accessibility_label("Select to fix").absolute().left(SIDE_BOX[0] + 6).top(top).w(14).h(14).rounded(3).border_1()
+  .border_color(sel ? t.accent : off ? t.border : t.input).bg(sel ? t.accent : off ? t.raised : t.background).flex().items_center().justify_center().text_size(TYPE.micro).text_color(t.accent_foreground)
+  .opacity(sel || lit ? 1 : 0.45).hover((s) => s.opacity(1)).child(sel ? "✓" : "");
 const THREAD_COLOR = { fixed: "ansi2", answered: "accent", wontfix: "muted", question: "ansi3", sent: "ansi4", posted: "ansi4" };
 const PROBE = "0".repeat(40);
 const CTX_MS = 10 * 60000; // related PRs, CI checks, mergeability (related.py): asked again after this when the review opens, else by ↻
@@ -1454,7 +1460,13 @@ export const ReviewMode = {
   // the findings ticked in the Findings tab. Every place that names it says the same number (the bar's button, the
   // pill over the diff, the Findings tab's button), and each of them sends all of it to one fix agent (fixSelected).
   // It is kept per PR in two lists (threads.js: "selected" and FINDINGS); a send and Esc empty both.
-  selection() { const comments = this.commentsById(this.selected()), findings = this.pickedFindings(); return { comments, findings, n: comments.length + findings.length }; },
+  // Kept while what it is made of is the same (it is asked for by every card of a frame).
+  selection() {
+    return this.keep("selection", [this.threadDoc, this.comments, this.gh, this.findings(), this.find.status, this.find.reports, this.head, this.rowsSig(), this.prSel?.url], () => {
+      const comments = this.commentsById(this.selected()), findings = this.pickedFindingsNow();
+      return { comments, findings, n: comments.length + findings.length };
+    });
+  },
   selCount() { return this.selection().n; },
   // Findings alone: the list of "Fix several…" with them ticked. Comments alone: their preview. Both: one preview,
   // one agent, one branch (fixTogether).
@@ -1474,7 +1486,8 @@ export const ReviewMode = {
   },
   // The findings ticked in the Findings tab's "No fix sent". Only what can still be ticked counts: unresolved, no fix
   // sent, and not a security finding about access or data (those go alone).
-  pickedFindings() {
+  pickedFindings() { return this.selection().findings; },
+  pickedFindingsNow() {
     const ids = TH.selectedOf(this.threadDoc, this.threadKey(), TH.FINDINGS);
     return ids.length ? this.findings().filter((f) => ids.includes(f.id) && ["open", "recheck"].includes(this.fstatus(f)) && !secByEffect(f)).map((f) => f.id) : [];
   },
@@ -1920,7 +1933,7 @@ export const ReviewMode = {
       this.fsel = d.sel && h.side ? { ...d.sel, side: h.side } : d.sel; this.sug = null;
       if (d.open) this.openComposer(cx);
     } else if (it.t === "gh") {
-      if (x >= GH_BOX[0] && x < GH_BOX[1]) this.toggleSel(`gh${it.g.id}`, cx); // its box, in the gutter beside the card
+      if (x >= SIDE_BOX[0] && x < SIDE_BOX[1]) this.toggleSel(`gh${it.g.id}`, cx); // its box, in the gutter beside the card
       else if (!(this.ghOpen ??= new Set()).delete(it.g.id)) this.ghOpen.add(it.g.id); // its <details> open and fold, as on GitHub
     }
     else if (it.t === "sug") { this.sug = this.sug === it.s.key ? null : it.s.key; this.visit(it.s.hunk, cx); }
@@ -1940,7 +1953,8 @@ export const ReviewMode = {
       else if (inside && which === 2) { const job = this.fixOf(it.f.id); if (job?.terminal) this.goFix(job); else this.fix([it.f], cx); }
       else if (inside && which === 3) this.dismiss(it.f, cx);
     } else if (it.t === "find") {
-      if (this.findOpen(it.f) && x >= this.press.w - 16 - FIND_LINK) this.openFinding(it.f);
+      if (x >= SIDE_BOX[0] && x < SIDE_BOX[1]) this.pickFinding(it.f.id, cx); // its box, in the gutter beside the card (nothing for one that cannot be ticked)
+      else if (this.findOpen(it.f) && x >= this.press.w - 16 - FIND_LINK) this.openFinding(it.f);
       else (this.fopen ??= new Map()).set(it.f.id, !this.findOpen(it.f));
     }
     else if (it.t === "cact") {
@@ -2100,8 +2114,12 @@ export const ReviewMode = {
     cx.notify();
   },
   // threads.json changed by fn, here and in the file (compare-and-swap, like the findings' status).
+  // The change shows at once, from what is kept here: this copy is drawn again and what the bar shows of it (the
+  // number selected) is published in the same call, so a tick costs one frame. The file follows in the background
+  // (its write, the registry and publish() after it find nothing new to draw). Before, a tick was only drawn when
+  // something else drew the review: the registry's write 1.5 s later, or nothing at all.
   updateThreads(cx, fn) {
-    this.threadDoc = fn(this.threadDoc); cx.notify(); // drawn at once: a tick in a box changes nothing else that would draw it
+    this.threadDoc = fn(this.threadDoc); this.publish(); cx.notify();
     cx.spawn(async (cx) => {
       for (let attempt = 0; attempt < 3; attempt++) {
         const before = await readTextFile(threadsFile()).catch(() => null);
@@ -5455,10 +5473,14 @@ export const ReviewMode = {
         .child(badge(t, f.severity, c).id(`rv-lfs-${f.id}`).tooltip(`${f.severity} is the highest severity among this finding's sources. The scale:\n${SEVERITY_SCALE}`))
         .when(Boolean(f.security), (x) => x.child(secBadge(t, f).id(`rv-lfsec-${f.id}`).tooltip(secWhy(f) || "A security finding")));
       const sources = div().id(`rv-lfr-${f.id}`).tooltip("Where this finding comes from, each source with its own severity").min_w(0).truncate().text_size(TYPE.small).font_semibold().text_color(t.muted).child(this.sourcesOf(f));
-      if (!open) return div().id(`rv-lf-${f.id}`).tooltip("Open this finding: what it claims, its text, its suggestion and its actions").w_full().h(FIND_FOLDED).pl(GUTTER).pr(16).pt(6).pb(2).cursor_pointer()
-        .child(head(card(h_flex())).size_full().px(12).gap(8).items_center().border_t(1).border_b(1).text_size(TYPE.body)
+      // An unresolved finding has its box beside the card, folded or open: the same selection as its row in the
+      // Findings tab and as the comments (sideBox; a security finding about access or data: there, switched off).
+      const alone = secByEffect(f), box = (top) => (st === "open" || st === "recheck" ? [sideBox(t, `rv-lfbox-${f.id}`, top, { sel: this.pickedFindings().includes(f.id), off: alone, lit: this.selCount() > 0,
+        tip: alone ? "Security findings about access or data are fixed one at a time: use Fix with agent… on the card." : "Select to fix this finding with an agent" })] : []);
+      if (!open) return div().id(`rv-lf-${f.id}`).tooltip("Open this finding: what it claims, its text, its suggestion and its actions").relative().w_full().h(FIND_FOLDED).pl(GUTTER).pr(16).pt(6).pb(2).cursor_pointer()
+        .children(box(12)).child(head(card(h_flex())).size_full().px(12).gap(8).items_center().border_t(1).border_b(1).text_size(TYPE.body)
           .children([certaintyWord(t, f, `rv-lfc-${f.id}`)].filter(Boolean)).child(div().flex_1().min_w(0).truncate().child(f.title)).child(div().flex_none().max_w(300).child(sources)).children([state].filter(Boolean)));
-      return div().w_full().h(this.sizeOf(it)).pl(GUTTER).pr(16).pt(6).cursor_pointer().child(card(v_flex()).size_full().px(12).pt(8).gap(4).border_t(1).text_size(TYPE.body).overflow_hidden()
+      return div().relative().w_full().h(this.sizeOf(it)).pl(GUTTER).pr(16).pt(6).cursor_pointer().children(box(22)).child(card(v_flex()).size_full().px(12).pt(8).gap(4).border_t(1).text_size(TYPE.body).overflow_hidden()
         // The head is 30 px high so "Open in Findings" is a drawn button of 28 px (a visible target of 25 pt at 90 % zoom).
         .child(head(h_flex().h(30).flex_none().gap(8).items_center()).child(sources).children([state].filter(Boolean)).child(div().flex_1())
           .child(div().id(`rv-lfo-${f.id}`).tooltip("Open this finding in the Findings tab").w(FIND_LINK - 12).h(28).flex_none().flex().items_center().justify_center().rounded(6).border_1().border_color(t.border).bg(t.background).text_size(TYPE.small).text_color(t.accent).child("Open in Findings ↗")))
@@ -5472,11 +5494,9 @@ export const ReviewMode = {
     if (it.t === "hidden") return div().w_full().h(24).pl(GUTTER + 4).flex().items_center().text_size(TYPE.small).italic().text_color(t.muted).child(it.text);
     if (it.t === "gh") {
       const g = it.g, sel = this.selected().includes(`gh${g.id}`);
-      // Its box, to send it to a fix with the rest of the selection: in the gutter beside the card (the card is one
-      // item of the list, and a press is known by its x only: GH_BOX), shown as a card's box is.
+      // Its box, to send it to a fix with the rest of the selection (sideBox).
       return div().relative().w_full().h(this.sizeOf(it)).pl(GUTTER).pr(16).pt(6)
-        .child(div().id(`rv-ghbox-${g.id}`).tooltip("Select to fix this comment with an agent").accessibility_label("Select comment").absolute().left(GH_BOX[0] + 6).top(16).w(14).h(14).rounded(3).border_1().border_color(sel ? t.accent : t.input).bg(sel ? t.accent : t.background)
-          .flex().items_center().justify_center().text_size(TYPE.micro).text_color(t.accent_foreground).opacity(sel || this.selCount() > 0 ? 1 : 0.45).hover((s) => s.opacity(1)).child(sel ? "✓" : ""))
+        .child(sideBox(t, `rv-ghbox-${g.id}`, 16, { sel, lit: this.selCount() > 0, tip: "Select to fix this comment with an agent" }))
         .child(v_flex().size_full().px(12).pt(8).gap(6).border_l(4).border_r(1).border_t(1).border_b(1)
         .border_color(t.border).bg(t.raised).rounded(4).text_size(TYPE.body)
         .child(h_flex().h(18).gap(8).items_center().text_size(TYPE.small)
