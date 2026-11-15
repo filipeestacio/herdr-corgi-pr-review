@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync, readdirSync } from "node:fs";
-import { baseText, sidesOf, readTerraform, readCloudFormation, infraModel, infraArch, infraMarks, infraPicture, infraMd, infraSource, infraSummary, cardLines, rowText, noticeText, isIac, INFRA_MAX } from "./infra.js";
+import { baseText, sidesOf, readTerraform, readCloudFormation, infraModel, infraArch, infraMarks, infraPicture, infraMd, infraSource, infraSummary, cardLines, rowText, noticeText, isIac, isDense, infraDense, denseRefs, denseText, shortType, INFRA_DENSE } from "./infra.js";
 import { splitPatch } from "./pr.js";
 import { mermaidFlow } from "./markdown.js";
 import { archLayout, archBest } from "./arch.js";
@@ -184,7 +184,7 @@ test("a removed resource that is still referenced is marked, also from a file th
   assert.deepEqual(m.edges.map((e) => [e.from.split("|")[1], e.to.split("|")[1]]), [["aws_cloudwatch_metric_alarm.depth", "aws_sqs_queue.dlq"]]);
   assert.equal(infraSummary(m), "2 resources: 1 changed, 1 removed. 1 unchanged one is directly connected to what changed.");
   assert.equal(infraArch(m).nodes.find((n) => n.id === dlq.id).status, "removed");
-  assert.equal(infraArch(m).nodes.find((n) => n.label === "depth").source, "existing", "an unchanged card is drawn as what is already there");
+  assert.equal(infraArch(m).nodes.find((n) => n.evidence.endsWith(".depth")).source, "existing", "an unchanged card is drawn as what is already there");
   // Without the other files (no checkout) nothing refers to it, and nothing is claimed.
   assert.deepEqual(card(model({ "stack/queue.tf": ['resource "aws_sqs_queue" "dlq" {\n}\n', "\n"] }), "aws_sqs_queue.dlq").still, []);
 });
@@ -226,8 +226,8 @@ test("SAM: PR #2 of the demo adds a queue and two functions that refer to it", (
   assert.deepEqual([...marks].map(([id, x]) => [id.split("|")[1], x.n, x.severity]), [["LoanEvents", 1, "high"], ["FrontDesk", 2, "medium"]], "a finding sits at the resource whose block holds its line");
   const P = infraPicture(m, f);
   assert.deepEqual([P.L.nodes.length, P.L.paths.length, P.L.groups.length], [3, 2, 1]);
-  assert.ok(P.L.nodes.find((n) => n.label === "LoanEvents").x > P.L.nodes.find((n) => n.label === "FrontDesk").x, "what refers stands left of what it refers to");
-  assert.ok(P.L.nodes.find((n) => n.label === "FrontDesk").h > P.L.nodes.find((n) => n.label === "ReminderConsumer").h, "a card with a finding has the room for its mark");
+  assert.ok(P.L.nodes.find((n) => n.evidence === "LoanEvents").x > P.L.nodes.find((n) => n.evidence === "FrontDesk").x, "what refers stands left of what it refers to");
+  assert.ok(P.L.nodes.find((n) => n.evidence === "FrontDesk").h > P.L.nodes.find((n) => n.evidence === "ReminderConsumer").h, "a card with a finding has the room for its mark");
 });
 
 test("CloudFormation: changed properties, a new name or Type may replace, a removed resource still referenced", () => {
@@ -331,23 +331,63 @@ test("the Terraform fixture end to end: from the patch and the files at the head
     assert.ok(out.includes("- `output.o changed · \"b\" → \"[click](https://example.invalid) @octo-org/everyone 'x'\"` (`main.tf:1`)")); }
   assert.ok(!md.includes("placeholder"), "the secret's value is in no line");
   const P = infraPicture(m);
-  assert.deepEqual([P.L.nodes.length, P.L.groups.length, P.arch.folded], [13, 1, null]);
+  assert.deepEqual([P.L.nodes.length, P.L.groups.length, isDense(m)], [13, 1, false]);
   // One layout for the render; the search for a better one runs after it, from the same arguments (stack.js laidOut).
   assert.deepEqual([P.args.length, P.args[4]], [5, { labels: true }]);
   assert.equal(JSON.stringify(P.L), JSON.stringify(archLayout(...P.args)), "the picture is archLayout's own");
   assert.ok(archBest(...P.args).hops.length <= P.L.hops.length, "and the search does not make it cross more");
-  const worker = P.arch.nodes.find((n) => n.label === "worker" && n.type === "aws_lambda_function");
+  const worker = P.arch.nodes.find((n) => n.evidence === "aws_lambda_function.worker");
   assert.deepEqual([worker.status, worker.word, worker.dashed, worker.at], ["replaced", "MAY BE REPLACED", true, "stacks/orders/worker.tf:1"], "may be replaced: its own word and a dashed border, not only a colour");
 });
 
-test("over 40 cards, the resources of one type in a group are one card with their number", () => {
-  const n = INFRA_MAX + 5, head = [...Array.from({ length: n }, (_x, i) => `resource "aws_iam_role_policy" "p${i}" {\n  role = aws_iam_role.r.id\n}\n`), 'resource "aws_iam_role" "r" {\n}\n'].join("");
-  const m = model({ "iam.tf": ['resource "aws_iam_role" "r" {\n  path = "/"\n}\n', head] }), a = infraArch(m);
-  assert.deepEqual(a.nodes.map((x) => [x.label, x.description, x.status, x.count]), [[`${n} aws_iam_role_policy`, `${n} added`, "new", n], ["r", "aws_iam_role · iam.tf:136", "changed", undefined]]);
-  assert.deepEqual([a.edges.length, a.folded], [1, { types: 1, cards: n }], "their references are one line");
-  assert.equal(infraMarks(m, [{ file: "iam.tf", line: 2, severity: "low", title: "t" }], a.alias).nodes.get(a.nodes[0].id).n, 1, "a finding at one of them sits at their card");
-  assert.ok(infraMd(m, { table, flow: mermaidFlow }).join("\n").includes(`Over ${INFRA_MAX} cards: ${n} resources of 1 type are one card per type.`));
-  assert.equal(infraArch(model({ "iam.tf": [null, head] }), 100).folded, null);
+test("many resources: cards by file instead of a picture with lines, what stands out first", () => {
+  const n = INFRA_DENSE.cards + 1, head = [...Array.from({ length: n }, (_x, i) => `resource "aws_iam_role_policy" "p${i}" {\n  role = aws_iam_role.r.id\n}\n`), 'resource "aws_iam_role" "r" {\n}\n'].join("");
+  const m = model({ "iam.tf": ['resource "aws_iam_role" "r" {\n  path = "/"\n}\n', head] });
+  assert.ok(isDense(m) && !isDense(model({ "iam.tf": [null, 'resource "aws_iam_role" "r" {\n}\n'] })), "more changed resources than a picture with lines can show");
+  const D = infraDense(m, [{ id: "f", file: "iam.tf", line: 5, severity: "low", title: "t" }]), [G] = D.groups;
+  assert.deepEqual([D.groups.length, G.file, G.dir, G.base, G.kind, G.types, G.more, D.uniform], [1, "iam.tf", "", "iam.tf", "Terraform", [["iam_role_policy", n], ["iam_role", 1]], 0, null]);
+  assert.deepEqual(G.cards.slice(0, 4).map((c) => [c.name, c.status, c.line, c.mark?.n ?? 0, c.to, c.from]), [["p1", "added", 4, 1, 1, 0], ["r", "changed", 3 * n + 1, 0, 0, n], ["p0", "added", 1, 0, 1, 0], ["p2", "added", 7, 0, 1, 0]],
+    "the card with a finding first, then the changed one, then the added ones by line");
+  const role = m.cards.find((c) => c.addr === "aws_iam_role.r").id, p0 = m.cards.find((c) => c.addr === "aws_iam_role_policy.p0").id;
+  assert.equal(denseRefs(D, p0), "aws_iam_role_policy.p0 refers to 1: aws_iam_role.r (role). Nothing in this PR refers to it.");
+  assert.ok(denseRefs(D, role).startsWith(`aws_iam_role.r refers to nothing in this PR. ${n} refer to it: aws_iam_role_policy.p0 (role), aws_iam_role_policy.p1 (role), `));
+  const md = infraMd(m, { table, flow: mermaidFlow }).join("\n");
+  assert.ok(md.includes(denseText()) && !md.includes("```mermaid") && md.includes("| `aws_iam_role_policy p0` | added |"), "the Markdown says so and has the table, no flowchart");
+  // More cards of one file than are drawn: the rest is counted.
+  const big = infraDense(model({ "iam.tf": [null, Array.from({ length: INFRA_DENSE.perFile + 3 }, (_x, i) => `resource "aws_sqs_queue" "q${i}" {\n}\n`).join("")] }));
+  assert.deepEqual([big.groups[0].cards.length, big.groups[0].more, big.uniform], [INFRA_DENSE.perFile, 3, "added"]);
+});
+
+test("resources that share a name are cards of their own, and nothing is counted twice", () => {
+  // One thing, six resources with its name: six cards, each titled by its type.
+  const kinds = ["aws_s3_bucket", "aws_s3_bucket_policy", "aws_s3_bucket_public_access_block", "aws_s3_bucket_server_side_encryption_configuration", "aws_s3_bucket_lifecycle_configuration", "aws_kinesis_firehose_delivery_stream"];
+  const six = model({ "lake/store.tf": [null, kinds.map((k, i) => `resource "${k}" "raw_events" {${i ? "\n  bucket = aws_s3_bucket.raw_events.id" : ""}\n}\n`).join("")] });
+  assert.deepEqual([six.cards.length, six.counts.added, six.total, new Set(six.cards.map((c) => c.id)).size, new Set(six.cards.map((c) => c.name)).size], [6, 6, 6, 6, 1]);
+  assert.deepEqual(infraArch(six).nodes.map((n) => [n.label, n.evidence]).slice(0, 4), [["s3_bucket · raw_events", "aws_s3_bucket.raw_events"], ["s3_bucket_policy · raw_events", "aws_s3_bucket_policy.raw_events"],
+    ["s3_bucket_public_access_block · raw_events", "aws_s3_bucket_public_access_block.raw_events"], ["s3_bucket_server_side_encryp… · raw_events", "aws_s3_bucket_server_side_encryption_configuration.raw_events"]], "the type leads in a card's title, the address is its tooltip");
+  assert.deepEqual([shortType("aws_s3_bucket"), shortType("AWS::SQS::Queue"), shortType("google_storage_bucket"), shortType("module"), shortType("Custom::Thing")], ["s3_bucket", "SQS::Queue", "storage_bucket", "module", "Custom::Thing"]);
+  // The same address in two files of one folder is one resource (the file read last has it), not two.
+  const twice = model({ "lake/a.tf": [null, 'resource "aws_s3_bucket" "raw" {\n}\n'], "lake/b.tf": [null, 'resource "aws_s3_bucket" "raw" {\n  force_destroy = true\n}\n'] });
+  assert.deepEqual([twice.cards.length, twice.counts.added, twice.cards[0].file], [1, 1, "lake/b.tf"]);
+  // A resource that moves to another file of its folder is one changed card there, not one removed and one added.
+  const moved = model({ "lake/a.tf": ['resource "aws_s3_bucket" "raw" {\n  force_destroy = false\n}\n', "# moved\n"], "lake/b.tf": [null, 'resource "aws_s3_bucket" "raw" {\n  force_destroy = true\n}\n'] });
+  assert.deepEqual(moved.cards.map((c) => [c.addr, c.status, c.file]), [["aws_s3_bucket.raw", "changed", "lake/b.tf"]]);
+  assert.deepEqual([moved.counts, moved.total], [{ added: 0, changed: 1, replaced: 0, removed: 0 }, 1]);
+  // The same address in two folders is two resources: each folder is a module of its own.
+  const two = model({ "eu/s.tf": [null, 'resource "aws_s3_bucket" "raw" {\n}\n'], "us/s.tf": [null, 'resource "aws_s3_bucket" "raw" {\n}\n'] });
+  assert.deepEqual([two.cards.length, two.groups.length, new Set(two.cards.map((c) => c.id)).size], [2, 2, 2]);
+  // The list by file has every card once, and its types add up to the cards.
+  const m = infraModel(splitPatch(fx("dense/pr.diff"))), D = infraDense(m), listed = D.groups.flatMap((g) => g.cards.map((c) => c.id));
+  assert.deepEqual([listed.length, new Set(listed).size, D.groups.reduce((n, g) => n + g.types.reduce((k, [, x]) => k + x, 0), 0), new Set(m.cards.map((c) => c.addr)).size], [34, 34, 34, 34]);
+});
+
+// A stack a PR adds whole (demo/fixtures/infra/dense, invented): 34 cards in three files, 49 references.
+test("the dense fixture: three files, the references of a chosen card", () => {
+  const m = infraModel(splitPatch(fx("dense/pr.diff"))), D = infraDense(m);
+  assert.deepEqual([m.cards.length, m.edges.length, m.counts.added, isDense(m), D.uniform], [34, 49, 34, true, "added"]);
+  assert.deepEqual(D.groups.map((g) => [g.base, g.dir, g.cards.length]), [["functions.tf", "infra/stacks/notifications/", 14], ["monitoring.tf", "infra/stacks/notifications/", 8], ["queues.tf", "infra/stacks/notifications/", 12]]);
+  const router = m.cards.find((c) => c.addr === "aws_lambda_function.router").id, r = D.refs.get(router);
+  assert.deepEqual([r.to.map((x) => D.names.get(x.id)), r.from.length], [["aws_iam_role.workers", "aws_sns_topic.events", "aws_lambda_function.mailer"], 4]);
 });
 
 // A file of the PR written to break the reader: it never throws and never takes long, the file is named as not read

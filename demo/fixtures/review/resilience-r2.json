@@ -215,7 +215,7 @@
    "what": "Loan.reminded_on / returned_on (loan status)",
    "store": "in-memory LoanStore, per Lambda process",
    "isolation": null,
-   "note": "Each Lambda has its own `api.store`, so the consumer never sees the front desk's loans (741d3e364325).",
+   "note": "Each Lambda has its own `api.store`, so the consumer never sees the front desk's loans.",
    "invariant": "Only transition() changes the status, and a change is always published",
    "shared_across_process": false,
    "writers": [
@@ -288,7 +288,7 @@
    "findings": [],
    "oncall": "Members report two identical mails; there is no error or alarm.",
    "possible_today": false,
-   "note": "Not possible today: nothing publishes to SQS (0ecf9c8f5fff) and nothing schedules send_reminders (r_f1)."
+   "note": "Not possible today: nothing publishes to SQS and nothing schedules send_reminders."
   }
  ],
  "additions": [
@@ -485,7 +485,7 @@
     "af7a655d1"
    ],
    "probe": null,
-   "note": "Not possible today because nothing runs it (r_f1) and nothing publishes to SQS.",
+   "note": "Not possible today because nothing runs it and nothing publishes to SQS.",
    "action": "Mail only from the consumer and remove the direct `mailer.send`."
   },
   {
@@ -719,7 +719,7 @@
     "a867a575d"
    ],
    "probe": null,
-   "note": "Not possible today because nothing runs it (r_f1).",
+   "note": "Not possible today because nothing runs it.",
    "action": "Move the status derivation so OVERDUE is reachable."
   },
   {

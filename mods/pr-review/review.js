@@ -65,7 +65,7 @@ import { scopeTable, scopeConflicts, runSummary, AREA_NAME, areaFindings, surfac
 import * as TH from "./threads.js";
 import { leftWidth, rowClick, CHIP_W, ASK_W, keyRoute, scopeLine, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf, rangeLabel, pinAnchor, pinAdd, pinDrop, pinsOf, pinsOn, codePins, drillPush, drillTo, crumbs, drillKey, cachePut, mapDrill, exploreId, exploreIndex, exploreAi, pathOf, lineOf, repoOfRemote, exploreTrust, layersForNode } from "./explore.js";
 import { TYPE } from "./views.js"; // the text sizes (U34)
-import { isIac, dirOf, infraModel, infraPicture } from "./infra.js"; // "Infrastructure changes" on the Architecture page
+import { isIac, dirOf, infraModel, infraPicture, isDense, infraDense } from "./infra.js"; // "Infrastructure changes" on the Architecture page
 import { infraSection } from "./infra-view.js";
 
 const LEVEL = { high: "ansi1", medium: "ansi3", low: "ansi4", skim: "muted" };
@@ -582,6 +582,7 @@ export const ReviewMode = {
     else if (name === "arch-view") { if (["diff", "before", "after"].includes(arg)) this.archMode = arg; }
     else if (name === "arch-fit") { this.archFit = !this.archFitOn(); this.hsOf("rv-arch-canvas").x = 0; this.doorShown = false; }
     else if (name === "arch-wrap") this.setArchWrap(!this.archWrapOn());
+    else if (name === "infra-card") { this.page = "arch"; this.tab = "steps"; this.infraFocus = (this.infra?.cards ?? []).find((c) => c.addr === arg)?.id ?? null; } // a card of the list by file ("Infrastructure changes" with many resources) chosen by its address ("": none)
     else if (name === "sec-card") { this.page = "blast"; this.tab = "steps"; this.secCard(arg || null, cx); } // a click on a card of the Security page's picture ("": unlight)
     else if (name === "res-path") { this.page = "res"; this.tab = "steps"; this.resOpen = this.resOpen === arg ? null : arg || null; } // a click on a path of the Resilience page (its id; "" folds)
     else if (name === "res-add") { this.page = "res"; this.resAddOpen = !this.resAddOpen; } // the parts this PR adds, folded or open
@@ -3474,7 +3475,13 @@ export const ReviewMode = {
   infraPart(t) {
     const m = this.exMode ? null : this.infra;
     if (!m) return [];
-    const fs = this.openFindings(), key = fs.map((f) => `${f.id}|${f.severity}`).join();
+    const fs = this.openFindings(), key = fs.map((f) => `${f.id}|${f.severity}`).join(), o = this.archOpts("infra");
+    // Many resources (infra.js isDense): cards by file, no layout and no lines; the chosen card (infraFocus, else
+    // infraHover) shows its references. Kept per model and findings like the picture.
+    if (m.cards.length && isDense(m)) {
+      if (this.infraMemo?.model !== m || this.infraMemo.key !== key) { this.infraMemo = { model: m, key, dense: infraDense(m, fs) }; if (!this.infraMemo.dense.refs.has(this.infraFocus)) this.infraFocus = null; }
+      return [["infra", infraSection(t, { model: m, pic: null, dense: this.infraMemo.dense, onJump: (at, cx) => this.jumpTo(at, cx), edit: (id, at) => this.editAt(t, id, at), focus: o.focus, hover: o.hover, onFocus: o.onFocus, onHover: o.onHover, onFinding: o.onFinding })]];
+    }
     if (m.cards.length && (this.infraMemo?.model !== m || this.infraMemo.key !== key)) {
       // As archL (stack.js laidOut): what a frame can afford now, the better layout after it; a picture too big for
       // the frame comes with the first slice after it (until then the section without its picture, or with the one
@@ -3482,9 +3489,8 @@ export const ReviewMode = {
       const pic = infraPicture(m, fs, false, false), before = this.infraMemo?.model === m ? this.infraMemo.pic.L : null;
       this.infraMemo = { model: m, key, pic: laidOut(pic.args, pic, () => this.infraMemo?.pic, { wait: true, before }) };
     }
-    const o = this.archOpts("infra");
     return [["infra", infraSection(t, { model: m, pic: m.cards.length && this.infraMemo?.model === m && this.infraMemo.pic.L ? this.infraMemo.pic : null, onJump: (at, cx) => this.jumpTo(at, cx), edit: (id, at) => this.editAt(t, id, at), hl: o.hl, onHl: o.onHl,
-      canvas: (L, decorate, marks) => this.archCanvas(t, L, { ...o, onFocus: null, marks, zoom: settings().zoom || 1 }, { id: "rv-infra-canvas", pic: "rv-infra", wrap: false, decorate, notes: false }) })]];
+      canvas: (L, decorate, marks) => this.archCanvas(t, L, { ...o, focus: null, onFocus: null, marks, zoom: settings().zoom || 1 }, { id: "rv-infra-canvas", pic: "rv-infra", wrap: false, decorate, notes: false }) })]];
   },
 
   // The picture: wider than the view and Wrap on (archWrapOn, off by default), in bands stacked top to bottom (arch.js

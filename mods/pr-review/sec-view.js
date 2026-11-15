@@ -7,7 +7,7 @@ import { div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { chip } from "./stack.js";
 import { TYPE, signOf, signEl, signWords, secWho, runLabel } from "./views.js";
-import { rightsOf, rightsShown, cellOf, entryText, GUARD } from "./rights.js";
+import { rightsOf, rightsShown, cellOf, entryText, GUARD, CHANGE, NOT_SAID } from "./rights.js";
 import { dataflowOf, wayLine, FLAGS } from "./dataflow.js";
 
 const FLAG_WORD = Object.fromEntries(FLAGS.map(([k, , , at]) => [k, at]));
@@ -91,10 +91,17 @@ export const SecPicsMode = {
           .when(e.loosened, (x) => x.child(div().text_color(t.ansi1).child("⚠ This PR loosens it."))); };
       const colHead = (c) => v_flex().child(div().whitespace_normal().text_color(c.wild ? t.ansi1 : t.foreground).child(c.name)).when(c.kinds.length > 0, (e) => e.child(div().font_normal().text_color(t.muted).child(c.kinds.join(", "))));
       const rowHead = (r) => v_flex().child(div().font_semibold().whitespace_normal().child(r.name)).when(Boolean(r.kind), (e) => e.child(div().text_color(t.muted).child(r.kind)));
+      // The signs of the cells shown, in a line over the table (as Schema changes has one): only those that occur.
+      // Nothing of it while the section is folded.
+      const cells = open ? v.rows.map((r) => v.cols.map((c) => cellOf(m, r, c))) : [], shown = cells.flat(2), key = (sign, word, color = t.muted) => h_flex().flex_none().gap(4).child(div().text_color(color).child(sign)).child(div().child(word));
+      const legend = [...[...Object.entries(CHANGE), [null, NOT_SAID]].filter(([c]) => shown.some((e) => (c ? e.change === c : e.change === null))).map(([c, [sign, word]]) => key(sign, word, c === null ? t.ansi3 : c === "unchanged" ? t.muted : t.accent)),
+        ...(shown.some((e) => e.guard) ? [key(GUARD[0], `${GUARD[1]}: a rule that denies`, t.ansi2)] : []), ...(shown.some((e) => e.crossing) ? [key("‖", "crossing on the map")] : []),
+        ...(shown.some((e) => e.findings.length) ? [key("!", "unresolved findings", t.foreground)] : [])];
       parts.push(["rights", box("rv-sec-rights")
         .child(head("rv-sec-rights-h", "Who may do what", m.total, m.line, open, "Principals and resources as a table: the actions each may do and what this PR changes", "sec-rights"))
         .when(open, (e) => e.child(note(m.note))
-          .child(this.table(t, "rv-sec-rt", [["Who", 200], ...v.cols.map((c) => [colHead(c), null])], v.rows.map((r) => [rowHead(r), ...v.cols.map((c) => { const es = cellOf(m, r, c); return es.length ? v_flex().gap(4).children(es.map(entry)) : div().text_color(t.dim).child("–"); })])))
+          .child(h_flex().id("rv-sec-rt-legend").gap(12).flex_wrap().text_size(TYPE.small).text_color(t.muted).tooltip("What the signs in a cell say").children(legend))
+          .child(this.table(t, "rv-sec-rt", [["Who", 200], ...v.cols.map((c) => [colHead(c), null])], v.rows.map((r, i) => [rowHead(r), ...cells[i].map((es) => (es.length ? v_flex().gap(4).children(es.map(entry)) : div().text_color(t.dim).child("–")))])))
           .when(folded > 0, (y) => y.child(div().id("rv-sec-rt-all").text_size(TYPE.small).text_color(t.muted).cursor_pointer().hover((x) => x.text_color(t.foreground)).on_click((_e, cx) => { this.secPicCommand("sec-rights", "all"); cx.notify(); })
             .child(this.secRightsAll ? "Show only what this PR changes ▴" : `${v.moreLine} ▸`))))]);
     }

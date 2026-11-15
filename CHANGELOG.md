@@ -1,5 +1,237 @@
 # Changelog
 
+## 0.11.1 (2026-11-15)
+
+### Fixes
+
+- pr-review: IntelliJ from the Snap store is found by its launcher's own name
+
+### Other
+
+- chore: merge feat/herdr-0116 (snap names for IntelliJ)
+
+## 0.11.0 (2026-11-15)
+
+### Features
+
+- review: a Copy as Markdown button in the head of every page it can copy
+- review: a finding at a state machine names the move it is about
+- pr-review: remove a review from In progress with Undo, show merged ones dimmed, other repos behind Show all
+- review: the resilience run checks each dependency that is slow, overloaded, down, answers wrong or comes back
+- pr-review: list and remove fix worktrees, back off failed PR scans, remember Markdown heights
+- review: finding chips that would touch in a state diagram are one chip
+- review: fewer terms on the first screen, one place for each fact, visible click targets in the diff
+- review: Copy as Markdown shows a preview first and copies the whole page with its pictures and code
+- security: one count of security findings, the operator's trust level, guards that say what they hold against
+- pr-review: the panel shows what the review knows, says why a diff failed, and asks before Discard
+- review: the Copy as Markdown preview lists findings by severity and stays inside a narrow pane
+- pr-review: the list stays after a review opened from it; the chip shows the review's risk; no jerk on resume
+- pr-review: a fourth source, This space: the PRs of the branches checked out in the space
+- review: state diagrams route every transition on its own line and label it
+- review: one sign says how severe and how sure what stands behind a page is
+- security: order cards and frames so calls run straight
+- pr-review: a timing picture on the Resilience page
+- pr-review: a fault tree for each case of a failing dependency
+- lsp-bridge: symbols of a file and references of a name
+- review: Impact on the Architecture page, the changed functions and their callers
+- review: infrastructure changes on the Architecture page, read from the diff
+- syntax: Makefiles, YAML with workflows and Spring settings, key=value files and TOML get their own colors
+- pr-review: tell the Worktrees mod which PR belongs to which branch
+- pr-review: who may do what and where sensitive data goes on the Security page
+- review: schema changes on the Architecture page, read from migrations and model files
+- review: lay the schema picture out once per marks, a big one after the frame
+- pr-review: Open in your editor, from a file's head, a definition, a card's place and the panel
+- explore: Explore can be minimized, and a failed run offers Retry
+- pr-review: init starts no task and no timer during herdr-app check
+- pr-review: watched folders are cancelled when a repo is let go and when the copy closes
+- pr-review: review and fix worktrees go to Herdr's worktrees folder, never into the clone
+- pr-review: tabs are named repo first, and the review's Ask tab opens in the background
+- pr-review: a file's head and its panel row drag onto a terminal as the path in the checkout
+- pr-review: editor link on Impact cards, callers and Infrastructure cards
+- pr-review: a legend line over the rights table
+
+### Fixes
+
+- pr-review: the PR panel follows the Herdr space and lists only relevant PRs
+- review: Fit only narrows the map's cards and never puts it in rows
+- pr-review: the PR panel draws and fetches only for new data
+- security: a deny rule is a guard, one placeholder per place, operator ways by name, Codex named as Codex
+- review: the Security page counts the findings behind threats, shows guards as guards and one row per crossing
+- review: one blast line per deployment, the zone's name in full on the security map, a smoke tour with a guard
+- security: an operator's threat covers its script's call only, a guard reads as what it denies, tool words leave the skipped list whole
+- pr-review: the list of fix worktrees can open at a given spot; the folded merged row says what it leaves out
+- review: a dependency's open question reads as one clause ("is slow or overloaded")
+- review: a bundled finding chip stands right of its last arrow
+- pr-review: a repo written to while its diff loads is checked again without waiting for a render
+- pr-review: back from a review the panel shows that review's PR, not the one picked before
+- pr-review: a resumed review opens on the tab and page you left, without a jump
+- security: what follows from the shield follows from the effect, a threat cites only what enables it
+- review: resilience follow-ups: a case scrolls to its path, marks wrap on the card, the route's own reason blocks
+- test: the smoke test says when its fixtures are missing, and the bundle leaves it out
+- review: every cache has a limit and goes with its PR
+- pr-review: the last pick wins while something loads; review opens the branch's PR again; wrap, a line for a merged review
+- syntax: shell scripts are highlighted again, also without an ending
+- review: resilience shows the listed path number instead of run ids
+- review: the Markdown preview counts one way and names what is left out
+- review: security crossings fold the other findings and name a finding once
+- review: a path and its probe say old or new once
+- review: the verdict says when its security count comes from a run under older rules
+- review: model runs get an allowlist of the environment
+- review: Before merge counts rows and keeps a cause's later findings at its row
+- review: the Codex run reads only the checkout and loads no MCP, hooks or PR config
+- panel: file marks take the security sign from the same source as the review
+- review: one effect said by several sources near by is one finding
+- review: a probe's script and result come from the runner only, never through a link
+- review: the probe of a dated path says what its script did on the base
+- review: one file that cannot be colored no longer keeps the whole diff plain
+- review: the push lock also holds for a remote with a push URL of its own
+- review: the push lock's note shows no push URL, and its gate is tested in the layout
+- review: search for the better map layout after the render
+- review: lay the infrastructure picture out in one pass
+- review: search for the better map layout after the render
+- syntax: no scanner can hold a line for ever, and a stopped slice no longer stalls the colors
+- review: lay maps out within a render's slice, search in slices after it
+- pr-review: a click on a Worktrees PR mark is kept for the panel; the panel starts with Worktrees there
+- review: the command loop survives a command that threw or was stopped
+- review: Impact leaves infrastructure files to Infrastructure changes
+- review: the infrastructure picture uses the one layout mechanism
+- llm: a run that gave no answer says so in one sentence, not with the CLI's result object
+- pr-review: no cx is used after its call, and a click waits for the folder's files
+- pr-review: a dry run starts no editor; no editors found is not kept for a day
+- pr-review: a file editor.dry-run in the Herdr home keeps every editor from starting
+- pr-review: the Infrastructure title counts resources, values and notices by name
+- pr-review: a PR that is not trusted opens only a tracked regular file, and no build file by any spelling
+- pr-review: a changed symbol's name is matched as text, not as a pattern
+- pr-review: names and values from the PR are inert in the copied Markdown
+- pr-review: an infrastructure file written to break the reader costs its section, not the review
+- pr-review: an untrusted PR's file is opened by its real path, after the index and the disk agree it is a regular file
+- pr-review: editor links look again after none was found, a menu's pick is its own, one wording for the menu
+- pr-review: a saved result replaces the file from before, and a hidden feeding copy does not count
+- pr-review: the panel's editor link stands at the open file's name
+
+### Other
+
+- test(review): the smoke test draws the definition view, the Ask drawer, Look inside, Explore and the popups
+- test(review): a script refreshes the review fixtures, and the fixtures are today's
+- chore: merge feat/ux-backlog into the smoke leftovers
+- test(pr-review): smoke-test the PR panel
+- Merge branch 'feat/ux-backlog' into feat/ux-panel-bugs
+- test(review): the smoke test opens each comment card's menu, sent threads, a note and every probe's script
+- chore: merge feat/ux-leftovers-smoke
+- chore: merge feat/ux-panel-bugs
+- chore: merge feat/ux-backlog (panel follows the space, relevant PRs) into the render fixes
+- chore: merge feat/ux-backlog into the Fit, Copy as Markdown and transition work
+- chore: merge fit without wrapping and a visible Copy as Markdown
+- chore: merge feat/ux-backlog into the security judge work
+- chore: merge feat/ux-backlog into feat/ux-res-downstream
+- chore: merge the security page after its judgement
+- chore: merge feat/ux-backlog into the panel render and removal work
+- Merge branch 'feat/ux-backlog' into feat/ux-panel-render
+- chore: merge feat/ux-backlog into the UX leftovers
+- chore: merge feat/ux-backlog into feat/ux-res-downstream
+- chore: merge feat/ux-backlog (security page) into the UX leftovers
+- chore: merge a panel that renders only on new data
+- chore: merge feat/ux-rest
+- chore: merge feat/ux-backlog into the second security judge round
+- chore: merge resilience for dependencies that fail or are overloaded
+- chore: merge feat/ux-backlog into the Copy as Markdown preview and whole-page text
+- chore: merge feat/ux-backlog (dependencies that fail) into the whole-page Markdown
+- chore: merge one security count, the operator level and guards
+- docs(review): the Resilience page's Copy as Markdown help names the dependencies that fail
+- chore: merge feat/ux-backlog (one security count, operator level, guards) into the whole-page Markdown
+- chore: merge the Markdown preview, full pages with diagrams and code context
+- chore: merge feat/ux-backlog into the third security judge round
+- chore: merge feat/ux-backlog into the panel work (minimize bug, resume, UX findings)
+- chore: merge feat/ux-backlog into the preview by severity
+- chore: merge fix/bundle-smoke
+- chore: merge feat/ux-sec-judge3
+- chore: merge feat/ux-panel-render
+- chore: merge feat/ux-backlog (panel render) into the preview by severity
+- chore: merge the Markdown preview by severity and dependencies in the export
+- Merge branch 'feat/ux-backlog' into feat/ux-panel-rest
+- chore: merge feat/ux-backlog into feat/ux-res-rest
+- chore: merge the panel's rest: wrap, races while loading, setup, review without a pick
+- chore: merge the list stays after a deliberate back, risk on the minimized chip
+- chore: merge feat/ux-backlog into feat/ux-res-rest
+- chore: merge feat/ux-backlog into feat/ux-res-rest
+- chore: merge resilience follow-ups and cache limits
+- refactor(review): text sizes are named steps instead of fifteen numbers
+- chore: merge the type ladder
+- refactor(review): a state label's width holds the room for its chip
+- chore: merge feat/ux-backlog into feat/ux-state-diagram
+- chore: merge feat/ux-backlog into feat/ux-shell-icons
+- Merge branch 'feat/ux-shell-icons' into feat/ux-backlog
+- chore: merge feat/ux-backlog into feat/ux-map-layout
+- Merge branch 'feat/ux-map-layout' into feat/ux-backlog
+- Merge branch 'feat/ux-backlog' into feat/pic-time
+- test(perf): count what a frame costs, on PR #2 and a synthetic big review
+- Merge branch 'feat/ux-backlog' into feat/pic-impact
+- perf(findings): a frame no longer looks up every finding's rows on each ask
+- Merge branch 'feat/ux-backlog' into feat/pic-infra
+- docs(setup): what the Codex run, the push lock and probes need installed, and what happens without it
+- perf(review): no JSON text of the map per frame, the diff is read once for the resilience start
+- docs(setup): language servers also turn on Impact, with their install commands
+- perf(arch): a map of more than 20 cards is laid out after the frame, not in it
+- chore: merge feat/ux-backlog into feat/ux-shell-icons
+- chore: merge the acceptance corrections (UX and engineer)
+- perf(diff): listing the diff asks what hangs under a line only where something does
+- perf(security): the Security page computes its crossings once, not twice per frame
+- Merge branch 'feat/ux-accept-sec' into feat/ux-backlog
+- Merge branch 'feat/pic-time' into feat/ux-backlog
+- Merge branch 'feat/pic-impact' into feat/ux-backlog
+- Merge branch 'feat/ux-backlog' into feat/pic-infra
+- Merge branch 'feat/ux-shell-icons' into feat/ux-backlog
+- perf(review): a running fix's cost is not polled behind another window
+- Merge branch 'feat/ux-map-layout' into feat/ux-backlog
+- Merge branch 'fix/highlight-queue' into feat/ux-backlog
+- perf(open): the review no longer waits for git before it shows the cached diff
+- perf(open): where a resilience run would start is counted a second after the review opened
+- chore: merge feat/ux-backlog into feat/perf
+- chore: merge feat/ux-backlog into feat/perf
+- perf(panel): the panel's diff is a virtual list, so a frame no longer grows with the file
+- chore: merge feat/ux-backlog into perf/panel-diff-list
+- Merge branch 'feat/ux-backlog' into feat/pic-schema
+- Merge branch 'feat/ux-backlog' into feat/pic-infra
+- perf(review): a view whose frames Herdr stopped draws less; the Walkthrough has its own line limit
+- chore: merge feat/ux-backlog into feat/pic-sec
+- chore: merge feat/ux-backlog into feat/perf
+- Merge branch 'feat/pic-sec' into feat/ux-backlog
+- chore: merge feat/ux-backlog into feat/perf
+- chore: merge feat/ux-backlog into fix/map-layout-budget
+- perf(panel): the panel builds only the body it shows
+- chore: merge feat/ux-backlog into perf/panel-diff-list
+- chore: merge feat/ux-backlog into perf/panel-diff-list
+- perf(review): the layout search prices an order without re-sorting every column
+- Merge branch 'feat/pic-infra' into feat/ux-backlog
+- chore: merge feat/ux-backlog into feat/pic-schema
+- chore: merge feat/ux-backlog into fix/map-layout-budget
+- chore: merge feat/ux-backlog into fix/map-layout-budget
+- perf(walkthrough): 3 000 lines, the open layer first; a view draws less after three stopped frames, for five minutes
+- perf(review): no log reads for a fix whose agent ended, no frame for a poll that found nothing new
+- perf(shared): shared state is written for another value only; a visit alone does not rewrite the register
+- test(smoke): a review keeps its analysis through the whole tour
+- chore: merge feat/ux-backlog into fix/map-layout-budget
+- perf(panel): the list of PRs is built only while it shows
+- test(infra): name the layout queue that is there
+- chore: merge feat/ux-backlog into feat/perf2
+- chore: merge feat/ux-backlog into fix/explore-minimize-errors
+- chore: merge feat/ux-backlog into Open in your editor
+- chore: merge feat/ux-backlog (the Explore chip) into Open in your editor
+- perf(review): coloring a diff asks for two frames, not one per slice
+- refactor(pr-review): the editor menu as plain data, for the other mods that draw it themselves
+- Merge branch 'perf/highlight-frames' into feat/ux-backlog
+- Merge branch 'feat/open-in-editor' into feat/ux-backlog
+- perf(live): the panel and the review are no longer drawn for every agent's status change
+- chore: merge feat/ux-backlog into feat/perf2
+- Merge branch 'feat/ux-backlog' into feat/open-in-editor
+- chore: merge feat/ux-backlog into feat/pic-schema
+- chore: merge feat/pic-schema into feat/ux-backlog
+- refactor(pr-review): one title line for Impact, Infrastructure changes and Schema changes
+- test(pr-review): the review fixtures name a path by the number the page shows
+- docs(pr-review): the new pictures, the Security page's name and the editor requirements on Linux
+- chore: merge feat/herdr-0116 into feat/ux-backlog
+- docs(pr-review): copy as markdown, the short editor link and large infrastructure files
+
 ## 0.10.0 (2026-11-15)
 
 ### Features

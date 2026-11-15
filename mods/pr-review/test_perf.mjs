@@ -373,7 +373,7 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
 }
 // ---- "Infrastructure changes" on the Architecture page (infra.js): read and laid out once
 // A frame that changes nothing reads no file, builds no model and lays nothing out (measured on PR #2: 1 238 of the
-// mod's functions with the section, 1 154 without). A picture of more than 20 cards is laid out after the frame.
+// mod's functions with the section, 1 154 without). Many resources are a list of cards by file with no layout.
 {
   const { infraModel } = await import("./infra.js");
   const OWN = ["arch.archLayout", "infra.infraModel", "infra.infraPicture", "infra.infraArch", "infra.infraMarks", "infra.cardLines", "infra.readCloudFormation", "infra.readTerraform", "infra.baseText", "view.loadInfra"];
@@ -385,27 +385,24 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
   assert.deepEqual(OWN.filter((f) => m.calls(f) > 0), [], "Architecture with Infrastructure changes: a frame that changes nothing computes none of these again");
   assert.ok(fns <= 1500, `Architecture with Infrastructure changes: ${fns} function calls in a frame that changes nothing, at most 1500`);
   assert.deepEqual(m.asked, { notify: 0, after: 0, every: 0, spawn: 0, exec: 0, read: 0, shared: 0 }, "and asks for no redraw, timer, task, command or shared write");
-  // As the maps (stack.js laidOut). Thirty resources that refer to the first, 29 calls: more than a frame can lay out
-  // in full, so one rough pass in the frame (no order priced), the picture there at once.
-  const drawn = () => { S.ids = new Set(); const ran = counted(() => frame(v)); const ids = S.ids; S.ids = null; return { layouts: ran("arch.archLayout"), priced: ran("arch.permutations") + ran("arch.overlapsOf") - ran("arch.archLayout"), picture: ids.has("rv-infra-canvas") }; };
-  // n queues that refer to the first (and, with `two`, to the second as well).
-  const queues = (n, two = false) => infraModel([{ path: "queues.tf", status: "added", lines: [`@@ -0,0 +1,${4 * n} @@`, ...Array.from({ length: n }, (_x, i) => [`+resource "aws_sqs_queue" "q${i}" {`, i ? "+  redrive = aws_sqs_queue.q0.arn" : '+  name = "first"', ...(two && i > 1 ? ["+  other = aws_sqs_queue.q1.arn"] : []), "+}"]).flat()] }]);
-  await quiet(v); v.infra = queues(30); v.infraMemo = null;
-  assert.equal(v.infra.cards.length, 30);
-  assert.deepEqual(drawn(), { layouts: 1, priced: 0, picture: true }, "30 cards: one rough layout in the frame, and the picture");
-  assert.deepEqual(drawn(), { layouts: 0, priced: 0, picture: true }, "the next frame lays nothing out");
+  // A picture with lines has at most 12 changed resources and 15 references (infra.js INFRA_DENSE), which a frame lays
+  // out in full. n queues that refer to the first.
+  const drawn = () => { S.ids = new Set(); const ran = counted(() => frame(v)); const ids = S.ids; S.ids = null; return { layouts: ran("arch.archLayout"), dense: ran("infra.infraDense"), picture: ids.has("rv-infra-canvas"), list: ids.has("rv-infra-dense") }; };
+  const queues = (n) => infraModel([{ path: "queues.tf", status: "added", lines: [`@@ -0,0 +1,${3 * n} @@`, ...Array.from({ length: n }, (_x, i) => [`+resource "aws_sqs_queue" "q${i}" {`, i ? "+  redrive = aws_sqs_queue.q0.arn" : '+  name = "first"', "+}"]).flat()] }]);
+  await quiet(v); v.infra = queues(12); v.infraMemo = null;
+  assert.deepEqual([v.infra.cards.length, v.infra.edges.length], [12, 11]);
+  assert.deepEqual(drawn(), { layouts: 1, dense: 0, picture: true, list: false }, "12 cards: laid out in the frame, and the picture");
   await quiet(v);
-  assert.deepEqual(drawn(), { layouts: 0, priced: 0, picture: true }, "also once the search for a better layout is through");
-  // Forty that refer to the first two, 77 calls: too many even for a rough pass in a frame. The frame draws the
-  // section without its picture, the first slice after it lays the picture out.
-  v.infra = queues(40, true); v.infraMemo = null;
-  assert.deepEqual(drawn(), { layouts: 0, priced: 0, picture: false }, "40 cards, 77 calls: the first frame lays nothing out");
-  assert.equal(v.infraMemo.pic.args[0].edges.length, 77);
-  later();
-  assert.equal(v.infraMemo?.pic.L.nodes.length, 40, "its layout is made right after the frame");
-  assert.deepEqual(drawn(), { layouts: 0, priced: 0, picture: true }, "and the next frame draws the picture without laying it out again");
-  await quiet(v);
-  assert.deepEqual(drawn(), { layouts: 0, priced: 0, picture: true }, "also once the search for a better layout is through");
+  assert.deepEqual(drawn(), { layouts: 0, dense: 0, picture: true, list: false }, "the next frame lays nothing out");
+  // More than that is a list of cards by file: no layout at all, its model made once, also while a card is chosen.
+  v.infra = queues(40); v.infraMemo = null;
+  assert.deepEqual(drawn(), { layouts: 0, dense: 1, picture: false, list: true }, "40 cards: the list by file in the first frame, nothing laid out");
+  assert.deepEqual(drawn(), { layouts: 0, dense: 0, picture: false, list: true }, "the next frame makes nothing again");
+  v.infraFocus = v.infra.cards[0].id;
+  assert.deepEqual(drawn(), { layouts: 0, dense: 0, picture: false, list: true }, "nor does a chosen card");
+  const big = await measure(v, 1);
+  assert.deepEqual(big.asked, { notify: 0, after: 0, every: 0, spawn: 0, exec: 0, read: 0, shared: 0 }, "and the list asks for no redraw, timer, task, command or shared write");
+  v.infraFocus = null;
 }
 // ---- "Open in <Editor>": the installed editors are found by reading files, with no process; the frames that draw
 // the links (a file head's zones in the big diff, the cards' monogram) start none either, however many follow; a

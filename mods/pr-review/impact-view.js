@@ -7,7 +7,7 @@ import { div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { readTextFile, writeTextFile, appHome, settings, shared } from "herdr";
 import { markRoom, ARCH } from "./arch.js";
-import { archView, laidOut } from "./stack.js";
+import { archView, laidOut, sectionTitle } from "./stack.js";
 import { TYPE } from "./views.js";
 import { hash } from "./pr.js";
 import { call, supported } from "./defs.js";
@@ -30,21 +30,23 @@ export function impactLayout(model, marks) {
   return laidOut(args, { a }); // what a render can afford now, the better layout after it (stack.js)
 }
 
-// A card's rows: its mark as a shape and its words (a caller), or what is known about a changed function.
-const decorate = (t, id) => (n) => (n.rows?.length ? [v_flex().id(`${id}-rows-${n.id}`).flex_none().h(n.rows.length * ROW).children(n.rows.map((r, k) => h_flex().id(`${id}-row-${n.id}-${k}`).h(ROW).gap(5).items_center()
+// A card's rows: its mark as a shape and its words (a caller), or what is known about a changed function. The first
+// row carries the short link to the card's place in the person's editor (edit(id, at): review.js editAt, or null).
+const decorate = (t, id, edit = null) => (n) => (n.rows?.length ? [v_flex().id(`${id}-rows-${n.id}`).flex_none().h(n.rows.length * ROW).children(n.rows.map((r, k) => h_flex().id(`${id}-row-${n.id}-${k}`).h(ROW).gap(5).items_center()
   .text_size(TYPE.micro).text_color(tone(t, r)).when(r.tone === "strong", (e) => e.font_semibold()).when(Boolean(r.tip), (e) => e.tooltip(r.tip))
-  .when(Boolean(r.glyph), (e) => e.child(div().flex_none().w(12).child(r.glyph))).child(div().flex_1().min_w(0).truncate().child(r.text))))] : []);
+  .when(Boolean(r.glyph), (e) => e.child(div().flex_none().w(12).child(r.glyph))).child(div().flex_1().min_w(0).truncate().child(r.text))
+  .children(k === 0 && edit && n.at ? edit(`${id}-ed-${n.id}`, n.at) : [])))] : []);
 
 /**
  * The section. st: {state: "ok" | "busy" | "idle" | "error", model, message, done, of} (ImpactMode's); o: {root: the
  * checkout or null, trusted, marks, L: impactLayout's, open: the list is unfolded, hover, onHover, onFinding,
- * onPlace(at, cx), onRun(cx), onFold(cx), hscroll(id, w, h, el): the review's sideways scroller}. Returns the page's
+ * onPlace(at, cx), onRun(cx), onFold(cx), hscroll(id, w, h, el): the review's sideways scroller, edit(id, at): the
+ * short "open in the editor" link for a place (review.js editAt; [] without an editor or a checkout)}. Returns the page's
  * parts [[name, element]]: "impact", and "impact-list" (every caller and test, folded) when there are callers; none
  * when there is nothing to say yet.
  */
 export function impactSection(t, st, o) {
-  const title = (counts) => h_flex().gap(10).items_baseline().flex_wrap().child(div().text_size(TYPE.title).font_semibold().child("Impact"))
-    .when(Boolean(counts), (e) => e.child(div().text_size(TYPE.body).text_color(t.muted).child(counts ?? "")));
+  const title = (counts) => sectionTitle(t, "Impact", counts);
   const line = (text, c = t.muted) => div().w_full().whitespace_normal().text_size(TYPE.body).text_color(c).child(text);
   const box = (...kids) => [["impact", v_flex().id("rv-impact").w_full().gap(8).pt(6).children(kids.filter(Boolean))]];
   if (!st || st.state === "loading" || st.state === "none") return [];
@@ -59,7 +61,7 @@ export function impactSection(t, st, o) {
       h_flex().child(button("rv-impact-run", t, "Find callers", "Start the language server for this PR's code and ask it who calls the changed functions. No model is asked.", (_e, cx) => o.onRun(cx))));
   }
   const m = st.model, lines = impactLines(m), T = lines.totals, L = o.L.L, rows = impactRows(m).filter((r) => r.caller);
-  const pic = L.nodes.length ? archView(L, t, "rv-impact-pic", (n, _e, cx) => o.onPlace(n.at, cx), decorate(t, "rv-impact"), { hover: o.hover, onHover: o.onHover, onFinding: o.onFinding, marks: o.marks, zoom: settings().zoom || 1, numbers: false }) : null;
+  const pic = L.nodes.length ? archView(L, t, "rv-impact-pic", (n, _e, cx) => o.onPlace(n.at, cx), decorate(t, "rv-impact", o.edit), { hover: o.hover, onHover: o.onHover, onFinding: o.onFinding, marks: o.marks, zoom: settings().zoom || 1, numbers: false }) : null;
   const key = (mark, n, risky = false) => h_flex().gap(5).items_center().child(div().flex_none().text_color(risky ? t.ansi3 : mark === "outside" ? t.foreground : t.muted).child(risky ? SIG.glyph : MARKS[mark].glyph))
     .child(div().text_color(n ? t.foreground : t.muted).child(`${risky ? SIG.word : MARKS[mark].word}: ${n}`));
   return [...box(title(lines.counts),
@@ -79,7 +81,8 @@ export function impactSection(t, st, o) {
         .child(div().flex_none().text_color(t.muted).child("calls"))
         .child(div().flex_none().max_w(260).truncate().child(fullName(r.fn)))
         .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(r.at))
-        .child(div().flex_none().text_color(r.words.includes(SIG.word) ? t.ansi3 : t.muted).child(r.words))))))]] : [])];
+        .child(div().flex_none().text_color(r.words.includes(SIG.word) ? t.ansi3 : t.muted).child(r.words))
+        .children(o.edit ? o.edit(`rv-impact-li-${k}`, `${r.caller.path}:${r.caller.line}`) : [])))))]] : [])];
 }
 
 export const ImpactMode = {
@@ -162,6 +165,6 @@ export const ImpactMode = {
     const o = this.archOpts("impact");
     return impactSection(t, st, { root: this.lspRoot(), trusted: this.trustedPr(), marks, L, open: Boolean(this.fold.impactList), hover: o.hover, onHover: o.onHover, onFinding: o.onFinding,
       onPlace: (at, cx) => this.impactGo(at, cx), onRun: (cx) => this.impactRun(cx), onFold: (cx) => { this.fold.impactList = !this.fold.impactList; cx.notify(); },
-      hscroll: (id, w, h, pic) => this.hscroll(id, w, h, pic, t) });
+      hscroll: (id, w, h, pic) => this.hscroll(id, w, h, pic, t), edit: (id, at) => this.editAt(t, id, at) });
   },
 };

@@ -1,6 +1,6 @@
 # Corgi · PR review for Herdr
 
-<h3 align="center">AI-guided pull request review for Herdr: the change as a story, risk first, with an architecture map, a security boundary map, resilience paths and debugger-style sample values in the diff.</h3>
+<h3 align="center">AI-guided pull request review for Herdr: the change as a story, risk first, with an architecture map, a security map and debugger-style sample values in the diff.</h3>
 
 <p align="center"><img src="preview.png" width="88%" alt="The review's overview of a demo PR: the verdict, what to settle before the merge and what the PR does" /></p>
 
@@ -12,8 +12,7 @@ A Herdr mod for reviewing pull requests next to your agents. A side panel shows 
 PR), lets you comment on lines and send the comments to the agent that wrote the code. A full-window review
 layout adds an AI analysis that walks you through the PR by risk and layer, reviewers (Claude code review,
 security review, optionally Codex) whose findings you can send to the agent to fix and then verify, an
-architecture picture, a security page with the trust boundaries the PR crosses, a resilience page with the paths a
-failure spreads along, CI checks, related PRs, and go-to-definition in the diff. You comment
+architecture picture, a Security and a Resilience page, CI checks, related PRs, and go-to-definition in the diff. You comment
 as on GitHub: a comment box under the line, pending comments as threads, and "Finish your review" posts one GitHub
 review (Comment, Approve or Request changes) or sends it to the agent session.
 
@@ -22,17 +21,17 @@ review (Comment, Approve or Request changes) or sends it to the agent session.
 | | |
 |---|---|
 | ![Overview: the verdict, what to settle before the merge, the acceptance criteria and what the PR does](docs/screenshots/overview.png) | ![Analysis: the AI's walkthrough by layer, with a picture per layer](docs/screenshots/layers.png) |
-| ![Architecture impact: every connection on its own lane, numbered, with a legend](docs/screenshots/architecture-impact.png) | ![Security: the trust boundaries the PR crosses, each with who calls, what is checked and when the check holds](docs/screenshots/security.png) |
-| ![Security: the boundary map with trust zones, a card lit and its finding below](docs/screenshots/security-boundary.png) | ![Resilience: how many paths block the merge, and the map a failure spreads on](docs/screenshots/resilience.png) |
-| ![Resilience: one path with its retries added up and the findings on it](docs/screenshots/resilience-path.png) | ![Resilience: a probe that reproduced the failure, with its script and output](docs/screenshots/resilience-probe.png) |
+| ![Architecture impact: every connection on its own lane, numbered, with a legend](docs/screenshots/architecture-impact.png) | ![Impact: the changed functions and who calls them outside the diff](docs/screenshots/impact.png) |
+| ![Infrastructure changes: resources added, changed, removed or possibly replaced, with what they refer to](docs/screenshots/infrastructure-changes.png) | ![Schema changes: the tables a migration touches, column by column](docs/screenshots/schema-changes.png) |
+| ![Security: the trust boundaries the PR crosses, each with who calls, what is checked and when the check holds](docs/screenshots/security.png) | ![Security: the boundary map with trust zones, a card lit and its finding below](docs/screenshots/security-boundary.png) |
+| ![Security: where sensitive data goes, and who may do what](docs/screenshots/security-data.png) | ![Resilience: how many paths block the merge, and the map a failure spreads on](docs/screenshots/resilience.png) |
+| ![Resilience: one path with its retries added up and the finding on it](docs/screenshots/resilience-path.png) | ![Resilience: a probe that reproduced the failure, with its script and output](docs/screenshots/resilience-probe.png) |
+| ![Resilience: the fault tree of a dependency that is slow](docs/screenshots/resilience-fault-tree.png) | ![Resilience: timeouts, retries and pauses on one axis](docs/screenshots/resilience-timing.png) |
 | ![Findings from the reviewers, one per cause, with Fix and Discuss](docs/screenshots/findings.png) | ![The diff with example values inline, an AI suggestion and a finding](docs/screenshots/diff-inline-values.png) |
 | ![Go to definition in the diff through a language server](docs/screenshots/go-to-definition.png) | ![Commenting: the comment box under a line, a pending comment and Finish your review](docs/screenshots/commenting.png) |
-| ![The panel's PR sources with triage and the reviews in progress](docs/screenshots/panel-pr-sources.png) | ![The panel with a PR open: its files and the diff next to your agents](docs/screenshots/panel-pr.png) |
-| ![Setup: which programs are there and how to install the rest](docs/screenshots/panel-setup.png) | ![The panel's This space list: the PR of the branch the focused pane is on](docs/screenshots/panel-this-space.png) |
-| ![Impact: the changed functions and who calls them outside the diff](docs/screenshots/impact.png) | ![Infrastructure changes: resources added, changed, removed or possibly replaced, with what they depend on](docs/screenshots/infrastructure-changes.png) |
-| ![Schema changes: the tables a migration touches, column by column](docs/screenshots/schema-changes.png) | ![Security: where sensitive data goes, and who may do what](docs/screenshots/security-data.png) |
-| ![Resilience: the fault tree of a dependency that is slow](docs/screenshots/resilience-fault-tree.png) | ![Resilience: timeouts, retries and pauses on one axis](docs/screenshots/resilience-timing.png) |
 | ![Open in your editor: the link in a file's head after its click](docs/screenshots/open-in-editor.png) | ![Explore a topic in a repo, without a PR](docs/screenshots/explore.png) |
+| ![The panel's PR sources with triage and the reviews in progress](docs/screenshots/panel-pr-sources.png) | ![The panel's This space list: the PR of the branch the focused pane is on](docs/screenshots/panel-this-space.png) |
+| ![The panel with a PR open: its files and the diff next to your agents](docs/screenshots/panel-pr.png) | ![Setup: which programs are there and how to install the rest](docs/screenshots/panel-setup.png) |
 
 The screenshots show a small public demo repository made for them ([saefty/corgi-demo](https://github.com/saefty/corgi-demo), PR #2), not a real project.
 That PR has no Terraform and no migration, so "Infrastructure changes" and "Schema changes" are shown with the
@@ -59,9 +58,13 @@ not in this PR, and a caller that still calls a changed signature the old way st
 
 ![Impact: two changed functions, their tests and no caller outside the diff](docs/screenshots/impact.png)
 
-When the PR changes Terraform, CloudFormation or SAM, **Infrastructure changes** draws the resources it adds,
-changes or removes and what they depend on, read from the diff without a model. No plan is run and no change set is
-created, so a replacement is marked as possible ("may be replaced") and not as certain.
+When the PR changes Terraform, CloudFormation or SAM files, **Infrastructure changes** shows the resources it adds,
+changes, removes or may replace as cards with their changed arguments and the references between them, and lists
+the changed variables and outputs. It is read from the diff and the files at the PR head, without a model and
+without `terraform plan` or a change set, so a replacement is an estimate and is marked as one. An infrastructure
+file larger than 2 MB is named as not read. With more than 12 changed resources or 15 references there are no lines
+between the cards: they stand by file, what stands out first, and a card you point at or click shows what it refers
+to and what refers to it.
 
 ![Infrastructure changes: a SAM template and a Terraform stack, with a removed queue that is still referenced](docs/screenshots/infrastructure-changes.png)
 
@@ -73,6 +76,9 @@ migrations, Liquibase changelogs in XML or YAML and JPA entities are not read ye
 shows.
 
 ![Schema changes: five tables with added, changed, renamed and removed columns and what may be risky](docs/screenshots/schema-changes.png)
+
+A card of these three pictures leads to its place in the diff, and with a local checkout and an editor it also
+carries the short link "VS ↗" or "IJ ↗" (see Open in your editor).
 
 ![Architecture impact: components as cards with New, Changed and Unchanged, numbered connections and a legend](docs/screenshots/architecture-impact.png)
 
@@ -90,6 +96,7 @@ breadcrumb to go deeper or back.
 **Explore code you don't know.** No PR needed: pick a repo, type a topic ("How does the reminder job get scheduled
 and sent?") and get the same walkthrough as for a PR: the question, how it works, layers in reading order, the
 architecture and sample values, each with file:line, and the cited files in a read-only view with go-to-definition.
+
 Minimize puts Explore away as one entry at the top of the window, with the topic you typed and a run that is going;
 Resume brings it back.
 
@@ -102,35 +109,45 @@ in place, GitHub replies show up there too, and Fix hands one comment, or all se
 in its own worktree. When done it hands its commit to the PR's agent, which cherry-picks it, runs the tests and
 pushes; Apply to PR brings it over yourself when there is no live PR agent.
 
-**Security: the boundaries the PR crosses.** One sentence says what the PR opens and to whom. Below it, each trust
-boundary crossing is a row: who calls, what the code checks, and the condition under which the check holds. The
-boundary map draws only those crossings between their trust zones (public, authenticated, internal, data). A
-finding names where it can be reached from and how certain that is: derived from the code, or confirmed by a run.
+**Security.** A map of the trust boundaries the PR touches: the zones from public to data, the calls that cross
+from one zone into another, numbered as in the table of crossings, and the findings at the crossing they belong to.
 
 ![Security: the boundary map with trust zones and the finding of the lit card](docs/screenshots/security-boundary.png)
 
-Under the map, **Where sensitive data goes** follows each kind of sensitive data the security run named (a token, a
-mail address, a secret) from where it starts over the crossings it takes to where it ends, and marks a step that
-writes it to a log or keeps it without a retention rule. **Who may do what** is a table of callers and resources
-with the rights this PR adds, removes or leaves as they are; a right that is granted and not used says so.
+Under the map, **Where sensitive data goes** names each kind of sensitive data the security review found (a
+credential, a secret, personal data, what users wrote) with the crossings it takes and where it ends, such as a log,
+an error message, a queue or a third party. Picking one lights its way on the map, and a step is marked when the
+data reaches a log or an error message, crosses a public boundary with no protection stated, or is kept with no
+retention rule stated.
+
+**Who may do what** is a table of principals (a role, a function, a pipeline, an operator, anyone on the internet)
+and resources: each cell has the actions that principal may do there and what the PR does to them (added, widened,
+narrowed, removed or unchanged). A rule that denies stands as a guard in the cell it protects, a wildcard is marked,
+and a line over the table names the signs.
+
+Both sections are folded to one line until you open them, and both read what the security review already wrote: no
+model is asked again.
 
 ![Security: a member's mail address followed into a log, and the rights the PR adds](docs/screenshots/security-data.png)
 
-**Resilience: where a failure goes.** A separate run follows each way the change can fail: a timeout, a retry, a
-lost message, a mail sent twice. Every path names its effect, whether anyone would see it, and whether it blocks the
-merge. Retries are added up against the timeout around them. A probe runs a small script in a sandbox without
-network and shows its output as evidence, for the PR's head and for the base.
+**Resilience.** The paths on which the change can fail under load or when something it depends on fails, blockers
+first; an opened path is lit on the map.
 
 ![Resilience: a path with a probe that reproduced it, the script and its output](docs/screenshots/resilience-probe.png)
 
-**When a dependency fails** lists, for each dependency, what the code does when it is slow, overloaded, down, gives
-a bad answer or comes back. A case opens as a tree: what repeats, where it ends, what the caller gets and what
-on-call would see. **Timing** puts the timeouts, retries and pauses the run read in the code on one axis per call,
-so a retry that runs past the timeout around it shows; a length the code does not state is drawn dashed.
-
-![Resilience: the fault tree of a slow mail server](docs/screenshots/resilience-fault-tree.png)
+**Timing** shows per call whether the timeouts, retries and pauses of the layers fit together: the limit a call
+runs inside (its own timeout, a function's timeout, a queue message's visibility) is a frame, and the attempts and
+pauses that run inside it are bars under it. Where their sum passes the frame the place is marked; a length the
+review did not state in seconds is an open dashed bar, and the sum then says "at least".
 
 ![Resilience: a batch that runs 60 s over the function timeout](docs/screenshots/resilience-timing.png)
+
+**When a dependency fails** has a row per dependency with its cases (slow, overloaded, down, a wrong answer, back
+again) and whether the code handles each. A case with a path has a fault tree: what follows step by step, from
+the line in the code over the repeats to where the path ends, down to what the caller gets, what on-call sees and
+whether it can happen today.
+
+![Resilience: the fault tree of a slow mail server](docs/screenshots/resilience-fault-tree.png)
 
 ## Use cases
 
@@ -139,8 +156,8 @@ so a retry that runs past the timeout around it shows; a length the code does no
 - **A colleague asked you for a review.** Pick it under *Review requested*, open it full size, and let the AI walk
   you through it: what the PR wants, how behaviour changes, which layer to read first and why. Comment on lines
   and post all comments as one GitHub review with Comment, Approve or Request changes.
-- **A big PR lands on a Friday.** The overview gives you the verdict, what to settle before the merge and the
-  acceptance criteria before you open a file. The layers group 40 files into five steps you can tick off.
+- **A big PR lands on a Friday.** The overview gives you merge risk, review effort, blockers and failed checks
+  before you open a file. The layers group 40 files into five steps you can tick off.
 - **The author pushed again.** You see only what changed since your last review, and one click re-analyses just
   that part.
 - **You want a second opinion.** Run a Claude code review, a security review or Codex. Findings land on their lines,
@@ -152,10 +169,8 @@ so a retry that runs past the timeout around it shows; a length the code does no
 ## Features
 
 - Panel: PRs from your sessions, the repo you're in, or review requests, with a one-line triage per PR.
-- Review layout: overview (the verdict, what to settle before the merge, acceptance criteria, what the PR does),
-  layers in risk or reading order with check questions, an architecture impact diagram, a Security page (trust
-  boundary crossings, a boundary map, what each run checked), a Resilience page (failure paths, retries against
-  timeouts, probes, what nobody would see), and related PRs.
+- Review layout: overview (intent, behaviour, risk, effort, blockers, pre-merge checks), layers in risk or reading
+  order with check questions, an architecture impact diagram, a Security and a Resilience page, and related PRs.
 - Diff: syntax highlighting, go-to-definition through real language servers, inline example values, collapsed
   context you can open.
 - Comments as on GitHub: click a line number (shift-click for a range) or press `c` for a comment box under the
@@ -215,13 +230,30 @@ in but not run.
 | `codex` (optional, with permission profiles; checked with 0.164) | the Codex reviewer, offered only when installed | `npm install -g @openai/codex` | same |
 | `bwrap` (optional, Linux only) | the sandbox a probe's script runs in | built in (`sandbox-exec`) | `sudo apt install bubblewrap` |
 | `acli` (optional) | the Jira ticket a PR names, in the task check | `brew tap atlassian/homebrew-acli && brew install acli` | see Atlassian's docs |
-| an editor (optional): VS Code, IntelliJ IDEA, Cursor or Zed | "Open in VS Code" on a file's head, a definition, a card's place in the code and a PR's checkout | `brew install --cask visual-studio-code`, or `brew install --cask intellij-idea-ce` | `sudo snap install code --classic`, or `sudo snap install intellij-idea-community --classic` |
+| an editor (optional): VS Code, IntelliJ IDEA, Cursor or Zed | "Open in VS Code" on a file's head, a definition, a card's place in the code and a PR's checkout; without one there are no such links | the app in `/Applications` or `~/Applications` (`brew install --cask visual-studio-code`, `brew install --cask intellij-idea`, `brew install --cask cursor`, `brew install --cask zed`); the `code` and `idea` command line tools are not needed | the editor's command line tool in `/usr/bin`, `/usr/local/bin`, `/snap/bin`, `~/.local/bin` or `~/bin`: `code` (`sudo snap install code --classic`), `idea` or `idea.sh`, `cursor`, `zed`; see below for IntelliJ IDEA, Cursor and Zed |
+| `wl-copy` or `xclip` (Linux only) | copying to the clipboard: Copy as Markdown, Copy path, a PR's link, an install command in Setup | built in (`pbcopy`) | `sudo apt install wl-clipboard` (Wayland) or `sudo apt install xclip` (X11) |
+| `xdg-open` (Linux only) | opening a link in the browser: the PR, a posted review, a commit, a related PR | built in (`open`) | `sudo apt install xdg-utils` |
+
+**Editors on Linux.** The links look for the editor's command in the five folders of the table, not in your shell's
+`PATH`. IntelliJ IDEA: JetBrains Toolbox writes an `idea` script when its shell scripts are turned on (set their
+folder to `~/.local/bin`); for the unpacked archive or the snap, put a link named `idea` in `~/.local/bin` that points
+at `bin/idea.sh` or at `/snap/bin/intellij-idea-community`. Cursor: its Linux packages bring a `cursor` command;
+when yours is in none of the five folders (the AppImage has none), put a link named `cursor` in `~/.local/bin`. Zed:
+the install script from zed.dev puts `zed` in `~/.local/bin`.
+
+**Copy as Markdown.** A page can be copied as Markdown, with each diagram as a Mermaid block. Names, values and
+paths from the PR are code spans in it, so a mention, an image or a fence written into the PR does nothing when you
+paste the text.
 
 **Open in your editor.** A file's head in the diff, the file and definition view, the panel and the cards that
-name a place in the code carry a link "VS Code ↗" or "IntelliJ ↗": it opens that file at its line in the checkout the
+name a place in the code carry a link "VS Code ↗" or "IntelliJ ↗", and a card's row or a line of a list its short
+form "VS ↗" or "IJ ↗". In lists, the short link appears when you point at its place at the end of the row; a
+right-click on it opens the menu. In the panel, the link stands at the open file's name. It opens that file at its line in the checkout the
 review made for the PR. A click starts one process and changes nothing in the checkout. On macOS the app is enough
-(the link goes through `open` and the editor's own URL, `vscode://file/…` or `idea://open?file=…`); on Linux the
-`code` or `idea` command is used. Java, Kotlin and Gradle files open in IntelliJ IDEA and the rest in VS Code; a
+(the link goes through `open` and the editor's own URL, `vscode://file/…` or `idea://open?file=…&line=…`); on Linux
+the `code` or `idea` command is used. Whether IntelliJ's link counts lines from 0 or from 1 was not tried by hand
+yet, so a file may open one line off there (one number, `LINE_BASE` in `editor.js`). Java, Kotlin and Gradle files
+open in IntelliJ IDEA and the rest in VS Code; a
 folder goes by the kind of project. The ▾ next to the link picks another editor for that project, and the pick is
 shared with the other Corgi mods. For a PR from someone else that you have not trusted, only single files are
 opened, never the folder: before the click starts the editor, git and the disk are asked what the path is in the
@@ -352,14 +384,16 @@ local stand-in for its GitHub remote, and a separate Herdr home in `demo/home` w
 `demo/fixtures/` (the analysis, two findings, related PRs and checks, PR lists, triage). Open a second Herdr window
 on it with `HERDR_APP_HOME="$PWD/demo/home"`, add a space in `demo/bookshelf` there, and switch it to the `review`
 (or `demo-panel`) layout: everything shows without LLM calls, and GitHub is only asked when a seeded PR list is
-older than 3 minutes (↻). The seeded analysis predates the Security and Resilience pages; the screenshots above
-come from `demo/shots/shoot.py` with `demo/shots/readme.json` (and `readme-fixtures.json` for the two pictures
-that need the Terraform and migration fixtures), which drives a demo home through `herdr-app do` and writes
-`docs/screenshots/` and `preview.png` in one run. That window has a home, a herdr-core and a `HOME` of its own, and
-stand-ins for `gh`, `claude`, the editors and `open` first on its `PATH`, so it posts nothing and starts no editor. The commands `pr-review.page:arch`, `pr-review.step:1`,
+older than 3 minutes (↻). The commands `pr-review.page:arch`, `pr-review.step:1`,
 `pr-review.def:<path>:<line>:<name>`, `pr-review.source:repo` and `pr-review.setup` drive it from
 `herdr-app do`, and `pr-review.comment:<path>:<line>` and `pr-review.finish` open the comment box and the
 Finish-your-review popover. The demo config sets `"dryRun": true`, so Submit review posts nothing.
+
+The seeded analysis predates the Security and Resilience pages. The screenshots above come from
+`demo/shots/shoot.py` with `demo/shots/readme.json` (and `readme-fixtures.json` for the two pictures that need the
+Terraform and migration fixtures), which drives a demo home through `herdr-app do` and writes `docs/screenshots/`
+and `preview.png` in one run. That window has a home, a herdr-core and a `HOME` of its own, and stand-ins for `gh`,
+`claude`, the editors and `open` first on its `PATH`, so it posts nothing and starts no editor.
 
 ## Tests
 

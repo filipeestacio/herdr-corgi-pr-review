@@ -1478,7 +1478,7 @@
     "findings": [],
     "oncall": "Nothing: the duplicate mail is logged only at debug level.",
     "possible_today": false,
-    "note": "Not possible today: nothing calls send_reminders (r_f1). The in-memory store is also per process, so two runs would need one process."
+    "note": "Not possible today: nothing calls send_reminders. The in-memory store is also per process, so two runs would need one process."
    }
   ],
   "additions": [
@@ -1889,7 +1889,7 @@
      "6737c617ef43"
     ],
     "probe": null,
-    "note": "Not possible today: nothing publishes to SQS (p5).",
+    "note": "Not possible today: nothing publishes to SQS (path 5).",
     "action": "Add a dead-letter queue with maxReceiveCount and partial batch responses, and make the consumer idempotent.",
     "possible_today": false
    },
@@ -1921,7 +1921,7 @@
      "af7a655d1"
     ],
     "probe": null,
-    "note": "Not possible today: no caller (r_f1) and no SQS publisher (p5).",
+    "note": "Not possible today: no caller and no SQS publisher (path 5).",
     "action": "Keep one sender: only publish the event and let the consumer mail.",
     "possible_today": false
    },
@@ -2065,7 +2065,7 @@
      "6737c617ef43"
     ],
     "probe": null,
-    "note": "Not possible today: nothing publishes (p5). The mail server's limits cannot be read from the code.",
+    "note": "Not possible today: nothing publishes (path 5). The mail server's limits cannot be read from the code.",
     "action": "",
     "possible_today": false
    },
@@ -2142,7 +2142,7 @@
     "check": "clocks",
     "result": "finding",
     "at": "library/reminders.py:13",
-    "why": "Exact-day equality and a UTC date; see r_f5.",
+    "why": "Exact-day equality and a UTC date.",
     "findings": [
      "1c012b474363"
     ]
@@ -2165,7 +2165,7 @@
     "check": "scheduler",
     "result": "finding",
     "at": "template.yaml:28",
-    "why": "Nothing calls `send_reminders` or `publish_overdue`; see r_f1.",
+    "why": "Nothing calls `send_reminders` or `publish_overdue`.",
     "findings": [
      "f836bc6838d5"
     ]
