@@ -17,7 +17,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, Editor, EditorState, TextView, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
 import { focused, exec, hc, run, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, home, layout, props, watchFolder, nextCommand, checking } from "herdr";
-import { spaces, panes, agents, terminals, feed, whenFed } from "./live.js"; // never straight from Herdr: one read and this copy is drawn on every agent's status change
+import { spaces, panes, agents, terminals, feed, feedIfAsked, whenFed } from "./live.js"; // never straight from Herdr: one read and this copy is drawn on every agent's status change
 import { diffRows, buildPrompt, splitPatch, selection, nextChange, lineLabel, anchorRow, buildReview, hunksOf, hash, uiLine, reviewRequest, mapReview, triageOf, isSecurity, withThreats, knownOf } from "./pr.js";
 import { parsePrRef, ghTarget, pruneSources, codeModel, windowActive, pollDue, pollAfter, tabName } from "./pr.js";
 import * as C from "./context.js";
@@ -139,6 +139,8 @@ export default class PrReview extends View {
     if (this.part === "mini") this.listen(cx, (c) => { if (c.startsWith("want:")) this.wantPick(c.slice(5)); }, false);
     // A minimized Explore whose run is going: its status file says when it has ended, so the chip can say so.
     if (this.part === "mini") cx.timer.every(5000, (cx) => this.miniPoll(cx));
+    // The small copies read Herdr's live data in their frames; asked for data from now on (live.js whenFed), also between.
+    if (this.part === "mini" || this.part === "bar") cx.timer.every(500, () => { if (feedIfAsked()) setShared("review.watched", Date.now()); });
     if (this.part === "bar" || this.part === "reviews" || this.part === "agentbar" || this.part === "keys" || this.part === "cmenu" || this.part === "mini") return;
     this.announces = true; // Go to's keys: published while this copy runs, cleared in close()
     this.files = []; this.rows = []; this.sel = null; this.selEnd = null; this.question = "";
@@ -853,7 +855,7 @@ export default class PrReview extends View {
     let key, fetch, why = null;
     if (now === "space") {
       // Local only: the folders of the space's panes and agents, their repos (remembered) and HEAD files.
-      await whenFed(cx); // right after a start the chip may not have read the spaces yet (live.js)
+      await whenFed(cx, true); // what the chip read before may be older than this space or its tabs (live.js)
       const found = (await Promise.all(spaceFolders(space, spaces(), panes(), terminals()).map((cwd) => this.checkout(cwd)))).filter(Boolean), repos = spaceBranches(found);
       if (stale()) return;
       this.spaceHeads = new Map(found.map((c) => [c.cwd, c]));
