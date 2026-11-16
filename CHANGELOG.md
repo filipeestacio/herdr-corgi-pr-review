@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- review: a fix or a reply that holds someone else's GitHub comment runs in manual mode, never in a running session, and quotes the comment as untrusted text
+
 ## 0.13.0 (2026-11-15)
 
 ### Fixes
