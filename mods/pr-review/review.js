@@ -2961,7 +2961,9 @@ export const ReviewMode = {
     // its own (the talk with the agent), not a finding's: "Fixed" is a finding's word, after a verification.
     const all = this.commentRowsNow(), rows = TH.filterRows(all, "all", this.show()), sel = new Set(this.selected());
     const STATE = { pending: ["Pending", "ansi3"], waiting: ["Sent to agent", "ansi6"], replied: ["Agent replied", "accent"], fixed: ["Reported fixed", "ansi2"], declined: ["Declined", "muted"], github: ["GitHub", "ansi4"], note: ["Note", "ansi5"] };
-    const files = [...new Set(rows.map((r) => r.file))];
+    // "Reported fixed" ones are folded into one line at the end, per PR; ticks on them still count.
+    const fixedOpen = (this.fixedShown ??= new Set()).has(this.threadKey()), done = rows.filter((r) => r.state === "fixed");
+    const listed = (list) => [...new Set(list.map((r) => r.file))];
     return v_flex().flex_1().min_h(0)
       .child(v_flex().flex_none().px(14).py(10).gap(8).border_b(1).border_color(t.border)
         .child(div().text_size(TYPE.small).text_color(t.muted).whitespace_normal().child(TH.commentSummary(all) || "No comments yet")))
@@ -2969,7 +2971,18 @@ export const ReviewMode = {
         .child(v_flex().id("rv-comments-left").absolute().inset_0().overflow_y_scroll().p(8).gap(2)
           .when(!rows.length, (e) => e.child(div().p(6).text_size(TYPE.small).text_color(t.muted).whitespace_normal().child(all.length ? "The Show switch in the bar hides these comments." : "Comments you write, send or post show here, with their replies.")))
           // A file's heading jumps to that file in the diff (its rows jump to their lines).
-          .children(files.flatMap((file) => [div().id(`rv-cfile-${file}`).tooltip("Show this file in the diff").flex_none().pt(8).pb(2).px(6).text_size(TYPE.small).font_semibold().text_color(t.muted).truncate()
+          .children(this.commentGroups(t, rows.filter((r) => r.state !== "fixed"), listed, STATE, sel, ""))
+          .when(done.length > 0, (e) => e.child(h_flex().id("rv-cfixed").flex_none().mt(10).px(6).h(26).gap(6).items_center().rounded(6).cursor_pointer()
+            .text_size(TYPE.small).text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground))
+            .tooltip(fixedOpen ? "Hide the comments an agent reported fixed" : "Show the comments an agent reported fixed")
+            .on_click((_e, cx) => { const k = this.threadKey(); if (this.fixedShown.has(k)) this.fixedShown.delete(k); else this.fixedShown.add(k); cx.notify(); })
+            .child(`${done.length} reported fixed ${fixedOpen ? "▾" : "▸"}`)))
+          .when(fixedOpen, (e) => e.children(this.commentGroups(t, done, listed, STATE, sel, "f"))))
+        .child(Scrollbar.vertical("rv-comments-left").absolute().inset_0()));
+  },
+  // Rows of the Comments tab under their files' headings. pre keeps the ids of a second group apart.
+  commentGroups(t, rows, listed, STATE, sel, pre) {
+          return listed(rows).flatMap((file) => [div().id(`rv-cfile-${pre}${file}`).tooltip("Show this file in the diff").flex_none().pt(8).pb(2).px(6).text_size(TYPE.small).font_semibold().text_color(t.muted).truncate()
             .cursor_pointer().hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => { this.openCommentFile(file); cx.notify(); }).child(file),
             ...rows.filter((r) => r.file === file).flatMap((r) => {
               const st = STATE[r.state], mine = r.kind !== "note"; // yours, a sent thread, someone's GitHub comment: all can go to a fix; a private note cannot
@@ -2989,8 +3002,7 @@ export const ReviewMode = {
                 .when(Boolean(r.outdated), (e) => e.child(badge(t, "Outdated", t.muted).id(`rv-cro-${r.id}`).tooltip("GitHub marks this comment outdated: the code it was on changed since")))
                 .when(Boolean(r.resolved), (e) => e.child(badge(t, "Resolved", t.ansi2).id(`rv-crv-${r.id}`).tooltip("This thread is resolved on GitHub")))
                 .child(div().id(`rv-crs-${r.id}`).tooltip(STATE_TIP[r.state] ?? st[0]).flex_none().px(6).h(18).flex().items_center().rounded(9).border_1().border_color(t[st[1]] ?? t.muted).text_size(TYPE.small).text_color(t[st[1]] ?? t.muted).child(st[0]))), ...whole];
-            })])))
-        .child(Scrollbar.vertical("rv-comments-left").absolute().inset_0()));
+            })]);
   },
 
   // While comments are selected: a toolbar floating at the bottom centre of the diff (the list keeps room for it).

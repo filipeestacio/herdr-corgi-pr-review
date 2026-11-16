@@ -172,7 +172,16 @@ async function tour(v, name) {
     v.replies = { t1: [{ reply: "Because of `x`.", status: "answered", commit: null }, { reply: "The caller is fine.", status: "question", commit: null }], t2: [{ reply: "Renamed.", status: "fixed", commit: "abc1234def" }] };
     v.deep = { ...v.deep, pins: pinAdd(v.deep.pins, v.deepKey(), { q: "What reads this?", at: 1, a: { text: "The consumer reads it.\n\nIt mails **once** per event.", evidence: [{ at: line, why: "here" }] },
       scope: { kind: "range", range: { file: c.file, start: c.start, end: c.end, old: Boolean(c.old) } } }) };
-    act(v, "files", at("files with a sent thread, a fixed one and a note")); act(v, "comments", at("Comments with sent threads")); v.command("files", cx);
+    act(v, "files", at("files with a sent thread, a fixed one and a note")); act(v, "comments", at("Comments with sent threads"));
+    // Comments an agent reported fixed fold into one line; a click on it shows them, a second one hides them again.
+    const fixedRows = v.commentRowsNow().filter((r) => r.state === "fixed");
+    if (fixedRows.length) {
+      const ids = () => { S.ids = new Set(); draw(v, at("Comments, reported fixed")); const got = S.ids; S.ids = null; return got; };
+      let got = ids(); assert.ok(got.has("rv-cfixed") && !fixedRows.some((r) => got.has(`rv-cr-${r.id}`)), at("reported fixed are folded"));
+      v.fixedShown.add(v.threadKey()); got = ids(); assert.ok(fixedRows.every((r) => got.has(`rv-cr-${r.id}`)), at("unfolded, they show"));
+      v.fixedShown.delete(v.threadKey());
+    }
+    v.command("files", cx);
   }
   // The pages, with their folds and rows clicked.
   for (const p of ["overview", "blast", "arch", "res"]) act(v, `page:${p}`, at(`page ${p}`));
