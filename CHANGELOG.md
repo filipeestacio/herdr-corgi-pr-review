@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- review: the minimized entry has one frame (Herdr's, as a floating block), is 20 px high and shows its security mark as plain text
+
 ## 0.13.1 (2026-11-16)
 
 ### Fixes

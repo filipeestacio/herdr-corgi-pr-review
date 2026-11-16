@@ -105,6 +105,11 @@ architecture and sample values, each with file:line, and the cited files in a re
 Minimize puts Explore away as one entry at the top of the window, with the topic you typed and a run that is going;
 Resume brings it back.
 
+The minimized entry (a review's or Explore's) is the mod's part `mini`. A layout shows it as a floating block, for
+example over the tab bar: `"floating": [{ "id": "review-mini", "content": { "mod": "pr-review", "props": { "part": "mini" } }, "edge": "top", "align": "center" }]`
+on the column that holds the tab bar and the panes. Herdr draws the frame of a floating block, so the entry is content
+only there, 20 px high.
+
 ![Explore: the repository, the topic and the model](docs/screenshots/explore.png)
 
 ![Explore's answer: the question, how it works and layers in reading order, each with file:line](docs/screenshots/explore-result.png)
