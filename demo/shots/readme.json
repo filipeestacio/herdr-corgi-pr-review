@@ -218,8 +218,31 @@
    "wait": 3
   },
   {
+   "name": "findings-select",
+   "do": [
+    ":send-cancel",
+    ":review",
+    ":findings",
+    ":pick-finding:702913b183ff",
+    ":pick-finding:aaea870fcc9c",
+    ":pick-comment:mwfmv4h8"
+   ],
+   "wait": 3
+  },
+  {
+   "name": "run-review",
+   "do": [
+    ":pick-finding:702913b183ff",
+    ":pick-finding:aaea870fcc9c",
+    ":pick-comment:mwfmv4h8",
+    ":reviews:2300,90"
+   ],
+   "wait": 3
+  },
+  {
    "name": "diff-inline-values",
    "do": [
+    "overlay.close",
     ":send-cancel",
     ":review",
     ":file:library/reminders.py"

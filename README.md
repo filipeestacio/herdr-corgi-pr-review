@@ -31,6 +31,7 @@ review (Comment, Approve or Request changes) or sends it to the agent session.
 | ![Go to definition in the diff through a language server](docs/screenshots/go-to-definition.png) | ![Commenting: the comment box under a line, a pending comment and Finish your review](docs/screenshots/commenting.png) |
 | ![Open in your editor: the link in a file's head after its click](docs/screenshots/open-in-editor.png) | ![Explore a topic in a repo, without a PR](docs/screenshots/explore.png) |
 | ![Explore's answer as a walkthrough of the existing code](docs/screenshots/explore-result.png) | ![Fix with agent: the preview before anything is sent](docs/screenshots/fix-preview.png) |
+| ![One selection for findings and comments: three ticked, Fix selected (3)](docs/screenshots/findings-select.png) | ![Run review: the reviewers with their last run, what a new run costs and what each may do](docs/screenshots/run-review.png) |
 | ![The panel's PR sources with triage and the reviews in progress](docs/screenshots/panel-pr-sources.png) | ![The panel's This space list: the PR of the branch the focused pane is on](docs/screenshots/panel-this-space.png) |
 | ![The panel with a PR open: its files and the diff next to your agents](docs/screenshots/panel-pr.png) | ![Setup: which programs are there and how to install the rest](docs/screenshots/panel-setup.png) |
 
