@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.13.1 (2026-11-16)
+
+### Fixes
+
+- pr-review: someone else's GitHub comment in a task is a fenced quotation, and its agent runs in manual mode
+
+### Other
+
+- docs(readme): screenshots of the new pictures, Explore and the editor link
+- chore: merge main (v0.11.1 and the infrastructure card titles) into docs/shots-v7
+- docs(readme): screenshots and the walkthrough again, from the mod as main has it
+- chore: merge main (v0.12.1) into docs/shots-v7
+- docs(readme): screenshots from a fresh analysis of the demo PR
+- chore: merge main (v0.13.0) into docs/shots-v7
+- docs(readme): screenshots from a fresh analysis, with Explore's answer and the Fix preview
+- chore: merge fix/gh-comment-trust
+- chore: let the release write the changelog
+
 ## 0.13.0 (2026-11-15)
 
 ### Fixes
