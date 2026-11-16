@@ -406,11 +406,7 @@ older than 3 minutes (↻). The commands `pr-review.page:arch`, `pr-review.step:
 `herdr-app do`, and `pr-review.comment:<path>:<line>` and `pr-review.finish` open the comment box and the
 Finish-your-review popover. The demo config sets `"dryRun": true`, so Submit review posts nothing.
 
-The seeded analysis predates the Security and Resilience pages. The screenshots above come from
-`demo/shots/shoot.py` with `demo/shots/readme.json` (and `readme-fixtures.json` for the two pictures that need the
-Terraform and migration fixtures), which drives a demo home through `herdr-app do` and writes `docs/screenshots/`
-and `preview.png` in one run. That window has a home, a herdr-core and a `HOME` of its own, and stand-ins for `gh`,
-`claude`, the editors and `open` first on its `PATH`, so it posts nothing and starts no editor.
+The seeded analysis predates the Security and Resilience pages.
 
 ## Tests
 
