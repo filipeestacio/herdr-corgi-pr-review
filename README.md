@@ -198,7 +198,10 @@ whether it can happen today.
   or at their card in the diff) and findings (under "No fix sent" in the Findings tab, or at their card in the diff), and "Fix selected (n)" hands all
   of them to one fix agent after a preview that lists both. The number is the same in the bar, over the diff and in the
   Findings tab. A security finding about access or data is fixed one at a time, so its box is off. A GitHub comment
-  sent to a fix becomes a thread in the review; nothing is written to GitHub for it.
+  sent to a fix becomes a thread in the review; nothing is written to GitHub for it. A GitHub comment by
+  someone else is untrusted text: in the task it is a fenced quotation named as such, and the agent that gets it runs in
+  manual mode with only your own settings and asks before every edit and command, also on a PR you trust; it never goes
+  into the PR's own session.
 - Ask about this, pinned notes and Show details (a card or a layer from the inside), as described above.
 - Explore a topic in existing code without a PR (the panel, the review's ⋯ menu, or `pr-review.explore`).
 - Big PRs: the analysis gets every hunk, inlines what fits, reads the rest itself and splits into passes when it has
