@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.13.4 (2026-11-16)
+
+### Features
+
+- pr-review: the minimized chip's own layout row takes no room while nothing is minimized
+
+### Fixes
+
+- pr-review: This space reads the spaces as they are now, not as the chip last drew them
+- pr-review: the Worktrees mod gets the PR marks also while the PR panel is not drawn
+
 ## 0.13.3 (2026-11-16)
 
 ### Features
