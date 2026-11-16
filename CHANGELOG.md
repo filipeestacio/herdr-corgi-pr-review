@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.13.2 (2026-11-16)
+
+### Fixes
+
+- pr-review: the minimized entry is content only in a floating block, 20 px high, its security mark plain text
+
+### Other
+
+- docs(readme): screenshots with the Codex review, one selection for findings and comments, and Run review
+- chore: merge main (v0.13.1) into docs/shots-v7
+- docs(readme): the walkthrough from the same stills
+- chore: keep the screenshot script out of the repo
+- chore: let the release write the changelog
+
 ## 0.13.1 (2026-11-16)
 
 ### Fixes
