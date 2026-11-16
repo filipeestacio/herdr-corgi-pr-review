@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.0 (2026-11-16)
+
+### Features
+
+- pr-review: the minimized entry as shared review.mini, a headless mini part and review.resume, for a bar that draws it itself
+
 ## 0.13.4 (2026-11-16)
 
 ### Features
