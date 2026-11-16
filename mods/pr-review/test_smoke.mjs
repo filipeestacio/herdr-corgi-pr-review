@@ -556,6 +556,13 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     assert.deepEqual([R.miniExploreText(kept.explore, { id: "x9", state: "failed" }).state, R.miniExploreText(kept.explore, { id: "other", state: "done" }).state], ["failed", "running"], "another run's end says nothing of this one");
     assert.deepEqual([R.miniExploreText({ start: true, root: "/h/repo" }).head, R.miniExploreText({ start: true, root: "/h/repo" }).text], ["Explore: repo", ""], "no topic yet: the repo");
     assert.equal(R.miniExploreText({ id: "x1", topic: "Loans", repo: "o/r", root: "/h/repo" }).state, null, "an exploration that is shown: no run");
+    // "review.mini" for another bar: the same facts as data, with no clock in it (it changes only with the entry).
+    assert.deepEqual(R.miniModel(kept, [], null), { kind: "explore", head: "Explore", title: "How are reminders sent?", repo: "o/r", url: null, mark: null, open: 0, run: "running" });
+    assert.equal(R.miniModel(kept, [], { id: "x9", state: "done" }).run, "done");
+    const pr = { url: "https://github.com/o/r/pull/7", repo: "o/r", number: 7, title: "feat: x" };
+    assert.deepEqual(R.miniModel({ target: pr }, [{ url: pr.url, risk: { top: "high", security: true }, progress: { findingsOpen: 9 } }]),
+      { kind: "review", head: "Review #7", title: "feat: x", repo: "o/r", url: pr.url, mark: { glyph: "⛨", word: "high", color: "ansi1", security: true, words: "" }, open: 9, run: null });
+    assert.deepEqual([R.miniModel({ target: pr }, null).mark, R.miniModel({ target: pr }, null).open, R.miniModel(null, []), R.miniModel({}, [])], [null, 0, null, null], "no entry in review.open: no mark; nothing minimized: null");
     for (const run of [null, { id: "x9", state: "done" }, { id: "x9", state: "failed" }]) { S.ids = new Set(); frame(`the minimized Explore chip, ${run?.state ?? "running"}`, () => R.renderMini(run)); assert.ok(["rv-mini", "rv-mini-open", "rv-mini-x"].every((id) => S.ids.has(id))); S.ids = null; }
     // Resume: a view that lost the page's state (a new one) takes it from the entry; the run ended meanwhile with an error.
     S.files.set("/h/mods/pr-review/review-layout.json", "{}"); // the layout it copies on a first start

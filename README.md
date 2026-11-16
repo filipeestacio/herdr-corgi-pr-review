@@ -116,6 +116,9 @@ example `{ "id": "review-mini-block", "type": "block", "size": { "px": 36 }, "co
 Put the block straight into the column, not into a column of its own with a fixed height: that column would keep its
 height.
 
+A bar of your own can draw the entry instead: `{"part": "mini", "headless": true}` in a 0 px block draws nothing and
+publishes the entry as shared `review.mini`; [PROVIDERS.md](mods/pr-review/PROVIDERS.md) says how to resume it.
+
 ![Explore: the repository, the topic and the model](docs/screenshots/explore.png)
 
 ![Explore's answer: the question, how it works and layers in reading order, each with file:line](docs/screenshots/explore-result.png)
