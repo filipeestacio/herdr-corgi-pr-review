@@ -25,11 +25,12 @@ review (Comment, Approve or Request changes) or sends it to the agent session.
 | ![Infrastructure changes: resources added, changed, removed or possibly replaced, with what they refer to](docs/screenshots/infrastructure-changes.png) | ![Schema changes: the tables a migration touches, column by column](docs/screenshots/schema-changes.png) |
 | ![Security: the trust boundaries the PR crosses, each with who calls, what is checked and when the check holds](docs/screenshots/security.png) | ![Security: the boundary map with trust zones, a card lit and its finding below](docs/screenshots/security-boundary.png) |
 | ![Security: where sensitive data goes, and who may do what](docs/screenshots/security-data.png) | ![Resilience: how many paths block the merge, and the map a failure spreads on](docs/screenshots/resilience.png) |
-| ![Resilience: one path with its retries added up and the finding on it](docs/screenshots/resilience-path.png) | ![Resilience: a probe that reproduced the failure, with its script and output](docs/screenshots/resilience-probe.png) |
+| ![Resilience: one path with its retries added up and the finding on it](docs/screenshots/resilience-path.png) | ![Resilience: a path that proposes a probe, a small script the review can run in a sandbox](docs/screenshots/resilience-probe.png) |
 | ![Resilience: the fault tree of a dependency that is slow](docs/screenshots/resilience-fault-tree.png) | ![Resilience: timeouts, retries and pauses on one axis](docs/screenshots/resilience-timing.png) |
 | ![Findings from the reviewers, one per cause, with Fix and Discuss](docs/screenshots/findings.png) | ![The diff with example values inline, an AI suggestion and a finding](docs/screenshots/diff-inline-values.png) |
 | ![Go to definition in the diff through a language server](docs/screenshots/go-to-definition.png) | ![Commenting: the comment box under a line, a pending comment and Finish your review](docs/screenshots/commenting.png) |
 | ![Open in your editor: the link in a file's head after its click](docs/screenshots/open-in-editor.png) | ![Explore a topic in a repo, without a PR](docs/screenshots/explore.png) |
+| ![Explore's answer as a walkthrough of the existing code](docs/screenshots/explore-result.png) | ![Fix with agent: the preview before anything is sent](docs/screenshots/fix-preview.png) |
 | ![The panel's PR sources with triage and the reviews in progress](docs/screenshots/panel-pr-sources.png) | ![The panel's This space list: the PR of the branch the focused pane is on](docs/screenshots/panel-this-space.png) |
 | ![The panel with a PR open: its files and the diff next to your agents](docs/screenshots/panel-pr.png) | ![Setup: which programs are there and how to install the rest](docs/screenshots/panel-setup.png) |
 
@@ -105,12 +106,16 @@ Resume brings it back.
 
 ![Explore: the repository, the topic and the model](docs/screenshots/explore.png)
 
+![Explore's answer: the question, how it works and layers in reading order, each with file:line](docs/screenshots/explore-result.png)
+
 ![Explore minimized to one entry above the terminals](docs/screenshots/explore-minimized.png)
 
 **Comments that keep going.** Sent and posted comments stay under their lines as threads. The agent answers each one
 in place, GitHub replies show up there too, and Fix hands one comment, or all selected ones, to a sub-agent that works
 in its own worktree. When done it hands its commit to the PR's agent, which cherry-picks it, runs the tests and
 pushes; Apply to PR brings it over yourself when there is no live PR agent.
+
+![Fix with agent: the preview names who fixes it, what the agent may do and the exact text it gets](docs/screenshots/fix-preview.png)
 
 **Security.** A map of the trust boundaries the PR touches: the zones from public to data, the calls that cross
 from one zone into another, numbered as in the table of crossings, and the findings at the crossing they belong to.
@@ -136,7 +141,7 @@ model is asked again.
 **Resilience.** The paths on which the change can fail under load or when something it depends on fails, blockers
 first; an opened path is lit on the map.
 
-![Resilience: a path with a probe that reproduced it, the script and its output](docs/screenshots/resilience-probe.png)
+![Resilience: a path with the probe it proposes: what the script would show, and the button that runs it in a sandbox](docs/screenshots/resilience-probe.png)
 
 **Timing** shows per call whether the timeouts, retries and pauses of the layers fit together: the limit a call
 runs inside (its own timeout, a function's timeout, a queue message's visibility) is a frame, and the attempts and

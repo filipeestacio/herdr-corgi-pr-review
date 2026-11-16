@@ -8,7 +8,7 @@
  ],
  "zoom_out": 0,
  "scale": 1728,
- "settle": 6,
+ "settle": 10,
  "setup": [
   [
    "layout.switch",
@@ -46,6 +46,8 @@
    "name": "panel-this-space",
    "do": [
     ":back",
+    ":source:space",
+    ":source:repo",
     ":source:space"
    ],
    "crop": [
@@ -54,7 +56,8 @@
     776,
     1840
    ],
-   "wait": 5
+   "wait": 7,
+   "step": 5
   },
   {
    "name": "panel-pr",
@@ -157,36 +160,30 @@
   {
    "name": "resilience-path",
    "do": [
-    ":back",
     ":review",
     ":page:res",
-    ":res-more",
-    ":res-path:p2",
-    ":page-part:p:p2"
+    ":res-path:p1",
+    ":page-part:p:p1"
    ],
-   "wait": 3,
-   "step": 1.6
+   "wait": 3
   },
   {
    "name": "resilience-probe",
    "do": [
-    ":back",
     ":review",
     ":page:res",
-    ":res-more",
-    ":res-path:p2",
-    ":res-probe-open:r1",
-    ":page-part:p:p2"
+    ":res-path:p6",
+    ":res-probe-open:r3",
+    ":page-part:p:p6"
    ],
-   "wait": 3,
-   "step": 1.6
+   "wait": 3
   },
   {
    "name": "resilience-fault-tree",
    "do": [
-    ":back",
     ":review",
     ":page:res",
+    ":res-path:",
     ":res-tree:0:slow",
     ":page-part:deps"
    ],
