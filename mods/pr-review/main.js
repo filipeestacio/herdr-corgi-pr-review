@@ -128,6 +128,7 @@ const pill = (id, t, label, click, on = false, tip = "", alt = "") => div().id(i
 
 // What the Worktrees mod gets (its PROVIDERS.md): the PRs as of now, the contexts they were listed for (view: the
 // chip's copy empties a list of another view), and what a click on a mark runs: the wish to pick that PR here.
+const wtKey = () => `${Boolean(shared("worktrees.api"))}|${viewKey()}`; // what the published list depends on besides the PRs
 const wtList = (prs) => ({ at: Date.now(), view: viewKey(), run: [["pr-review.want:{repo}#{number}", {}]], prs });
 
 export default class PrReview extends View {
@@ -199,6 +200,9 @@ export default class PrReview extends View {
       this.scanIfDue(cx);
     });
     cx.timer.every(60000, (cx) => this.scanIfDue(cx)); // a time check; prs.py itself at most every PRS_MS
+    // The same check as in render, for a panel not drawn (behind another panel of its stack, a hidden column): Worktrees
+    // started there meanwhile, or the view changed and the chip emptied the list, and its PR marks come without a frame.
+    cx.timer.every(2000, () => this.wtCheck());
   }
 
   // A key command or scripted click for the panel (pr-review.<c>).
@@ -943,6 +947,8 @@ export default class PrReview extends View {
   // Optional Worktrees (its PROVIDERS.md) integration: which PR belongs to which branch, from what the panel already
   // has (no fetch, no timer). Only with that mod there (shared "worktrees.api"), and written only when the list
   // changed: a shared write redraws every mod of the window. A click on a mark there picks the PR here.
+  // Worktrees came (or went), or the view shows other contexts: the list again (written only when it differs).
+  wtCheck() { const wk = wtKey(); if (wk !== this.wtKey) { this.wtKey = wk; this.wtSig = null; this.publishWorktrees(); } }
   publishWorktrees() {
     if (this.part || !shared("worktrees.api")) return;
     const prs = worktreePrs([this.knownPrs()]), sig = JSON.stringify(prs);
@@ -1490,7 +1496,7 @@ export default class PrReview extends View {
     // shared() hands out a new object each time: compared by what the items are made of (views.js openSig), not by identity.
     if (openSig(shared("review.open")) !== this.gotoSig) { this.gotoSig = openSig(shared("review.open")); cx.timer.after(0, () => this.publishGoto()); }
     // Worktrees came (or went), or the view shows other contexts: its list again (written only when it differs).
-    { const wk = `${Boolean(shared("worktrees.api"))}|${viewKey()}`; if (wk !== this.wtKey) { this.wtKey = wk; this.wtSig = null; cx.timer.after(0, () => this.publishWorktrees()); } }
+    if (wtKey() !== this.wtKey) cx.timer.after(0, () => this.wtCheck());
     // A PR asked for by a click elsewhere (wantPick), also one from before this panel was there.
     if (shared("pr.pick") && !this.pickQueued) { this.pickQueued = true; cx.timer.after(0, (cx) => { this.pickQueued = false; this.takePick(cx); }); }
     if (this.spaceSeen !== undefined && location().space !== this.spaceSeen) { this.spaceSeen = location().space; cx.timer.after(0, (cx) => this.onSpace(cx)); }
