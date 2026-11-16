@@ -110,6 +110,12 @@ example over the tab bar: `"floating": [{ "id": "review-mini", "content": { "mod
 on the column that holds the tab bar and the panes. Herdr draws the frame of a floating block, so the entry is content
 only there, 20 px high.
 
+It can also have a row of its own: a block with a fixed height. With `"hideEmpty": "<the block's id>"` in its props the
+row goes to 0 px while nothing is minimized and back to its height (`"height"`, default 36) when something is, for
+example `{ "id": "review-mini-block", "type": "block", "size": { "px": 36 }, "content": { "mod": "pr-review", "props": { "part": "mini", "hideEmpty": "review-mini-block" } } }`.
+Put the block straight into the column, not into a column of its own with a fixed height: that column would keep its
+height.
+
 ![Explore: the repository, the topic and the model](docs/screenshots/explore.png)
 
 ![Explore's answer: the question, how it works and layers in reading order, each with file:line](docs/screenshots/explore-result.png)

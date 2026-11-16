@@ -26,7 +26,7 @@ import { loadDiff, saveDiff } from "./diffcache.js";
 import { setupBanner, renderSetup, loadSetup, runSetup, openUrl, readConfig } from "./setup-view.js";
 import { chip, PRIORITY_TIP, layoutPump } from "./stack.js";
 import { panelState, bodyTab, DONE_DAYS, diffTooLarge, filesToDiff, isOpenPr, byState, listRows, riskSignal, progressText, pendingText, rowMarks, mineGroups, progressRows, removedText, withPick, openSig, panelShown, byRef, fileRisk, leftNow, wrapCode, codeCols, sliceSpans, markLabel, textW, panelButtons, panelHit, panelPress, PANEL_EDGE, spaceFolders, headBranch, spaceBranches, branchPrQuery, branchPrs, spaceOrder, focusedPr, spaceEmpty, worktreePrs } from "./views.js";
-import { keepLast, dragPath } from "./views.js"; // every cache has a limit; a file head's path to drag
+import { keepLast, dragPath, miniRowPx } from "./views.js"; // every cache has a limit; a file head's path to drag; the chip's own row
 import { ReviewMode, startReview, startExplore, saveKey, flowCard, modelPills, modelLabel, renderReviews, renderAgentBar, renderKeys, renderCardMenu, renderMini } from "./review.js";
 import { highlightJob, highlightStep, langOf, firstLineOf, colors, renderLine, editorSyntax } from "./syntax.js";
 import { TYPE } from "./views.js"; // the text sizes (U34)
@@ -1456,6 +1456,13 @@ export default class PrReview extends View {
           setShared("pr.goto", null);
           this.toReview(r ? r.target ?? r : { url: ref.url, repo: ref.repo, number: Number(ref.number), source: "open" });
         });
+      }
+      // props hideEmpty: "<its block's id>": the row goes to 0 px while nothing is minimized and back when something is
+      // (views.js miniRowPx says why not hidden). One resize per change, after this frame; the next frame's layout has it.
+      const own = props()?.hideEmpty, rowPx = () => { const m = shared("review.minimized"); return miniRowPx(layout(), own, Boolean(m?.target || m?.explore), Number(props()?.height) || 36); };
+      if (own && !this.rowQueued && rowPx() !== null) {
+        this.rowQueued = true;
+        cx.timer.after(0, () => { this.rowQueued = false; const px = rowPx(); if (px !== null) run("layout.resize", { id: own, px }); });
       }
       return renderMini(this.miniRun ?? null);
     }
