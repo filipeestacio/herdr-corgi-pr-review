@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.13.3 (2026-11-16)
+
+### Features
+
+- pr-review: comments an agent reported fixed fold into one line at the end of the Comments tab
+
 ## 0.13.2 (2026-11-16)
 
 ### Fixes
