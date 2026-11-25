@@ -232,7 +232,7 @@ export function renderReviews() {
     .children([right].filter(Boolean));
   const cur = codexMenu().find((c) => c.value === (shared("review.codexModel") || "")) ?? codexMenu()[0];
   return v_flex().id("rv-reviews").size_full().p(8).gap(4).bg(t.popover).text_color(t.foreground).text_size(TYPE.body)
-    .child(row("analysis", REVIEWERS.analysis[0], REVIEWERS.analysis[1], mine && meta.busy ? `Running with ${modelLabel(meta.busy)}`
+    .child(row("analysis", REVIEWERS.analysis[0], REVIEWERS.analysis[1], mine && meta.busy ? `Running with ${modelLabel(meta.busy)}${meta.busyAt ? ` · ${clock(Math.max(0, Date.now() - meta.busyAt))}` : ""}${meta.busyAt && Date.now() - meta.busyAt > 10 * 60000 ? " · no output yet (the harness answers at the end)" : ""}`
       : a ? [`${meta.findings?.analysis ?? 0} ${meta.findings?.analysis === 1 ? "finding" : "findings"}`, a.cost != null ? `$${Number(a.cost).toFixed(3)}` : null, modelLabel(a.model)].filter(Boolean).join(" · ")
       : "Not run on this PR yet. It starts from the Overview page.", false, null))
     .children(reviewersNow().map(([k, [label, c]]) => {
@@ -1127,7 +1127,7 @@ export const ReviewMode = {
   // What the bar shows: the analysis on screen, or the one running.
   publish() {
     const a = this.ai;
-    putShared("review.meta", { url: this.prSel?.url ?? null, pending: this.comments?.length ?? 0, selected: this.prSel ? this.selCount() : 0, model: this.aiModel, busy: this.aiBusy?.model ?? null, error: this.aiError,
+    putShared("review.meta", { url: this.prSel?.url ?? null, pending: this.comments?.length ?? 0, selected: this.prSel ? this.selCount() : 0, model: this.aiModel, busy: this.aiBusy?.model ?? null, busyAt: this.aiBusy?.started ?? null, error: this.aiError,
       shown: a ? { model: a.model, model_id: a.model_id, cost: a.cost, exact: a.exact, mergeRisk: a.mergeRisk, effort: a.effort } : null,
       checks: this.prSel ? this.checksNow().reduce((n, c) => ({ ok: n.ok + (c.ok === true), fail: n.fail + (c.ok === false) }), { ok: 0, fail: 0 }) : null,
       // For the bar's "Dry run" chip and the "Run review" popup (findings: all, and the analysis' own).
