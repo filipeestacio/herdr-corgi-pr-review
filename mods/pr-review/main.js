@@ -1644,7 +1644,7 @@ export default class PrReview extends View {
       .track_focus(this.fh).on_key_down((e, cx) => this.onKey(e, cx))
       .child(header)
       .when(Boolean(setupBanner(this, t)), (e) => e.child(setupBanner(this, t)))
-      .when(state === "setup", (e) => e.child(renderSetup(this, t)))
+      .when(state === "setup", (e) => e.child(renderSetup(this, t, cx)))
       .when(state === "picking", (e) => e.child(pickBody()))
       .when(state === "selected", (e) => e
         .when(Boolean(this.prSel && !shownIn(this.prSel)), (e) => e.child(h_flex().flex_none().flex_wrap().px(14).py(6).gap(8).items_center().bg(t.ansi3 + "1c").border_b(1).border_color(t.border).text_size(TYPE.small)

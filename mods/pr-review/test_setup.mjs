@@ -1,6 +1,6 @@
 // Run: node test_setup.mjs  (Setup's detection → report mapping, with stubbed PATH lookups; Codex detection)
 import assert from "node:assert/strict";
-import { parseCheck, report, blockers, found, programs, checkScript, pretypeArgv, installHint, harnessTool, harnessCommand, checkNames } from "./setup.js";
+import { parseCheck, report, blockers, found, programs, checkScript, pretypeArgv, installHint, harnessTool, harnessCommand } from "./setup.js";
 
 const out = (have, auth = "") => programs().map((p) => `${p}=${have.includes(p) ? `/bin/${p}` : ""}`).join("\n") + "\n" + auth;
 const byId = (rows) => Object.fromEntries(rows.map((r) => [r.id, r]));
@@ -79,14 +79,15 @@ assert.equal(hr.claude.status, "optional-missing"); // still listed, no longer r
 assert.deepEqual(blockers(report(hv, "darwin", [hrow])), []);
 assert.ok(checkScript(["opencode"]).includes("opencode"));
 
-// A cached check from an older program list has no key for a row added since: unprobed, not missing, and
-// loadSetup looks again instead of showing it missing.
-const oldCache = byId(report(parseCheck("git=/usr/bin/git\n"), "darwin"));
+// A cached check from an older program list has no key for a row added since: it reads "not checked", not missing,
+// and it does not block; Setup looks again while it is on screen.
+const stale = parseCheck("git=/usr/bin/git\n");
+const oldCache = byId(report(stale, "darwin"));
 assert.equal(oldCache.git.probed, true);
 assert.equal(oldCache.glab.probed, false);
+assert.equal(oldCache.glab.status, "unchecked");
 assert.equal(oldCache["typescript-language-server"].probed, false);
-assert.equal(checkNames({ harness: { command: ["opencode", "run"] } }).includes("opencode"), true);
-assert.equal(checkNames({}).includes("opencode"), false);
+assert.deepEqual(blockers(report(stale, "darwin")), []);
 
 // Nothing checked yet: Codex is not offered.
 assert.equal(found(undefined, "codex"), false);

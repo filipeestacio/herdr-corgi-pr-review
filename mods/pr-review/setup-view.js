@@ -5,11 +5,11 @@
 import { div } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar } from "gpui-base";
 import { exec, run, shared, setShared, appHome, readTextFile } from "herdr";
-import { checkScript, parseCheck, report, blockers, found, pretypeArgv, harnessTool, checkNames } from "./setup.js";
+import { checkScript, parseCheck, report, blockers, found, pretypeArgv, harnessTool } from "./setup.js";
 import { TYPE } from "./views.js"; // the text sizes (U34)
 
 export const SETUP_KEY = "pr-review.setup";
-const MARK = { ok: ["✓", "ansi2"], missing: ["missing", "ansi1"], "optional-missing": ["not installed", "muted"], "logged-out": ["logged out", "ansi3"] };
+const MARK = { ok: ["✓", "ansi2"], missing: ["missing", "ansi1"], "optional-missing": ["not installed", "muted"], "logged-out": ["logged out", "ansi3"], unchecked: ["not checked", "muted"] };
 const GROUPS = [["required", "Required"], ["optional", "Optional"], ["lsp", "Go to definition (language servers; a missing one only turns it off for that language)"]];
 
 export const hasTool = (name) => found(shared(SETUP_KEY), name);
@@ -41,10 +41,7 @@ export function runSetup(view, cx, force = true) {
 
 // On first open (nothing cached): check, and show Setup when something required is missing.
 export async function loadSetup(view, cx) {
-  if (!view.cfg) view.cfg = await readConfig().catch(() => ({}));
-  // A cached check from an older program list lacks the rows added since: look again rather than show them missing.
-  const s = shared(SETUP_KEY), want = checkNames(view.cfg);
-  if (s && want.every((n) => n in (s.found ?? {}))) return;
+  if (shared(SETUP_KEY)) return;
   runSetup(view, cx, true);
   view.setupFirst = true;
 }
@@ -70,15 +67,18 @@ function install(view, row, cx) {
 
 // The first line of Setup: what the list below comes to. rows: [{id, status}], at: when it was checked (ms).
 export function setupSummary(rows, at, now = Date.now()) {
-  const off = blockers(rows), extra = rows.filter((x) => x.status === "optional-missing").length;
+  const off = blockers(rows), extra = rows.filter((x) => x.status === "optional-missing").length, unknown = rows.filter((x) => x.status === "unchecked").length;
   const min = Math.max(0, Math.round((now - at) / 60000));
   const found = off.length ? `${off.length} of ${rows.length} programs ${off.length === 1 ? "is" : "are"} missing or not signed in: ${off.map((x) => x.id).join(", ")}. Install opens a terminal with the command typed in, not run.`
+    : unknown ? `${unknown} ${unknown === 1 ? "program was" : "programs were"} not checked in the last check; press Check again.`
     : extra ? `Everything required was found; ${extra} optional ${extra === 1 ? "program is" : "programs are"} not installed.` : `All ${rows.length} programs were found.`;
   return `${found} Checked ${min < 1 ? "just now" : min < 60 ? `${min} min ago` : `${Math.round(min / 60)} h ago`}.`;
 }
 
-export function renderSetup(view, t) {
+export function renderSetup(view, t, cx) {
   const s = shared(SETUP_KEY), r = rows(view), blocked = blockers(r ?? []).length > 0;
+  // A row the last check never looked for: look now, while Setup is the screen the person is on.
+  if (r?.some((x) => x.status === "unchecked") && !view.setupBusy && cx) runSetup(view, cx, true);
   const btn = (id, label, click, strong = false, tip = "") => div().id(id).tooltip(tip).flex_none().px(8).h(24).flex().items_center().rounded(5).border_1()
     .border_color(strong ? t.accent : t.border).text_size(TYPE.small).text_color(strong ? t.foreground : t.muted).cursor_pointer()
     .hover((st) => st.text_color(t.foreground)).on_click(click).child(label);

@@ -56,9 +56,6 @@ export function harnessTool(cfg) {
 // Every program name to look up on PATH.
 export const programs = () => [...new Set(TOOLS.flatMap((t) => [t.id, ...(t.also ?? [])]))];
 
-// Every program name a check must look up now: the tools plus the configured harness's executable.
-export const checkNames = (cfg) => [...new Set([...programs(), ...(harnessCommand(cfg) ?? []).slice(0, 1)])];
-
 // The shell script that prints `name=path` per program (empty: missing) and `auth:gh=0|1`, `auth:glab=0|1`, `auth:claude=0|1`.
 // extra: folders language servers often live in, the same ones lsp_bridge.py adds to PATH.
 export function checkScript(extra = []) {
@@ -93,7 +90,8 @@ export function report({ found = {}, auth = {} } = {}, os = "darwin", extra = []
     const names = t.command ? [t.command[0]] : [t.id, ...(t.also ?? [])]; // a harness is found by its executable
     const have = names.every((n) => Boolean(found[n])), probed = names.every((n) => n in found);
     const loggedOut = have && t.auth && auth[t.id] === false;
-    const status = !have ? (t.need === "required" ? "missing" : "optional-missing") : loggedOut ? "logged-out" : "ok";
+    // A row the last check never looked for is unknown, not missing: an older cache lacks the names added since.
+    const status = !probed ? "unchecked" : !have ? (t.need === "required" ? "missing" : "optional-missing") : loggedOut ? "logged-out" : "ok";
     const what = t.need === "lsp" ? `${t.impact === false ? "Go to definition" : "Go to definition and Impact"} in ${t.lang} ${t.impact === false && !t.also ? "needs" : "need"} ${[t.id, ...(t.also ?? [])].join(" + ")}` : t.what;
     const install = status === "logged-out" ? t.auth : status === "ok" ? null : (os === "linux" ? t.linux : t.mac) ?? null;
     return { id: t.id, need: t.need, group: t.group ?? null, status, probed, what, install, cmd: t.command ? t.command.join(" ") : null, path: found[names[0]] ?? null };
@@ -122,12 +120,12 @@ export function installHint(message, os = "darwin") {
 export function blockers(rows) {
   const out = [], seen = new Set();
   for (const r of rows) {
-    if (r.need !== "required") continue;
+    if (r.need !== "required" || r.status === "unchecked") continue; // unknown is not a blocker; Setup asks for a check
     if (!r.group) { if (r.status !== "ok") out.push(r); continue; }
     if (seen.has(r.group)) continue;
     seen.add(r.group);
     const members = rows.filter((x) => x.group === r.group);
-    if (members.some((x) => x.status === "ok")) continue;
+    if (members.some((x) => x.status === "ok" || x.status === "unchecked")) continue;
     const bad = members.filter((x) => x.status !== "ok");
     out.push({ ...bad[0], id: bad.map((x) => x.id).join(" or "), group: r.group });
   }
