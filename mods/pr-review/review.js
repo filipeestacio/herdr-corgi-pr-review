@@ -5071,10 +5071,15 @@ export const ReviewMode = {
     const files = this.patch ?? [];
     return { lines: files.reduce((n, f) => n + (f.add ?? 0) + (f.del ?? 0), 0), files: files.length, rules: (this.ctx?.security_trigger?.reasons ?? []).map((x) => x?.rule).filter(Boolean), risk: this.ai?.mergeRisk?.level ?? null };
   },
-  runTier(kind) { return { ...recommendModel(kind, this.runFacts()), chosen: this.deep.runModels?.[`${this.deepKey()}|${kind}`] ?? null }; },
+  runTier(kind) {
+    const r = { ...recommendModel(kind, this.runFacts()), chosen: this.deep.runModels?.[`${this.deepKey()}|${kind}`] ?? null };
+    const h = harnessChoices();
+    return h.length && !h.some((c) => c.value === r.chosen) ? { ...r, chosen: model() } : r; // a harness needs a model id, not a class
+  },
   // What a run of this kind costs on a class: the last run's cost scaled by the classes' output prices, else its cap.
   // ponytail: one past run as the measure; a mean over runs when there are several kinds of PRs to compare.
   runPrice(kind, tier) {
+    if (String(tier).includes("/")) return "price not reported"; // a harness names its own model; the CLI reports no price
     const r = kind === "analysis" ? (this.ai?.cost > 0 ? { cost: this.ai.cost, model: this.ai.model_id ?? this.ai.model } : null) : this.find.runs[kind]?.cost > 0 ? this.find.runs[kind] : null;
     const typical = RUN_TYPICAL[kind]?.[tier]; // measured before a first run (pr.js RUN_TYPICAL)
     return r ? `about $${((r.cost * priceOf(tier)[1]) / priceOf(r.model)[1]).toFixed(2)}${r.ms > 0 ? `, ${Math.max(1, Math.round(r.ms / 60000))} min` : ""}` : typical ? `about $${typical.usd.toFixed(2)}, ${Math.round(typical.s / 60) || 1} min` : `capped at $${REVIEW_CAP[tier]}`;
@@ -5084,15 +5089,19 @@ export const ReviewMode = {
   runOffer(kind, t) {
     const START = { security: (tier, cx) => this.runReviewer("security", cx, null, tier), resilience: (tier, cx) => this.runReviewer("resilience", cx, null, tier) }, NAME = { analysis: "Analysis", security: "Security review", resilience: "Resilience review", verify: "Verify", ask: "Ask", fix: "Fix" };
     if (!START[kind]) return null;
-    const r = this.runTier(kind), tier = r.chosen ?? r.tier, steps = tierSteps(tier), menu = this.offerMenu === kind, label = (x) => MODELS[x]?.label ?? x, last = this.find.runs?.[kind];
+    const r = this.runTier(kind), tier = r.chosen ?? r.tier, steps = tierSteps(tier), menu = this.offerMenu === kind, label = (x) => MODELS[x]?.label ?? modelLabel(x), last = this.find.runs?.[kind];
+    // A harness picks from the models pr-review.config.json lists; Claude Code picks a class up or down.
+    const h = harnessChoices();
+    const choices = h.length
+      ? modelChoices(this.ctxId()).map((c) => ({ value: c.value, label: c.label, tip: c.description ? `${c.description}: ${c.value}` : c.value }))
+      : [["up", steps.up], ["down", steps.down]].filter(([, x]) => x).map(([dir, x]) => ({ value: x, label: MODELS[x]?.label ?? x, tip: dir === "up" ? "A larger model: slower and dearer, better at long and subtle code" : "A smaller model: faster and cheaper" }));
     const choose = (to, cx) => { const k = `${this.deepKey()}|${kind}`; this.offerMenu = null; this.updateDeep(cx, (d) => ({ ...d, runModels: { ...(d.runModels ?? {}), [k]: to === r.tier ? null : to } })); cx.notify(); };
     return h_flex().id(`rv-offer-${kind}`).w_full().min_w(0).gap(8).items_center().flex_wrap().text_size(TYPE.body)
       .child(div().w_full().min_w(0).whitespace_normal().child(r.chosen && r.chosen !== r.tier ? `${NAME[kind]}: ${label(tier)}, your choice; ${label(r.tier)} is recommended because ${r.why}.` : `${NAME[kind]}: ${label(tier)} recommended because ${r.why}.`))
       .child(pill(`rv-offer-run-${kind}`, t, runLabel(last, this.runPrice(kind, tier), last?.at ? ago(last.at) : ""), (_e, cx) => { this.offerMenu = null; START[kind](tier, cx); }, false, t.foreground)
-        .tooltip(`${last?.state === "done" ? "The same run again, paid again: " : ""}one ${label(tier)} call, read-only on the PR head; it stops at $${REVIEW_CAP[tier]}`))
+        .tooltip(`${last?.state === "done" ? "The same run again, paid again: " : ""}one ${label(tier)} call, read-only on the PR head; ${REVIEW_CAP[tier] ? `it stops at $${REVIEW_CAP[tier]}` : "the harness command's own budget applies"}`))
       .child(pill(`rv-offer-ch-${kind}`, t, menu ? "Change model ▴" : "Change model ▾", (_e, cx) => { this.offerMenu = menu ? null : kind; cx.notify(); }).tooltip("A class up or down for this run; Haiku is not offered for code"))
-      .when(menu, (e) => e.children([["up", steps.up], ["down", steps.down]].filter(([, x]) => x).map(([dir, x]) => pill(`rv-offer-${dir}-${kind}`, t, `${label(x)} (${this.runPrice(kind, x)})${x === r.tier ? " · recommended" : ""}`, (_e, cx) => choose(x, cx))
-        .tooltip(dir === "up" ? "A larger model: slower and dearer, better at long and subtle code" : "A smaller model: faster and cheaper"))));
+      .when(menu, (e) => e.children(choices.map((c, i) => pill(`rv-offer-${i}-${kind}`, t, `${c.label} (${this.runPrice(kind, c.value)})${c.value === tier ? " · chosen" : ""}`, (_e, cx) => choose(c.value, cx)).tooltip(c.tip))));
   },
   // Whether the PR's repo is public, asked once per repo (gh repo view): the Security page says who can read a comment.
   loadVisibility(cx) {
@@ -5113,7 +5122,9 @@ export const ReviewMode = {
   // account may use, Codex what it offers. Kept in shared "review.models" and pr-data/models.json.
   loadModels(cx) {
     const ctx = this.ctxReq(), id = ctx?.id ?? "default", d = modelsDoc()[id], busy = (this.modelsBusy ??= new Set());
-    if ((d && Date.now() - d.at < 86400000) || busy.has(id)) return;
+    // The harness's list comes from the config: a changed config asks again rather than waiting out the day.
+    const sig = JSON.stringify(this.cfg?.harness ?? null);
+    if ((d && Date.now() - d.at < 86400000 && d.sig === sig) || busy.has(id)) return;
     busy.add(id);
     cx.spawn(async (cx) => {
       const r = await exec("python3", [`${appHome()}/mods/pr-review/models.py`, JSON.stringify({ context: ctx })], { timeout: 90000 }).catch(() => null);
@@ -5121,7 +5132,7 @@ export const ReviewMode = {
       try { out = r?.code === 0 ? JSON.parse(r.stdout) : null; } catch { /* no answer */ }
       if (!out?.claude?.length && !out?.codex?.length && !out?.harness?.length) return; // busy stays: no second try this session
       busy.delete(id);
-      const doc = { ...modelsDoc(), [id]: { at: Date.now(), claude: out.claude ?? [], codex: out.codex ?? [], harness: out.harness ?? [] } };
+      const doc = { ...modelsDoc(), [id]: { at: Date.now(), sig, claude: out.claude ?? [], codex: out.codex ?? [], harness: out.harness ?? [] } };
       setShared("review.models", doc);
       readTextFile(modelsFile()).catch(() => null).then((before) => writeTextFile(modelsFile(), JSON.stringify(doc), before)).catch(() => null); // over the list from before (told nothing, writeTextFile leaves an existing file as it is)
       cx.notify();

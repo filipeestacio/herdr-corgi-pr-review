@@ -72,6 +72,8 @@ llm.subprocess.run = fake("plain answer")
 assert llm.claude("Triage", "p", context=None, model="a/x").strip() == "plain answer"
 
 # ---- the models the harness offers: a shortlist wins, else a command's output filtered by prefix
+assert models.short("llmgateway-providers/openai/gpt-6.2-sol") == "openai/gpt-6.2-sol"
+assert models.short("a/b") == "a/b"
 assert models.harness_list() == [{"value": "a/x", "label": "a/x", "description": ""}] if False else True
 llm.config = lambda: {"harness": {"modelList": ["a/x", "b/y"], "label": "Gateway"}}
 assert models.harness_list() == [{"value": "a/x", "label": "a/x", "description": "Gateway"}, {"value": "b/y", "label": "b/y", "description": "Gateway"}]

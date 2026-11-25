@@ -61,6 +61,12 @@ def claude_models(context, timeout=30):
         p.kill()
 
 
+def short(model_id):
+    """A model id as a menu shows it: its vendor and name ("anthropic/claude-opus-5-5"), not the namespace before."""
+    parts = str(model_id).split("/")
+    return "/".join(parts[-2:]) if len(parts) >= 3 else str(model_id)
+
+
 def harness_list(timeout=60):
     """The configured harness's models: config harness.models (argv) prints one model id per line; harness.prefix keeps
     the ones that start with it, harness.label describes them."""
@@ -68,7 +74,7 @@ def harness_list(timeout=60):
     picked = [str(v) for v in (spec.get("modelList") or []) if str(v).strip()]
     if picked:  # a chosen shortlist: better than 500 ids in a menu
         label = str(spec.get("label") or "")
-        return [{"value": v, "label": v, "description": label} for v in picked]
+        return [{"value": v, "label": short(v), "description": label} for v in picked]
     cmd = spec.get("models")
     if not isinstance(cmd, list) or not cmd:
         return []
@@ -79,7 +85,7 @@ def harness_list(timeout=60):
     if r.returncode != 0:
         return []
     prefix, label = str(spec.get("prefix") or ""), str(spec.get("label") or "")
-    return [{"value": v, "label": v, "description": label}
+    return [{"value": v, "label": short(v), "description": label}
             for v in (line.strip() for line in r.stdout.splitlines()) if v and v.startswith(prefix)]
 
 
