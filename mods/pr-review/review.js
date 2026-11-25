@@ -130,7 +130,13 @@ const TOUCH_MS = 5 * 60000; // a review's "last touched" on file may be this old
 // (PROVIDERS.md). Written on each registry change, 1.5 s after the last edit.
 // The AI analysis' model: any value the claude CLI offers (models.py), Sonnet until one is picked.
 // At least Sonnet (pr.js codeModel): every use reads or judges code, which Haiku is too weak for.
-const model = () => { const m = shared("review.model"), h = harnessChoices(); return codeModel(typeof m === "string" && m ? m : h[0]?.value ?? "sonnet"); };
+// A stored pick that the configured list no longer holds (the list changed) falls back to its first model, never to a
+// stale id the harness would reject.
+const model = () => {
+  const m = shared("review.model"), h = harnessChoices();
+  if (h.length) return typeof m === "string" && h.some((c) => c.value === m) ? m : h[0].value;
+  return codeModel(typeof m === "string" && m ? m : "sonnet");
+};
 // The models the CLIs offer per context ({at, claude, codex}, models.py), shared so the Reviews popup sees them too;
 // pr-data/models.json keeps them across restarts.
 const modelsFile = () => `${appHome()}/pr-data/models.json`;
