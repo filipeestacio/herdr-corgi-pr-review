@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """The PR head as files for the review layout: reviewers, the AI analysis and the LSP bridge work there.
 
-argv[1]: PR url (https://github.com/<owner>/<repo>/pull/<n>); options --local <dir> (the active space's checkout of
+argv[1]: PR or MR url (https://github.com/<owner>/<repo>/pull/<n>, https://<host>/<group>/<project>/-/merge_requests/<n>);
+options --local <dir> (the active space's checkout of
 that repo), --root <dir> (repeatable: the clone folders to look in, the first one is where a new clone goes;
 default ~/code), --worktrees <dir> (Herdr's folder for worktrees, settings.json `worktrees.directory`; default
 ~/.herdr/worktrees), --clone.
@@ -9,7 +10,8 @@ Uses an existing clone: a dedicated one under a root (<repo> or <owner>-<repo>),
 origin is that repo. Without one it clones only with --clone (an explicit click; into the first root,
 --filter=blob:none); otherwise exit 3 with {"need_clone": <folder>}.
 ONE reusable throwaway worktree per repo, <worktrees>/<repo>/pr-review (<repo>: the main checkout's folder name,
-as Herdr's own New worktree names it): it fetches pull/<n>/head and checks that commit out detached (forced,
+as Herdr's own New worktree names it): it fetches the PR's head (pull/<n>/head on GitHub, merge-requests/<n>/head on
+GitLab) and checks that commit out detached (forced,
 cleaned). One path per repo keeps one warm LSP index per repo. Nothing is made inside the clone. A folder at that
 path is only reset when it is a detached worktree of this clone (a person's own checkout of a branch `pr-review`
 is refused, not cleaned). A repo's review worktree goes after MAX_AGE unused, together with the LSP bridge's index
@@ -29,6 +31,9 @@ import shutil
 import subprocess
 import sys
 import time
+
+sys.dont_write_bytecode = True  # a .pyc written into the mod's folder reloads the mod: the view waiting for this run is gone
+import host
 
 BASES = [pathlib.Path.home() / "code"]  # --root replaces it
 WORKTREES = pathlib.Path.home() / ".herdr" / "worktrees"  # --worktrees replaces it
@@ -67,7 +72,13 @@ def find_clone(owner, repo, local=None):
     return None
 
 
-def clone_for(owner, repo, clone=False, local=None):
+def origin_of(path):
+    """A checkout's origin URL, or None."""
+    r = subprocess.run(["git", "remote", "get-url", "origin"], cwd=path, capture_output=True, text=True, timeout=30)
+    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+
+
+def clone_for(owner, repo, clone=False, local=None, url=None, hostname=None):
     """The clone to work in (find_clone); none: a new one under the first root with clone=True, else NeedClone."""
     found = find_clone(owner, repo, local)
     if found:
@@ -79,11 +90,21 @@ def clone_for(owner, repo, clone=False, local=None):
     if not clone:
         raise NeedClone(dest)
     base.mkdir(parents=True, exist_ok=True)
-    r = subprocess.run(["gh", "repo", "clone", f"{owner}/{repo}", str(dest), "--", "--filter=blob:none", "--no-checkout"],
-                       capture_output=True, text=True, timeout=600)
-    if r.returncode != 0:
-        raise RuntimeError(f"gh repo clone: {r.stderr.strip()[:300]}")
-    return dest
+    # The space's own checkout already knows the right remote and its login; else try HTTPS, then SSH (a private repo
+    # with no credential helper answers only over SSH).
+    remotes = [origin_of(local)] if local and is_repo(local, owner, repo) else []
+    if hostname:
+        remotes += [f"https://{hostname}/{owner}/{repo}.git", f"git@{hostname}:{owner}/{repo}.git"]
+    remotes = [r for r in dict.fromkeys(remotes) if r] or [url]
+    why = None
+    for remote in remotes:
+        shutil.rmtree(dest, ignore_errors=True)
+        r = subprocess.run(["git", "clone", "--filter=blob:none", "--no-checkout", remote, str(dest)],
+                           capture_output=True, text=True, timeout=600)
+        if r.returncode == 0:
+            return dest
+        why = (r.stderr or r.stdout).strip()[:300]
+    raise RuntimeError(f"git clone: {why or 'no remote to clone from'}")
 
 
 def remove(clone, tree):
@@ -142,12 +163,16 @@ def since_diff(cwd, old, head, paths=()):
 
 
 def main(url, clone=False, local=None):
-    m = re.match(r"https://github\.com/([\w.-]+)/([\w.-]+)/pull/(\d+)", url)
-    if not m:
+    link = host.parse_link(url)
+    if not link:
         raise RuntimeError(f"Not a PR url: {url}")
-    owner, repo, n = m.groups()
-    clone = clone_for(owner, repo, clone, local)
-    git("fetch", "--quiet", "origin", f"+pull/{n}/head:refs/review/{n}", cwd=clone)
+    owner, _, repo = link["repo"].rpartition("/")  # GitLab's nested group stays in owner
+    n = link["number"]
+    clone = clone_for(owner or link["repo"], repo or link["repo"], clone, local, url=url, hostname=link["hostname"])
+    # GitHub publishes a PR's head as refs/pull/<n>/head; GitLab as refs/merge-requests/<n>/head.
+    gitlab = link["host"] == host.GITLAB
+    refspec = f"+refs/merge-requests/{n}/head:refs/review/{n}" if gitlab else f"+refs/pull/{n}/head:refs/review/{n}"
+    git("fetch", "--quiet", "origin", refspec, cwd=clone)
     head = git("rev-parse", f"refs/review/{n}", cwd=clone)
     path = review_path(clone)
     if (path / ".git").exists():
