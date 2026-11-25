@@ -13,7 +13,7 @@ import { div } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, TextView, v_virtual_list, VirtualListScrollHandle, ScrollHandle, Textarea, TextareaState, Input, InputState, HoverCard } from "gpui-base";
 import { exec, hc, run, focused, pickFolder, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, nextCommand, watchFolder, openOverlay, closeOverlay, props, home, placement } from "herdr";
 import { spaces, agents, terminals, watch } from "./live.js";
-import { hostOf } from "./host.js"; // never straight from Herdr (live.js says why)
+import { hostOfLink } from "./host.js"; // never straight from Herdr (live.js says why)
 import { parseReports, findingStatus, mergeFindings, findingCounts, countLine, runsOf, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
 import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig } from "./setup-view.js";
@@ -2078,7 +2078,7 @@ export const ReviewMode = {
       let text = null;
       try {
         if (!this.head) {
-          const v = hostOf(url) === "gitlab"
+          const v = hostOfLink(url) === "gitlab"
             ? await exec("python3", [`${appHome()}/mods/pr-review/mrs.py`, "view", url], { timeout: 60000 })
             : await exec("gh", ["pr", "view", url, "--json", "headRefOid"], { timeout: 30000 });
           if (v.code !== 0) throw new Error("PR head unknown");
@@ -2090,7 +2090,7 @@ export const ReviewMode = {
         const local = text === null && this.root ? await exec("git", ["cat-file", "-p", `${head}:${path}`], { cwd: this.root }).catch(() => null) : null;
         if (text !== null) {} else if (local?.code === 0) text = local.stdout;
         else {
-          const r = hostOf(url) === "gitlab"
+          const r = hostOfLink(url) === "gitlab"
             ? await exec("python3", [`${appHome()}/mods/pr-review/mrs.py`, "file", url, path], { timeout: 60000 })
             : await exec("gh", ["api", "-H", "Accept: application/vnd.github.raw", `repos/${repo}/contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${head}`], { timeout: 60000 });
           if (r.code !== 0) throw new Error(String(r.stderr).trim().slice(0, 160));
@@ -2613,7 +2613,7 @@ export const ReviewMode = {
     const done = (cx, how) => { this.updateThreads(cx, (d) => TH.addThreads(d, key, [c], how)); this.fsel = null; this.closeComposer(cx); };
     if (this.routeNow() === "github") {
       setShared("review.hintPostNow", true);
-      return hostOf(this.prSel?.url) === "gitlab" ? this.postSingleMr(c, cx, done) : this.postSingleGh(c, cx, done);
+      return hostOfLink(this.prSel?.url) === "gitlab" ? this.postSingleMr(c, cx, done) : this.postSingleGh(c, cx, done);
     }
     const { label } = this.sendAgent();
     this.previewSend(cx, { what: "Comment", own: c.text, prompt: buildReview({ pr: this.pr, base: this.base, comments: [c], lang: this.lang(), replies: this.repliesFile(), contract: TH.repliesContract }),
@@ -2703,7 +2703,7 @@ export const ReviewMode = {
   // ---- where reviews go: GitHub (any PR there) or the PR's agent session (a PR made in a session; branch diffs)
 
   routes() {
-    const direct = Boolean(this.prSel?.url && hostOf(this.prSel.url)); // GitHub or GitLab: the host takes the review
+    const direct = Boolean(this.prSel?.url && hostOfLink(this.prSel.url)); // GitHub or GitLab: the host takes the review
     return [...(direct ? ["github"] : []), ...(this.prSel?.session || !direct ? ["agent"] : [])];
   },
   routeNow() {
@@ -2753,7 +2753,7 @@ export const ReviewMode = {
   // Config "dryRun": true writes the payload to pr-data/review-dry-run.json instead of posting.
   postGh(comments, event, summary, cx, done) {
     const pr = this.prSel;
-    if (hostOf(pr?.url) === "gitlab") return this.postMr(comments, event, summary, cx, done);
+    if (hostOfLink(pr?.url) === "gitlab") return this.postMr(comments, event, summary, cx, done);
     const m = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(pr?.url ?? "");
     if (!m || this.sending) return;
     this.sending = true; this.note = null; this.posted = null;
@@ -2806,7 +2806,7 @@ export const ReviewMode = {
   // time: an ask while one runs for this PR gets the same answer.
   ghComments() {
     const pr = this.prSel;
-    if (hostOf(pr?.url) === "gitlab") return this.mrComments(pr); // a merge request: mrs.py threads
+    if (hostOfLink(pr?.url) === "gitlab") return this.mrComments(pr); // a merge request: mrs.py threads
     const m = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(pr?.url ?? "");
     if (!m || this.cfg?.dryRun) return Promise.resolve(null); // dry run: no network (the demo)
     if (this.ghIn?.url === pr.url) return this.ghIn.p;
@@ -3610,7 +3610,7 @@ export const ReviewMode = {
       const known = prs.find((x) => x.url === p.url);
       if (known) return startReview(known);
       const r = !p.url ? null
-        : hostOf(p.url) === "gitlab"
+        : hostOfLink(p.url) === "gitlab"
           ? await exec("python3", [`${appHome()}/mods/pr-review/mrs.py`, "view", p.url], { timeout: 60000 }).catch(() => null)
           : await exec("gh", ["pr", "view", p.url, "--json", "number,title,author,headRefName,headRefOid,baseRefName,updatedAt,isDraft,state,url,additions,deletions,reviewDecision"], { timeout: 30000 }).catch(() => null);
       if (r?.code === 0) startReview(ghTarget(JSON.parse(r.stdout), { context: this.ctxId(), source: "related", cwd: this.prSel?.cwd ?? null }));
@@ -5199,7 +5199,7 @@ export const ReviewMode = {
     const repo = this.prSel?.repo;
     if (!repo || this.repoVis?.[repo] !== undefined) return;
     this.repoVis = { ...this.repoVis, [repo]: null };
-    const gitlab = hostOf(this.prSel?.url) === "gitlab";
+    const gitlab = hostOfLink(this.prSel?.url) === "gitlab";
     const argv = [...this.ctxEnv(this.ctxId()), "gh", "repo", "view", repo, "--json", "visibility", "--jq", ".visibility"];
     cx.spawn(async (cx) => {
       const r = gitlab

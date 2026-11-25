@@ -1,6 +1,6 @@
 // Run: node --test test_host.mjs  (the git host behind a remote or a link)
 import assert from "node:assert/strict";
-import { hostOf, parseRemote, parseLink, webUrl, remoteHost, GITHUB, GITLAB } from "./host.js";
+import { hostOf, hostOfLink, parseRemote, parseLink, webUrl, remoteHost, GITHUB, GITLAB } from "./host.js";
 
 assert.equal(remoteHost("git@gitlab.com:g/p.git"), "gitlab.com");
 assert.equal(remoteHost("ssh://git.example.com/g/p.git"), "git.example.com");
@@ -29,4 +29,8 @@ assert.equal(parseLink("https://example.com/x"), null);
 assert.equal(webUrl({ host: GITHUB, hostname: "github.com", repo: "o/r", number: 12 }), "https://github.com/o/r/pull/12");
 assert.equal(webUrl({ host: GITLAB, hostname: "gitlab.com", repo: "g/sub/p", number: 7 }), "https://gitlab.com/g/sub/p/-/merge_requests/7");
 assert.equal(webUrl(null), null);
+assert.equal(hostOfLink("https://gitlab.com/g/sub/p/-/merge_requests/7"), GITLAB);
+assert.equal(hostOfLink("https://git.company.example/g/p/-/merge_requests/7"), GITLAB); // a self-hosted name needs no setting
+assert.equal(hostOfLink("https://github.com/o/r/pull/12"), GITHUB);
+assert.equal(hostOfLink("https://example.com/x"), null);
 console.log("ok");

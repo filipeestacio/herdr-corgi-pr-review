@@ -20,7 +20,7 @@ import { focused, exec, hc, run, theme, settings, readTextFile, writeTextFile, s
 import { spaces, panes, agents, terminals, feed, feedIfAsked, whenFed } from "./live.js"; // never straight from Herdr: one read and this copy is drawn on every agent's status change
 import { diffRows, buildPrompt, splitPatch, selection, nextChange, lineLabel, anchorRow, buildReview, hunksOf, hash, uiLine, reviewRequest, mapReview, triageOf, isSecurity, withThreats, knownOf } from "./pr.js";
 import { parsePrRef, ghTarget, pruneSources, codeModel, windowActive, pollDue, pollAfter, tabName } from "./pr.js";
-import { hostOf, parseRemote } from "./host.js";
+import { hostOfLink, parseRemote } from "./host.js";
 import * as C from "./context.js";
 import { tabArgs } from "./threads.js"; // a new Claude tab with the PR's text: no MCP servers
 import { loadDiff, saveDiff } from "./diffcache.js";
@@ -340,7 +340,7 @@ export default class PrReview extends View {
     if (before !== null) return before;
     const keep = (source, text) => saveDiff(base, pr.url, head, source, text, writeTextFile)
       .then(() => exec("python3", [`${appHome()}/mods/pr-review/prs.py`, "--prune"])).catch(() => null); // bounds the cache folder
-    const gitlab = hostOf(pr.url) === "gitlab";
+    const gitlab = hostOfLink(pr.url) === "gitlab";
     const r = gitlab
       ? await exec("python3", [`${appHome()}/mods/pr-review/mrs.py`, "diff", pr.url], { timeout: 120000 })
       : await exec("gh", ["pr", "diff", pr.url, "--color", "never"], { timeout: 60000 });
@@ -815,7 +815,7 @@ export default class PrReview extends View {
   async slugInfo(root) {
     if (!this.slugs.has(root)) {
       const r = await exec("git", ["remote", "get-url", "origin"], { cwd: root }).catch(() => null);
-      const parsed = parseRemote(r?.stdout.trim() ?? "");
+      const parsed = parseRemote(r?.stdout.trim() ?? "", { host: this.cfg?.host });
       this.slugs.set(root, parsed?.repo ? { slug: parsed.repo, host: parsed.host } : null);
     }
     return this.slugs.get(root);

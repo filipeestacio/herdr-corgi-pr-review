@@ -447,7 +447,8 @@ your sessions and PRs you authored. For anyone else's PR it asks first, as VS Co
 - **Trust this PR** or **Trust all PRs in owner/repo**: language servers run as usual.
 - **Stay in Restricted Mode**: Java skips the build import, TypeScript uses your global install, Go downloads nothing
   and skips cgo, and rust-analyzer doesn't start. Go-to-definition finds less. The Codex review asks once before
-  it runs. The diff, comments and reviews, the Claude reviewers and the AI analysis work the same.
+  it runs. The diff, comments and reviews, the reviewers and the AI analysis work the same, on Claude Code or on your
+harness.
 
 The header shows **Restricted Mode · Trust** until you trust the PR.
 

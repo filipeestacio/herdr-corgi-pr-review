@@ -48,6 +48,12 @@ export function parseLink(url) {
   return null;
 }
 
+// The host a PR or MR link belongs to, from the link itself: GitLab's /-/merge_requests/ names it whatever the
+// hostname is, so a self-hosted instance needs no setting.
+export function hostOfLink(url) {
+  return parseLink(url)?.host ?? null;
+}
+
 // The web address of a PR or MR on its host.
 export function webUrl(link) {
   if (!link?.hostname || !link?.repo || !link?.number) return null;
