@@ -230,7 +230,7 @@ class RunFailed(RuntimeError):
 def failed(e, limit=500):
     """What a run's status file says of an exception: {error: the sentence}, and for a RunFailed its kind and what
     the CLI printed (detail), for a "Details" fold."""
-    more = {"kind": e.kind, "detail": e.detail[:2000]} if isinstance(e, RunFailed) else {}
+    more = {"kind": e.kind, "detail": str(e.detail or "")[:2000]} if isinstance(e, RunFailed) else {}  # detail may be a dict
     return {"error": str(e)[:limit], **more}
 
 
