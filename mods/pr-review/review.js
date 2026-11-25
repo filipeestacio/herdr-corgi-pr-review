@@ -5119,9 +5119,9 @@ export const ReviewMode = {
       const r = await exec("python3", [`${appHome()}/mods/pr-review/models.py`, JSON.stringify({ context: ctx })], { timeout: 90000 }).catch(() => null);
       let out = null;
       try { out = r?.code === 0 ? JSON.parse(r.stdout) : null; } catch { /* no answer */ }
-      if (!out?.claude?.length && !out?.codex?.length) return; // busy stays: no second try this session
+      if (!out?.claude?.length && !out?.codex?.length && !out?.harness?.length) return; // busy stays: no second try this session
       busy.delete(id);
-      const doc = { ...modelsDoc(), [id]: { at: Date.now(), claude: out.claude ?? [], codex: out.codex ?? [] } };
+      const doc = { ...modelsDoc(), [id]: { at: Date.now(), claude: out.claude ?? [], codex: out.codex ?? [], harness: out.harness ?? [] } };
       setShared("review.models", doc);
       readTextFile(modelsFile()).catch(() => null).then((before) => writeTextFile(modelsFile(), JSON.stringify(doc), before)).catch(() => null); // over the list from before (told nothing, writeTextFile leaves an existing file as it is)
       cx.notify();
