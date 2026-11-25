@@ -87,12 +87,14 @@ def run_harness(feature, prompt, *, context=None, model="", schema=None, system=
     text = f"{system}\n\n{prompt}" if system else prompt
     if schema is not None:
         text += "\n\nAnswer with one JSON object and nothing else, matching this schema:\n" + json.dumps(schema)
+    # A harness has no cost cap, so its own timeout (config harness.timeout, in seconds) may be longer than a CLI's.
+    alive = int((config().get("harness") or {}).get("timeout") or timeout)
     started = time.monotonic()
     try:
-        out = subprocess.run(harness_argv(cmd, model, text), capture_output=True, text=True, timeout=timeout,
+        out = subprocess.run(harness_argv(cmd, model, text), capture_output=True, text=True, timeout=alive,
                              env=env_for(context), cwd=str(cwd or APP))
     except subprocess.TimeoutExpired:
-        raise RunFailed(feature, f"The harness run did not answer within {timeout} s. Try again.", "timeout", {}) from None
+        raise RunFailed(feature, f"The harness run did not answer within {alive} s. Try again.", "timeout", {}) from None
     except FileNotFoundError:
         raise RunFailed(feature, f"The harness command {cmd[0]!r} was not found. Check harness.command in "
                                 "pr-review.config.json.", "harness", {}) from None

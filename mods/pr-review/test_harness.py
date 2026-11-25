@@ -86,3 +86,19 @@ llm.config = lambda: {"harness": {"models": ["list-models"], "prefix": "g/"}}
 models.subprocess.run = fake("g/one\nother/two\ng/three\n")
 assert [m["value"] for m in models.harness_list()] == ["g/one", "g/three"]
 print("ok")
+
+# A harness may be given more time than a CLI call: the run's timeout comes from harness.timeout.
+llm.config = lambda: {"harness": {"command": ["h", "{prompt}"], "timeout": 42}}
+seen = {}
+
+
+def timed(args, **kw):
+    seen["timeout"] = kw.get("timeout")
+    return subprocess.CompletedProcess(args, 0, '{"a": 1}', "")
+llm.subprocess.run = timed
+assert llm.run_harness("Review analysis", "p", schema={}) == {"a": 1}
+assert seen["timeout"] == 42, seen
+llm.config = lambda: {"harness": {"command": ["h", "{prompt}"]}}
+llm.run_harness("Review analysis", "p", schema={}, timeout=180)
+assert seen["timeout"] == 180, seen
+print("timeout ok")

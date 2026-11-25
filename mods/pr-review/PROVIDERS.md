@@ -99,7 +99,7 @@ All keys optional.
   "globalRules": "PR titles follow Conventional Commits: `type(scope): subject`.",
   "ledger": "~/.local/share/llm-usage",
   "sessionTitles": "~/path/to/titles.json",
-  "harness": { "command": ["opencode", "run"] }
+  "harness": { "command": ["opencode", "run"], "timeout": 1800 }
 }
 ```
 
@@ -114,6 +114,8 @@ All keys optional.
   `{at, feature, account (the context id), model, cost, tokens, ms, ok, tool}`. The newest 24 months are kept.
   Unset: no ledger.
 - `sessionTitles`: a JSON file `{<Claude session id>: {title}}` with better titles for the "Mine" list.
+- `harness.timeout`: seconds a harness run may take (default: the caller's own limit, 15 minutes for the analysis
+  and 25 for a reviewer). A configured harness has no cost cap, so a slow CLI can be given more time.
 - `harness`: your own review CLI, as the program and its fixed arguments. Setup lists it as `harness`, finds it by
   its first argument, and counts it as the AI program, so `claude` need not be installed when it is set. The calls
   that run it are not wired yet.
