@@ -56,6 +56,9 @@ export function harnessTool(cfg) {
 // Every program name to look up on PATH.
 export const programs = () => [...new Set(TOOLS.flatMap((t) => [t.id, ...(t.also ?? [])]))];
 
+// Every program name a check must look up now: the tools plus the configured harness's executable.
+export const checkNames = (cfg) => [...new Set([...programs(), ...(harnessCommand(cfg) ?? []).slice(0, 1)])];
+
 // The shell script that prints `name=path` per program (empty: missing) and `auth:gh=0|1`, `auth:glab=0|1`, `auth:claude=0|1`.
 // extra: folders language servers often live in, the same ones lsp_bridge.py adds to PATH.
 export function checkScript(extra = []) {
@@ -88,12 +91,12 @@ export function parseCheck(text) {
 export function report({ found = {}, auth = {} } = {}, os = "darwin", extra = []) {
   return [...TOOLS, ...extra].filter((t) => !t.os || t.os === os).map((t) => {
     const names = t.command ? [t.command[0]] : [t.id, ...(t.also ?? [])]; // a harness is found by its executable
-    const have = names.every((n) => Boolean(found[n]));
+    const have = names.every((n) => Boolean(found[n])), probed = names.every((n) => n in found);
     const loggedOut = have && t.auth && auth[t.id] === false;
     const status = !have ? (t.need === "required" ? "missing" : "optional-missing") : loggedOut ? "logged-out" : "ok";
     const what = t.need === "lsp" ? `${t.impact === false ? "Go to definition" : "Go to definition and Impact"} in ${t.lang} ${t.impact === false && !t.also ? "needs" : "need"} ${[t.id, ...(t.also ?? [])].join(" + ")}` : t.what;
     const install = status === "logged-out" ? t.auth : status === "ok" ? null : (os === "linux" ? t.linux : t.mac) ?? null;
-    return { id: t.id, need: t.need, group: t.group ?? null, status, what, install, cmd: t.command ? t.command.join(" ") : null, path: found[names[0]] ?? null };
+    return { id: t.id, need: t.need, group: t.group ?? null, status, probed, what, install, cmd: t.command ? t.command.join(" ") : null, path: found[names[0]] ?? null };
   });
 }
 

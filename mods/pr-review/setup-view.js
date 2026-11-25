@@ -5,7 +5,7 @@
 import { div } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar } from "gpui-base";
 import { exec, run, shared, setShared, appHome, readTextFile } from "herdr";
-import { checkScript, parseCheck, report, blockers, found, pretypeArgv, harnessTool } from "./setup.js";
+import { checkScript, parseCheck, report, blockers, found, pretypeArgv, harnessTool, checkNames } from "./setup.js";
 import { TYPE } from "./views.js"; // the text sizes (U34)
 
 export const SETUP_KEY = "pr-review.setup";
@@ -41,7 +41,10 @@ export function runSetup(view, cx, force = true) {
 
 // On first open (nothing cached): check, and show Setup when something required is missing.
 export async function loadSetup(view, cx) {
-  if (shared(SETUP_KEY)) return;
+  if (!view.cfg) view.cfg = await readConfig().catch(() => ({}));
+  // A cached check from an older program list lacks the rows added since: look again rather than show them missing.
+  const s = shared(SETUP_KEY), want = checkNames(view.cfg);
+  if (s && want.every((n) => n in (s.found ?? {}))) return;
   runSetup(view, cx, true);
   view.setupFirst = true;
 }
