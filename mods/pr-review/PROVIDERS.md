@@ -128,13 +128,15 @@ Feature names in the ledger: `Review analysis`, `Review analysis (since last rev
 Setup (PRs ▾ → Setup) checks each one and offers the install command; nothing is installed without you pressing
 Enter in the terminal it opens.
 
-- Required: `git` (2.46 or later for the push lock where a remote has a push URL of its own), `gh` (logged in),
-  `claude` (logged in), `python3`.
+- Required: `git` (2.46 or later for the push lock where a remote has a push URL of its own) and `python3`, plus one
+  member of each group: `gh` or `glab` (logged in), and `claude` (logged in) or the harness from `harness.command`.
+  A group blocks only when none of its members is usable; the pane names it "gh or glab", "claude or harness". A
+  missing member of a satisfied group is listed as not installed, never as required.
 - Optional: `codex` (the Codex reviewer is offered only when it is on PATH; it needs a Codex with permission
   profiles), `bwrap` on Linux (the sandbox for probes; macOS has `sandbox-exec` built in), `acli` (the Jira ticket
   a PR names).
-- The reviewers use Claude Code's `/security-review` and a `/code-review` command; when a command is missing in
-  your Claude setup, the same review runs as a plain prompt.
+- The reviewers run a plain prompt; the `/code-review` and `/security-review` slash commands are not used, so the
+  same path works on Claude Code and on a harness.
 - Language servers, for go-to-definition and hover in the diff (each one only turns that language on):
   `typescript-language-server` + `tsc` (TypeScript, JavaScript), `pyright-langserver` (Python), `gopls` (Go),
   `rust-analyzer` (Rust), `jdtls` (Java), `terraform-ls` (Terraform), `clangd` (C, C++). They are found on PATH
