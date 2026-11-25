@@ -118,7 +118,7 @@ All keys optional.
   its first argument, and counts it as the AI program, so `claude` need not be installed when it is set. The calls
   that run it are not wired yet.
 
-Feature names in the ledger: `Review analysis`, `Review analysis (since last review)`, `Claude code review`,
+Feature names in the ledger: `Review analysis`, `Review analysis (since last review)`, `Code review`,
 `Security review`, `Codex review`, `PR triage`, `PR fix verification`.
 
 ## 6. Programs

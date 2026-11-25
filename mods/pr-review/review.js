@@ -166,7 +166,7 @@ const exploreDir = () => `${appHome()}/pr-data/explore`; // explorations: <id>.j
 const deepFile = () => `${appHome()}/pr-data/deep.json`; // Ask threads per PR and drill-downs per node (explore.js bounds both)
 const ctxDoc = () => shared(C.CONTEXTS_KEY);
 const prCtx = (pr) => C.prContext(ctxDoc(), pr, home());
-const ALL_REVIEWERS = { claude: ["Claude code review", "ansi5"], security: ["Security review", "ansi1"], resilience: ["Resilience review", "ansi4"], codex: ["Codex review", "ansi6"] };
+const ALL_REVIEWERS = { claude: ["Code review", "ansi5"], security: ["Security review", "ansi1"], resilience: ["Resilience review", "ansi4"], codex: ["Codex review", "ansi6"] };
 // Codex is optional: offered only when `codex` is on PATH (Setup's last check). Labels stay for findings already there.
 // The analysis files its own findings inside its layers, and an AI suggestion can be one source of a finding (pr.js
 // mergeFindings): a label and colour here, never a run of their own.
@@ -217,7 +217,7 @@ const openCodexMenu = () => { const cur = shared("review.codexModel") || ""; ret
 const reviewsPop = () => { const cx = hasTool("codex"); return { width: 500, height: 28 + 60 * (reviewersNow().length + 1) + (cx && codexChoices().length ? 36 : 0) + (cx ? 152 : 60) }; };
 export function renderReviews() {
   const t = theme(), runs = runsOf(shared("review.reviewers") ?? {}), meta = shared("review.meta") ?? {}, pr = shared("review.target"), mine = meta.url === pr?.url;
-  const total = mine ? meta.findings?.total ?? 0 : 0, a = mine ? meta.shown : null, cap = REVIEW_CAP[tierOf(model())];
+  const total = mine ? meta.findings?.total ?? 0 : 0, a = mine ? meta.shown : null, harness = harnessChoices().length > 0, cap = harness ? null : REVIEW_CAP[tierOf(model())];
   const row = (k, label, c, line, bad, right) => h_flex().id(`rv-rr-${k}`).gap(10).px(8).py(6).rounded(7).items_center()
     .child(div().w(8).h(8).flex_none().rounded_full().bg(t[c]))
     .child(v_flex().flex_1().min_w(0).child(div().font_semibold().child(label)).child(div().text_size(TYPE.small).line_height(1.4).whitespace_normal().text_color(bad ? t.ansi1 : t.muted).child(line)))
@@ -230,16 +230,16 @@ export function renderReviews() {
     .children(reviewersNow().map(([k, [label, c]]) => {
       const r = runs[k], n = r?.count ?? 0, done = r?.state === "done";
       const line = TH.runLine(r, n ? 0 : total, { running: r?.started ? clock(Date.now() - Date.parse(r.started)) : "", took: r?.ms ? clock(r.ms) : null, ago: r?.at ? ago(r.at) : null })
-        + (k === "codex" ? (done ? " · Codex does not report its price" : "") : !r?.state ? ` · capped at $${cap}` : "") + (k === "security" && mine && meta.securityOffer ? `. ${meta.securityOffer}` : "");
+        + (k === "codex" ? (done ? " · Codex does not report its price" : "") : !r?.state ? (harness ? " · the harness sets its budget" : ` · capped at $${cap}`) : "") + (k === "security" && mine && meta.securityOffer ? `. ${meta.securityOffer}` : "");
       return row(k, label, c, line, r?.state === "failed", r?.state === "running" ? div().flex_none().child(SPIN[0]).frames(SPIN, 90)
         : pill(`rv-rrun-${k}`, t, runLabel(r, k === "codex" || !mine ? null : meta.prices?.[k] ?? null, "", true), () => { run(`pr-review.reviewer:${k}`); closeOverlay(props().overlay); }).flex_none()
-          .tooltip(k === "codex" ? `Run the codex CLI on the PR head, with its own login; its price is not reported. ${TH.CODEX_MAY} On someone else's PR in Restricted Mode it asks once first.` : `One read-only review of the PR head with ${modelLabel(model())}, capped at $${cap}`));
+          .tooltip(k === "codex" ? `Run the codex CLI on the PR head, with its own login; its price is not reported. ${TH.CODEX_MAY} On someone else's PR in Restricted Mode it asks once first.` : `One read-only review of the PR head with ${modelLabel(model())}, ${harness ? "and the harness command's own budget applies" : `capped at $${cap}`}`));
     }))
     .when(hasTool("codex") && codexChoices().length > 0, (e) => e.child(h_flex().px(8).gap(8).items_center()
       .child(div().text_size(TYPE.small).text_color(t.muted).child("Codex review model"))
       .child(pill("rv-cxm", t, `${cur.label} ▾`, () => openCodexMenu()).tooltip(cur.description || "The model in Codex's own settings"))))
     .child(div().px(8).pt(4).text_size(TYPE.small).line_height(1.45).whitespace_normal().text_color(t.muted)
-      .child(`Claude reviews: ${accountOf(pr ? prCtx(pr) : C.defaultOf(ctxDoc()))}. They read the PR head in a checkout, read-only, and send the diff and the files they open to the provider.`
+      .child(`${harness ? "Reviews" : "Claude reviews"}: ${harness ? modelLabel(model()) : accountOf(pr ? prCtx(pr) : C.defaultOf(ctxDoc()))}. ${harness ? "They" : "They"} read the PR head in a checkout, read-only, and send the diff and the files they open to the ${harness ? "harness" : "provider"}.`
         + (hasTool("codex") ? ` Codex review: the codex CLI with its own login. It is a second provider (OpenAI) and gets the same checkout. ${TH.CODEX_MAY}` : "")));
 }
 
@@ -3922,7 +3922,7 @@ export const ReviewMode = {
       .child(div().text_size(TYPE.small).text_color(t.muted).whitespace_normal().child(what));
     return h_flex().gap(12).items_start()
       .child(card("rv-start-ai", `Analyze with ${modelLabel(m)}`, `Understand the change: layers in reading order, pictures, sample values and a walkthrough. ${this.estimate(m)}.`, (_e, cx) => this.loadAi(cx, "run"), Boolean(this.aiBusy)))
-      .child(card("rv-start-cr", "Run Claude code review", "Find problems: bugs and risks as findings on their lines, each with Fix and Verify.", (_e, cx) => this.runReviewer("claude", cx), Boolean(cr.busy)));
+      .child(card("rv-start-cr", "Run code review", "Find problems: bugs and risks as findings on their lines, each with Fix and Verify.", (_e, cx) => this.runReviewer("claude", cx), Boolean(cr.busy)));
   },
 
   // ---- Ask about this (review.py main_ask, "Review: architecture question"): a question on the picture, a node or a
