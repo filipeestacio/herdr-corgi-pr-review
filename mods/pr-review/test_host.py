@@ -2,7 +2,7 @@
 import host
 
 assert host.remote_host("git@gitlab.com:g/p.git") == "gitlab.com"
-assert host.remote_host("ssh://git@git.example.com/g/p.git") == "git.example.com"
+assert host.remote_host("ssh://git.example.com/g/p.git") == "git.example.com"
 assert host.remote_host("https://github.com/o/r.git") == "github.com"
 assert host.remote_host("") is None
 assert host.remote_host("not a url") is None

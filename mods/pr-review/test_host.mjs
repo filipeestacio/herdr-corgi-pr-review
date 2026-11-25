@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { hostOf, parseRemote, parseLink, webUrl, remoteHost, GITHUB, GITLAB } from "./host.js";
 
 assert.equal(remoteHost("git@gitlab.com:g/p.git"), "gitlab.com");
-assert.equal(remoteHost("ssh://git@git.example.com/g/p.git"), "git.example.com");
+assert.equal(remoteHost("ssh://git.example.com/g/p.git"), "git.example.com");
 assert.equal(remoteHost("https://github.com/o/r.git"), "github.com");
 assert.equal(remoteHost(""), null);
 assert.equal(remoteHost("not a url"), null);

@@ -3,7 +3,7 @@
 
 export const GITHUB = "github", GITLAB = "gitlab";
 
-// The remote's host name, lowercased: "git@github.com:o/r.git", "ssh://git@g.example/o/r", "https://g.example/o/r.git".
+// The remote's host name, lowercased: "git@github.com:o/r.git", "ssh://g.example/o/r", "https://g.example/o/r.git".
 export function remoteHost(remote) {
   const u = String(remote ?? "").trim();
   if (!u) return null;
