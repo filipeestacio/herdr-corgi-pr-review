@@ -50,6 +50,24 @@ except SystemExit as e:
 print("ok")
 
 
+# A file at the head, and a project's visibility.
+mrs.subprocess.run = fake(json.dumps(MR))
+assert mrs.view("https://gitlab.com/g/sub/p/-/merge_requests/7")["headRefOid"].startswith("26a0")
+def routed(args, **kw):
+    calls.append(args)
+    if "view" in args:
+        return subprocess.CompletedProcess(args, 0, json.dumps(MR), "")
+    return subprocess.CompletedProcess(args, 0, "print(1)\n", "")
+mrs.subprocess.run = routed
+assert mrs.file_at("https://gitlab.com/g/sub/p/-/merge_requests/7", "src/a b.py") == "print(1)\n"
+assert calls[-1][:3] == ["glab", "api", "projects/g%2Fsub%2Fp/repository/files/src%2Fa%20b.py/raw?ref=26a03336956ffd4964b829aaf729e05a8756e5c6"], calls[-1]
+mrs.subprocess.run = fake(json.dumps({"visibility": "private"}))
+assert mrs.visibility("g/sub/p") == "private"
+assert calls[-1][2] == "projects/g%2Fsub%2Fp", calls[-1]
+assert mrs.glab("gitlab.com") == ["glab"] and mrs.glab("gitlab.example.com") == ["glab", "--hostname", "gitlab.example.com"]
+print("file and visibility ok")
+
+
 # The discussions page: a line comment, its reply, a system note and a general note (left out), one thread.
 NOTE = {"id": 5, "body": "why?", "system": False, "author": {"username": "ann"}, "created_at": "2026-01-01T00:00:00Z",
         "position": {"new_path": "a.py", "old_path": "a.py", "new_line": 3, "old_line": None, "head_sha": "h", "base_sha": "b"},

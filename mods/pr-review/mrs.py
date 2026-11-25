@@ -5,6 +5,8 @@
   python3 mrs.py diff <merge request url>    the MR's unified diff, as `gh pr diff` gives it
   python3 mrs.py view <merge request url>    one MR as a PR object, with its head
   python3 mrs.py threads <merge request url> the line comments and their threads, as the review reads GitHub's
+  python3 mrs.py file <merge request url> <path>   that file at the MR's head commit
+  python3 mrs.py visibility <group/project>  the project's visibility (public, internal, private)
 
 Every call goes through `glab`, which must be signed in (`glab auth login`). A failure prints the reason to stderr and
 exits 1; the caller shows it as the list's or the diff's error.
@@ -103,6 +105,27 @@ def threads(url):
     return {"comments": comments, "threads": states}
 
 
+def glab(hostname):
+    """glab for that host: it defaults to gitlab.com."""
+    return GLAB if not hostname or hostname == "gitlab.com" else GLAB + ["--hostname", hostname]
+
+
+def file_at(url, path):
+    """A file of the MR's head commit, as its text."""
+    ref = parse(url)
+    if not ref:
+        raise SystemExit(f"not a merge request link: {url}")
+    head = view(url)["headRefOid"]
+    project = quote(ref["repo"], safe="")
+    return run(glab(ref["hostname"]) + ["api", f"projects/{project}/repository/files/{quote(path, safe='')}/raw?ref={head}"])
+
+
+def visibility(repo):
+    """A project's visibility, as `gh repo view --json visibility` gives it for GitHub."""
+    got = json.loads(run(GLAB + ["api", f"projects/{quote(repo, safe='')}"]))
+    return str(got.get("visibility") or "").strip() or "unknown"
+
+
 def list_open(repo):
     return [to_pr(m) for m in json.loads(run(GLAB + ["mr", "list", "--repo", repo, "--per-page", "50", "--output", "json"]))]
 
@@ -133,6 +156,12 @@ def main(argv):
         sys.stdout.write(diff(target))
     elif what == "threads":
         print(json.dumps(threads(target)))
+    elif what == "file":
+        if len(argv) < 4:
+            raise SystemExit("file needs a merge request link and a path")
+        sys.stdout.write(file_at(target, argv[3]))
+    elif what == "visibility":
+        print(visibility(target))
     else:
         raise SystemExit(f"unknown command: {what}")
     return 0

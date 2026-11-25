@@ -2041,7 +2041,9 @@ export const ReviewMode = {
       let text = null;
       try {
         if (!this.head) {
-          const v = await exec("gh", ["pr", "view", url, "--json", "headRefOid"], { timeout: 30000 });
+          const v = hostOf(url) === "gitlab"
+            ? await exec("python3", [`${appHome()}/mods/pr-review/mrs.py`, "view", url], { timeout: 60000 })
+            : await exec("gh", ["pr", "view", url, "--json", "headRefOid"], { timeout: 30000 });
           if (v.code !== 0) throw new Error("PR head unknown");
           this.head = JSON.parse(v.stdout).headRefOid;
         }
@@ -2051,8 +2053,10 @@ export const ReviewMode = {
         const local = text === null && this.root ? await exec("git", ["cat-file", "-p", `${head}:${path}`], { cwd: this.root }).catch(() => null) : null;
         if (text !== null) {} else if (local?.code === 0) text = local.stdout;
         else {
-          const r = await exec("gh", ["api", "-H", "Accept: application/vnd.github.raw", `repos/${repo}/contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${head}`], { timeout: 60000 });
-          if (r.code !== 0) throw new Error(r.stderr.trim().slice(0, 160));
+          const r = hostOf(url) === "gitlab"
+            ? await exec("python3", [`${appHome()}/mods/pr-review/mrs.py`, "file", url, path], { timeout: 60000 })
+            : await exec("gh", ["api", "-H", "Accept: application/vnd.github.raw", `repos/${repo}/contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${head}`], { timeout: 60000 });
+          if (r.code !== 0) throw new Error(String(r.stderr).trim().slice(0, 160));
           text = r.stdout;
         }
       } catch (e) { if (this.prSel?.url === url) { this.full[path] = `Could not load the file: ${String(e).replace(/^Error: /, "")}`; this.rowsTouched(); } }
@@ -3511,7 +3515,10 @@ export const ReviewMode = {
       const prs = JSON.parse(await readTextFile(`${appHome()}/pr-data/prs.json`).catch(() => null) ?? "{}").prs ?? [];
       const known = prs.find((x) => x.url === p.url);
       if (known) return startReview(known);
-      const r = p.url ? await exec("gh", ["pr", "view", p.url, "--json", "number,title,author,headRefName,headRefOid,baseRefName,updatedAt,isDraft,state,url,additions,deletions,reviewDecision"], { timeout: 30000 }).catch(() => null) : null;
+      const r = !p.url ? null
+        : hostOf(p.url) === "gitlab"
+          ? await exec("python3", [`${appHome()}/mods/pr-review/mrs.py`, "view", p.url], { timeout: 60000 }).catch(() => null)
+          : await exec("gh", ["pr", "view", p.url, "--json", "number,title,author,headRefName,headRefOid,baseRefName,updatedAt,isDraft,state,url,additions,deletions,reviewDecision"], { timeout: 30000 }).catch(() => null);
       if (r?.code === 0) startReview(ghTarget(JSON.parse(r.stdout), { context: this.ctxId(), source: "related", cwd: this.prSel?.cwd ?? null }));
       else if (p.url) openUrl(p.url);
     });
@@ -5089,9 +5096,12 @@ export const ReviewMode = {
     const repo = this.prSel?.repo;
     if (!repo || this.repoVis?.[repo] !== undefined) return;
     this.repoVis = { ...this.repoVis, [repo]: null };
+    const gitlab = hostOf(this.prSel?.url) === "gitlab";
     const argv = [...this.ctxEnv(this.ctxId()), "gh", "repo", "view", repo, "--json", "visibility", "--jq", ".visibility"];
     cx.spawn(async (cx) => {
-      const r = await exec(argv[0], argv.slice(1), { timeout: 20000 }).catch(() => null);
+      const r = gitlab
+        ? await exec("python3", [`${appHome()}/mods/pr-review/mrs.py`, "visibility", repo], { timeout: 20000 }).catch(() => null)
+        : await exec(argv[0], argv.slice(1), { timeout: 20000 }).catch(() => null);
       if (r?.code === 0 && r.stdout.trim()) { this.repoVis = { ...this.repoVis, [repo]: r.stdout.trim() }; cx.notify(); }
     });
   },
