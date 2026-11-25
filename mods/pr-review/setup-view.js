@@ -88,7 +88,7 @@ export function renderSetup(view, t) {
       .child(div().flex_1().min_w(0).truncate().font_semibold().text_size(TYPE.small).child(x.id))
       .when(Boolean(x.install), (e) => e
         .child(btn(`setup-copy-${x.id}`, "Copy", (_e, cx) => { copyText(x.install); view.note = `Copied: ${x.install}`; cx.notify(); }, false, "Copy the install command to the clipboard"))
-        .child(btn(`setup-run-${x.id}`, x.status === "logged-out" ? "Log in in terminal" : "Install in terminal", (_e, cx) => install(view, x, cx), x.need === "required", "Open a terminal with the command typed in, not run: press Enter there"))))
+        .child(btn(`setup-run-${x.id}`, x.status === "logged-out" ? "Log in in terminal" : "Install in terminal", (_e, cx) => install(view, x, cx), x.status === "missing" || x.status === "logged-out", "Open a terminal with the command typed in, not run: press Enter there"))))
     .child(div().pl(92).text_size(TYPE.small).text_color(t.muted).whitespace_normal().child(x.what))
     .when(Boolean(x.cmd ?? x.install), (e) => e.child(div().pl(92).text_size(TYPE.small).text_color(t.dim).font_family("JetBrains Mono").truncate().child(x.cmd ?? x.install)))
     .when(!x.cmd && !x.install && x.status !== "ok", (e) => e.child(div().pl(92).text_size(TYPE.small).text_color(t.dim).child("See the project's install page for this OS.")));

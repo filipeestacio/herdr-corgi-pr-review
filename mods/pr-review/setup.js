@@ -89,7 +89,7 @@ export function parseCheck(text) {
 // One row per tool: status ok | missing (required) | optional-missing | logged-out, what it enables, the install
 // command for this OS ("darwin" or "linux"; null when there is no simple one).
 export function report({ found = {}, auth = {} } = {}, os = "darwin", extra = []) {
-  return [...TOOLS, ...extra].filter((t) => !t.os || t.os === os).map((t) => {
+  const rows = [...TOOLS, ...extra].filter((t) => !t.os || t.os === os).map((t) => {
     const names = t.command ? [t.command[0]] : [t.id, ...(t.also ?? [])]; // a harness is found by its executable
     const have = names.every((n) => Boolean(found[n])), probed = names.every((n) => n in found);
     const loggedOut = have && t.auth && auth[t.id] === false;
@@ -98,6 +98,14 @@ export function report({ found = {}, auth = {} } = {}, os = "darwin", extra = []
     const install = status === "logged-out" ? t.auth : status === "ok" ? null : (os === "linux" ? t.linux : t.mac) ?? null;
     return { id: t.id, need: t.need, group: t.group ?? null, status, probed, what, install, cmd: t.command ? t.command.join(" ") : null, path: found[names[0]] ?? null };
   });
+  // A group one member satisfies makes its other members optional: they are listed, not required.
+  const groups = new Map();
+  for (const r of rows) if (r.group) groups.set(r.group, [...(groups.get(r.group) ?? []), r]);
+  for (const members of groups.values()) {
+    if (!members.some((r) => r.status === "ok")) continue;
+    for (const r of members) if (r.status === "missing") r.status = "optional-missing";
+  }
+  return rows;
 }
 
 // The bridge's "<program> is not installed" (lsp_bridge.py) with how to get it: the language it is for and this OS's

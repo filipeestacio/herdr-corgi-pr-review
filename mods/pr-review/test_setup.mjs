@@ -42,7 +42,7 @@ const half = parseCheck(out(["git", "gh", "claude", "python3", "typescript-langu
 assert.equal(byId(report(half))["typescript-language-server"].status, "optional-missing");
 
 // A one-of group needs one member: git/gh alone satisfies "git", and claude alone satisfies "llm".
-assert.equal(r.glab.status, "missing"); // the other git CLI is absent, and that is not a blocker
+assert.equal(r.glab.status, "optional-missing"); // a group one member satisfies makes the other optional
 assert.equal(blockers(report(min)).length, 0);
 assert.match(r.claude.what, /Claude Code CLI/);
 
@@ -75,7 +75,7 @@ const hv = parseCheck(out(["git", "glab", "python3"], "auth:glab=1\n") + "openco
 const hr = byId(report(hv, "darwin", [hrow]));
 assert.equal(hr.harness.status, "ok");
 assert.equal(hr.harness.cmd, "opencode run");
-assert.equal(hr.claude.status, "missing"); // still listed, no longer required: the harness is there
+assert.equal(hr.claude.status, "optional-missing"); // still listed, no longer required: the harness is there
 assert.deepEqual(blockers(report(hv, "darwin", [hrow])), []);
 assert.ok(checkScript(["opencode"]).includes("opencode"));
 
