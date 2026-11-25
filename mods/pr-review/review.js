@@ -12,7 +12,8 @@
 import { div } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, TextView, v_virtual_list, VirtualListScrollHandle, ScrollHandle, Textarea, TextareaState, Input, InputState, HoverCard } from "gpui-base";
 import { exec, hc, run, focused, pickFolder, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, nextCommand, watchFolder, openOverlay, closeOverlay, props, home, placement } from "herdr";
-import { spaces, agents, terminals, watch } from "./live.js"; // never straight from Herdr (live.js says why)
+import { spaces, agents, terminals, watch } from "./live.js";
+import { hostOf } from "./host.js"; // never straight from Herdr (live.js says why)
 import { parseReports, findingStatus, mergeFindings, findingCounts, countLine, runsOf, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
 import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig } from "./setup-view.js";
@@ -2706,7 +2707,9 @@ export const ReviewMode = {
   // The comments themselves: a list, false when gh failed, null when not asked (no GitHub PR, dry run). One fetch at a
   // time: an ask while one runs for this PR gets the same answer.
   ghComments() {
-    const pr = this.prSel, m = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(pr?.url ?? "");
+    const pr = this.prSel;
+    if (hostOf(pr?.url) === "gitlab") return this.mrComments(pr); // a merge request: mrs.py threads
+    const m = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(pr?.url ?? "");
     if (!m || this.cfg?.dryRun) return Promise.resolve(null); // dry run: no network (the demo)
     if (this.ghIn?.url === pr.url) return this.ghIn.p;
     const env = this.ctxEnv(this.ctxId()), [owner, name] = m[1].split("/");
@@ -2723,6 +2726,21 @@ export const ReviewMode = {
     this.ghIn = { url: pr.url, p };
     return p;
   },
+  // A merge request's discussions as the review shows GitHub's comments: mrs.py threads, one fetch at a time.
+  mrComments(pr) {
+    if (this.cfg?.dryRun) return Promise.resolve(null);
+    if (this.ghIn?.url === pr.url) return this.ghIn.p;
+    const p = exec("python3", [`${appHome()}/mods/pr-review/mrs.py`, "threads", pr.url], { timeout: 60000 }).catch(() => null)
+      .then((r) => {
+        if (r?.code !== 0) return false;
+        const got = JSON.parse(r.stdout);
+        return TH.withThreadState(got.comments ?? [], got.threads ?? []);
+      })
+      .finally(() => { if (this.ghIn?.p === p) this.ghIn = null; });
+    this.ghIn = { url: pr.url, p };
+    return p;
+  },
+
   // GitHub's comments as the review shows them (threads.js ghShown), memoized: the Show switch's resolved and bots.
   ghNow() {
     const deps = [this.gh, this.showResolved, this.allBots];

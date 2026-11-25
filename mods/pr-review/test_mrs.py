@@ -48,3 +48,25 @@ try:
 except SystemExit as e:
     assert "not signed in" in str(e), e
 print("ok")
+
+
+# The discussions page: a line comment, its reply, a system note and a general note (left out), one thread.
+NOTE = {"id": 5, "body": "why?", "system": False, "author": {"username": "ann"}, "created_at": "2026-01-01T00:00:00Z",
+        "position": {"new_path": "a.py", "old_path": "a.py", "new_line": 3, "old_line": None, "head_sha": "h", "base_sha": "b"},
+        "resolved": False}
+SYSTEM = {"id": 6, "body": "added 1 commit", "system": True, "author": {"username": "ann"}}
+GENERAL = {"id": 8, "body": "nice work", "system": False, "author": {"username": "bob"}}
+TALK = [{"id": 1, "notes": [NOTE, {**NOTE, "id": 7, "body": "fixed"}]}, {"id": 2, "notes": [SYSTEM]}, {"id": 3, "notes": [GENERAL]}]
+mrs.subprocess.run = fake(json.dumps(TALK))
+got = mrs.threads("https://gitlab.com/g/p/-/merge_requests/1")
+assert [c["id"] for c in got["comments"]] == [5, 7], got["comments"]
+assert got["comments"][1]["in_reply_to_id"] == 5 and got["comments"][0]["in_reply_to_id"] is None
+assert (got["comments"][0]["side"], got["comments"][0]["path"], got["comments"][0]["line"]) == ("RIGHT", "a.py", 3)
+assert got["threads"] == [{"id": 5, "resolved": False, "outdated": False}], got["threads"]
+assert calls[-1][:3] == ["glab", "api", "--paginate"], calls[-1]
+assert "merge_requests/1/discussions" in calls[-1][3], calls[-1]
+assert mrs.is_bot({"username": "renovate-bot"}) and not mrs.is_bot({"username": "ann"})
+
+# --paginate prints one array per page, one after the other: both pages are read.
+assert mrs.pages('[{"a": 1}]\n[{"a": 2}]') == [{"a": 1}, {"a": 2}]
+print("threads ok")
