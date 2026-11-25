@@ -134,6 +134,8 @@ const model = () => { const m = shared("review.model"), h = harnessChoices(); re
 // The models the CLIs offer per context ({at, claude, codex}, models.py), shared so the Reviews popup sees them too;
 // pr-data/models.json keeps them across restarts.
 const modelsFile = () => `${appHome()}/pr-data/models.json`;
+// A run writes its output beside its status file: a failure that never reached the status is still readable.
+const runLog = (status) => String(status).replace(/\.status$/, "") + ".log";
 const modelsDoc = () => shared("review.models") ?? {};
 // A model's name as its CLI calls it ("Opus 5.5"), else the class label, else the value itself.
 export const modelLabel = (m) => Object.values(modelsDoc()).flatMap((d) => [...(d?.harness ?? []), ...(d?.claude ?? [])]).find((x) => x.value === m)?.label ?? MODELS[m]?.label ?? m;
@@ -989,7 +991,7 @@ export const ReviewMode = {
       cx.spawn(async (cx) => {
         const before = await readTextFile(reqFile).catch(() => null);
         await writeTextFile(reqFile, JSON.stringify(req), before).catch((e) => { this.aiError = String(e); });
-        exec("sh", ["-c", 'nohup python3 "$0" "$1" >/dev/null 2>&1 &', `${appHome()}/mods/pr-review/review.py`, `@${reqFile}`])
+        exec("sh", ["-c", 'nohup python3 "$0" "$1" >"$2" 2>&1 &', `${appHome()}/mods/pr-review/review.py`, `@${reqFile}`, runLog(job.status)])
         .catch((e) => { this.aiError = String(e); this.aiBusy = false; cx.notify(); });
       });
       this.publish(); this.pollAi(cx, job, url, m);
@@ -1002,7 +1004,11 @@ export const ReviewMode = {
       this.ai = text || fallback ? this.mapSaved(JSON.parse(text ?? fallback), Boolean(text)) : null;
       this.securityNow(cx); // the findings file may have been read before the analysis: its resilience block is derived on the analysis (withResilience)
       this.aiFile = text ? job.out : fallback ? job.latest : null;
-      if (status?.busy && Date.now() - Date.parse(status.started) < 20 * 60000) { // a run started earlier, maybe from another copy
+      if (status?.busy && status.pid && !(await this.livePids([status.pid])).has(String(status.pid))) {
+        this.aiError = `The run ended without a result (its process is gone). Its output is in ${runLog(job.status)}.`;
+        const before = await readTextFile(job.status).catch(() => null);
+        await writeTextFile(job.status, JSON.stringify({ error: this.aiError }), before).catch(() => null);
+      } else if (status?.busy && Date.now() - Date.parse(status.started) < 20 * 60000) { // a run started earlier, maybe from another copy
         this.aiBusy = { model: m, started: Date.parse(status.started), status: job.status, pid: status.pid };
         this.pollAi(cx, job, url, m);
       }
@@ -1022,7 +1028,7 @@ export const ReviewMode = {
     const req = { diagrams: file, also: [job.out, job.latest].filter((x) => x !== file), head: this.head, model: m, context: this.ctxReq(), pr: job.req.pr,
       worktree: job.req.worktree, hunks: job.req.hunks, status };
     this.diaBusy = { status, file, url }; this.diaError = null;
-    exec("sh", ["-c", 'nohup python3 "$0" "$1" >/dev/null 2>&1 &', `${appHome()}/mods/pr-review/review.py`, JSON.stringify(req)])
+    exec("sh", ["-c", 'nohup python3 "$0" "$1" >"$2" 2>&1 &', `${appHome()}/mods/pr-review/review.py`, JSON.stringify(req), runLog(status)])
       .catch((e) => { this.diaError = String(e); this.diaBusy = null; cx.notify(); });
     this.pollDiagrams(cx);
     cx.notify();
@@ -1056,10 +1062,25 @@ export const ReviewMode = {
       .when(Boolean(this.diaError), (e) => e.child(div().max_w(260).truncate().text_color(t.ansi1).tooltip(this.diaError ?? "").child(this.diaError ?? "")));
   },
 
+  // The processes still running among these: one shell probe, so a stale "busy" is known without a per-pid spawn.
+  async livePids(pids) {
+    const list = [...new Set((pids ?? []).filter((x) => x !== null && x !== undefined).map(String))];
+    if (!list.length) return new Set();
+    const r = await exec("sh", ["-c", 'for p in "$@"; do kill -0 "$p" 2>/dev/null && echo "$p"; done', "sh", ...list]).catch(() => null);
+    return new Set(String(r?.stdout ?? "").split(/\s+/).filter(Boolean));
+  },
+
   pollAi(cx, job, url, m) {
     cx.timer.after(5000, (cx) => cx.spawn(async (cx) => {
       if (this.prSel?.url !== url || !this.aiBusy) return;
       const st = JSON.parse(await readTextFile(job.status).catch(() => null) ?? "null");
+      if (st?.busy && st.pid && !(await this.livePids([st.pid])).has(String(st.pid))) {
+        // The process is gone: the run ended without a result. Say so instead of showing it as running for ever.
+        const why = `The run ended without a result (its process is gone). Its output is in ${runLog(job.status)}.`;
+        const before = await readTextFile(job.status).catch(() => null);
+        await writeTextFile(job.status, JSON.stringify({ error: why }), before).catch(() => null);
+        this.aiBusy = false; this.aiError = why; this.publish(); cx.notify(); return;
+      }
       if (st?.busy || !st) { if (st?.pid) this.aiBusy.pid = st.pid; if (st?.passes) Object.assign(this.aiBusy, { pass: st.pass, passes: st.passes }); cx.notify(); return this.pollAi(cx, job, url, m); }
       this.aiBusy = false;
       if (st.error) this.aiError = st.error;
@@ -1282,7 +1303,12 @@ export const ReviewMode = {
     if (this.prSel?.url !== url) return;
     const d = doc ? JSON.parse(doc) : {};
     this.find = { ...this.find, list: withThreats(d.findings ?? [], d.security), runs: runsOf(d.runs), status: d.status ?? {}, reports: parseReports(rep), security: d.security ?? null, resilience: d.resilience ?? null, loaded: url };
-    for (const r of Object.values(this.find.runs)) if (r.busy && Date.now() - Date.parse(r.started) > 30 * 60000) { r.busy = false; r.state = "failed"; r.error = "Stopped without a result"; }
+    const running = Object.values(this.find.runs).filter((r) => r.busy && r.pid);
+    const live = await this.livePids(running.map((r) => r.pid));
+    for (const r of Object.values(this.find.runs)) {
+      if (r.busy && r.pid && !live.has(String(r.pid))) { r.busy = false; r.state = "failed"; r.error = `Stopped without a result (its process is gone). Its output is in ${findDir()}/${hash(url)}.${Object.keys(this.find.runs).find((k) => this.find.runs[k] === r)}.log`; }
+      else if (r.busy && Date.now() - Date.parse(r.started) > 30 * 60000) { r.busy = false; r.state = "failed"; r.error = "Stopped without a result"; }
+    }
     putShared("review.reviewers", this.find.runs);
     this.securityNow(cx);
     cx.notify();
@@ -1327,7 +1353,8 @@ export const ReviewMode = {
       head: w.head, level: "medium", file: `${findDir()}/${hash(pr.url)}.json`, ...(auto ? { auto } : {}) };
     this.find.runs[kind] = { state: "running", busy: true, started: new Date().toISOString(), scope: null, error: null, head: w.head, ...(auto ? { auto } : {}) };
     setShared("review.reviewers", { ...this.find.runs });
-    exec("sh", ["-c", 'nohup python3 "$0" "$1" >/dev/null 2>&1 &', `${appHome()}/mods/pr-review/reviewers.py`, JSON.stringify(req)])
+    const log = `${findDir()}/${hash(pr.url)}.${kind}.log`; // a reviewer's own output, for a run that ends without a state
+    exec("sh", ["-c", 'nohup python3 "$0" "$1" >"$2" 2>&1 &', `${appHome()}/mods/pr-review/reviewers.py`, JSON.stringify(req), log])
       .catch((e) => { this.note = `Could not start ${REVIEWERS[kind][0]}: ${e}`; cx.notify(); });
     cx.notify();
   },
