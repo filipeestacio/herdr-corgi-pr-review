@@ -1182,7 +1182,7 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     v.command("fix", cx); await settle();
     const p = v.sendP, text = v.sendText.value();
     assert.deepEqual([p.fix.items.map((x) => x.kind).sort(), p.fix.items.map((x) => x.id).sort(), Boolean(p.fix.pool)], [["comment", "comment", "finding", "finding"], ["gh77", mine, f1.id, f2.id].sort(), false]);
-    assert.match(p.own, /^COMMENTS · 2\n[^]*@copilot on GitHub · [^]*\n\nFINDINGS · 2\n/);
+    assert.match(p.own, /^COMMENTS · 2\n[^]*@copilot on GitHub or GitLab · [^]*\n\nFINDINGS · 2\n/);
     assert.ok(text.includes("a GitHub comment by @copilot") && text.includes("This loop never ends when `n` is 0.") && text.includes("Rename this.") && text.includes(f1.title) && text.includes(f2.title) && text.includes("The same task has a second part"), "the task has both parts");
     draw(v, "selection: the preview of comments and findings");
     p.fix.sent(cx, { route: "agent", agent: "a" }); await settle(); v.sendP = null;

@@ -655,3 +655,12 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   } finally { S.checking = false; S.exec = null; }
 }
 console.log("panel ok");
+
+// ---- a GitLab merge request takes a direct review too, and an unknown host does not
+{
+  const v = new PrReview();
+  v.prSel = { url: "https://gitlab.com/g/sub/p/-/merge_requests/7" };
+  assert.ok(v.routes().includes("github"), "a merge request posts directly, like a pull request");
+  v.prSel = { url: "https://example.com/x", session: null };
+  assert.deepEqual(v.routes(), ["agent"], "an unknown host only sends to an agent");
+}
