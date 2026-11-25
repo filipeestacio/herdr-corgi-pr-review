@@ -32,6 +32,90 @@ LEAN = ["--no-session-persistence", "--output-format", "json",
         "--disable-slash-commands"]
 
 
+def quote(text, n=200):
+    """A message shortened for one sentence, with an ellipsis when it was cut."""
+    text = str(text or "")
+    return text if len(text) <= n else text[:n].rstrip() + "…"
+
+
+def harness():
+    """The harness command from pr-review.config.json (harness.command), or None: argv with {model} and {prompt}
+    placeholders; the prompt is appended when the command has no {prompt}."""
+    cmd = (config().get("harness") or {}).get("command")
+    return [str(x) for x in cmd] if isinstance(cmd, list) and cmd else None
+
+
+def harness_argv(cmd, model, prompt):
+    """The command with {model} and {prompt} filled in; a {model} with no model chosen leaves no argument."""
+    args = [a.replace("{model}", model or "").replace("{prompt}", prompt) for a in cmd]
+    if not any("{prompt}" in a for a in cmd):
+        args.append(prompt)
+    return [a for a in args if a != ""]
+
+
+def json_in(text):
+    """The JSON object an answer carries: the text itself, else the first object in it (a fence, a sentence around
+    it). Claude's {answer} wrapper is unwrapped; any other object is the answer itself."""
+    text = str(text or "").strip()
+    try:
+        got = json.loads(text)
+        return (got["answer"] if isinstance(got, dict) and set(got) == {"answer"} else got) if isinstance(got, dict) else None
+    except ValueError:
+        pass
+    dec = json.JSONDecoder()
+    for i, ch in enumerate(text):
+        if ch != "{":
+            continue
+        try:
+            got, _ = dec.raw_decode(text, i)
+        except ValueError:
+            continue
+        if isinstance(got, dict):
+            return got["answer"] if set(got) == {"answer"} else got
+    return None
+
+
+def run_harness(feature, prompt, *, context=None, model="", schema=None, system=None, timeout=180, cwd=None, meta=None):
+    """Runs the configured harness command and reads its answer: the JSON object it prints (with a schema) or its
+    text. No cost or token count is reported for a command the mod does not own."""
+    cmd = harness()
+    if not cmd:
+        raise RunFailed(feature, "No harness is configured: set harness.command in pr-review.config.json.", "harness", {})
+    if any("{model}" in a for a in cmd) and not model:
+        raise RunFailed(feature, "Choose a model for the harness: its command needs one (harness.command has {model}).",
+                        "model", {})
+    text = f"{system}\n\n{prompt}" if system else prompt
+    if schema is not None:
+        text += "\n\nAnswer with one JSON object and nothing else, matching this schema:\n" + json.dumps(schema)
+    started = time.monotonic()
+    try:
+        out = subprocess.run(harness_argv(cmd, model, text), capture_output=True, text=True, timeout=timeout,
+                             env=env_for(context), cwd=str(cwd or APP))
+    except subprocess.TimeoutExpired:
+        raise RunFailed(feature, f"The harness run did not answer within {timeout} s. Try again.", "timeout", {}) from None
+    except FileNotFoundError:
+        raise RunFailed(feature, f"The harness command {cmd[0]!r} was not found. Check harness.command in "
+                                "pr-review.config.json.", "harness", {}) from None
+    except OSError as e:
+        raise RunFailed(feature, f"The harness command could not start ({e}). Check harness.command in "
+                                "pr-review.config.json.", "harness", {}) from None
+    ms = int((time.monotonic() - started) * 1000)
+    log(feature, (context or {}).get("id") or "default", model or "harness", 0, 0, ms, out.returncode == 0, tool="harness")
+    if out.returncode != 0:
+        said = (out.stderr or out.stdout or "").strip().splitlines()
+        raise RunFailed(feature, f"The harness run failed: {quote(said[0] if said else f'exit {out.returncode}', 200)}. "
+                                "Choose another model, or check harness.command in pr-review.config.json.", "harness",
+                     {"stderr": (out.stderr or "")[:2000]})
+    got = json_in(out.stdout)
+    if meta is not None:
+        meta.update(cost=None, tokens=0, usage={}, ms=ms, model_id=model or "harness", result=got, text=out.stdout)
+    if schema is not None:
+        if got is None:
+            raise RunFailed(feature, f"The harness answer could not be read ({quote(' '.join(out.stdout.split()), 100)}). "
+                                    "It must print one JSON object.", "unreadable", {"stdout": out.stdout[:2000]})
+        return got
+    return got if got is not None else out.stdout
+
 def config():
     try:
         return json.loads(CONFIG.read_text()) or {}
@@ -174,7 +258,6 @@ def failure(feature, returncode, stdout, stderr, data=None, *, model=None, timeo
     said = said.rstrip(". ")
     low, subtype = said.lower(), str(data.get("subtype") or "")
     how = "ended at once without an answer" if not spent else "failed"
-    quote = lambda text, n=200: text if len(text) <= n else text[:n].rstrip() + "…"
     if timeout is not None:
         return RunFailed(feature, f"The run took longer than {int(timeout)} s and was stopped. Try again, or choose a faster model.", "timeout", detail)
     if "usage limit" in low or "hit your limit" in low or "rate limit" in low or "credit balance" in low or "quota" in low:
@@ -208,6 +291,9 @@ def claude(feature, prompt, *, context=None, model="sonnet", schema=None, system
     result, text} of the call, for callers that show them.
     skills: keep skills and slash commands (a prompt like "/code-review medium 12") and read the run as a stream, since
     such a command may answer in a fork (parse); everything else stays lean."""
+    if harness():
+        return run_harness(feature, prompt, context=context, model=model, schema=schema, system=system, timeout=timeout,
+                           cwd=cwd, meta=meta)
     lean = [a for a in LEAN if not (skills and a == "--disable-slash-commands")]
     if skills:
         lean = ["stream-json" if a == "json" else a for a in lean] + ["--verbose"]  # stream-json needs --verbose with -p

@@ -2,8 +2,10 @@
 """The models the CLIs offer, for the review's model pickers.
 
 argv[1]: JSON {context: {id, env}} (the PR's context: Claude lists what that account may use).
-Prints {claude: [{value, label, description, resolved}], codex: [{value, label, description}]}; a CLI that is
-missing or doesn't answer gives an empty list.
+Prints {claude: [{value, label, description, resolved}], codex: [{value, label, description}], harness:
+[{value, label, description}]}; a CLI that is missing or doesn't answer gives an empty list.
+Harness: config harness.modelList names the models, or harness.models prints one id per line (harness.prefix
+keeps a subset).
 Claude: the CLI's initialize control request, the one the Agent SDK's supportedModels() sends. No model is called,
 and hooks, MCP servers and session files stay off. Codex: `codex debug models`, the models it lists in its picker.
 """
@@ -59,6 +61,28 @@ def claude_models(context, timeout=30):
         p.kill()
 
 
+def harness_list(timeout=60):
+    """The configured harness's models: config harness.models (argv) prints one model id per line; harness.prefix keeps
+    the ones that start with it, harness.label describes them."""
+    spec = llm.config().get("harness") or {}
+    picked = [str(v) for v in (spec.get("modelList") or []) if str(v).strip()]
+    if picked:  # a chosen shortlist: better than 500 ids in a menu
+        label = str(spec.get("label") or "")
+        return [{"value": v, "label": v, "description": label} for v in picked]
+    cmd = spec.get("models")
+    if not isinstance(cmd, list) or not cmd:
+        return []
+    try:
+        r = subprocess.run([str(x) for x in cmd], capture_output=True, text=True, timeout=timeout, env=llm.env_for(None))
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if r.returncode != 0:
+        return []
+    prefix, label = str(spec.get("prefix") or ""), str(spec.get("label") or "")
+    return [{"value": v, "label": v, "description": label}
+            for v in (line.strip() for line in r.stdout.splitlines()) if v and v.startswith(prefix)]
+
+
 def codex_models(timeout=30):
     codex = shutil.which("codex")
     if not codex:
@@ -72,4 +96,4 @@ def codex_models(timeout=30):
 
 if __name__ == "__main__":
     req = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}
-    print(json.dumps({"claude": claude_models(req.get("context")), "codex": codex_models()}))
+    print(json.dumps({"claude": claude_models(req.get("context")), "codex": codex_models(), "harness": harness_list()}))

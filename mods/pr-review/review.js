@@ -130,26 +130,29 @@ const TOUCH_MS = 5 * 60000; // a review's "last touched" on file may be this old
 // (PROVIDERS.md). Written on each registry change, 1.5 s after the last edit.
 // The AI analysis' model: any value the claude CLI offers (models.py), Sonnet until one is picked.
 // At least Sonnet (pr.js codeModel): every use reads or judges code, which Haiku is too weak for.
-const model = () => { const m = shared("review.model"); return codeModel(typeof m === "string" && m ? m : "sonnet"); };
+const model = () => { const m = shared("review.model"), h = harnessChoices(); return codeModel(typeof m === "string" && m ? m : h[0]?.value ?? "sonnet"); };
 // The models the CLIs offer per context ({at, claude, codex}, models.py), shared so the Reviews popup sees them too;
 // pr-data/models.json keeps them across restarts.
 const modelsFile = () => `${appHome()}/pr-data/models.json`;
 const modelsDoc = () => shared("review.models") ?? {};
 // A model's name as its CLI calls it ("Opus 5.5"), else the class label, else the value itself.
-export const modelLabel = (m) => Object.values(modelsDoc()).flatMap((d) => d?.claude ?? []).find((x) => x.value === m)?.label ?? MODELS[m]?.label ?? m;
+export const modelLabel = (m) => Object.values(modelsDoc()).flatMap((d) => [...(d?.harness ?? []), ...(d?.claude ?? [])]).find((x) => x.value === m)?.label ?? MODELS[m]?.label ?? m;
 // Codex's models (one login for every context): from whichever context asked last.
 const codexChoices = () => Object.values(modelsDoc()).map((d) => d?.codex ?? []).find((l) => l.length) ?? [];
+// A configured harness's models (models.py): the ones pr-review.config.json lists, whatever CLI they belong to.
+const harnessChoices = () => Object.values(modelsDoc()).map((d) => d?.harness ?? []).find((l) => l.length) ?? [];
 // The model id a picker value stands for ("opus" -> "claude-opus-5-5"), from the CLI's list.
 const resolvedOf = (m) => Object.values(modelsDoc()).flatMap((d) => d?.claude ?? []).find((x) => x.value === m)?.resolved ?? m;
 // "$4 / $20 per MTok": input and output.
-const priceText = (m) => { const [i, o] = priceOf(resolvedOf(m)); return `$${i} / $${o} per MTok`; };
+const priceText = (m) => { const r = resolvedOf(m); if (String(r).includes("/")) return "price not reported"; const [i, o] = priceOf(r); return `$${i} / $${o} per MTok`; };
 // The choices for a context: the CLI's aliases (opus, fable, sonnet: each its family's newest model; older models by
 // full id are left out, unless one is the current pick), or the classes until the CLI answered. Never Haiku: every
 // choice here reads or judges code (codeModel).
 const modelChoices = (ctx) => {
-  const list = modelsDoc()[ctx]?.claude ?? [], cur = model();
+  const list = modelsDoc()[ctx]?.claude ?? [], cur = model(), harness = harnessChoices();
   const shown = list.filter((c) => (!c.value.startsWith("claude-") || c.value === cur) && tierOf(c.value) !== "haiku");
-  return shown.length ? shown : Object.entries(MODELS).filter(([k]) => k !== "haiku").map(([value, v]) => ({ value, label: v.label, description: "" }));
+  const base = shown.length ? shown : (harness.length ? [] : Object.entries(MODELS).filter(([k]) => k !== "haiku").map(([value, v]) => ({ value, label: v.label, description: "" })));
+  return [...harness, ...base.filter((c) => !harness.some((h) => h.value === c.value))];
 };
 const cacheDir = () => `${appHome()}/pr-data/cache`;
 const valuesOn = () => shared("review.values") !== false; // inline example values (flow traces), on by default
