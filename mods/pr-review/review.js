@@ -144,7 +144,8 @@ const harnessChoices = () => Object.values(modelsDoc()).map((d) => d?.harness ??
 // The model id a picker value stands for ("opus" -> "claude-opus-5-5"), from the CLI's list.
 const resolvedOf = (m) => Object.values(modelsDoc()).flatMap((d) => d?.claude ?? []).find((x) => x.value === m)?.resolved ?? m;
 // "$4 / $20 per MTok": input and output.
-const priceText = (m) => { const r = resolvedOf(m); if (String(r).includes("/")) return "price not reported"; const [i, o] = priceOf(r); return `$${i} / $${o} per MTok`; };
+const harnessPrice = (m) => Object.values(modelsDoc()).flatMap((d) => d?.harness ?? []).find((c) => c.value === m)?.price ?? null;
+const priceText = (m) => { const p = harnessPrice(m); if (p) return `$${p[0]} / $${p[1]} per MTok`; const r = resolvedOf(m); if (String(r).includes("/")) return "price not reported"; const [i, o] = priceOf(r); return `$${i} / $${o} per MTok`; };
 // The choices for a context: the CLI's aliases (opus, fable, sonnet: each its family's newest model; older models by
 // full id are left out, unless one is the current pick), or the classes until the CLI answered. Never Haiku: every
 // choice here reads or judges code (codeModel).
@@ -5141,7 +5142,7 @@ export const ReviewMode = {
   // A rough price before running: input from the diff size, output and thinking from earlier runs; the cap is review.py's.
   estimate(m) {
     const chars = Math.min(MODELS[tierOf(m)].chars, (this.hunks ?? []).reduce((n, h) => n + h.lines.reduce((k, l) => k + l.length + 1, 0), 0));
-    const [inp, out] = priceOf(resolvedOf(m));
+    const [inp, out] = harnessPrice(m) ?? priceOf(resolvedOf(m));
     // ponytail: reading the code with tools multiplies input; ×4 from the first runs, a guess until the ledger says more.
     const usd = (((chars / 3.5 + 3000) * 4) * inp + 15000 * out) / 1e6;
     return `≈ $${usd.toFixed(2)} · cap $${CAP[tierOf(m)]}`;

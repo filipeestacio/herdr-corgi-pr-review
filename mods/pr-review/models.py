@@ -71,10 +71,20 @@ def harness_list(timeout=60):
     """The configured harness's models: config harness.models (argv) prints one model id per line; harness.prefix keeps
     the ones that start with it, harness.label describes them."""
     spec = llm.config().get("harness") or {}
-    picked = [str(v) for v in (spec.get("modelList") or []) if str(v).strip()]
-    if picked:  # a chosen shortlist: better than 500 ids in a menu
+    def entry(e, label):
+        mid = str(e.get("id") if isinstance(e, dict) else e).strip()
+        got = {"value": mid, "label": short(mid), "description": label}
+        price = e.get("price") if isinstance(e, dict) else None  # USD per million input and output tokens
+        if isinstance(price, (list, tuple)) and len(price) == 2:
+            got["price"] = [float(price[0]), float(price[1])]
+        elif isinstance(price, dict) and price.get("input") is not None and price.get("output") is not None:
+            got["price"] = [float(price["input"]), float(price["output"])]
+        return got
+
+    picked = [e for e in (spec.get("modelList") or []) if str(e.get("id") if isinstance(e, dict) else e).strip()]
+    if picked:  # a chosen shortlist: better than 500 ids in a menu, and each may carry its price
         label = str(spec.get("label") or "")
-        return [{"value": v, "label": short(v), "description": label} for v in picked]
+        return [entry(e, label) for e in picked]
     cmd = spec.get("models")
     if not isinstance(cmd, list) or not cmd:
         return []

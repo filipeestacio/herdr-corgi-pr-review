@@ -73,6 +73,11 @@ assert llm.claude("Triage", "p", context=None, model="a/x").strip() == "plain an
 
 # ---- the models the harness offers: a shortlist wins, else a command's output filtered by prefix
 assert models.short("llmgateway-providers/openai/gpt-6.2-sol") == "openai/gpt-6.2-sol"
+# A listed model may carry its price (USD per million input and output tokens), or none.
+llm.config = lambda: {"harness": {"modelList": [{"id": "a/b/c", "price": [3, 15]}, "d/e"], "label": "G"}}
+got = models.harness_list()
+assert got[0] == {"value": "a/b/c", "label": "b/c", "description": "G", "price": [3.0, 15.0]}, got[0]
+assert got[1] == {"value": "d/e", "label": "d/e", "description": "G"}, got[1]
 assert models.short("a/b") == "a/b"
 assert models.harness_list() == [{"value": "a/x", "label": "a/x", "description": ""}] if False else True
 llm.config = lambda: {"harness": {"modelList": ["a/x", "b/y"], "label": "Gateway"}}
