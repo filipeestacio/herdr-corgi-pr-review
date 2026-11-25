@@ -27,8 +27,10 @@ import shlex
 import shutil
 import subprocess
 import sys
+from urllib.parse import quote
 
 sys.dont_write_bytecode = True  # a .pyc written into the mod's folder reloads the mod: the view waiting for this run is gone
+import host
 import llm  # noqa: E402  (this folder)
 
 FEATURE = "Review analysis"
@@ -261,10 +263,21 @@ def task(pr, tickets=True):
     context allows tickets); a note says what was skipped. None: no PR."""
     if not (pr or "").startswith("https://"):
         return None
-    r = subprocess.run(["gh", "pr", "view", pr, "--json", "title,body,headRefName"], capture_output=True, text=True, timeout=60)
-    if r.returncode != 0:
-        raise RuntimeError(f"gh pr view: {r.stderr.strip()[:200]}")
-    d = json.loads(r.stdout)
+    link = host.parse_link(pr)
+    if link and link["host"] == host.GITLAB:
+        project = quote(link["repo"], safe="")
+        r = subprocess.run(["glab", "api", f"projects/{project}/merge_requests/{link['number']}"], capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:
+            raise RuntimeError(f"glab api: {(r.stderr or r.stdout).strip()[:200]}")
+        got = json.loads(r.stdout)
+        d = {"title": got.get("title") or "", "body": got.get("description") or "", "headRefName": got.get("source_branch")}
+    else:
+        if not shutil.which("gh"):  # no client for this host: the analysis runs without the PR's title and body
+            return None
+        r = subprocess.run(["gh", "pr", "view", pr, "--json", "title,body,headRefName"], capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:
+            raise RuntimeError(f"gh pr view: {r.stderr.strip()[:200]}")
+        d = json.loads(r.stdout)
     out = {"title": d["title"], "text": f"PR: {d['title']}\n\n{d.get('body') or ''}".strip(), "jira": None, "note": None}
     key = jira_key(d["title"], d.get("headRefName"), d.get("body"))
     if key and not tickets:
