@@ -60,3 +60,20 @@ names = related.security_trigger([{"path": "infra/main.tf"}, {"path": "src/app.p
 assert [r["text"] for r in names["reasons"]] == ["infra/main.tf changes infrastructure"]
 assert related.security_trigger([{"path": "src/app.py"}])["why_not"].startswith("The diff could not be read here")
 print("ok")
+
+# A CLI that is not installed is skipped, never run; a merge request's checks and mergeability come from its project.
+assert related.have("git") and not related.have("definitely-not-a-command")
+calls = []
+
+
+def fake(cmd, cwd=None, timeout=120):
+    calls.append(cmd)
+    if "pipelines" in cmd[-1]:
+        return json.dumps([{"id": 12, "status": "success", "web_url": "u"}, {"id": 13, "status": "running", "web_url": "v"}])
+    return json.dumps({"has_conflicts": False, "detailed_merge_status": "mergeable"})
+related.run = fake
+checks, mergeable, state = related.glab_state({"repo": "g/sub/p", "number": 7})
+assert [(c["name"], c["bucket"]) for c in checks] == [("Pipeline #12", "pass"), ("Pipeline #13", "pending")], checks
+assert (mergeable, state) == ("MERGEABLE", "mergeable"), (mergeable, state)
+assert calls[0][:3] == ["glab", "api", "projects/g%2Fsub%2Fp/merge_requests/7/pipelines?per_page=10"], calls[0]
+print("merge request context ok")

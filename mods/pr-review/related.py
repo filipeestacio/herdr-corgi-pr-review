@@ -17,7 +17,12 @@ import json
 import pathlib
 import re
 import subprocess
+import shutil
 import sys
+from urllib.parse import quote
+
+sys.dont_write_bytecode = True  # a .pyc written into the mod's folder reloads the mod: the view waiting for this run is gone
+import host
 
 OPEN_LIMIT, MERGED_DAYS, KEEP = 30, 90, 10
 PR_NUMBER = re.compile(r"Merge pull request #(\d+)|\(#(\d+)\)\s*$")
@@ -142,18 +147,40 @@ def merged_from_log(text):
     return list(out.values())
 
 
+def have(cmd):
+    """Whether a CLI is on PATH: a missing one is skipped, never run (FileNotFoundError would end the whole load)."""
+    return shutil.which(cmd) is not None
+
+
+def glab_state(link):
+    """Checks and mergeability of a merge request from its project's API: pipelines as the check rows, conflicts and
+    detailed_merge_status as mergeable and merge_state."""
+    project = quote(link["repo"], safe="")
+    pipes = json.loads(run(["glab", "api", f"projects/{project}/merge_requests/{link['number']}/pipelines?per_page=10"]) or "[]")
+    bucket = {"success": "pass", "failed": "fail", "canceled": "cancel", "running": "pending", "pending": "pending"}
+    checks = [{"name": f"Pipeline #{p.get('id')}", "bucket": bucket.get(str(p.get("status")), "pending"), "link": p.get("web_url")} for p in pipes]
+    mr = json.loads(run(["glab", "api", f"projects/{project}/merge_requests/{link['number']}"]) or "{}")
+    state = str(mr.get("detailed_merge_status") or mr.get("merge_status") or "")
+    mergeable = "CONFLICTING" if mr.get("has_conflicts") or state in ("conflict", "cannot_be_merged") else ("MERGEABLE" if state else None)
+    return checks, mergeable, state or None
+
+
 def run(cmd, cwd=None, timeout=120):
     r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
     return r.stdout if r.returncode in (0, 8) else None  # gh pr checks exits 8 while checks are pending
 
 
 def main(req):
-    m = re.match(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)", req["url"])
-    repo, number, files, wt = m[1], int(m[2]), req.get("files") or [], req.get("worktree")
-    raw = run(["gh", "pr", "list", "--repo", repo, "--state", "open", "--limit", str(OPEN_LIMIT), "--json", "number,title,url,files,headRefName,baseRefName,isCrossRepository"])
+    link = host.parse_link(req["url"])
+    if not link:
+        raise RuntimeError(f"Not a PR url: {req['url']}")
+    gitlab, repo, number, files, wt = link["host"] == host.GITLAB, link["repo"], link["number"], req.get("files") or [], req.get("worktree")
+    raw = "[]"
+    if not gitlab and have("gh"):  # the other open PRs of this repo: a GitLab project's merge requests are not read yet
+        raw = run(["gh", "pr", "list", "--repo", repo, "--state", "open", "--limit", str(OPEN_LIMIT), "--json", "number,title,url,files,headRefName,baseRefName,isCrossRepository"]) or "[]"
     others = [{"number": p["number"], "title": p["title"], "url": p["url"], "files": [f["path"] for f in p.get("files") or []],
                "branch": p.get("headRefName"), "base": p.get("baseRefName"), "fork": bool(p.get("isCrossRepository"))}
-              for p in json.loads(raw or "[]") if p["number"] != number]
+              for p in json.loads(raw) if p["number"] != number]
     below, above = stacked_on(req.get("base"), others), stacked_above(req.get("branch"), others)
     on_top = {p["number"] for p in above}
     merged, diff = [], None
@@ -162,14 +189,23 @@ def main(req):
         run(["git", "fetch", "--quiet", "origin", base], cwd=wt, timeout=300)
         diff = run(["git", "diff", "--no-color", "--no-ext-diff", "-U0", f"origin/{base}...{req.get('head') or 'HEAD'}"], cwd=wt)
         log = run(["git", "log", f"origin/{base}", f"--since={MERGED_DAYS}.days.ago", "--format=%x1e%s%x1f%b%x1d", "--name-only", "--", *files[:200]], cwd=wt)
-        merged = [{**p, "url": f"https://github.com/{repo}/pull/{p['number']}"} for p in overlap(files, merged_from_log(log or "")) if p["number"] != number]
-    checks = json.loads(run(["gh", "pr", "checks", req["url"], "--json", "name,bucket,link"]) or "[]")
-    view = json.loads(run(["gh", "pr", "view", req["url"], "--json", "mergeable,mergeStateStatus"]) or "{}")
+        merged = [{**p, "url": host.web_url({"host": link["host"], "hostname": link["hostname"], "repo": repo, "number": p["number"]})}
+                  for p in overlap(files, merged_from_log(log or "")) if p["number"] != number]
+    checks, mergeable, merge_state = [], None, None
+    try:
+        if gitlab and have("glab"):
+            checks, mergeable, merge_state = glab_state(link)
+        elif not gitlab and have("gh"):
+            checks = json.loads(run(["gh", "pr", "checks", req["url"], "--json", "name,bucket,link"]) or "[]")
+            view = json.loads(run(["gh", "pr", "view", req["url"], "--json", "mergeable,mergeStateStatus"]) or "{}")
+            mergeable, merge_state = view.get("mergeable"), view.get("mergeStateStatus")
+    except Exception:  # a CLI that fails leaves the review without checks, never without the page
+        checks, mergeable, merge_state = [], None, None
     result = {"at": dt.datetime.now().astimezone().isoformat(), "head": req.get("head"), "stacked_on": below, "stacked_above": above,
               "open": [{**p, "stacked": (bool(below) and p["number"] == below["number"]) or p["number"] in on_top, "above": p["number"] in on_top}
                        for p in overlap(files, others)], "merged": merged,
               "checks": [{"name": c["name"], "bucket": c.get("bucket") or "pending", "link": c.get("link")} for c in checks],
-              "mergeable": view.get("mergeable"), "merge_state": view.get("mergeStateStatus"),
+              "mergeable": mergeable, "merge_state": merge_state,
               "security_trigger": security_trigger(diff_files(diff) if diff else [{"path": f} for f in files])}
     out = pathlib.Path(req["out"])
     out.parent.mkdir(parents=True, exist_ok=True)
