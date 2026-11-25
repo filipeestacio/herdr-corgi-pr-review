@@ -2566,7 +2566,7 @@ export const ReviewMode = {
   // button adds to the pending review. Posting this one comment to GitHub at once is public and cannot be taken back,
   // so it waits behind the ▾ beside the main button (composeMore) instead of sitting next to it.
   composeButtons() {
-    const now = this.routeNow() === "github" ? [["▾", 28, "toggleComposeMore"], ...(this.composeMore ? [["Post now to GitHub", 160, "singleComment"]] : [])] : [["Send to agent…", 160, "singleComment"]];
+    const now = this.routeNow() === "github" ? [["▾", 28, "toggleComposeMore"], ...(this.composeMore ? [["Post now", 160, "singleComment"]] : [])] : [["Send to agent…", 160, "singleComment"]];
     const list = this.editing ? [["Suggestion", 104, "insertSuggestion"], ["Cancel", 80, "closeComposer"], ["Update comment", 140, "addDraft", true]]
       : [["Suggestion", 104, "insertSuggestion"], ["Cancel", 80, "closeComposer"], [this.comments.length ? "Add review comment" : "Start a review", 160, "addDraft", true], ...now];
     let x = GUTTER + 16; // the card's 4 px border and 12 px padding
@@ -2611,10 +2611,65 @@ export const ReviewMode = {
     const c = this.draftComment(), key = this.threadKey();
     if (!c) return cx.notify();
     const done = (cx, how) => { this.updateThreads(cx, (d) => TH.addThreads(d, key, [c], how)); this.fsel = null; this.closeComposer(cx); };
-    if (this.routeNow() === "github") { setShared("review.hintPostNow", true); return this.postSingleGh(c, cx, done); }
+    if (this.routeNow() === "github") {
+      setShared("review.hintPostNow", true);
+      return hostOf(this.prSel?.url) === "gitlab" ? this.postSingleMr(c, cx, done) : this.postSingleGh(c, cx, done);
+    }
     const { label } = this.sendAgent();
     this.previewSend(cx, { what: "Comment", own: c.text, prompt: buildReview({ pr: this.pr, base: this.base, comments: [c], lang: this.lang(), replies: this.repliesFile(), contract: TH.repliesContract }),
       onSent: (cx) => done(cx, { route: "agent", agent: label }) });
+  },
+
+  // A review as GitLab takes it: mrs.py posts one discussion per comment and one note for the summary and the verdict.
+  postMr(comments, event, summary, cx, done) {
+    const pr = this.prSel;
+    if (!pr?.url || this.sending) return;
+    this.sending = true; this.note = null; this.posted = null;
+    cx.spawn(async (cx) => {
+      try {
+        if (!this.head) throw new Error("MR head unknown");
+        const { payload, outside } = ghReview({ comments, event, summary, commit: this.head, lines: this.diffLines ?? new Map() });
+        if (!payload.comments.length && !payload.body && payload.event !== "APPROVE") throw new Error("Nothing to post: add a comment or a summary");
+        if (this.cfg?.dryRun) {
+          const file = `${appHome()}/pr-data/review-dry-run.json`, before = await readTextFile(file).catch(() => null);
+          await writeTextFile(file, JSON.stringify({ endpoint: `merge_requests/${pr.number}/discussions`, payload }, null, 1), before);
+          this.posted = { dry: file, outside: outside.length, items: TH.postedItems(payload) };
+          this.note = `Dry run: nothing posted, the payload is in ${file.replace(home(), "~")}`;
+          return done(cx, { route: "gitlab", dry: true });
+        }
+        const got = await this.mrPost(payload);
+        this.posted = { url: got.url, items: TH.postedItems(payload) };
+        this.note = `Review posted: ${got.url}${got.approved ? " · approved" : ""}`;
+        done(cx, { route: "gitlab", notes: got.notes });
+        this.loadGhComments(cx);
+      } catch (e) { this.note = `Not posted: ${String(e).replace(/^Error: /, "")}`; }
+      finally { this.sending = false; cx.notify(); }
+    });
+    cx.notify();
+  },
+  // A payload through mrs.py post: the payload goes in a file, a big review's comments outgrow a command line.
+  async mrPost(payload) {
+    const file = `${appHome()}/pr-data/review-post.json`, before = await readTextFile(file).catch(() => null);
+    await writeTextFile(file, JSON.stringify(payload), before);
+    const r = await exec("python3", [`${appHome()}/mods/pr-review/mrs.py`, "post", this.prSel.url, file], { timeout: 120000 });
+    if (r.code !== 0) throw new Error(String(r.stderr ?? "").trim() || "mrs.py post failed");
+    return JSON.parse(r.stdout);
+  },
+  // One line comment on a merge request now, as its own discussion.
+  postSingleMr(c, cx, done) {
+    const line = this.diffLines ?? new Map();
+    if (!inDiff(line, c)) { this.note = "Not posted: GitLab takes line comments on lines of the merge request's diff. Use Start a review: it goes into the summary note."; return cx.notify(); }
+    this.sending = true; this.note = null;
+    cx.spawn(async (cx) => {
+      try {
+        const payload = { commit_id: this.head, event: "COMMENT", body: "", comments: [{ path: c.file, line: c.end, side: c.old ? "LEFT" : "RIGHT", body: c.text.trim() }] };
+        const got = await this.mrPost(payload);
+        this.note = `Posted: ${got.url}`;
+        done(cx, { route: "gitlab", notes: got.notes });
+      } catch (e) { this.note = `Not posted: ${String(e).replace(/^Error: /, "")}`; }
+      finally { this.sending = false; cx.notify(); }
+    });
+    cx.notify();
   },
 
   // One line comment on GitHub now (POST pulls/{n}/comments), as the PR's context; dry run: the payload into a file.
@@ -2648,8 +2703,8 @@ export const ReviewMode = {
   // ---- where reviews go: GitHub (any PR there) or the PR's agent session (a PR made in a session; branch diffs)
 
   routes() {
-    const gh = /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+/.test(this.prSel?.url ?? "");
-    return [...(gh ? ["github"] : []), ...(this.prSel?.session || !gh ? ["agent"] : [])];
+    const direct = Boolean(this.prSel?.url && hostOf(this.prSel.url)); // GitHub or GitLab: the host takes the review
+    return [...(direct ? ["github"] : []), ...(this.prSel?.session || !direct ? ["agent"] : [])];
   },
   routeNow() {
     const all = this.routes();
@@ -2697,7 +2752,9 @@ export const ReviewMode = {
   // One GitHub review with these comments (pr.js ghReview), JSON on stdin, as the PR's context (its gh account).
   // Config "dryRun": true writes the payload to pr-data/review-dry-run.json instead of posting.
   postGh(comments, event, summary, cx, done) {
-    const pr = this.prSel, m = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(pr?.url ?? "");
+    const pr = this.prSel;
+    if (hostOf(pr?.url) === "gitlab") return this.postMr(comments, event, summary, cx, done);
+    const m = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(pr?.url ?? "");
     if (!m || this.sending) return;
     this.sending = true; this.note = null; this.posted = null;
     const env = this.ctxEnv(this.ctxId()), sh = (script, ...args) => exec(env[0] ?? "sh", [...env.slice(1), ...(env.length ? ["sh"] : []), "-c", script, ...args], { timeout: 60000 });

@@ -7,11 +7,13 @@
   python3 mrs.py threads <merge request url> the line comments and their threads, as the review reads GitHub's
   python3 mrs.py file <merge request url> <path>   that file at the MR's head commit
   python3 mrs.py visibility <group/project>  the project's visibility (public, internal, private)
+  python3 mrs.py post <merge request url> <payload.json>   one discussion per comment, then the summary note
 
 Every call goes through `glab`, which must be signed in (`glab auth login`). A failure prints the reason to stderr and
 exits 1; the caller shows it as the list's or the diff's error.
 """
 import json
+import pathlib
 import re
 import subprocess
 import sys
@@ -21,8 +23,8 @@ GLAB = ["glab"]
 URL = re.compile(r"^https://([\w.-]+)/(.+?)/-/merge_requests/(\d+)")
 
 
-def run(args, cwd=None):
-    r = subprocess.run(args, capture_output=True, text=True, cwd=cwd, timeout=120)
+def run(args, cwd=None, stdin=None):
+    r = subprocess.run(args, capture_output=True, text=True, cwd=cwd, timeout=120, input=stdin)
     if r.returncode != 0:
         why = (r.stderr or r.stdout or "").strip().splitlines()
         raise SystemExit(f"{' '.join(args[:3])}: {why[0] if why else f'exit {r.returncode}'}")
@@ -126,6 +128,50 @@ def visibility(repo):
     return str(got.get("visibility") or "").strip() or "unknown"
 
 
+def post(url, payload):
+    """A review as GitLab takes it: one discussion per line comment, then one note for the summary (and the verdict
+    as a word at its head), then an approval when the verdict asks for one. Returns the notes' ids, matched by path,
+    line and body, so the review can show what it sent as threads."""
+    ref = parse(url)
+    if not ref:
+        raise SystemExit(f"not a merge request link: {url}")
+    gl, project = glab(ref["hostname"]), quote(ref["repo"], safe="")
+    mr_path = f"projects/{project}/merge_requests/{ref['iid']}"
+
+    def api(path, method="GET", body=None):
+        args = gl + ["api", *(["-X", method] if method != "GET" else []), path]
+        if body is not None:
+            args += ["-H", "Content-Type: application/json", "--input", "-"]
+        return json.loads(run(args, stdin=json.dumps(body) if body is not None else None) or "{}")
+
+    refs = api(mr_path).get("diff_refs") or {}
+    at = {k: refs.get(k) for k in ("base_sha", "start_sha", "head_sha")}
+    notes = []
+    for c in payload.get("comments") or []:
+        old = c.get("side") == "LEFT"
+        text = c.get("body") or ""
+        start = c.get("start_line")
+        if start and start != c.get("line"):
+            text = f"Lines {start}–{c['line']}:\n\n{text}"  # a GitLab position names one line: the range is said in the body
+        pos = {"position_type": "text", **at, ("old_path" if old else "new_path"): c.get("path"),
+               ("old_line" if old else "new_line"): c.get("line")}
+        got = api(f"{mr_path}/discussions", "POST", {"body": text, "position": pos})
+        note = (got.get("notes") or [{}])[0]
+        notes.append({"id": note.get("id"), "path": c.get("path"), "line": c.get("line"), "body": c.get("body")})
+    event = str(payload.get("event") or "COMMENT").upper()
+    head = {"APPROVE": "**Approved.**", "REQUEST_CHANGES": "**Requested changes.**"}.get(event)
+    summary = "\n\n".join(x for x in (head, (payload.get("body") or "").strip()) if x)
+    summary_id = api(f"{mr_path}/notes", "POST", {"body": summary}).get("id") if summary else None
+    approved = False
+    if event == "APPROVE":
+        try:
+            api(f"{mr_path}/approve", "POST")
+            approved = True
+        except SystemExit:  # an approval the project does not take (or a self-approval) is not a lost review
+            approved = False
+    return {"url": url, "notes": notes, "summary": summary_id, "approved": approved}
+
+
 def list_open(repo):
     return [to_pr(m) for m in json.loads(run(GLAB + ["mr", "list", "--repo", repo, "--per-page", "50", "--output", "json"]))]
 
@@ -162,6 +208,10 @@ def main(argv):
         sys.stdout.write(file_at(target, argv[3]))
     elif what == "visibility":
         print(visibility(target))
+    elif what == "post":
+        if len(argv) < 4:
+            raise SystemExit("post needs a merge request link and a payload file")
+        print(json.dumps(post(target, json.loads(pathlib.Path(argv[3]).read_text()))))
     else:
         raise SystemExit(f"unknown command: {what}")
     return 0

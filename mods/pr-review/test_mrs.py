@@ -2,6 +2,7 @@
 import json
 import subprocess
 import mrs
+import pathlib
 
 MR = {"iid": 4556, "title": "chore(deps): update", "state": "opened", "draft": False, "source_branch": "renovate/x",
       "target_branch": "main", "sha": "26a03336956ffd4964b829aaf729e05a8756e5c6",
@@ -88,3 +89,33 @@ assert mrs.is_bot({"username": "renovate-bot"}) and not mrs.is_bot({"username": 
 # --paginate prints one array per page, one after the other: both pages are read.
 assert mrs.pages('[{"a": 1}]\n[{"a": 2}]') == [{"a": 1}, {"a": 2}]
 print("threads ok")
+
+# A review posted as discussions: the position names the changed line, an old-side comment its old line, the summary
+# note carries the verdict, and the approval follows.
+def post_fake(args, **kw):
+    calls.append((args, kw.get("input")))
+    path = next((a for a in args if str(a).startswith("projects/")), "")
+    if path.endswith("/approve"):
+        return subprocess.CompletedProcess(args, 0, json.dumps({}), "")
+    if "discussions" in path:
+        return subprocess.CompletedProcess(args, 0, json.dumps({"notes": [{"id": 91}]}), "")
+    if path.endswith("/notes"):
+        return subprocess.CompletedProcess(args, 0, json.dumps({"id": 92}), "")
+    return subprocess.CompletedProcess(args, 0, json.dumps({"diff_refs": {"base_sha": "b", "start_sha": "s", "head_sha": "h"}}), "")
+calls.clear()
+mrs.subprocess.run = post_fake
+out = mrs.post("https://gitlab.com/g/sub/p/-/merge_requests/7", {"event": "APPROVE", "body": "Looks right.",
+    "comments": [{"path": "a.py", "line": 3, "side": "RIGHT", "body": "why?"},
+                 {"path": "a.py", "line": 2, "side": "LEFT", "body": "old side"},
+                 {"path": "b.py", "line": 9, "start_line": 4, "side": "RIGHT", "body": "range"}]})
+assert out["notes"][0]["id"] == 91 and out["summary"] == 92 and out["approved"] is True, out
+path_of = lambda a: next((x for x in a if str(x).startswith("projects/")), "")
+posted = [(path_of(a), json.loads(s)) for a, s in calls if path_of(a).endswith("/discussions")]
+assert len(posted) == 3, posted
+assert posted[0][1]["position"] == {"position_type": "text", "base_sha": "b", "start_sha": "s", "head_sha": "h", "new_path": "a.py", "new_line": 3}, posted[0][1]
+assert posted[1][1]["position"].get("old_path") == "a.py" and posted[1][1]["position"].get("old_line") == 2, posted[1][1]
+assert posted[2][1]["body"].startswith("Lines 4–9:"), posted[2][1]
+summary = [json.loads(s) for a, s in calls if path_of(a).endswith("/notes")][0]
+assert summary["body"].startswith("**Approved.**") and "Looks right." in summary["body"], summary
+assert any(path_of(a).endswith("/approve") for a, _ in calls), calls
+print("post ok")
