@@ -8,6 +8,7 @@
   python3 mrs.py file <merge request url> <path>   that file at the MR's head commit
   python3 mrs.py visibility <group/project>  the project's visibility (public, internal, private)
   python3 mrs.py post <merge request url> <payload.json>   one discussion per comment, then the summary note
+  python3 mrs.py branches <group/project> <branch> ...   open MRs of these source branches
 
 Every call goes through `glab`, which must be signed in (`glab auth login`). A failure prints the reason to stderr and
 exits 1; the caller shows it as the list's or the diff's error.
@@ -128,6 +129,13 @@ def visibility(repo):
     return str(got.get("visibility") or "").strip() or "unknown"
 
 
+def branches(repo, names):
+    """A project's open merge requests whose source branch is one of these, as PR objects (a space's branches)."""
+    want = {n for n in names if n}
+    got = json.loads(run(GLAB + ["mr", "list", "--repo", repo, "--per-page", "100", "--output", "json"]) or "[]")
+    return [to_pr(m) for m in got if m.get("source_branch") in want]
+
+
 def post(url, payload):
     """A review as GitLab takes it: one discussion per line comment, then one note for the summary (and the verdict
     as a word at its head), then an approval when the verdict asks for one. Returns the notes' ids, matched by path,
@@ -208,6 +216,8 @@ def main(argv):
         sys.stdout.write(file_at(target, argv[3]))
     elif what == "visibility":
         print(visibility(target))
+    elif what == "branches":
+        print(json.dumps(branches(target, argv[3:])))
     elif what == "post":
         if len(argv) < 4:
             raise SystemExit("post needs a merge request link and a payload file")

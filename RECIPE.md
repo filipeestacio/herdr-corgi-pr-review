@@ -2,6 +2,15 @@
 
 AI-guided pull request review for Herdr. Instead of a wall of files, you get the change as a story: grouped into layers by intent and ordered risk first, an architecture map of which components changed and how they connect, and a security blast radius of what calls into the change. In the diff, debugger-style sample values sit next to the changed lines, so you see what flows in and out of a function without running it. Comment on lines like on GitHub and submit one review, or send the findings to the agent that wrote the code.
 
+**Hosts and the AI harness.** Two axes, independent of each other. The host comes from the repository's remote
+(`host.js`, `host.py`): `github.com` is GitHub and is read and written through `gh`; a `gitlab.*` host (or one named
+in `pr-review.config.json`'s `host`) is GitLab and goes through `glab` (`mrs.py` for the merge request list, diff,
+discussions, threads, a file at the head, visibility, and posting). Unknown hosts are neither. The AI runs on
+Claude Code, or on any command from `harness.command`, with `{model}` and `{prompt}` filled in and the answer read
+as the JSON object it prints; `harness.modelList` names the models the pickers offer, each optionally with a
+price. Setup treats the programs as one-of groups (`gh` or `glab`, `claude` or the harness), so a group blocks
+only when none of its members is usable.
+
 On the right of the window, a panel shows the diff of the focused space's
 branch against its PR base (or any PR you pick) with comments on lines that go to the agent who wrote the code.
 "Review" switches to a full-window layout: the AI's walkthrough of the PR in layers on the left, every diff line
@@ -18,8 +27,8 @@ corners and a 1 px `border`:
 - Header, at least 42 px: the PR title (`#42 feat(invites): …`, semibold, up to two lines) or `vs origin/main`;
   small pills (10 px text, 4 px corners, `border`, `muted` text, `foreground` on hover): `↻`, `GitHub ↗`; then the
   one filled button (`solid`, 26 px, 12 px semibold): `Review`, or `Resume` once this PR's review was started.
-- A red-tinted banner (`ansi1` at ~11 % alpha) "Needs gh, claude to work. [Open Setup]" when a required program is
-  missing or logged out.
+- A red-tinted banner (`ansi1` at ~11 % alpha) "Needs gh or glab to work. [Open Setup]" when no member of a required
+  group is usable, naming the group's members.
 - **In progress** (11 px semibold `muted`): up to 3 started reviews, then "Show all"; each `#n title` (12.5 px),
   its risk chips (see the list below), a wrapping line like `1/10 layers · 1/17 files · 1 comment · 3 open
   findings` (11 px `muted`), a context tag when a plug-in supplies several contexts, and `Resume`. A click on the

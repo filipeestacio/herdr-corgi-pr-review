@@ -1147,6 +1147,7 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.deepEqual([headBranch("ref: refs/heads/feat/x\n"), headBranch("9e575d6adf38\n"), headBranch(null)], ["feat/x", null, null]);
   const co = (cwd, slug, branch, base = "origin/main") => ({ cwd, root: cwd, slug, branch, base });
   const repos = spaceBranches([co("/a", "o/a", "feat/x"), co("/w/fix-1", "o/a", "fix/1"), co("/b", "o/b", "main"), co("/c", null, "feat/y"), co("/d", "o/a", null), co("/e", "o/a", "feat/x"), co("/f", "o/c", "dev", "origin/dev")]);
+  assert.deepEqual(spaceBranches([{ cwd: "/g", root: "/g", slug: "g/p", host: "gitlab", branch: "feat/g", base: "origin/main" }]).map((r) => [r.slug, r.host, r.branches]), [["g/p", "gitlab", ["feat/g"]]], "a checkout that knows its host keeps it");
   assert.deepEqual(repos, [{ slug: "o/a", branches: ["feat/x", "fix/1"], roots: { "feat/x": "/a", "fix/1": "/w/fix-1" } }], "no default branch, no detached head, no repo without GitHub; a branch once");
   const q = branchPrQuery("o/a", ['feat/x', 'we"ird']);
   assert.ok(q.includes('repository(owner: "o", name: "a")') && q.includes('b0: pullRequests(headRefName: "feat/x"') && q.includes('b1: pullRequests(headRefName: "we\\"ird"'), "one alias per branch, names escaped");

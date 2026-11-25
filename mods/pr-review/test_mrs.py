@@ -119,3 +119,10 @@ summary = [json.loads(s) for a, s in calls if path_of(a).endswith("/notes")][0]
 assert summary["body"].startswith("**Approved.**") and "Looks right." in summary["body"], summary
 assert any(path_of(a).endswith("/approve") for a, _ in calls), calls
 print("post ok")
+
+# A space's branches: only the open merge requests of those source branches.
+mrs.subprocess.run = fake(json.dumps([{**MR, "iid": 1, "source_branch": "feat/a"}, {**MR, "iid": 2, "source_branch": "feat/b"}, {**MR, "iid": 3, "source_branch": "main"}]))
+got = mrs.branches("g/p", ["feat/a", "feat/b", ""])
+assert [p["number"] for p in got] == [1, 2], got
+assert calls[-1][:4] == ["glab", "mr", "list", "--repo"], calls[-1]
+print("branches ok")

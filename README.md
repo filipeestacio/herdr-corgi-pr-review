@@ -8,13 +8,14 @@
 
 Part of [Corgi](https://github.com/saefty/herdr-corgi), a set of Herdr mods that plug into each other.
 
-A Herdr mod for reviewing pull requests next to your agents. A side panel shows the focused branch's diff (or any
-PR), lets you comment on lines and send the comments to the agent that wrote the code. A full-window review
-layout adds an AI analysis that walks you through the PR by risk and layer, reviewers (Claude code review,
-security review, optionally Codex) whose findings you can send to the agent to fix and then verify, an
-architecture picture, a Security and a Resilience page, CI checks, related PRs, and go-to-definition in the diff. You comment
-as on GitHub: a comment box under the line, pending comments as threads, and "Finish your review" posts one GitHub
-review (Comment, Approve or Request changes) or sends it to the agent session.
+A Herdr mod for reviewing pull requests and merge requests next to your agents. A side panel shows the focused
+branch's diff (or any PR), lets you comment on lines and send the comments to the agent that wrote the code. A
+full-window review layout adds an AI analysis that walks you through the PR by risk and layer, reviewers (code
+review, security review, resilience; on Claude Code or a harness you configure) whose findings you can send to the
+agent to fix and then verify, an architecture picture, a Security and a Resilience page, CI checks, related PRs,
+and go-to-definition in the diff. You comment as on GitHub or GitLab: a comment box under the line, pending
+comments as threads, and "Finish your review" posts one GitHub review, or on GitLab one discussion per comment plus
+a summary note, or sends it to the agent session.
 
 ![Open a PR from the panel, read the overview, the layers and the architecture impact, comment under a line in the diff, then Finish your review](docs/screenshots/walkthrough.gif)
 
@@ -255,8 +256,8 @@ in but not run.
 | Program | Needed for | macOS | Linux |
 |---|---|---|---|
 | `git` (2.46 or later for the full push lock) | diffs, checkouts, the push lock of fix and verify agents | `brew install git` | `sudo apt install git` |
-| `gh` (logged in) | PR lists, diffs, CI checks, clones | `brew install gh`, `gh auth login` | `sudo apt install gh` |
-| `claude` (logged in) | the AI analysis, reviewers, triage, fix checks | `npm install -g @anthropic-ai/claude-code` | same |
+| `gh` or `glab` (one of them, logged in) | PR lists, diffs, CI checks and clones on GitHub (`gh`) or GitLab (`glab`) | `brew install gh`, `gh auth login`; `brew install glab`, `glab auth login` | `sudo apt install gh`; see GitLab's docs for `glab` |
+| `claude` or a harness command | the AI analysis, reviewers, triage, fix checks: `claude` (logged in), or your own CLI set as `harness.command` in `pr-review.config.json` (see `mods/pr-review/PROVIDERS.md`) | `npm install -g @anthropic-ai/claude-code` | same |
 | `python3` | the helper scripts (standard library only) | `brew install python` | `sudo apt install python3` |
 | `codex` (optional, with permission profiles; checked with 0.164) | the Codex reviewer, offered only when installed | `npm install -g @openai/codex` | same |
 | `bwrap` (optional, Linux only) | the sandbox a probe's script runs in | built in (`sandbox-exec`) | `sudo apt install bubblewrap` |
@@ -264,6 +265,12 @@ in but not run.
 | an editor (optional): VS Code, IntelliJ IDEA, Cursor or Zed | "Open in VS Code" on a file's head, a definition, a card's place in the code and a PR's checkout; without one there are no such links | the app in `/Applications` or `~/Applications` (`brew install --cask visual-studio-code`, `brew install --cask intellij-idea`, `brew install --cask cursor`, `brew install --cask zed`); the `code` and `idea` command line tools are not needed | the editor's command line tool in `/usr/bin`, `/usr/local/bin`, `/snap/bin`, `~/.local/bin` or `~/bin`: `code` (`sudo snap install code --classic`), `idea` or `idea.sh`, `cursor`, `zed`; see below for IntelliJ IDEA, Cursor and Zed |
 | `wl-copy` or `xclip` (Linux only) | copying to the clipboard: Copy as Markdown, Copy path, a PR's link, an install command in Setup | built in (`pbcopy`) | `sudo apt install wl-clipboard` (Wayland) or `sudo apt install xclip` (X11) |
 | `xdg-open` (Linux only) | opening a link in the browser: the PR, a posted review, a commit, a related PR | built in (`open`) | `sudo apt install xdg-utils` |
+
+**Hosts.** GitHub works through `gh`; GitLab works through `glab` for the merge request list, its diff, its line
+comments and threads, the checkout of its head, its pipelines and visibility, and posting a review. Not read on
+GitLab yet: the list of other merge requests that touch the same files ("This space" falls back to "This repo"),
+mergeability beyond conflicts, and the Jira ticket of a merge request. A GitLab comment that spans several lines
+names its range in the text, because a GitLab position names one line.
 
 **Editors on Linux.** The links look for the editor's command in the five folders of the table, not in your shell's
 `PATH`. IntelliJ IDEA: JetBrains Toolbox writes an `idea` script when its shell scripts are turned on (set their
@@ -350,9 +357,9 @@ The panel docks on the right the first time Herdr sees it. The review layout app
 "Review" click writes it to `layouts/review.json` (or `layouts/pr-review.json` when you already have a different
 layout named `review`). It never overwrites a file you have.
 
-It runs programs (`git`, `gh`, `claude`, `python3`, language servers), reaches GitHub through `gh` (it posts only
-when you click Submit review or Add single comment), and reads your
-Claude session transcripts (`~/.claude/projects`) to list PRs your sessions created. LLM calls only happen when you
+It runs programs (`git`, `gh` or `glab`, `claude` or your harness, `python3`, language servers), reaches GitHub
+through `gh` and GitLab through `glab` (it posts only when you click Submit review or Post now), and reads your
+Claude session transcripts (`~/.claude/projects`) when Claude Code is installed, to list PRs your sessions created. LLM calls only happen when you
 click (Analyze, a reviewer, Triage, Verify fixes). Its data lives in `~/.config/herdr-app/pr-data/`.
 
 ## Settings
@@ -360,14 +367,18 @@ click (Analyze, a reviewer, Triage, Verify fixes). Its data lives in `~/.config/
 Optional, in `~/.config/herdr-app/pr-review.config.json`:
 
 ```json
-{ "language": "English", "cloneRoot": "~/code", "globalRules": "PR titles follow Conventional Commits.", "ledger": null, "dryRun": false }
+{ "language": "English", "cloneRoot": "~/code", "globalRules": "PR titles follow Conventional Commits.",
+  "ledger": null, "dryRun": false,
+  "harness": { "command": ["your-cli", "run", "--model", "{model}"], "modelList": ["your-model"] } }
 ```
 
 `language` is what the AI writes in; `cloneRoot` is the folder where a PR's repository is looked for and, when you
 click "Clone to …", cloned into (default `~/code`; with `"cloneRoot": "~/Work/Claude"` a clone goes to
 `~/Work/Claude/<repo>`); `globalRules` are conventions every PR is checked against; `ledger` is a folder for a JSONL
-usage ledger of every LLM call; `dryRun` makes "Submit review" write the GitHub payload to
-`pr-data/review-dry-run.json` instead of posting it.
+usage ledger of every LLM call; `dryRun` makes "Submit review" write the payload to
+`pr-data/review-dry-run.json` instead of posting it. `harness` runs your own AI CLI instead of Claude Code, with
+`{model}` and `{prompt}` filled in, and `harness.modelList` names the models the pickers offer (an entry may carry
+`"price": [input, output]` per million tokens); `mods/pr-review/PROVIDERS.md` has the details.
 
 ### Where checkouts go
 

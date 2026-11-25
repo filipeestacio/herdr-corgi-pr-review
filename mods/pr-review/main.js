@@ -826,7 +826,8 @@ export default class PrReview extends View {
   async checkout(cwd) {
     const repo = await this.repoOf(cwd);
     if (!repo) return null;
-    return { cwd, root: repo.root, base: repo.base, slug: await this.slugOf(repo.root), branch: headBranch(await readTextFile(`${repo.gitdir}/HEAD`).catch(() => null)) };
+    const info = await this.slugInfo(repo.root);
+    return { cwd, root: repo.root, base: repo.base, slug: info?.slug ?? null, host: info?.host ?? null, branch: headBranch(await readTextFile(`${repo.gitdir}/HEAD`).catch(() => null)) };
   }
 
   // A PR's context for one you didn't open: the contexts' rules on its folder and remote, else the context your
@@ -857,6 +858,12 @@ export default class PrReview extends View {
     });
   }
 
+  // A GitLab project's open merge requests of these branches, as the PR objects ghTarget reads (mrs.py).
+  async glabBranches(slug, branches) {
+    const r = await exec("python3", [`${appHome()}/mods/pr-review/mrs.py`, "branches", slug, ...(branches ?? [])], { timeout: 60000 }).catch((e) => ({ code: 1, stdout: "", stderr: String(e) }));
+    if (r.code !== 0) throw new Error(String(r.stderr ?? "").trim().slice(0, 200) || "mrs.py branches failed");
+    return JSON.parse(r.stdout);
+  }
   // A GitLab project's open merge requests, as the PR objects ghTarget reads (mrs.py).
   async glabMerges(slug) {
     const r = await exec("python3", [`${appHome()}/mods/pr-review/mrs.py`, "list", slug], { timeout: 60000 }).catch((e) => ({ code: 1, stdout: "", stderr: String(e) }));
@@ -877,8 +884,12 @@ export default class PrReview extends View {
       if (stale()) return;
       this.spaceHeads = new Map(found.map((c) => [c.cwd, c]));
       key = repos.length ? `space:${hash(JSON.stringify(repos.map((r) => [r.slug, r.branches])))}` : null; why = spaceEmpty(found, repos);
-      fetch = async () => (await Promise.all(repos.map(async (r) => branchPrs(await gh(["api", "graphql", "-f", `query=${branchPrQuery(r.slug, r.branches)}`]))
-        .map((p) => ghTarget(p, { repo: r.slug, cwd: r.roots[p.headRefName] ?? null, source: now, context: this.contextOfPr(r.slug, r.roots[p.headRefName] ?? null, spaceC) }))))).flat();
+      fetch = async () => (await Promise.all(repos.map(async (r) => {
+        const list = r.host === "gitlab"
+          ? await this.glabBranches(r.slug, r.branches)
+          : branchPrs(await gh(["api", "graphql", "-f", `query=${branchPrQuery(r.slug, r.branches)}`]));
+        return list.map((p) => ghTarget(p, { repo: r.slug, cwd: r.roots[p.headRefName] ?? null, source: now, context: this.contextOfPr(r.slug, r.roots[p.headRefName] ?? null, spaceC) }));
+      }))).flat();
     } else if (now === "repo") {
       key = sr ? `repo:${sr.slug}` : null;
       fetch = async () => (sr.host === "gitlab"
