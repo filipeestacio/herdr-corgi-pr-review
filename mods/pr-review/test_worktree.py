@@ -140,3 +140,16 @@ with tempfile.TemporaryDirectory() as roots:
     except RuntimeError as e:
         assert "Not a PR url" in str(e), e
 print("merge request ok")
+
+# Two roots: a clone in the second is found, and the refusal names every folder searched.
+with tempfile.TemporaryDirectory() as one, tempfile.TemporaryDirectory() as two:
+    worktree.BASES = [pathlib.Path(one), pathlib.Path(two)]
+    pathlib.Path(two, "p").mkdir()
+    worktree.subprocess.run(["git", "init", "-q", "-b", "main"], cwd=str(pathlib.Path(two, "p")), check=True)
+    worktree.subprocess.run(["git", "remote", "add", "origin", "https://gitlab.com/g/sub/p.git"], cwd=str(pathlib.Path(two, "p")), check=True)
+    assert str(worktree.find_clone("g/sub", "p")) == str(pathlib.Path(two, "p")), "a clone in the second root is found"
+    try:
+        worktree.clone_for("g/sub", "other")
+    except worktree.NeedClone as e:
+        assert e.roots == [one, two], e.roots
+print("roots ok")

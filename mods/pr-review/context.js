@@ -62,9 +62,11 @@ export const contextReq = (doc, id) => ({ id, env: infoOf(doc, id).env ?? null }
 
 // Folders to look for an existing clone in, this context's first; the clone goes into the first one.
 export function cloneRoots(doc, id, fallback) {
+  // fallback may be a list: a person keeps clones in more than one folder.
+  const flat = (v) => (Array.isArray(v) ? v : [v]).flat().filter(Boolean);
   const own = infoOf(doc, id).cloneRoot;
   const others = Object.values(doc?.contexts ?? {}).map((c) => c.cloneRoot);
-  return [...new Set([own, fallback, ...others].filter(Boolean))];
+  return [...new Set([...flat(own), ...flat(fallback), ...flat(others)])];
 }
 
 // The Claude config folders to scan for session PRs, one per distinct CLAUDE_CONFIG_DIR (unset: ~/.claude).
