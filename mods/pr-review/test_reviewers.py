@@ -341,4 +341,19 @@ with tempfile.TemporaryDirectory() as d:
         assert r.stdout.startswith("in the PR\n1\n"), ("the checkout and, through git, the clone's history are readable", r.stdout[:200], r.stderr[:300])
         assert r.stderr.count("not permitted") == 5 and "MARKER" not in r.stdout, ("a file beside the clone, the home folder, Codex's home, the clone's other files, a write", r.stderr)
         assert not os.path.exists(f"{wt}/w.txt") and "LEAK_API_" not in r.stdout and "GIT_CONFIG_GLOBAL=/dev/null" in r.stdout, r.stdout[:300]
+# The text pass that turns a reviewer's prose into findings uses the run's model when a runner is configured, and Haiku
+# only on the built-in Claude Code runner: a provider catalog need not hold the alias.
+_saved_claude, _saved_harness = llm.claude, llm.harness
+_seen = []
+def _fake_claude(feature, prompt, **kw):
+    _seen.append(kw.get("model")); return {"findings": []}
+try:
+    llm.claude = _fake_claude
+    llm.harness = lambda: ["opencode", "run", "--model", "{model}"]
+    reviewers.from_text("A review in prose.", {"kind": "claude", "model": "aircall-llmgateway/anthropic/claude-opus-5-5"}, {})
+    llm.harness = lambda: None
+    reviewers.from_text("A review in prose.", {"kind": "claude", "model": "aircall-llmgateway/anthropic/claude-opus-5-5"}, {})
+finally:
+    llm.claude, llm.harness = _saved_claude, _saved_harness
+assert _seen == ["aircall-llmgateway/anthropic/claude-opus-5-5", "haiku"], _seen
 print("ok")

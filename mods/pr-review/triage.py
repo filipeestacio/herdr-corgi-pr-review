@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """PR triage for the PR panel: one sentence "why review this now" and a priority per PR, on an explicit click.
 
-argv[1]: JSON {items: [{url, context ({id, env}), title, repo, state, chips: [...], hint}], out (pr-data/triage.json)}.
-One cheap Haiku call per context (feature "PR triage"), each with that context's env. Merges {url: {priority, why, at}}
-into `out`, keeping the newest MAX entries. Prints {count, cost}; exit 1 with the reason on stderr.
+argv[1]: JSON {items: [{url, context ({id, env}), title, repo, state, chips: [...], hint}], out (pr-data/triage.json),
+model}: one cheap call per context, with the model the panel picked (Haiku when it has none), each with that context's
+env. Merges {url: {priority, why, at}} into `out`, keeping the newest MAX entries. Prints {count, cost}; exit 1 with the
+reason on stderr.
 """
 import datetime as dt
 import json
@@ -40,12 +41,13 @@ def merge(path, results, now):
 
 def main(req):
     by_context, results, cost = {}, [], 0
+    model = req.get("model") or "haiku"
     for i in req["items"]:
         ctx = i.get("context") or {"id": "default", "env": None}
         by_context.setdefault(json.dumps(ctx, sort_keys=True), (ctx, []))[1].append(i)
     for ctx, items in by_context.values():
         meta = {}
-        answer = llm.claude(FEATURE, prompt(items[:40]), context=ctx, model="haiku", schema=SCHEMA, budget=0.2, timeout=180, meta=meta)
+        answer = llm.claude(FEATURE, prompt(items[:40]), context=ctx, model=model, schema=SCHEMA, budget=0.2, timeout=180, meta=meta)
         urls = {i["url"] for i in items}
         results += [r for r in (answer or {}).get("prs", []) if r.get("url") in urls]
         cost += meta.get("cost") or 0

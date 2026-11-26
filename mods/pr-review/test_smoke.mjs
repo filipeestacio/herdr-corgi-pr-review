@@ -255,7 +255,7 @@ async function tour(v, name) {
     }
   }
   // The mod's other parts, on what this review published.
-  for (const part of ["bar", "reviews", "agentbar", "keys", "cmenu", "mini"]) {
+  for (const part of ["bar", "reviews", "agentbar", "keys", "cmenu", "models", "mini"]) {
     S.props = { part }; const p = new PrReview(); p.init({}, cx); frame(at(`part ${part}`), () => p.render(cx)); S.props = null;
   }
   for (const r of [R.renderReviews, R.renderAgentBar, R.renderKeys, R.renderCardMenu, R.renderMini]) frame(at(r.name), () => r());
@@ -1284,4 +1284,22 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
 }
 await settle();
 assert.deepEqual(late, [], "a spawned task threw");
+// A provider's full catalog: the models popup is one virtual list with the pinned models first, and nothing is drawn
+// until the list asks for a range.
+const catalogModels = Array.from({ length: 243 }, (_x, i) => ({ value: `aircall-llmgateway/anthropic/m-${i}`, id: `m-${i}`, label: `Model ${i}`, description: "Public gateway", price: [1, 2] }));
+S.store.set("review.models", { default: { provider: "gateway", providers: [{ name: "gateway", label: "Public gateway", kind: "openai" }],
+  providerModels: catalogModels, pinned: ["m-7", "m-3"] } });
+S.store.set("review.provider", "gateway"); S.store.set("review.model", catalogModels[7].value);
+S.props = { part: "models", overlay: "ov1" };
+frame("models: the provider's full catalog", R.renderModels);
+{
+  const list = S.lists.find((l) => l.id === "rv-models-list");
+  assert.equal(list?.n, 243, "the full catalog is one virtual list");
+  S.texts = new Set(); list.render({ start: 0, end: 2 }, cx);
+  assert.ok(S.texts.has("Model 7") && S.texts.has("Model 3"), "the pinned models come first, in pinned order");
+  S.texts = null;
+  const sonnet = { label: "Claude Sonnet 5.5", id: "claude-sonnet-5-5", value: "aircall-llmgateway/anthropic/claude-sonnet-5-5" };
+  assert.deepEqual([R.modelMatches(sonnet, "sonnet"), R.modelMatches(sonnet, "ANTHROPIC/"), R.modelMatches(sonnet, "gpt")], [true, true, false], "the search reads label, catalog id and runner id");
+}
+S.props = null;
 console.log(`smoke ok: ${shown} frames`);

@@ -228,7 +228,7 @@ whether it can happen today.
   commit and report), Fixed (after a passed verification), Dismissed. Every view shows the same count.
 - Incremental: "since your last review" view and analysis.
 - A resizable layers column (drag the divider, double-click for the default width).
-- Model per review (Sonnet or Opus; Haiku only for text: triage and reshaping a reviewer's prose); LLM calls only on click.
+- Model per review (any id the provider's catalog offers; Claude Code's own classes on the built-in profile, Sonnet or Opus among them, Haiku only for text); LLM calls only on click.
 - Restricted Mode for other people's code (see below).
 - Works with other mods: separate setups (accounts, clone folders), the Go to box and the chat bar.
 
@@ -257,7 +257,7 @@ in but not run.
 |---|---|---|---|
 | `git` (2.46 or later for the full push lock) | diffs, checkouts, the push lock of fix and verify agents | `brew install git` | `sudo apt install git` |
 | `gh` or `glab` (one of them, logged in) | PR lists, diffs, CI checks and clones on GitHub (`gh`) or GitLab (`glab`) | `brew install gh`, `gh auth login`; `brew install glab`, `glab auth login` | `sudo apt install gh`; see GitLab's docs for `glab` |
-| `claude` or a harness profile | the AI analysis, reviewers, triage, fix checks: `claude` (logged in), or a profile from `harnesses` in `pr-review.config.json` (`harness` names the active one; see `mods/pr-review/PROVIDERS.md`) | `npm install -g @anthropic-ai/claude-code` | same |
+| `claude` or a harness profile | the AI analysis, reviewers, triage, fix checks: `claude` (logged in), or the program a `harnesses` profile runs (`harness` names it). The models come from the `providers` catalog; see `mods/pr-review/PROVIDERS.md` | `npm install -g @anthropic-ai/claude-code` | same |
 | `python3` | the helper scripts (standard library only) | `brew install python` | `sudo apt install python3` |
 | `codex` (optional, with permission profiles; checked with 0.164) | the Codex reviewer, offered only when installed | `npm install -g @openai/codex` | same |
 | `bwrap` (optional, Linux only) | the sandbox a probe's script runs in | built in (`sandbox-exec`) | `sudo apt install bubblewrap` |
@@ -369,10 +369,12 @@ Optional, in `~/.config/herdr-app/pr-review.config.json`:
 ```json
 { "language": "English", "cloneRoot": "~/code", "globalRules": "PR titles follow Conventional Commits.",
   "ledger": null, "dryRun": false,
-  "harness": "gateway",
-  "harnesses": { "gateway": { "command": ["your-cli", "run", "--model", "{model}"],
-                              "env": { "OPENAI_API_KEY": "${MY_GATEWAY_KEY}" },
-                              "models": { "shortlist": ["your-model"] } } } }
+  "harness": "mine",
+  "harnesses": { "mine": { "command": ["your-cli", "run", "--model", "{model}"],
+                           "env": { "OPENAI_API_KEY": "${MY_GATEWAY_KEY}" }, "timeout": 1800 } },
+  "providers": { "gateway": { "label": "LLM Gateway", "kind": "openai", "baseUrl": "https://gateway.example/v1",
+                              "apiKeyEnv": "MY_GATEWAY_KEY", "modelId": "my-runner/{family}/{id}",
+                              "families": { "google": "google-ai-studio" } } } }
 ```
 
 `language` is what the AI writes in; `cloneRoot` is the folder where a PR's repository is looked for and, when you
@@ -381,11 +383,14 @@ click "Clone to …", cloned into (default `~/code`; with `"cloneRoot": "~/Work/
 `"cloneRoot": ["~/code", "~/aircall"]`; the first is where a new clone goes, and every folder is searched. The
 banner names the folders it searched when it found no clone; `globalRules` are conventions every PR is checked against; `ledger` is a folder for a JSONL
 usage ledger of every LLM call; `dryRun` makes "Submit review" write the payload to
-`pr-data/review-dry-run.json` instead of posting it. `harness` names the active profile in `harnesses`: each profile
-has its own `command` (with `{model}` and `{prompt}` filled in), `env`, `timeout` and `models` (a `shortlist`, whose
-entries may carry `"price": [input, output]` per million tokens, a `provider` declared in `providers`, or a command
-that prints one id per line). A profile named `claude` is the built-in Claude Code command, so its `env` points
-Claude Code at another endpoint. `mods/pr-review/PROVIDERS.md` has the details.
+`pr-data/review-dry-run.json` instead of posting it. `harness` names the active profile in `harnesses`, the program
+that runs the call: each profile has its own `command` (with `{model}` and `{prompt}` filled in), `env` and `timeout`.
+`providers` says where the models come from, by name: `baseUrl` is read with `/models`, `modelId` builds the id the
+runner receives (`{id}`, `{family}`, `{vendor}`) and `families` renames a family for it; the review picks the provider.
+A profile's own `models` (a `shortlist`, whose entries may carry `"price": [input, output]` per million tokens, or a
+command that prints one id per line) is the fallback when no provider is declared. A profile named `claude` is the
+built-in Claude Code command, so its `env` points Claude Code at another endpoint.
+`mods/pr-review/PROVIDERS.md` has the details.
 
 ### Where checkouts go
 
@@ -409,8 +414,10 @@ Without touching code:
 
 - **What the AI writes and checks:** `language`, `globalRules` (conventions every PR is checked against) and the
   other keys in `pr-review.config.json` (above).
-- **Which model:** Sonnet or Opus, picked per review in the review layout. Fix and Ask agents run on it too. Haiku is
-  used only for text (PR triage, turning a reviewer's prose into findings); a stored Haiku pick becomes Sonnet.
+- **Which model:** any id the provider's catalog offers, or Claude Code's own classes on the built-in profile (Sonnet
+  or Opus among them), picked per review in the review layout: its menu starts with the pinned models, then `All N
+  models…` opens the whole catalog to search. Fix and Ask agents run on it too. Haiku is used only for text (PR triage,
+  turning a reviewer's prose into findings); a stored Haiku pick becomes Sonnet.
 - **The review layout:** `layouts/review.json` is yours once it is written. Move, resize or remove its blocks; the
   mod never overwrites it.
 - **Your own code review:** with a `/code-review` command in your Claude setup, the Claude reviewer uses it.

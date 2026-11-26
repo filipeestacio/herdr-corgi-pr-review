@@ -2,16 +2,18 @@
 
 AI-guided pull request review for Herdr. Instead of a wall of files, you get the change as a story: grouped into layers by intent and ordered risk first, an architecture map of which components changed and how they connect, and a security blast radius of what calls into the change. In the diff, debugger-style sample values sit next to the changed lines, so you see what flows in and out of a function without running it. Comment on lines like on GitHub and submit one review, or send the findings to the agent that wrote the code.
 
-**Hosts and the AI harness.** Two axes, independent of each other. The host comes from the repository's remote
-(`host.js`, `host.py`): `github.com` is GitHub and is read and written through `gh`; a `gitlab.*` host (or one named
-in `pr-review.config.json`'s `host`) is GitLab and goes through `glab` (`mrs.py` for the merge request list, diff,
-discussions, threads, a file at the head, visibility, and posting). Unknown hosts are neither. The AI runs on the
-active harness profile from `harnesses` (`harness` names it; absent: the built-in `claude`), with `{model}` and
-`{prompt}` filled in and the answer read as the JSON object it prints. A profile carries its own `env`, `timeout` and
-models: a shortlist, a `command` that prints one id per line, or a `provider` whose catalog comes from
-`{baseUrl}/models` and is cached for six hours. A profile named `claude` is the built-in Claude Code command, so its
-`env` points Claude Code at another endpoint. Setup treats the programs as one-of groups (`gh` or `glab`, and `claude`
-or a profile's program), so a group blocks only when none of its members is usable.
+**Hosts, providers and the AI harness.** Three axes, independent of each other. The host comes from the repository's
+remote (`host.js`, `host.py`): `github.com` is GitHub and is read and written through `gh`; a `gitlab.*` host (or one
+named in `pr-review.config.json`'s `host`) is GitLab and goes through `glab` (`mrs.py` for the merge request list,
+diff, discussions, threads, a file at the head, visibility, and posting). Unknown hosts are neither. The models come
+from a provider catalog: `providers` declares each one by name (`{baseUrl}/models`, cached as the provider returned it
+for six hours), and the review picks the provider. The runner is separate: the AI runs on the active harness profile
+from `harnesses` (`harness` names it; absent: the built-in `claude`), with `{model}` and `{prompt}` filled in and the
+answer read as the JSON object it prints. A profile carries its own `env` and `timeout`; a config with no `providers`
+keeps its `models` (a shortlist, or a `command` that prints one id per line) as the picker. A profile named `claude`
+is the built-in Claude Code command, so its `env` points Claude Code at another endpoint. Setup treats the programs as
+one-of groups (`gh` or `glab`, and `claude` or a profile's program), so a group blocks only when none of its members
+is usable.
 
 On the right of the window, a panel shows the diff of the focused space's
 branch against its PR base (or any PR you pick) with comments on lines that go to the agent who wrote the code.
@@ -73,12 +75,14 @@ title bar (traffic lights at 12, 16):
 - The bar (52 px, `chrome`, draggable; the mod with `{part: "bar"}`, left padding 84 px): `← Back`, `#n title`
   (14 px semibold), `owner/repo#n`, a state badge, a context tag (only with several contexts), merge risk and
   review effort badges, `Pre-merge checks ✓ n ✗ n`, `Mark done`, a round `?` (the keys popup), `Reviews ▾`,
-  `Values: On`, the model picker (Sonnet / Opus, never Haiku: it reads and judges code; on a harness profile it lists
-  that profile's models, each with its catalog price or "price not reported"), the harness picker beside it (picking
-  a profile writes `harness` in the config and lists that profile's models again; the menu lists a profile when its
-  program is on PATH, plus the active profile even when it is not, marked "not installed"), then the shown analysis'
-  model and cost (it truncates first when the window is narrow) and, at the
-  right, GitHub's green (`#238636`) `Finish your review ▾`, with the count n while n comments are pending.
+  `Values: On`, the provider picker (only when the config declares more than one; the pick is kept per review, and
+  with no pick the first declared provider is used), the model picker (the active provider's catalog: its pinned models
+  first, then `All N models…`, a searchable list; each option with its price or "price not reported"; with no provider
+  declared, the active profile's own models; on the built-in Claude Code profile, its own classes, Sonnet or Opus among
+  them, never Haiku: it reads and judges code), then the shown analysis' model and cost (it truncates first when the
+  window is narrow) and, at the right, GitHub's green (`#238636`) `Finish your review ▾`, with the count n while n
+  comments are pending. The runner is not in this row: `harness` names the profile in `harnesses` whose `command` runs
+  the call, and Setup checks its program.
 - The body (`{part: "review"}`): a 420 px left column with the tabs `Files · n`, `Analysis · n`, `Comments · n`,
   `Findings · n`; a tab's help text opens under the tab row after a short rest.
   Analysis: on top the PR's pages as a small group (Overview, Architecture impact with a plain `Changed`, Security
@@ -181,7 +185,7 @@ Explore shows Overview, Layers, Architecture and Files for a topic, without a di
 - `Review` switches to the review layout (and remembers the layout to come back to); `← Back` / Esc returns.
   The first time, the mod writes `review-layout.json` to `layouts/review.json`; when a `review` layout that isn't
   this mod's is already there, it uses `layouts/pr-review.json` instead. It never overwrites a file.
-- The AI analysis never runs by itself: "Analyze with Sonnet" (or Opus) starts it detached; a spinner shows
+- The AI analysis never runs by itself: "Analyze with <the picked model's name>" starts it detached; a spinner shows
   the time and the cost cap (a harness profile has none: its command and `timeout` decide); it can take minutes.
   After a push, "Only new changes" analyses just the new commits.
 - `Reviews ▾` lists Claude code review, Security review and (when installed) Codex review with their last run;

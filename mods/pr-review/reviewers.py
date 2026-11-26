@@ -9,7 +9,8 @@ Codex: codex_args()), turns its answer into findings {id, reviewer, file, line, 
 detail, suggestion, code, and when the reviewer gave them: category, impact, effect, preconditions, certainty (see
 review.py: the severity follows from the impact by the fixed scale)} and merges them into `file` under that reviewer
 (other reviewers' findings and every status stay). A review that comes back as text (Codex's, or a slash command that
-answered in prose) goes through a cheap Haiku pass in the PR's context. Every call goes to the optional
+answered in prose) goes through a cheap text pass in the PR's context, on the run's model when a runner is configured
+(Haiku on the built-in Claude Code runner). Every call goes to the optional
 ledger (llm.py). The slash-command reviewers need those commands in the Claude setup: when one is missing, the same
 review runs as a plain prompt. Codex is optional (`codex` on PATH).
 runs[kind] in `file` says how the run went: {state: "running", busy, started, pid, head}, then {state: "done", count, cost,
@@ -657,10 +658,12 @@ def scope(raw, kind):
 
 
 def from_text(text, req, meta):
-    """A review written as text turned into findings by a cheap Haiku pass in the PR's context; its cost joins meta."""
+    """A review written as text turned into findings by a cheap pass in the PR's context, on the run's model when a
+    runner is configured (Haiku on the built-in Claude Code runner); its cost joins meta."""
     m = {}
+    model = req["model"] if llm.harness() else "haiku"
     answer = llm.claude(FEATURE[req["kind"]], "Turn this code review into findings. Keep its wording; do not add findings.\n\n"
-                        + text[-60000:] + ASK_PLAIN, context=req.get("context"), model="haiku", schema=PLAIN_FINDINGS, budget=0.3,
+                        + text[-60000:] + ASK_PLAIN, context=req.get("context"), model=model, schema=PLAIN_FINDINGS, budget=0.3,
                         timeout=300, meta=m)
     if answer is None:
         raise RuntimeError(f"{FEATURE[req['kind']]}: the review could not be turned into findings")
@@ -846,7 +849,7 @@ def main(arg):
     for f in findings:
         f.pop("ref", None)
     notes = [f"/{'code-review' if req['kind'] == 'claude' else 'security-review'} not available: ran as a plain prompt"] if meta.get("fallback") else []
-    notes += ["The reviewer answered in text: a Haiku pass turned it into findings"] if meta.get("converted") else []
+    notes += ["The reviewer answered in text: a text pass turned it into findings"] if meta.get("converted") else []
     notes += ["Codex reports no scope of its own"] if req["kind"] == "codex" else []
     run = {"state": "done", "cost": meta.get("cost"), "ms": int((time.monotonic() - started) * 1000), "model": meta.get("model_id"),
            "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "count": len(findings), "head": req["head"], "scope": scope(answer.get("scope"), req["kind"]),
