@@ -257,7 +257,7 @@ in but not run.
 |---|---|---|---|
 | `git` (2.46 or later for the full push lock) | diffs, checkouts, the push lock of fix and verify agents | `brew install git` | `sudo apt install git` |
 | `gh` or `glab` (one of them, logged in) | PR lists, diffs, CI checks and clones on GitHub (`gh`) or GitLab (`glab`) | `brew install gh`, `gh auth login`; `brew install glab`, `glab auth login` | `sudo apt install gh`; see GitLab's docs for `glab` |
-| `claude` or a harness command | the AI analysis, reviewers, triage, fix checks: `claude` (logged in), or your own CLI set as `harness.command` in `pr-review.config.json` (see `mods/pr-review/PROVIDERS.md`) | `npm install -g @anthropic-ai/claude-code` | same |
+| `claude` or a harness profile | the AI analysis, reviewers, triage, fix checks: `claude` (logged in), or a profile from `harnesses` in `pr-review.config.json` (`harness` names the active one; see `mods/pr-review/PROVIDERS.md`) | `npm install -g @anthropic-ai/claude-code` | same |
 | `python3` | the helper scripts (standard library only) | `brew install python` | `sudo apt install python3` |
 | `codex` (optional, with permission profiles; checked with 0.164) | the Codex reviewer, offered only when installed | `npm install -g @openai/codex` | same |
 | `bwrap` (optional, Linux only) | the sandbox a probe's script runs in | built in (`sandbox-exec`) | `sudo apt install bubblewrap` |
@@ -369,7 +369,10 @@ Optional, in `~/.config/herdr-app/pr-review.config.json`:
 ```json
 { "language": "English", "cloneRoot": "~/code", "globalRules": "PR titles follow Conventional Commits.",
   "ledger": null, "dryRun": false,
-  "harness": { "command": ["your-cli", "run", "--model", "{model}"], "modelList": ["your-model"] } }
+  "harness": "gateway",
+  "harnesses": { "gateway": { "command": ["your-cli", "run", "--model", "{model}"],
+                              "env": { "OPENAI_API_KEY": "${MY_GATEWAY_KEY}" },
+                              "models": { "shortlist": ["your-model"] } } } }
 ```
 
 `language` is what the AI writes in; `cloneRoot` is the folder where a PR's repository is looked for and, when you
@@ -378,9 +381,11 @@ click "Clone to …", cloned into (default `~/code`; with `"cloneRoot": "~/Work/
 `"cloneRoot": ["~/code", "~/aircall"]`; the first is where a new clone goes, and every folder is searched. The
 banner names the folders it searched when it found no clone; `globalRules` are conventions every PR is checked against; `ledger` is a folder for a JSONL
 usage ledger of every LLM call; `dryRun` makes "Submit review" write the payload to
-`pr-data/review-dry-run.json` instead of posting it. `harness` runs your own AI CLI instead of Claude Code, with
-`{model}` and `{prompt}` filled in, and `harness.modelList` names the models the pickers offer (an entry may carry
-`"price": [input, output]` per million tokens); `mods/pr-review/PROVIDERS.md` has the details.
+`pr-data/review-dry-run.json` instead of posting it. `harness` names the active profile in `harnesses`: each profile
+has its own `command` (with `{model}` and `{prompt}` filled in), `env`, `timeout` and `models` (a `shortlist`, whose
+entries may carry `"price": [input, output]` per million tokens, a `provider` declared in `providers`, or a command
+that prints one id per line). A profile named `claude` is the built-in Claude Code command, so its `env` points
+Claude Code at another endpoint. `mods/pr-review/PROVIDERS.md` has the details.
 
 ### Where checkouts go
 
