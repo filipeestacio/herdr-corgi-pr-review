@@ -179,6 +179,9 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
 // ---- the panel with a PR chosen does not build the list of PRs behind it
 {
   const { v: p, prs } = await openPanel(PR2(), 40);
+  // Mine is a fetched list: seed what loadList stores for it, and show it, so the rows come through the real path.
+  S.store.set("pr.source", "mine");
+  p.srcLists.mine = { key: "mine", prs, at: Date.now() };
   p.picking = true; const list = counted(() => frame(p));
   p.memo.clear(); p.context = null; p.choose(prs[0], cx); await settle();
   const chosen = counted(() => frame(p));
@@ -189,6 +192,8 @@ const NEVER = ["pr.mergeFindings", "arch.archLayout", "pr.fileRows", "pr.resilie
 {
   const { hash } = await import("./pr.js");
   const { v: p, prs } = await openPanel(PR2(), 6), pr = prs.find((x) => x.state === "open"), base = `/h/pr-data/cache/diff-${hash(pr.url)}-${pr.headSha}`;
+  S.store.set("pr.source", "mine"); // the fetched list, as loadList stores it
+  p.srcLists.mine = { key: "mine", prs, at: Date.now() };
   S.files.set(`${base}.json`, JSON.stringify({ url: pr.url, head: pr.headSha, parts: 1 })); S.files.set(`${base}.0.txt`, PR2().diff);
   let reads = 0; const get = S.files.get.bind(S.files); S.files.get = (k) => { if (k === `${base}.0.txt`) reads++; return get(k); };
   p.picking = true; p.loadTriage(cx); await settle(); p.loadTriage(cx); await settle();

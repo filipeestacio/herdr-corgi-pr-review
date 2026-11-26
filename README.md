@@ -192,7 +192,7 @@ whether it can happen today.
 
 ## Features
 
-- Panel: PRs from your sessions, the repo you're in, or review requests, with a one-line triage per PR.
+- Panel: PRs assigned to you or opened by you, from your sessions, the repo or space you're in, or review requests, with a one-line triage per PR.
 - Review layout: overview (intent, behaviour, risk, effort, blockers, pre-merge checks), layers in risk or reading
   order with check questions, an architecture impact diagram, a Security and a Resilience page, and related PRs.
 - Diff: syntax highlighting, go-to-definition through real language servers, inline example values, collapsed

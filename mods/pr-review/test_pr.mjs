@@ -429,7 +429,15 @@ console.log("ok");
 
 // PRs you didn't open
 {
-  const { parsePrRef, ghTarget, pruneSources } = await import("./pr.js");
+  const { parsePrRef, ghTarget, pruneSources, mergeMine } = await import("./pr.js");
+  // Mine merges assigned, opened and GitLab: one per url in the order they came, the assigned copy first for a url.
+  const assigned = { url: "https://github.com/o/r/pull/1", title: "assigned" }, created = { url: "https://github.com/o/r/pull/2", title: "created" };
+  assert.deepEqual(mergeMine([[assigned], [assigned, created]]), [assigned, created]);
+  assert.deepEqual(mergeMine([[created], [{ ...assigned, title: "also opened" }]]), [created, { ...assigned, title: "also opened" }], "the first answer for a url wins");
+  assert.deepEqual(mergeMine([]), [], "nothing asked");
+  assert.deepEqual(mergeMine([[], []]), [], "every host empty");
+  const one = [assigned, created];
+  assert.deepEqual(mergeMine([one]), one, "a single answer is unchanged");
   assert.deepEqual(parsePrRef("acme/bookshelf#12"), { repo: "acme/bookshelf", number: 12, url: "https://github.com/acme/bookshelf/pull/12" });
   assert.equal(parsePrRef(" https://github.com/o/r.js/pull/7/files ")?.url, "https://github.com/o/r.js/pull/7"); // a tab of the PR page
   assert.equal(parsePrRef("https://github.com/o/r.js/pull/7").repo, "o/r.js");

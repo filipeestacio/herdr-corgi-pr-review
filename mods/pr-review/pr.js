@@ -866,6 +866,19 @@ export function ghTarget(p, { repo, context, cwd = null, source }) {
     add: p.additions ?? null, del: p.deletions ?? null, context, sessionContext: context, session: null, cwd, source };
 }
 
+// The Mine list from its answers (assigned, opened, GitLab): one entry per url, in the order they came, so the assigned
+// copy comes before the one you opened.
+export const mergeMine = (lists) => {
+  const seen = new Set(), out = [];
+  for (const p of (lists ?? []).flat()) {
+    const url = p?.url;
+    if (url && seen.has(url)) continue;
+    if (url) seen.add(url);
+    out.push(p);
+  }
+  return out;
+};
+
 // The source lists cache (pr-data/sources.json, {key: {at, prs}}): the newest max keys.
 export function pruneSources(doc, max = 20) {
   return Object.fromEntries(Object.entries(doc ?? {}).sort((a, b) => (b[1].at ?? 0) - (a[1].at ?? 0)).slice(0, max));
