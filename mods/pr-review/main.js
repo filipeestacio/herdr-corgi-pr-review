@@ -154,7 +154,7 @@ export default class PrReview extends View {
     this.input.on("submit", (_e, cx) => this.addComment(cx));
     this.input.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
     this.input.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
-    this.openRefInput = InputState.new({ placeholder: "Open PR… URL or owner/repo#123 (Enter)" });
+    this.openRefInput = InputState.new({ placeholder: "Open PR or MR… URL or owner/repo#123 (Enter)" });
     this.openRefInput.on("submit", (_e, cx) => this.openRef(cx));
     this.publishGoto();
     this.srcLists = {}; this.slugs = new Map(); this.cfg = {};
@@ -865,6 +865,11 @@ export default class PrReview extends View {
     return JSON.parse(r.stdout);
   }
   // A GitLab project's open merge requests, as the PR objects ghTarget reads (mrs.py).
+  async glabView(url) {
+    const r = await exec("python3", [`${appHome()}/mods/pr-review/mrs.py`, "view", url], { timeout: 60000 }).catch((e) => ({ code: 1, stdout: "", stderr: String(e) }));
+    if (r.code !== 0) throw new Error(String(r.stderr ?? "").trim().slice(0, 200) || "mrs.py view failed");
+    return JSON.parse(r.stdout);
+  }
   async glabMerges(slug) {
     const r = await exec("python3", [`${appHome()}/mods/pr-review/mrs.py`, "list", slug], { timeout: 60000 }).catch((e) => ({ code: 1, stdout: "", stderr: String(e) }));
     if (r.code !== 0) throw new Error(String(r.stderr ?? "").trim().slice(0, 200) || "mrs.py list failed");
@@ -931,6 +936,10 @@ export default class PrReview extends View {
   // A target with its head (gh pr view): search results and references have none; the diff cache is keyed by it.
   async resolve(target) {
     if (target.headSha) return target;
+    if (hostOfLink(target.url) === "gitlab") { // a merge request: its head and fields from its project
+      const view = await this.glabView(target.url);
+      return { ...ghTarget(view, { repo: target.repo, cwd: target.cwd, source: target.source, context: target.context }) };
+    }
     const r = await exec("gh", ["pr", "view", target.url, "--json", `${GH_FIELDS},state`], { timeout: 30000 }).catch((e) => ({ code: 1, stderr: String(e) }));
     if (r.code !== 0) throw new Error(`gh pr view: ${r.stderr.trim().slice(0, 160)}`);
     return { ...ghTarget(JSON.parse(r.stdout), { repo: target.repo, cwd: target.cwd, source: target.source, context: target.context }) };
@@ -1041,7 +1050,7 @@ export default class PrReview extends View {
   // "Open PR…": a URL or owner/repo#123, opened like a listed PR.
   openRef(cx) {
     const ref = parsePrRef(this.openRefInput.value());
-    if (!ref) { this.note = "Not a PR: paste its URL or owner/repo#123"; return cx.notify(); }
+    if (!ref) { this.note = "Not a PR or MR: paste its URL or owner/repo#123"; return cx.notify(); }
     this.openRefInput.set_value("");
     const mine = this.prs.find((p) => p.url === ref.url);
     if (mine) return this.choose(mine, cx);

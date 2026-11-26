@@ -433,6 +433,12 @@ console.log("ok");
   assert.deepEqual(parsePrRef("acme/bookshelf#12"), { repo: "acme/bookshelf", number: 12, url: "https://github.com/acme/bookshelf/pull/12" });
   assert.equal(parsePrRef(" https://github.com/o/r.js/pull/7/files ")?.url, "https://github.com/o/r.js/pull/7"); // a tab of the PR page
   assert.equal(parsePrRef("https://github.com/o/r.js/pull/7").repo, "o/r.js");
+  // A merge request link, on any host, names its project (nested groups kept) and its own address.
+  assert.deepEqual(parsePrRef("https://gitlab.com/group/sub/project/-/merge_requests/1508"),
+    { repo: "group/sub/project", number: 1508, url: "https://gitlab.com/group/sub/project/-/merge_requests/1508" });
+  assert.equal(parsePrRef("https://gitlab.com/group/sub/project/-/merge_requests/7/diffs")?.url, "https://gitlab.com/group/sub/project/-/merge_requests/7");
+  assert.equal(parsePrRef("https://git.example.com/g/p/-/merge_requests/9")?.repo, "g/p"); // a self-hosted instance
+  assert.equal(parsePrRef("https://example.com/x"), null);
   assert.equal(parsePrRef("o/r/pull/7#issuecomment-1").number, 7);
   assert.equal(parsePrRef("nope"), null);
   const t = ghTarget({ number: 5, title: "x", url: "https://github.com/o/r/pull/5", author: { login: "kim" }, isDraft: true, headRefOid: "abc", reviewDecision: "" }, { context: "blue", source: "repo" });

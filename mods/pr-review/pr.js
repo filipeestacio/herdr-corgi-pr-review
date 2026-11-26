@@ -1,5 +1,7 @@
 // Pure helpers for the PR review panel (tested by test_pr.mjs).
 
+import { parseLink, webUrl } from "./host.js"; // a link names its host (host.js)
+
 // Numbers each diff line once (as the shipped changes panel does): number is the line on its side (new, removed:
 // old); o and n are the old and new line numbers where the line has one.
 export function diffRows(lines) {
@@ -843,9 +845,15 @@ export function triageOf({ pr, analysis = null, size = null, security = [], rela
 
 // ---- PRs you didn't open (main.js sources "This repo", "Review requested", "Open PR…")
 
-// "https://github.com/o/r/pull/12" (also …/files), "o/r#12" or "o/r/pull/12" → {repo, number, url}; null otherwise.
+// "https://github.com/o/r/pull/12" (also …/files), a GitLab merge request link (any host, see host.js), "o/r#12" or
+// "o/r/pull/12" → {repo, number, url}; null otherwise. The short forms name no host, so they stay GitHub's.
 export function parsePrRef(text) {
-  const m = /^\s*(?:https?:\/\/github\.com\/)?([\w.-]+\/[\w.-]+?)(?:#|\/pull\/)(\d+)(?:\/[\w/-]*)?(?:[?#].*)?\s*$/.exec(String(text ?? ""));
+  const raw = String(text ?? "").trim();
+  if (/^https?:\/\//i.test(raw)) {
+    const link = parseLink(raw);
+    if (link) return { repo: link.repo, number: link.number, url: webUrl(link) };
+  }
+  const m = /^(?:https?:\/\/github\.com\/)?([\w.-]+\/[\w.-]+?)(?:#|\/pull\/)(\d+)(?:\/[\w/-]*)?(?:[?#].*)?$/.exec(raw);
   return m ? { repo: m[1], number: Number(m[2]), url: `https://github.com/${m[1]}/pull/${m[2]}` } : null;
 }
 
