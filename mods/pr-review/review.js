@@ -12,7 +12,8 @@
 import { div } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, TextView, v_virtual_list, VirtualListScrollHandle, ScrollHandle, Textarea, TextareaState, Input, InputState, HoverCard } from "gpui-base";
 import { exec, hc, run, focused, pickFolder, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, nextCommand, watchFolder, openOverlay, closeOverlay, props, home, placement } from "herdr";
-import { spaces, agents, terminals, watch } from "./live.js"; // never straight from Herdr (live.js says why)
+import { spaces, agents, terminals, watch } from "./live.js";
+import { hostOfLink } from "./host.js"; // never straight from Herdr (live.js says why)
 import { parseReports, findingStatus, mergeFindings, findingCounts, countLine, runsOf, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
 import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig } from "./setup-view.js";
@@ -129,26 +130,38 @@ const TOUCH_MS = 5 * 60000; // a review's "last touched" on file may be this old
 // (PROVIDERS.md). Written on each registry change, 1.5 s after the last edit.
 // The AI analysis' model: any value the claude CLI offers (models.py), Sonnet until one is picked.
 // At least Sonnet (pr.js codeModel): every use reads or judges code, which Haiku is too weak for.
-const model = () => { const m = shared("review.model"); return codeModel(typeof m === "string" && m ? m : "sonnet"); };
+// A stored pick that the configured list no longer holds (the list changed) falls back to its first model, never to a
+// stale id the harness would reject.
+const model = () => {
+  const m = shared("review.model"), h = harnessChoices();
+  if (h.length) return typeof m === "string" && h.some((c) => c.value === m) ? m : h[0].value;
+  return codeModel(typeof m === "string" && m ? m : "sonnet");
+};
 // The models the CLIs offer per context ({at, claude, codex}, models.py), shared so the Reviews popup sees them too;
 // pr-data/models.json keeps them across restarts.
 const modelsFile = () => `${appHome()}/pr-data/models.json`;
+// A run writes its output beside its status file: a failure that never reached the status is still readable.
+const runLog = (status) => String(status).replace(/\.status$/, "") + ".log";
 const modelsDoc = () => shared("review.models") ?? {};
 // A model's name as its CLI calls it ("Opus 5.5"), else the class label, else the value itself.
-export const modelLabel = (m) => Object.values(modelsDoc()).flatMap((d) => d?.claude ?? []).find((x) => x.value === m)?.label ?? MODELS[m]?.label ?? m;
+export const modelLabel = (m) => Object.values(modelsDoc()).flatMap((d) => [...(d?.harness ?? []), ...(d?.claude ?? [])]).find((x) => x.value === m)?.label ?? MODELS[m]?.label ?? m;
 // Codex's models (one login for every context): from whichever context asked last.
 const codexChoices = () => Object.values(modelsDoc()).map((d) => d?.codex ?? []).find((l) => l.length) ?? [];
+// A configured harness's models (models.py): the ones pr-review.config.json lists, whatever CLI they belong to.
+const harnessChoices = () => Object.values(modelsDoc()).map((d) => d?.harness ?? []).find((l) => l.length) ?? [];
 // The model id a picker value stands for ("opus" -> "claude-opus-5-5"), from the CLI's list.
 const resolvedOf = (m) => Object.values(modelsDoc()).flatMap((d) => d?.claude ?? []).find((x) => x.value === m)?.resolved ?? m;
 // "$4 / $20 per MTok": input and output.
-const priceText = (m) => { const [i, o] = priceOf(resolvedOf(m)); return `$${i} / $${o} per MTok`; };
+const harnessPrice = (m) => Object.values(modelsDoc()).flatMap((d) => d?.harness ?? []).find((c) => c.value === m)?.price ?? null;
+const priceText = (m) => { const p = harnessPrice(m); if (p) return `$${p[0]} / $${p[1]} per MTok`; const r = resolvedOf(m); if (String(r).includes("/")) return "price not reported"; const [i, o] = priceOf(r); return `$${i} / $${o} per MTok`; };
 // The choices for a context: the CLI's aliases (opus, fable, sonnet: each its family's newest model; older models by
 // full id are left out, unless one is the current pick), or the classes until the CLI answered. Never Haiku: every
 // choice here reads or judges code (codeModel).
 const modelChoices = (ctx) => {
-  const list = modelsDoc()[ctx]?.claude ?? [], cur = model();
+  const list = modelsDoc()[ctx]?.claude ?? [], cur = model(), harness = harnessChoices();
   const shown = list.filter((c) => (!c.value.startsWith("claude-") || c.value === cur) && tierOf(c.value) !== "haiku");
-  return shown.length ? shown : Object.entries(MODELS).filter(([k]) => k !== "haiku").map(([value, v]) => ({ value, label: v.label, description: "" }));
+  const base = shown.length ? shown : (harness.length ? [] : Object.entries(MODELS).filter(([k]) => k !== "haiku").map(([value, v]) => ({ value, label: v.label, description: "" })));
+  return [...harness, ...base.filter((c) => !harness.some((h) => h.value === c.value))];
 };
 const cacheDir = () => `${appHome()}/pr-data/cache`;
 const valuesOn = () => shared("review.values") !== false; // inline example values (flow traces), on by default
@@ -161,7 +174,7 @@ const exploreDir = () => `${appHome()}/pr-data/explore`; // explorations: <id>.j
 const deepFile = () => `${appHome()}/pr-data/deep.json`; // Ask threads per PR and drill-downs per node (explore.js bounds both)
 const ctxDoc = () => shared(C.CONTEXTS_KEY);
 const prCtx = (pr) => C.prContext(ctxDoc(), pr, home());
-const ALL_REVIEWERS = { claude: ["Claude code review", "ansi5"], security: ["Security review", "ansi1"], resilience: ["Resilience review", "ansi4"], codex: ["Codex review", "ansi6"] };
+const ALL_REVIEWERS = { claude: ["Code review", "ansi5"], security: ["Security review", "ansi1"], resilience: ["Resilience review", "ansi4"], codex: ["Codex review", "ansi6"] };
 // Codex is optional: offered only when `codex` is on PATH (Setup's last check). Labels stay for findings already there.
 // The analysis files its own findings inside its layers, and an AI suggestion can be one source of a finding (pr.js
 // mergeFindings): a label and colour here, never a run of their own.
@@ -173,12 +186,12 @@ const SEV = { high: "ansi1", medium: "ansi3", low: "ansi4" };
 // Where a card comes from: its stripe, and the Show switch's colours.
 const SOURCE = { mine: "accent", ai: "ansi3", agents: "ansi6", github: "ansi4", notes: "ansi5" };
 // Hover texts for the Show chips, the Comments tab's filters and its state chips.
-const SHOW_TIP = { mine: "Comments you wrote: drafts (local until you finish the review), sent to agents, or posted", ai: "Findings and AI notes under their lines", agents: "Replies from agent sessions", github: "Comments other people left on GitHub", notes: "Your pinned notes, private to you" };
+const SHOW_TIP = { mine: "Comments you wrote: drafts (local until you finish the review), sent to agents, or posted", ai: "Findings and AI notes under their lines", agents: "Replies from agent sessions", github: "Comments other people left on GitHub or GitLab", notes: "Your pinned notes, private to you" };
 
 const TAB_TIP = { files: "The changed files; tick the ones you have viewed", steps: "The AI analysis: the PR's pages and the layers of this change, with explanations and pictures", findings: "Every finding once, with its sources and its state; fixes sent to an agent and their verification", comments: "All comments on this PR: yours, the agents' and GitHub's" };
 const COVER_TIP = { seen: "The diff does what this asks", partly: "The diff does only part of what this asks", absent: "Nothing in the diff does this", extra: "The diff does this, but it was not asked for" };
 const COMPOSE_TIP = { insertSuggestion: "Insert the selected lines as a GitHub suggestion block", closeComposer: "Close the composer without saving (Esc)", addDraft: "Add to your pending review; nothing is posted yet (⌘↩)", singleComment: "Post this one comment at once, or preview it first when it goes to an agent" };
-const STATE_TIP = { pending: "Pending: written by you, not sent yet", waiting: "Sent to agent: no reply yet", replied: "Agent replied, or someone answered on GitHub", fixed: "Reported fixed: the agent says it is done; nothing has checked it", declined: "Declined: the agent chose not to change it", github: "A comment from GitHub", note: "A pinned note, private to you" };
+const STATE_TIP = { pending: "Pending: written by you, not sent yet", waiting: "Sent to agent: no reply yet", replied: "Agent replied, or someone answered on GitHub", fixed: "Reported fixed: the agent says it is done; nothing has checked it", declined: "Declined: the agent chose not to change it", github: "A comment from GitHub or GitLab", note: "A pinned note, private to you" };
 const STALE_TIP = "The code here changed since this comment was written";
 const CARD_W = 720, CARD_MIN = 420, CARD_HEAD = 32, CARD_REPLY = 34, CARD_GAP = 6;
 // The "select to fix" box of a card that is one item of the list (a finding's card, a GitHub comment): it stands in
@@ -212,29 +225,29 @@ const openCodexMenu = () => { const cur = shared("review.codexModel") || ""; ret
 const reviewsPop = () => { const cx = hasTool("codex"); return { width: 500, height: 28 + 60 * (reviewersNow().length + 1) + (cx && codexChoices().length ? 36 : 0) + (cx ? 152 : 60) }; };
 export function renderReviews() {
   const t = theme(), runs = runsOf(shared("review.reviewers") ?? {}), meta = shared("review.meta") ?? {}, pr = shared("review.target"), mine = meta.url === pr?.url;
-  const total = mine ? meta.findings?.total ?? 0 : 0, a = mine ? meta.shown : null, cap = REVIEW_CAP[tierOf(model())];
+  const total = mine ? meta.findings?.total ?? 0 : 0, a = mine ? meta.shown : null, harness = harnessChoices().length > 0, cap = harness ? null : REVIEW_CAP[tierOf(model())];
   const row = (k, label, c, line, bad, right) => h_flex().id(`rv-rr-${k}`).gap(10).px(8).py(6).rounded(7).items_center()
     .child(div().w(8).h(8).flex_none().rounded_full().bg(t[c]))
     .child(v_flex().flex_1().min_w(0).child(div().font_semibold().child(label)).child(div().text_size(TYPE.small).line_height(1.4).whitespace_normal().text_color(bad ? t.ansi1 : t.muted).child(line)))
     .children([right].filter(Boolean));
   const cur = codexMenu().find((c) => c.value === (shared("review.codexModel") || "")) ?? codexMenu()[0];
   return v_flex().id("rv-reviews").size_full().p(8).gap(4).bg(t.popover).text_color(t.foreground).text_size(TYPE.body)
-    .child(row("analysis", REVIEWERS.analysis[0], REVIEWERS.analysis[1], mine && meta.busy ? `Running with ${modelLabel(meta.busy)}`
+    .child(row("analysis", REVIEWERS.analysis[0], REVIEWERS.analysis[1], mine && meta.busy ? `Running with ${modelLabel(meta.busy)}${meta.busyAt ? ` · ${clock(Math.max(0, Date.now() - meta.busyAt))}` : ""}${meta.busyAt && Date.now() - meta.busyAt > 10 * 60000 ? " · no output yet (the harness answers at the end)" : ""}`
       : a ? [`${meta.findings?.analysis ?? 0} ${meta.findings?.analysis === 1 ? "finding" : "findings"}`, a.cost != null ? `$${Number(a.cost).toFixed(3)}` : null, modelLabel(a.model)].filter(Boolean).join(" · ")
       : "Not run on this PR yet. It starts from the Overview page.", false, null))
     .children(reviewersNow().map(([k, [label, c]]) => {
       const r = runs[k], n = r?.count ?? 0, done = r?.state === "done";
       const line = TH.runLine(r, n ? 0 : total, { running: r?.started ? clock(Date.now() - Date.parse(r.started)) : "", took: r?.ms ? clock(r.ms) : null, ago: r?.at ? ago(r.at) : null })
-        + (k === "codex" ? (done ? " · Codex does not report its price" : "") : !r?.state ? ` · capped at $${cap}` : "") + (k === "security" && mine && meta.securityOffer ? `. ${meta.securityOffer}` : "");
+        + (k === "codex" ? (done ? " · Codex does not report its price" : "") : !r?.state ? (harness ? " · the harness sets its budget" : ` · capped at $${cap}`) : "") + (k === "security" && mine && meta.securityOffer ? `. ${meta.securityOffer}` : "");
       return row(k, label, c, line, r?.state === "failed", r?.state === "running" ? div().flex_none().child(SPIN[0]).frames(SPIN, 90)
         : pill(`rv-rrun-${k}`, t, runLabel(r, k === "codex" || !mine ? null : meta.prices?.[k] ?? null, "", true), () => { run(`pr-review.reviewer:${k}`); closeOverlay(props().overlay); }).flex_none()
-          .tooltip(k === "codex" ? `Run the codex CLI on the PR head, with its own login; its price is not reported. ${TH.CODEX_MAY} On someone else's PR in Restricted Mode it asks once first.` : `One read-only review of the PR head with ${modelLabel(model())}, capped at $${cap}`));
+          .tooltip(k === "codex" ? `Run the codex CLI on the PR head, with its own login; its price is not reported. ${TH.CODEX_MAY} On someone else's PR in Restricted Mode it asks once first.` : `One read-only review of the PR head with ${modelLabel(model())}, ${harness ? "and the harness command's own budget applies" : `capped at $${cap}`}`));
     }))
     .when(hasTool("codex") && codexChoices().length > 0, (e) => e.child(h_flex().px(8).gap(8).items_center()
       .child(div().text_size(TYPE.small).text_color(t.muted).child("Codex review model"))
       .child(pill("rv-cxm", t, `${cur.label} ▾`, () => openCodexMenu()).tooltip(cur.description || "The model in Codex's own settings"))))
     .child(div().px(8).pt(4).text_size(TYPE.small).line_height(1.45).whitespace_normal().text_color(t.muted)
-      .child(`Claude reviews: ${accountOf(pr ? prCtx(pr) : C.defaultOf(ctxDoc()))}. They read the PR head in a checkout, read-only, and send the diff and the files they open to the provider.`
+      .child(`${harness ? "Reviews" : "Claude reviews"}: ${harness ? modelLabel(model()) : accountOf(pr ? prCtx(pr) : C.defaultOf(ctxDoc()))}. ${harness ? "They" : "They"} read the PR head in a checkout, read-only, and send the diff and the files they open to the ${harness ? "harness" : "provider"}.`
         + (hasTool("codex") ? ` Codex review: the codex CLI with its own login. It is a second provider (OpenAI) and gets the same checkout. ${TH.CODEX_MAY}` : "")));
 }
 
@@ -984,7 +997,7 @@ export const ReviewMode = {
       cx.spawn(async (cx) => {
         const before = await readTextFile(reqFile).catch(() => null);
         await writeTextFile(reqFile, JSON.stringify(req), before).catch((e) => { this.aiError = String(e); });
-        exec("sh", ["-c", 'nohup python3 "$0" "$1" >/dev/null 2>&1 &', `${appHome()}/mods/pr-review/review.py`, `@${reqFile}`])
+        exec("sh", ["-c", 'nohup python3 "$0" "$1" >"$2" 2>&1 &', `${appHome()}/mods/pr-review/review.py`, `@${reqFile}`, runLog(job.status)])
         .catch((e) => { this.aiError = String(e); this.aiBusy = false; cx.notify(); });
       });
       this.publish(); this.pollAi(cx, job, url, m);
@@ -997,7 +1010,11 @@ export const ReviewMode = {
       this.ai = text || fallback ? this.mapSaved(JSON.parse(text ?? fallback), Boolean(text)) : null;
       this.securityNow(cx); // the findings file may have been read before the analysis: its resilience block is derived on the analysis (withResilience)
       this.aiFile = text ? job.out : fallback ? job.latest : null;
-      if (status?.busy && Date.now() - Date.parse(status.started) < 20 * 60000) { // a run started earlier, maybe from another copy
+      if (status?.busy && status.pid && !(await this.livePids([status.pid])).has(String(status.pid))) {
+        this.aiError = `The run ended without a result (its process is gone). Its output is in ${runLog(job.status)}.`;
+        const before = await readTextFile(job.status).catch(() => null);
+        await writeTextFile(job.status, JSON.stringify({ error: this.aiError }), before).catch(() => null);
+      } else if (status?.busy && Date.now() - Date.parse(status.started) < 20 * 60000) { // a run started earlier, maybe from another copy
         this.aiBusy = { model: m, started: Date.parse(status.started), status: job.status, pid: status.pid };
         this.pollAi(cx, job, url, m);
       }
@@ -1017,7 +1034,7 @@ export const ReviewMode = {
     const req = { diagrams: file, also: [job.out, job.latest].filter((x) => x !== file), head: this.head, model: m, context: this.ctxReq(), pr: job.req.pr,
       worktree: job.req.worktree, hunks: job.req.hunks, status };
     this.diaBusy = { status, file, url }; this.diaError = null;
-    exec("sh", ["-c", 'nohup python3 "$0" "$1" >/dev/null 2>&1 &', `${appHome()}/mods/pr-review/review.py`, JSON.stringify(req)])
+    exec("sh", ["-c", 'nohup python3 "$0" "$1" >"$2" 2>&1 &', `${appHome()}/mods/pr-review/review.py`, JSON.stringify(req), runLog(status)])
       .catch((e) => { this.diaError = String(e); this.diaBusy = null; cx.notify(); });
     this.pollDiagrams(cx);
     cx.notify();
@@ -1051,10 +1068,25 @@ export const ReviewMode = {
       .when(Boolean(this.diaError), (e) => e.child(div().max_w(260).truncate().text_color(t.ansi1).tooltip(this.diaError ?? "").child(this.diaError ?? "")));
   },
 
+  // The processes still running among these: one shell probe, so a stale "busy" is known without a per-pid spawn.
+  async livePids(pids) {
+    const list = [...new Set((pids ?? []).filter((x) => x !== null && x !== undefined).map(String))];
+    if (!list.length) return new Set();
+    const r = await exec("sh", ["-c", 'for p in "$@"; do kill -0 "$p" 2>/dev/null && echo "$p"; done', "sh", ...list]).catch(() => null);
+    return new Set(String(r?.stdout ?? "").split(/\s+/).filter(Boolean));
+  },
+
   pollAi(cx, job, url, m) {
     cx.timer.after(5000, (cx) => cx.spawn(async (cx) => {
       if (this.prSel?.url !== url || !this.aiBusy) return;
       const st = JSON.parse(await readTextFile(job.status).catch(() => null) ?? "null");
+      if (st?.busy && st.pid && !(await this.livePids([st.pid])).has(String(st.pid))) {
+        // The process is gone: the run ended without a result. Say so instead of showing it as running for ever.
+        const why = `The run ended without a result (its process is gone). Its output is in ${runLog(job.status)}.`;
+        const before = await readTextFile(job.status).catch(() => null);
+        await writeTextFile(job.status, JSON.stringify({ error: why }), before).catch(() => null);
+        this.aiBusy = false; this.aiError = why; this.publish(); cx.notify(); return;
+      }
       if (st?.busy || !st) { if (st?.pid) this.aiBusy.pid = st.pid; if (st?.passes) Object.assign(this.aiBusy, { pass: st.pass, passes: st.passes }); cx.notify(); return this.pollAi(cx, job, url, m); }
       this.aiBusy = false;
       if (st.error) this.aiError = st.error;
@@ -1095,7 +1127,7 @@ export const ReviewMode = {
   // What the bar shows: the analysis on screen, or the one running.
   publish() {
     const a = this.ai;
-    putShared("review.meta", { url: this.prSel?.url ?? null, pending: this.comments?.length ?? 0, selected: this.prSel ? this.selCount() : 0, model: this.aiModel, busy: this.aiBusy?.model ?? null, error: this.aiError,
+    putShared("review.meta", { url: this.prSel?.url ?? null, pending: this.comments?.length ?? 0, selected: this.prSel ? this.selCount() : 0, model: this.aiModel, busy: this.aiBusy?.model ?? null, busyAt: this.aiBusy?.started ?? null, error: this.aiError,
       shown: a ? { model: a.model, model_id: a.model_id, cost: a.cost, exact: a.exact, mergeRisk: a.mergeRisk, effort: a.effort } : null,
       checks: this.prSel ? this.checksNow().reduce((n, c) => ({ ok: n.ok + (c.ok === true), fail: n.fail + (c.ok === false) }), { ok: 0, fail: 0 }) : null,
       // For the bar's "Dry run" chip and the "Run review" popup (findings: all, and the analysis' own).
@@ -1277,7 +1309,12 @@ export const ReviewMode = {
     if (this.prSel?.url !== url) return;
     const d = doc ? JSON.parse(doc) : {};
     this.find = { ...this.find, list: withThreats(d.findings ?? [], d.security), runs: runsOf(d.runs), status: d.status ?? {}, reports: parseReports(rep), security: d.security ?? null, resilience: d.resilience ?? null, loaded: url };
-    for (const r of Object.values(this.find.runs)) if (r.busy && Date.now() - Date.parse(r.started) > 30 * 60000) { r.busy = false; r.state = "failed"; r.error = "Stopped without a result"; }
+    const running = Object.values(this.find.runs).filter((r) => r.busy && r.pid);
+    const live = await this.livePids(running.map((r) => r.pid));
+    for (const r of Object.values(this.find.runs)) {
+      if (r.busy && r.pid && !live.has(String(r.pid))) { r.busy = false; r.state = "failed"; r.error = `Stopped without a result (its process is gone). Its output is in ${findDir()}/${hash(url)}.${Object.keys(this.find.runs).find((k) => this.find.runs[k] === r)}.log`; }
+      else if (r.busy && Date.now() - Date.parse(r.started) > 30 * 60000) { r.busy = false; r.state = "failed"; r.error = "Stopped without a result"; }
+    }
     putShared("review.reviewers", this.find.runs);
     this.securityNow(cx);
     cx.notify();
@@ -1322,7 +1359,8 @@ export const ReviewMode = {
       head: w.head, level: "medium", file: `${findDir()}/${hash(pr.url)}.json`, ...(auto ? { auto } : {}) };
     this.find.runs[kind] = { state: "running", busy: true, started: new Date().toISOString(), scope: null, error: null, head: w.head, ...(auto ? { auto } : {}) };
     setShared("review.reviewers", { ...this.find.runs });
-    exec("sh", ["-c", 'nohup python3 "$0" "$1" >/dev/null 2>&1 &', `${appHome()}/mods/pr-review/reviewers.py`, JSON.stringify(req)])
+    const log = `${findDir()}/${hash(pr.url)}.${kind}.log`; // a reviewer's own output, for a run that ends without a state
+    exec("sh", ["-c", 'nohup python3 "$0" "$1" >"$2" 2>&1 &', `${appHome()}/mods/pr-review/reviewers.py`, JSON.stringify(req), log])
       .catch((e) => { this.note = `Could not start ${REVIEWERS[kind][0]}: ${e}`; cx.notify(); });
     cx.notify();
   },
@@ -2040,7 +2078,9 @@ export const ReviewMode = {
       let text = null;
       try {
         if (!this.head) {
-          const v = await exec("gh", ["pr", "view", url, "--json", "headRefOid"], { timeout: 30000 });
+          const v = hostOfLink(url) === "gitlab"
+            ? await exec("python3", [`${appHome()}/mods/pr-review/mrs.py`, "view", url], { timeout: 60000 })
+            : await exec("gh", ["pr", "view", url, "--json", "headRefOid"], { timeout: 30000 });
           if (v.code !== 0) throw new Error("PR head unknown");
           this.head = JSON.parse(v.stdout).headRefOid;
         }
@@ -2050,8 +2090,10 @@ export const ReviewMode = {
         const local = text === null && this.root ? await exec("git", ["cat-file", "-p", `${head}:${path}`], { cwd: this.root }).catch(() => null) : null;
         if (text !== null) {} else if (local?.code === 0) text = local.stdout;
         else {
-          const r = await exec("gh", ["api", "-H", "Accept: application/vnd.github.raw", `repos/${repo}/contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${head}`], { timeout: 60000 });
-          if (r.code !== 0) throw new Error(r.stderr.trim().slice(0, 160));
+          const r = hostOfLink(url) === "gitlab"
+            ? await exec("python3", [`${appHome()}/mods/pr-review/mrs.py`, "file", url, path], { timeout: 60000 })
+            : await exec("gh", ["api", "-H", "Accept: application/vnd.github.raw", `repos/${repo}/contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${head}`], { timeout: 60000 });
+          if (r.code !== 0) throw new Error(String(r.stderr).trim().slice(0, 160));
           text = r.stdout;
         }
       } catch (e) { if (this.prSel?.url === url) { this.full[path] = `Could not load the file: ${String(e).replace(/^Error: /, "")}`; this.rowsTouched(); } }
@@ -2242,7 +2284,7 @@ export const ReviewMode = {
   },
   // What a fix of these comments needs for its preview and after it was sent (fixComments, fixTogether).
   commentFix(ids) {
-    const comments = this.commentsById(ids), said = (c) => `${c.by ? `@${c.by} on GitHub · ` : ""}${c.file} ${uiLine(c)}: ${c.text}`;
+    const comments = this.commentsById(ids), said = (c) => `${c.by ? `@${c.by} on GitHub or GitLab · ` : ""}${c.file} ${uiLine(c)}: ${c.text}`;
     // foreign: one of them is a GitHub comment by someone else (threads.js foreignComment): its fix never runs
     // unattended and never in the PR's own session, whatever the PR's trust (previewFix, startSubFix, mainOffered).
     return { comments, items: comments.map((c) => ({ kind: "comment", id: c.id })), labels: comments.map(said), foreign: TH.hasForeign(comments, shared("gh.login")),
@@ -2432,7 +2474,7 @@ export const ReviewMode = {
           text: e.text, status: e.status ? [{ fixed: `Reported fixed${e.commit ? ` in ${String(e.commit).slice(0, 7)}` : ""}`, wontfix: "Declined", answered: "Answered", question: "Question" }[e.status] ?? e.status, THREAD_COLOR[e.status] ?? "muted"] : null })),
         menu: [["Reply", false, (cx) => this.startReply(o.id, cx)], ...(fv?.job.terminal ? [["Go to fix", false, () => this.goFix(fv.job)]] : []),
           ...(fv?.job.target === "sub" ? [["Discard fix", true, (cx) => this.discardFix(fv.job, cx)]] : []), ...(v.status === "fixed" || v.status === "wontfix" ? [[this.openThreads.has(o.id) ? "Fold" : "Unfold", false, () => { if (this.openThreads.has(o.id)) this.openThreads.delete(o.id); else this.openThreads.add(o.id); }]] : []),
-          ["Select", false, (cx) => this.toggleSel(o.id, cx)], ...(o.url ? [["Open on GitHub", false, () => openUrl(o.url)]] : []), ["Copy position", false, () => copyText(where(o))]] };
+          ["Select", false, (cx) => this.toggleSel(o.id, cx)], ...(o.url ? [["Open in browser", false, () => openUrl(o.url)]] : []), ["Copy position", false, () => copyText(where(o))]] };
     }
     const open = this.openNotes?.has(o.id);
     return { key: `pin:${o.id}`, id: o.id, src: "notes", author: "Note · private", time: hm(o.at), sel: false, status: [o.q ? `on: ${o.q}` : "Ask answer", "muted"], text: open ? o.text : o.summary,
@@ -2524,7 +2566,7 @@ export const ReviewMode = {
   // button adds to the pending review. Posting this one comment to GitHub at once is public and cannot be taken back,
   // so it waits behind the ▾ beside the main button (composeMore) instead of sitting next to it.
   composeButtons() {
-    const now = this.routeNow() === "github" ? [["▾", 28, "toggleComposeMore"], ...(this.composeMore ? [["Post now to GitHub", 160, "singleComment"]] : [])] : [["Send to agent…", 160, "singleComment"]];
+    const now = this.routeNow() === "github" ? [["▾", 28, "toggleComposeMore"], ...(this.composeMore ? [["Post now", 160, "singleComment"]] : [])] : [["Send to agent…", 160, "singleComment"]];
     const list = this.editing ? [["Suggestion", 104, "insertSuggestion"], ["Cancel", 80, "closeComposer"], ["Update comment", 140, "addDraft", true]]
       : [["Suggestion", 104, "insertSuggestion"], ["Cancel", 80, "closeComposer"], [this.comments.length ? "Add review comment" : "Start a review", 160, "addDraft", true], ...now];
     let x = GUTTER + 16; // the card's 4 px border and 12 px padding
@@ -2569,10 +2611,65 @@ export const ReviewMode = {
     const c = this.draftComment(), key = this.threadKey();
     if (!c) return cx.notify();
     const done = (cx, how) => { this.updateThreads(cx, (d) => TH.addThreads(d, key, [c], how)); this.fsel = null; this.closeComposer(cx); };
-    if (this.routeNow() === "github") { setShared("review.hintPostNow", true); return this.postSingleGh(c, cx, done); }
+    if (this.routeNow() === "github") {
+      setShared("review.hintPostNow", true);
+      return hostOfLink(this.prSel?.url) === "gitlab" ? this.postSingleMr(c, cx, done) : this.postSingleGh(c, cx, done);
+    }
     const { label } = this.sendAgent();
     this.previewSend(cx, { what: "Comment", own: c.text, prompt: buildReview({ pr: this.pr, base: this.base, comments: [c], lang: this.lang(), replies: this.repliesFile(), contract: TH.repliesContract }),
       onSent: (cx) => done(cx, { route: "agent", agent: label }) });
+  },
+
+  // A review as GitLab takes it: mrs.py posts one discussion per comment and one note for the summary and the verdict.
+  postMr(comments, event, summary, cx, done) {
+    const pr = this.prSel;
+    if (!pr?.url || this.sending) return;
+    this.sending = true; this.note = null; this.posted = null;
+    cx.spawn(async (cx) => {
+      try {
+        if (!this.head) throw new Error("MR head unknown");
+        const { payload, outside } = ghReview({ comments, event, summary, commit: this.head, lines: this.diffLines ?? new Map() });
+        if (!payload.comments.length && !payload.body && payload.event !== "APPROVE") throw new Error("Nothing to post: add a comment or a summary");
+        if (this.cfg?.dryRun) {
+          const file = `${appHome()}/pr-data/review-dry-run.json`, before = await readTextFile(file).catch(() => null);
+          await writeTextFile(file, JSON.stringify({ endpoint: `merge_requests/${pr.number}/discussions`, payload }, null, 1), before);
+          this.posted = { dry: file, outside: outside.length, items: TH.postedItems(payload) };
+          this.note = `Dry run: nothing posted, the payload is in ${file.replace(home(), "~")}`;
+          return done(cx, { route: "gitlab", dry: true });
+        }
+        const got = await this.mrPost(payload);
+        this.posted = { url: got.url, items: TH.postedItems(payload) };
+        this.note = `Review posted: ${got.url}${got.approved ? " · approved" : ""}`;
+        done(cx, { route: "gitlab", notes: got.notes });
+        this.loadGhComments(cx);
+      } catch (e) { this.note = `Not posted: ${String(e).replace(/^Error: /, "")}`; }
+      finally { this.sending = false; cx.notify(); }
+    });
+    cx.notify();
+  },
+  // A payload through mrs.py post: the payload goes in a file, a big review's comments outgrow a command line.
+  async mrPost(payload) {
+    const file = `${appHome()}/pr-data/review-post.json`, before = await readTextFile(file).catch(() => null);
+    await writeTextFile(file, JSON.stringify(payload), before);
+    const r = await exec("python3", [`${appHome()}/mods/pr-review/mrs.py`, "post", this.prSel.url, file], { timeout: 120000 });
+    if (r.code !== 0) throw new Error(String(r.stderr ?? "").trim() || "mrs.py post failed");
+    return JSON.parse(r.stdout);
+  },
+  // One line comment on a merge request now, as its own discussion.
+  postSingleMr(c, cx, done) {
+    const line = this.diffLines ?? new Map();
+    if (!inDiff(line, c)) { this.note = "Not posted: GitLab takes line comments on lines of the merge request's diff. Use Start a review: it goes into the summary note."; return cx.notify(); }
+    this.sending = true; this.note = null;
+    cx.spawn(async (cx) => {
+      try {
+        const payload = { commit_id: this.head, event: "COMMENT", body: "", comments: [{ path: c.file, line: c.end, side: c.old ? "LEFT" : "RIGHT", body: c.text.trim() }] };
+        const got = await this.mrPost(payload);
+        this.note = `Posted: ${got.url}`;
+        done(cx, { route: "gitlab", notes: got.notes });
+      } catch (e) { this.note = `Not posted: ${String(e).replace(/^Error: /, "")}`; }
+      finally { this.sending = false; cx.notify(); }
+    });
+    cx.notify();
   },
 
   // One line comment on GitHub now (POST pulls/{n}/comments), as the PR's context; dry run: the payload into a file.
@@ -2606,8 +2703,8 @@ export const ReviewMode = {
   // ---- where reviews go: GitHub (any PR there) or the PR's agent session (a PR made in a session; branch diffs)
 
   routes() {
-    const gh = /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+/.test(this.prSel?.url ?? "");
-    return [...(gh ? ["github"] : []), ...(this.prSel?.session || !gh ? ["agent"] : [])];
+    const direct = Boolean(this.prSel?.url && hostOfLink(this.prSel.url)); // GitHub or GitLab: the host takes the review
+    return [...(direct ? ["github"] : []), ...(this.prSel?.session || !direct ? ["agent"] : [])];
   },
   routeNow() {
     const all = this.routes();
@@ -2655,7 +2752,9 @@ export const ReviewMode = {
   // One GitHub review with these comments (pr.js ghReview), JSON on stdin, as the PR's context (its gh account).
   // Config "dryRun": true writes the payload to pr-data/review-dry-run.json instead of posting.
   postGh(comments, event, summary, cx, done) {
-    const pr = this.prSel, m = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(pr?.url ?? "");
+    const pr = this.prSel;
+    if (hostOfLink(pr?.url) === "gitlab") return this.postMr(comments, event, summary, cx, done);
+    const m = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(pr?.url ?? "");
     if (!m || this.sending) return;
     this.sending = true; this.note = null; this.posted = null;
     const env = this.ctxEnv(this.ctxId()), sh = (script, ...args) => exec(env[0] ?? "sh", [...env.slice(1), ...(env.length ? ["sh"] : []), "-c", script, ...args], { timeout: 60000 });
@@ -2706,7 +2805,9 @@ export const ReviewMode = {
   // The comments themselves: a list, false when gh failed, null when not asked (no GitHub PR, dry run). One fetch at a
   // time: an ask while one runs for this PR gets the same answer.
   ghComments() {
-    const pr = this.prSel, m = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(pr?.url ?? "");
+    const pr = this.prSel;
+    if (hostOfLink(pr?.url) === "gitlab") return this.mrComments(pr); // a merge request: mrs.py threads
+    const m = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(pr?.url ?? "");
     if (!m || this.cfg?.dryRun) return Promise.resolve(null); // dry run: no network (the demo)
     if (this.ghIn?.url === pr.url) return this.ghIn.p;
     const env = this.ctxEnv(this.ctxId()), [owner, name] = m[1].split("/");
@@ -2723,6 +2824,21 @@ export const ReviewMode = {
     this.ghIn = { url: pr.url, p };
     return p;
   },
+  // A merge request's discussions as the review shows GitHub's comments: mrs.py threads, one fetch at a time.
+  mrComments(pr) {
+    if (this.cfg?.dryRun) return Promise.resolve(null);
+    if (this.ghIn?.url === pr.url) return this.ghIn.p;
+    const p = exec("python3", [`${appHome()}/mods/pr-review/mrs.py`, "threads", pr.url], { timeout: 60000 }).catch(() => null)
+      .then((r) => {
+        if (r?.code !== 0) return false;
+        const got = JSON.parse(r.stdout);
+        return TH.withThreadState(got.comments ?? [], got.threads ?? []);
+      })
+      .finally(() => { if (this.ghIn?.p === p) this.ghIn = null; });
+    this.ghIn = { url: pr.url, p };
+    return p;
+  },
+
   // GitHub's comments as the review shows them (threads.js ghShown), memoized: the Show switch's resolved and bots.
   ghNow() {
     const deps = [this.gh, this.showResolved, this.allBots];
@@ -3493,7 +3609,10 @@ export const ReviewMode = {
       const prs = JSON.parse(await readTextFile(`${appHome()}/pr-data/prs.json`).catch(() => null) ?? "{}").prs ?? [];
       const known = prs.find((x) => x.url === p.url);
       if (known) return startReview(known);
-      const r = p.url ? await exec("gh", ["pr", "view", p.url, "--json", "number,title,author,headRefName,headRefOid,baseRefName,updatedAt,isDraft,state,url,additions,deletions,reviewDecision"], { timeout: 30000 }).catch(() => null) : null;
+      const r = !p.url ? null
+        : hostOfLink(p.url) === "gitlab"
+          ? await exec("python3", [`${appHome()}/mods/pr-review/mrs.py`, "view", p.url], { timeout: 60000 }).catch(() => null)
+          : await exec("gh", ["pr", "view", p.url, "--json", "number,title,author,headRefName,headRefOid,baseRefName,updatedAt,isDraft,state,url,additions,deletions,reviewDecision"], { timeout: 30000 }).catch(() => null);
       if (r?.code === 0) startReview(ghTarget(JSON.parse(r.stdout), { context: this.ctxId(), source: "related", cwd: this.prSel?.cwd ?? null }));
       else if (p.url) openUrl(p.url);
     });
@@ -3893,7 +4012,7 @@ export const ReviewMode = {
       .child(div().text_size(TYPE.small).text_color(t.muted).whitespace_normal().child(what));
     return h_flex().gap(12).items_start()
       .child(card("rv-start-ai", `Analyze with ${modelLabel(m)}`, `Understand the change: layers in reading order, pictures, sample values and a walkthrough. ${this.estimate(m)}.`, (_e, cx) => this.loadAi(cx, "run"), Boolean(this.aiBusy)))
-      .child(card("rv-start-cr", "Run Claude code review", "Find problems: bugs and risks as findings on their lines, each with Fix and Verify.", (_e, cx) => this.runReviewer("claude", cx), Boolean(cr.busy)));
+      .child(card("rv-start-cr", "Run code review", "Find problems: bugs and risks as findings on their lines, each with Fix and Verify.", (_e, cx) => this.runReviewer("claude", cx), Boolean(cr.busy)));
   },
 
   // ---- Ask about this (review.py main_ask, "Review: architecture question"): a question on the picture, a node or a
@@ -5043,10 +5162,15 @@ export const ReviewMode = {
     const files = this.patch ?? [];
     return { lines: files.reduce((n, f) => n + (f.add ?? 0) + (f.del ?? 0), 0), files: files.length, rules: (this.ctx?.security_trigger?.reasons ?? []).map((x) => x?.rule).filter(Boolean), risk: this.ai?.mergeRisk?.level ?? null };
   },
-  runTier(kind) { return { ...recommendModel(kind, this.runFacts()), chosen: this.deep.runModels?.[`${this.deepKey()}|${kind}`] ?? null }; },
+  runTier(kind) {
+    const r = { ...recommendModel(kind, this.runFacts()), chosen: this.deep.runModels?.[`${this.deepKey()}|${kind}`] ?? null };
+    const h = harnessChoices();
+    return h.length && !h.some((c) => c.value === r.chosen) ? { ...r, chosen: model() } : r; // a harness needs a model id, not a class
+  },
   // What a run of this kind costs on a class: the last run's cost scaled by the classes' output prices, else its cap.
   // ponytail: one past run as the measure; a mean over runs when there are several kinds of PRs to compare.
   runPrice(kind, tier) {
+    if (String(tier).includes("/")) return "price not reported"; // a harness names its own model; the CLI reports no price
     const r = kind === "analysis" ? (this.ai?.cost > 0 ? { cost: this.ai.cost, model: this.ai.model_id ?? this.ai.model } : null) : this.find.runs[kind]?.cost > 0 ? this.find.runs[kind] : null;
     const typical = RUN_TYPICAL[kind]?.[tier]; // measured before a first run (pr.js RUN_TYPICAL)
     return r ? `about $${((r.cost * priceOf(tier)[1]) / priceOf(r.model)[1]).toFixed(2)}${r.ms > 0 ? `, ${Math.max(1, Math.round(r.ms / 60000))} min` : ""}` : typical ? `about $${typical.usd.toFixed(2)}, ${Math.round(typical.s / 60) || 1} min` : `capped at $${REVIEW_CAP[tier]}`;
@@ -5056,24 +5180,31 @@ export const ReviewMode = {
   runOffer(kind, t) {
     const START = { security: (tier, cx) => this.runReviewer("security", cx, null, tier), resilience: (tier, cx) => this.runReviewer("resilience", cx, null, tier) }, NAME = { analysis: "Analysis", security: "Security review", resilience: "Resilience review", verify: "Verify", ask: "Ask", fix: "Fix" };
     if (!START[kind]) return null;
-    const r = this.runTier(kind), tier = r.chosen ?? r.tier, steps = tierSteps(tier), menu = this.offerMenu === kind, label = (x) => MODELS[x]?.label ?? x, last = this.find.runs?.[kind];
+    const r = this.runTier(kind), tier = r.chosen ?? r.tier, steps = tierSteps(tier), menu = this.offerMenu === kind, label = (x) => MODELS[x]?.label ?? modelLabel(x), last = this.find.runs?.[kind];
+    // A harness picks from the models pr-review.config.json lists; Claude Code picks a class up or down.
+    const h = harnessChoices();
+    const choices = h.length
+      ? modelChoices(this.ctxId()).map((c) => ({ value: c.value, label: c.label, tip: c.description ? `${c.description}: ${c.value}` : c.value }))
+      : [["up", steps.up], ["down", steps.down]].filter(([, x]) => x).map(([dir, x]) => ({ value: x, label: MODELS[x]?.label ?? x, tip: dir === "up" ? "A larger model: slower and dearer, better at long and subtle code" : "A smaller model: faster and cheaper" }));
     const choose = (to, cx) => { const k = `${this.deepKey()}|${kind}`; this.offerMenu = null; this.updateDeep(cx, (d) => ({ ...d, runModels: { ...(d.runModels ?? {}), [k]: to === r.tier ? null : to } })); cx.notify(); };
     return h_flex().id(`rv-offer-${kind}`).w_full().min_w(0).gap(8).items_center().flex_wrap().text_size(TYPE.body)
       .child(div().w_full().min_w(0).whitespace_normal().child(r.chosen && r.chosen !== r.tier ? `${NAME[kind]}: ${label(tier)}, your choice; ${label(r.tier)} is recommended because ${r.why}.` : `${NAME[kind]}: ${label(tier)} recommended because ${r.why}.`))
       .child(pill(`rv-offer-run-${kind}`, t, runLabel(last, this.runPrice(kind, tier), last?.at ? ago(last.at) : ""), (_e, cx) => { this.offerMenu = null; START[kind](tier, cx); }, false, t.foreground)
-        .tooltip(`${last?.state === "done" ? "The same run again, paid again: " : ""}one ${label(tier)} call, read-only on the PR head; it stops at $${REVIEW_CAP[tier]}`))
+        .tooltip(`${last?.state === "done" ? "The same run again, paid again: " : ""}one ${label(tier)} call, read-only on the PR head; ${REVIEW_CAP[tier] ? `it stops at $${REVIEW_CAP[tier]}` : "the harness command's own budget applies"}`))
       .child(pill(`rv-offer-ch-${kind}`, t, menu ? "Change model ▴" : "Change model ▾", (_e, cx) => { this.offerMenu = menu ? null : kind; cx.notify(); }).tooltip("A class up or down for this run; Haiku is not offered for code"))
-      .when(menu, (e) => e.children([["up", steps.up], ["down", steps.down]].filter(([, x]) => x).map(([dir, x]) => pill(`rv-offer-${dir}-${kind}`, t, `${label(x)} (${this.runPrice(kind, x)})${x === r.tier ? " · recommended" : ""}`, (_e, cx) => choose(x, cx))
-        .tooltip(dir === "up" ? "A larger model: slower and dearer, better at long and subtle code" : "A smaller model: faster and cheaper"))));
+      .when(menu, (e) => e.children(choices.map((c, i) => pill(`rv-offer-${i}-${kind}`, t, `${c.label} (${this.runPrice(kind, c.value)})${c.value === tier ? " · chosen" : ""}`, (_e, cx) => choose(c.value, cx)).tooltip(c.tip))));
   },
   // Whether the PR's repo is public, asked once per repo (gh repo view): the Security page says who can read a comment.
   loadVisibility(cx) {
     const repo = this.prSel?.repo;
     if (!repo || this.repoVis?.[repo] !== undefined) return;
     this.repoVis = { ...this.repoVis, [repo]: null };
+    const gitlab = hostOfLink(this.prSel?.url) === "gitlab";
     const argv = [...this.ctxEnv(this.ctxId()), "gh", "repo", "view", repo, "--json", "visibility", "--jq", ".visibility"];
     cx.spawn(async (cx) => {
-      const r = await exec(argv[0], argv.slice(1), { timeout: 20000 }).catch(() => null);
+      const r = gitlab
+        ? await exec("python3", [`${appHome()}/mods/pr-review/mrs.py`, "visibility", repo], { timeout: 20000 }).catch(() => null)
+        : await exec(argv[0], argv.slice(1), { timeout: 20000 }).catch(() => null);
       if (r?.code === 0 && r.stdout.trim()) { this.repoVis = { ...this.repoVis, [repo]: r.stdout.trim() }; cx.notify(); }
     });
   },
@@ -5082,15 +5213,17 @@ export const ReviewMode = {
   // account may use, Codex what it offers. Kept in shared "review.models" and pr-data/models.json.
   loadModels(cx) {
     const ctx = this.ctxReq(), id = ctx?.id ?? "default", d = modelsDoc()[id], busy = (this.modelsBusy ??= new Set());
-    if ((d && Date.now() - d.at < 86400000) || busy.has(id)) return;
+    // The harness's list comes from the config: a changed config asks again rather than waiting out the day.
+    const sig = JSON.stringify(this.cfg?.harness ?? null);
+    if ((d && Date.now() - d.at < 86400000 && d.sig === sig) || busy.has(id)) return;
     busy.add(id);
     cx.spawn(async (cx) => {
       const r = await exec("python3", [`${appHome()}/mods/pr-review/models.py`, JSON.stringify({ context: ctx })], { timeout: 90000 }).catch(() => null);
       let out = null;
       try { out = r?.code === 0 ? JSON.parse(r.stdout) : null; } catch { /* no answer */ }
-      if (!out?.claude?.length && !out?.codex?.length) return; // busy stays: no second try this session
+      if (!out?.claude?.length && !out?.codex?.length && !out?.harness?.length) return; // busy stays: no second try this session
       busy.delete(id);
-      const doc = { ...modelsDoc(), [id]: { at: Date.now(), claude: out.claude ?? [], codex: out.codex ?? [] } };
+      const doc = { ...modelsDoc(), [id]: { at: Date.now(), sig, claude: out.claude ?? [], codex: out.codex ?? [], harness: out.harness ?? [] } };
       setShared("review.models", doc);
       readTextFile(modelsFile()).catch(() => null).then((before) => writeTextFile(modelsFile(), JSON.stringify(doc), before)).catch(() => null); // over the list from before (told nothing, writeTextFile leaves an existing file as it is)
       cx.notify();
@@ -5099,7 +5232,7 @@ export const ReviewMode = {
   // A rough price before running: input from the diff size, output and thinking from earlier runs; the cap is review.py's.
   estimate(m) {
     const chars = Math.min(MODELS[tierOf(m)].chars, (this.hunks ?? []).reduce((n, h) => n + h.lines.reduce((k, l) => k + l.length + 1, 0), 0));
-    const [inp, out] = priceOf(resolvedOf(m));
+    const [inp, out] = harnessPrice(m) ?? priceOf(resolvedOf(m));
     // ponytail: reading the code with tools multiplies input; ×4 from the first runs, a guess until the ledger says more.
     const usd = (((chars / 3.5 + 3000) * 4) * inp + 15000 * out) / 1e6;
     return `≈ $${usd.toFixed(2)} · cap $${CAP[tierOf(m)]}`;

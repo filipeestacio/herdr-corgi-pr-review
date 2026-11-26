@@ -374,3 +374,17 @@ for part in ("what_changed: the change as three short lists", "read: the paths o
 assert {"what_changed", "read"} <= set(review.SCHEMA["required"]) and {"what_changed", "read"} <= set(review.MERGE_SCHEMA["required"])
 print("ok finish")
 
+# A merge request's title, body and head branch come from its project; no gh is involved.
+import subprocess
+calls = []
+
+
+def fake(args, **kw):
+    calls.append(args)
+    return subprocess.CompletedProcess(args, 0, json.dumps({"title": "Add a tab", "description": "Why.", "source_branch": "feat/x"}), "")
+review.subprocess.run = fake
+got = review.task("https://gitlab.com/g/sub/p/-/merge_requests/7", tickets=False)
+assert got["title"] == "Add a tab" and got["text"].startswith("PR: Add a tab") and got["text"].endswith("Why."), got
+assert calls[-1][:3] == ["glab", "api", "projects/g%2Fsub%2Fp/merge_requests/7"], calls[-1]
+assert got["jira"] is None
+print("merge request task ok")

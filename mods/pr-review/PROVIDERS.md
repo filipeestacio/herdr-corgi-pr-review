@@ -98,7 +98,8 @@ All keys optional.
   "cloneRoot": "~/code",
   "globalRules": "PR titles follow Conventional Commits: `type(scope): subject`.",
   "ledger": "~/.local/share/llm-usage",
-  "sessionTitles": "~/path/to/titles.json"
+  "sessionTitles": "~/path/to/titles.json",
+  "harness": { "command": ["opencode", "run"], "timeout": 1800 }
 }
 ```
 
@@ -113,8 +114,13 @@ All keys optional.
   `{at, feature, account (the context id), model, cost, tokens, ms, ok, tool}`. The newest 24 months are kept.
   Unset: no ledger.
 - `sessionTitles`: a JSON file `{<Claude session id>: {title}}` with better titles for the "Mine" list.
+- `harness.timeout`: seconds a harness run may take (default: the caller's own limit, 15 minutes for the analysis
+  and 25 for a reviewer). A configured harness has no cost cap, so a slow CLI can be given more time.
+- `harness`: your own review CLI, as the program and its fixed arguments. Setup lists it as `harness`, finds it by
+  its first argument, and counts it as the AI program, so `claude` need not be installed when it is set. The calls
+  that run it are not wired yet.
 
-Feature names in the ledger: `Review analysis`, `Review analysis (since last review)`, `Claude code review`,
+Feature names in the ledger: `Review analysis`, `Review analysis (since last review)`, `Code review`,
 `Security review`, `Codex review`, `PR triage`, `PR fix verification`.
 
 ## 6. Programs
@@ -122,13 +128,15 @@ Feature names in the ledger: `Review analysis`, `Review analysis (since last rev
 Setup (PRs ▾ → Setup) checks each one and offers the install command; nothing is installed without you pressing
 Enter in the terminal it opens.
 
-- Required: `git` (2.46 or later for the push lock where a remote has a push URL of its own), `gh` (logged in),
-  `claude` (logged in), `python3`.
+- Required: `git` (2.46 or later for the push lock where a remote has a push URL of its own) and `python3`, plus one
+  member of each group: `gh` or `glab` (logged in), and `claude` (logged in) or the harness from `harness.command`.
+  A group blocks only when none of its members is usable; the pane names it "gh or glab", "claude or harness". A
+  missing member of a satisfied group is listed as not installed, never as required.
 - Optional: `codex` (the Codex reviewer is offered only when it is on PATH; it needs a Codex with permission
   profiles), `bwrap` on Linux (the sandbox for probes; macOS has `sandbox-exec` built in), `acli` (the Jira ticket
   a PR names).
-- The reviewers use Claude Code's `/security-review` and a `/code-review` command; when a command is missing in
-  your Claude setup, the same review runs as a plain prompt.
+- The reviewers run a plain prompt; the `/code-review` and `/security-review` slash commands are not used, so the
+  same path works on Claude Code and on a harness.
 - Language servers, for go-to-definition and hover in the diff (each one only turns that language on):
   `typescript-language-server` + `tsc` (TypeScript, JavaScript), `pyright-langserver` (Python), `gopls` (Go),
   `rust-analyzer` (Rust), `jdtls` (Java), `terraform-ls` (Terraform), `clangd` (C, C++). They are found on PATH

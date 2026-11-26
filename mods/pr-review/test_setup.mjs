@@ -1,12 +1,12 @@
 // Run: node test_setup.mjs  (Setup's detection → report mapping, with stubbed PATH lookups; Codex detection)
 import assert from "node:assert/strict";
-import { parseCheck, report, blockers, found, programs, checkScript, pretypeArgv, installHint } from "./setup.js";
+import { parseCheck, report, blockers, found, programs, checkScript, pretypeArgv, installHint, harnessTool, harnessCommand } from "./setup.js";
 
 const out = (have, auth = "") => programs().map((p) => `${p}=${have.includes(p) ? `/bin/${p}` : ""}`).join("\n") + "\n" + auth;
 const byId = (rows) => Object.fromEntries(rows.map((r) => [r.id, r]));
 
 // Everything there and logged in: all ok, no blockers, no install commands.
-const all = parseCheck(out(programs(), "auth:gh=1\nauth:claude=1"));
+const all = parseCheck(out(programs(), "auth:gh=1\nauth:glab=1\nauth:claude=1"));
 assert.ok(report(all).every((r) => r.status === "ok" && r.install === null));
 assert.deepEqual(blockers(report(all)), []);
 assert.equal(found(all, "codex"), true);
@@ -41,22 +41,61 @@ assert.match(r.codex.what, /permission profile that reads only the PR checkout.*
 const half = parseCheck(out(["git", "gh", "claude", "python3", "typescript-language-server"], "auth:gh=1\nauth:claude=1"));
 assert.equal(byId(report(half))["typescript-language-server"].status, "optional-missing");
 
-// Required missing, and gh logged out: both block, with the install or login command.
-const bad = parseCheck(out(["git", "gh", "python3"], "auth:gh=0"));
-const b = byId(report(bad, "linux"));
+// A one-of group needs one member: git/gh alone satisfies "git", and claude alone satisfies "llm".
+assert.equal(r.glab.status, "optional-missing"); // a group one member satisfies makes the other optional
+assert.equal(blockers(report(min)).length, 0);
+assert.match(r.claude.what, /Claude Code CLI/);
+
+// No git CLI and no harness or claude: each group blocks once, named with its members.
+const bad = parseCheck(out(["git", "python3"]));
+const b = byId(report(bad, "darwin"));
+assert.equal(b.gh.status, "missing");
+assert.equal(b.gh.install, "brew install gh");
+assert.equal(b.glab.status, "missing");
+assert.equal(b.glab.install, "brew install glab");
 assert.equal(b.claude.status, "missing");
 assert.equal(b.claude.install, "npm install -g @anthropic-ai/claude-code");
-assert.equal(b.gh.status, "logged-out");
-assert.equal(b.gh.install, "gh auth login");
-assert.deepEqual(blockers(report(bad)).map((x) => x.id), ["gh", "claude"]);
+assert.deepEqual(blockers(report(bad)).map((x) => x.id), ["gh or glab", "claude"]);
+
+// gh installed but signed out, glab absent: the group blocks once, and the login command is the fix.
+const out2 = byId(report(parseCheck(out(["git", "gh", "claude", "python3"], "auth:gh=0\nauth:claude=1")), "darwin"));
+assert.equal(out2.gh.status, "logged-out");
+assert.equal(out2.gh.install, "gh auth login");
+assert.deepEqual(blockers(report(parseCheck(out(["git", "gh", "claude", "python3"], "auth:gh=0\nauth:claude=1")))).map((x) => x.id), ["gh or glab"]);
+
+// A custom harness from pr-review.config.json stands in the llm group: the pane lists it and claude is optional.
+const cfg = { harness: { command: ["opencode", "run"] } };
+const hrow = harnessTool(cfg);
+assert.equal(hrow.id, "harness");
+assert.equal(hrow.group, "llm");
+assert.deepEqual(hrow.command, ["opencode", "run"]);
+assert.deepEqual(harnessCommand({ harness: { command: "opencode run" } }), ["opencode", "run"]);
+assert.equal(harnessTool({}), null);
+const hv = parseCheck(out(["git", "glab", "python3"], "auth:glab=1\n") + "opencode=/usr/local/bin/opencode\n");
+const hr = byId(report(hv, "darwin", [hrow]));
+assert.equal(hr.harness.status, "ok");
+assert.equal(hr.harness.cmd, "opencode run");
+assert.equal(hr.claude.status, "optional-missing"); // still listed, no longer required: the harness is there
+assert.deepEqual(blockers(report(hv, "darwin", [hrow])), []);
+assert.ok(checkScript(["opencode"]).includes("opencode"));
+
+// A cached check from an older program list has no key for a row added since: it reads "not checked", not missing,
+// and it does not block; Setup looks again while it is on screen.
+const stale = parseCheck("git=/usr/bin/git\n");
+const oldCache = byId(report(stale, "darwin"));
+assert.equal(oldCache.git.probed, true);
+assert.equal(oldCache.glab.probed, false);
+assert.equal(oldCache.glab.status, "unchecked");
+assert.equal(oldCache["typescript-language-server"].probed, false);
+assert.deepEqual(blockers(report(stale, "darwin")), []);
 
 // Nothing checked yet: Codex is not offered.
 assert.equal(found(undefined, "codex"), false);
 // The script asks for every program, and the pre-typed terminal never runs the command by itself.
 assert.ok(programs().every((p) => checkScript().includes(p)));
-const argv = pretypeArgv("brew install gh");
+const argv = pretypeArgv("brew install glab");
 assert.equal(argv[0], "sh");
-assert.equal(argv.at(-1), "brew install gh");
+assert.equal(argv.at(-1), "brew install glab");
 assert.ok(/vared/.test(argv[2]) && /read -e -i/.test(argv[2]));
 // The editors of "Open in <Editor>": optional, and on macOS the app alone counts (the links open through the app).
 {

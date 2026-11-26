@@ -197,9 +197,9 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
 // ---- Setup's first line says what the list comes to
 {
   const { setupSummary } = await import("./setup-view.js");
-  const now = 1e12, row = (id, status) => ({ id, status });
+  const now = 1e12, row = (id, status, need = "required") => ({ id, status, need });
   assert.equal(setupSummary([row("git", "ok"), row("gh", "ok")], now - 120000, now), "All 2 programs were found. Checked 2 min ago.");
-  assert.equal(setupSummary([row("git", "ok"), row("codex", "optional-missing")], now, now), "Everything required was found; 1 optional program is not installed. Checked just now.");
+  assert.equal(setupSummary([row("git", "ok"), row("codex", "optional-missing", "optional")], now, now), "Everything required was found; 1 optional program is not installed. Checked just now.");
   assert.match(setupSummary([row("git", "missing"), row("gh", "logged-out"), row("x", "ok")], now + 5000, now), /^2 of 3 programs are missing or not signed in: git, gh\. .* Checked just now\.$/);
 }
 // ---- "Discard" asks once
@@ -655,3 +655,12 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   } finally { S.checking = false; S.exec = null; }
 }
 console.log("panel ok");
+
+// ---- a GitLab merge request takes a direct review too, and an unknown host does not
+{
+  const v = new PrReview();
+  v.prSel = { url: "https://gitlab.com/g/sub/p/-/merge_requests/7" };
+  assert.ok(v.routes().includes("github"), "a merge request posts directly, like a pull request");
+  v.prSel = { url: "https://example.com/x", session: null };
+  assert.deepEqual(v.routes(), ["agent"], "an unknown host only sends to an agent");
+}

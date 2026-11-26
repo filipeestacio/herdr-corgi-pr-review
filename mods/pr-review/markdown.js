@@ -24,7 +24,7 @@ import { impactDoc } from "./impact.js"; // the Architecture page's Impact secti
 import { infraMd } from "./infra.js"; // the Architecture page's "Infrastructure changes"
 
 const STATE = { open: "Unresolved", progress: "Fix sent", fixed: "Fixed", dismissed: "Dismissed", recheck: "Unresolved, line changed" };
-const SOURCE = { analysis: "Analysis", security: "Security review", claude: "Claude code review", codex: "Codex review", resilience: "Resilience review", ai: "AI note" };
+const SOURCE = { analysis: "Analysis", security: "Security review", claude: "Code review", codex: "Codex review", resilience: "Resilience review", ai: "AI note" };
 const ASK = { met: "met", partly: "partly", broken: "broken", not_done: "not done", extra: "extra" };
 const KIND = { architecture: "Architecture", flow: "Flow", sequence: "Sequence", state_machine: "State diagram", steps: "Steps" };
 const RANK = { critical: 0, high: 1, medium: 2, low: 3 };

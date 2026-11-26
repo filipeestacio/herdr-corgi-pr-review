@@ -122,3 +122,21 @@ with tempfile.TemporaryDirectory() as d:
     worktree.prune(None)
     assert (old / ".worktrees" / "review" / "a.py").read_text() == "x = 3\n"
 print("ok")
+
+# A merge request link: a nested group stays in the owner, and without a clone the script asks for one under the
+# project's folder, never touching the real ~/code.
+with tempfile.TemporaryDirectory() as roots:
+    worktree.BASES = [pathlib.Path(roots)]
+    try:
+        worktree.main("https://gitlab.com/group/sub/project/-/merge_requests/7")
+        raise AssertionError("a merge request with no clone must ask for one")
+    except worktree.NeedClone as e:
+        assert pathlib.Path(e.dest).parent == pathlib.Path(roots), e.dest
+        assert pathlib.Path(e.dest).name in ("project", "group-sub-project"), e.dest
+    assert worktree.is_repo  # the parser came from host.py; a wrong link is refused before any git call
+    try:
+        worktree.main("https://example.com/x")
+        raise AssertionError("a link that is not a PR must be refused")
+    except RuntimeError as e:
+        assert "Not a PR url" in str(e), e
+print("merge request ok")

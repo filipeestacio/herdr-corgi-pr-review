@@ -20,6 +20,7 @@ import { focused, exec, hc, run, theme, settings, readTextFile, writeTextFile, s
 import { spaces, panes, agents, terminals, feed, feedIfAsked, whenFed } from "./live.js"; // never straight from Herdr: one read and this copy is drawn on every agent's status change
 import { diffRows, buildPrompt, splitPatch, selection, nextChange, lineLabel, anchorRow, buildReview, hunksOf, hash, uiLine, reviewRequest, mapReview, triageOf, isSecurity, withThreats, knownOf } from "./pr.js";
 import { parsePrRef, ghTarget, pruneSources, codeModel, windowActive, pollDue, pollAfter, tabName } from "./pr.js";
+import { hostOfLink, parseRemote } from "./host.js";
 import * as C from "./context.js";
 import { tabArgs } from "./threads.js"; // a new Claude tab with the PR's text: no MCP servers
 import { loadDiff, saveDiff } from "./diffcache.js";
@@ -339,9 +340,12 @@ export default class PrReview extends View {
     if (before !== null) return before;
     const keep = (source, text) => saveDiff(base, pr.url, head, source, text, writeTextFile)
       .then(() => exec("python3", [`${appHome()}/mods/pr-review/prs.py`, "--prune"])).catch(() => null); // bounds the cache folder
-    const r = await exec("gh", ["pr", "diff", pr.url, "--color", "never"], { timeout: 60000 });
-    if (r.code !== 0 && diffTooLarge(r.stderr)) { const t = await this.apiPrDiff(pr); keep("api", t); return t; }
-    if (r.code !== 0) throw new Error(`gh pr diff: ${r.stderr.trim()}`);
+    const gitlab = hostOfLink(pr.url) === "gitlab";
+    const r = gitlab
+      ? await exec("python3", [`${appHome()}/mods/pr-review/mrs.py`, "diff", pr.url], { timeout: 120000 })
+      : await exec("gh", ["pr", "diff", pr.url, "--color", "never"], { timeout: 60000 });
+    if (!gitlab && r.code !== 0 && diffTooLarge(r.stderr)) { const t = await this.apiPrDiff(pr); keep("api", t); return t; }
+    if (r.code !== 0) throw new Error(`${gitlab ? "mrs.py diff" : "gh pr diff"}: ${String(r.stderr).trim()}`);
     keep("gh", r.stdout);
     return r.stdout;
   }
@@ -802,25 +806,28 @@ export default class PrReview extends View {
   // A click on a source: for this space (the newest 30 spaces kept), and as the last pick for spaces without one.
   pickSource(k) { setShared("pr.source", k); setShared("pr.sourceBy", withPick(shared("pr.sourceBy"), location().space ?? "", k)); }
 
-  // The active space's repo: {root, slug: owner/name from origin}, or null outside a GitHub repo.
+  // The active space's repo: {root, slug, host}, or null outside a repo whose origin names one.
   async spaceRepo() {
-    const cwd = location().cwd, repo = cwd ? await this.repoOf(cwd) : null, slug = repo ? await this.slugOf(repo.root) : null;
-    return slug ? { root: repo.root, slug } : null;
+    const cwd = location().cwd, repo = cwd ? await this.repoOf(cwd) : null, info = repo ? await this.slugInfo(repo.root) : null;
+    return info?.slug ? { root: repo.root, slug: info.slug, host: info.host } : null;
   }
-  // A repo's owner/name on GitHub from its origin (one git call per repo, remembered), null for another host or none.
-  async slugOf(root) {
+  // A repo's path on its host and which host that is, from its origin (one git call per repo, remembered).
+  async slugInfo(root) {
     if (!this.slugs.has(root)) {
       const r = await exec("git", ["remote", "get-url", "origin"], { cwd: root }).catch(() => null);
-      this.slugs.set(root, /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(r?.stdout.trim() ?? "")?.[1] ?? null);
+      const parsed = parseRemote(r?.stdout.trim() ?? "", { host: this.cfg?.host });
+      this.slugs.set(root, parsed?.repo ? { slug: parsed.repo, host: parsed.host } : null);
     }
     return this.slugs.get(root);
   }
+  async slugOf(root) { return (await this.slugInfo(root))?.slug ?? null; }
   // A folder's checkout: its repo, GitHub name and branch. The branch is read from the HEAD file, so looking again
   // costs no git call (a worktree has its own); null outside a repo.
   async checkout(cwd) {
     const repo = await this.repoOf(cwd);
     if (!repo) return null;
-    return { cwd, root: repo.root, base: repo.base, slug: await this.slugOf(repo.root), branch: headBranch(await readTextFile(`${repo.gitdir}/HEAD`).catch(() => null)) };
+    const info = await this.slugInfo(repo.root);
+    return { cwd, root: repo.root, base: repo.base, slug: info?.slug ?? null, host: info?.host ?? null, branch: headBranch(await readTextFile(`${repo.gitdir}/HEAD`).catch(() => null)) };
   }
 
   // A PR's context for one you didn't open: the contexts' rules on its folder and remote, else the context your
@@ -851,6 +858,19 @@ export default class PrReview extends View {
     });
   }
 
+  // A GitLab project's open merge requests of these branches, as the PR objects ghTarget reads (mrs.py).
+  async glabBranches(slug, branches) {
+    const r = await exec("python3", [`${appHome()}/mods/pr-review/mrs.py`, "branches", slug, ...(branches ?? [])], { timeout: 60000 }).catch((e) => ({ code: 1, stdout: "", stderr: String(e) }));
+    if (r.code !== 0) throw new Error(String(r.stderr ?? "").trim().slice(0, 200) || "mrs.py branches failed");
+    return JSON.parse(r.stdout);
+  }
+  // A GitLab project's open merge requests, as the PR objects ghTarget reads (mrs.py).
+  async glabMerges(slug) {
+    const r = await exec("python3", [`${appHome()}/mods/pr-review/mrs.py`, "list", slug], { timeout: 60000 }).catch((e) => ({ code: 1, stdout: "", stderr: String(e) }));
+    if (r.code !== 0) throw new Error(String(r.stderr ?? "").trim().slice(0, 200) || "mrs.py list failed");
+    return JSON.parse(r.stdout);
+  }
+
   // One source's list into this.srcLists[now]: its key in sources.json and how to fetch it; fresh from the file, else
   // gh (repo: one gh pr list; review: one search; space: one GraphQL call per repo with all its branches).
   async loadList(now, cx, { space, stale, force, quiet = false }) {
@@ -864,11 +884,17 @@ export default class PrReview extends View {
       if (stale()) return;
       this.spaceHeads = new Map(found.map((c) => [c.cwd, c]));
       key = repos.length ? `space:${hash(JSON.stringify(repos.map((r) => [r.slug, r.branches])))}` : null; why = spaceEmpty(found, repos);
-      fetch = async () => (await Promise.all(repos.map(async (r) => branchPrs(await gh(["api", "graphql", "-f", `query=${branchPrQuery(r.slug, r.branches)}`]))
-        .map((p) => ghTarget(p, { repo: r.slug, cwd: r.roots[p.headRefName] ?? null, source: now, context: this.contextOfPr(r.slug, r.roots[p.headRefName] ?? null, spaceC) }))))).flat();
+      fetch = async () => (await Promise.all(repos.map(async (r) => {
+        const list = r.host === "gitlab"
+          ? await this.glabBranches(r.slug, r.branches)
+          : branchPrs(await gh(["api", "graphql", "-f", `query=${branchPrQuery(r.slug, r.branches)}`]));
+        return list.map((p) => ghTarget(p, { repo: r.slug, cwd: r.roots[p.headRefName] ?? null, source: now, context: this.contextOfPr(r.slug, r.roots[p.headRefName] ?? null, spaceC) }));
+      }))).flat();
     } else if (now === "repo") {
       key = sr ? `repo:${sr.slug}` : null;
-      fetch = async () => (await gh(["pr", "list", "-R", sr.slug, "--state", "open", "--limit", "50", "--json", GH_FIELDS])).map((p) => ghTarget(p, { repo: sr.slug, cwd: sr.root, source: now, context: this.contextOfPr(sr.slug, sr.root, spaceC) }));
+      fetch = async () => (sr.host === "gitlab"
+        ? (await this.glabMerges(sr.slug)).map((p) => ghTarget(p, { repo: sr.slug, cwd: sr.root, source: now, context: this.contextOfPr(sr.slug, sr.root, spaceC) }))
+        : (await gh(["pr", "list", "-R", sr.slug, "--state", "open", "--limit", "50", "--json", GH_FIELDS])).map((p) => ghTarget(p, { repo: sr.slug, cwd: sr.root, source: now, context: this.contextOfPr(sr.slug, sr.root, spaceC) })));
     } else {
       key = "review";
       fetch = async () => (await gh(["search", "prs", "--review-requested=@me", "--state", "open", "--limit", "50", "--json", "repository,number,title,author,updatedAt,url,isDraft"])).map((p) => {
@@ -1644,7 +1670,7 @@ export default class PrReview extends View {
       .track_focus(this.fh).on_key_down((e, cx) => this.onKey(e, cx))
       .child(header)
       .when(Boolean(setupBanner(this, t)), (e) => e.child(setupBanner(this, t)))
-      .when(state === "setup", (e) => e.child(renderSetup(this, t)))
+      .when(state === "setup", (e) => e.child(renderSetup(this, t, cx)))
       .when(state === "picking", (e) => e.child(pickBody()))
       .when(state === "selected", (e) => e
         .when(Boolean(this.prSel && !shownIn(this.prSel)), (e) => e.child(h_flex().flex_none().flex_wrap().px(14).py(6).gap(8).items_center().bg(t.ansi3 + "1c").border_b(1).border_color(t.border).text_size(TYPE.small)

@@ -38,7 +38,7 @@ import related  # noqa: E402  (the diff read as files and added lines)
 import resilience  # noqa: E402  (the resilience run's schema, prompt and checks)
 import review  # noqa: E402  (the severity scale and the areas of a run's self-report)
 
-FEATURE = {"claude": "Claude code review", "security": "Security review", "codex": "Codex review", "resilience": "Resilience review"}
+FEATURE = {"claude": "Code review", "security": "Security review", "codex": "Codex review", "resilience": "Resilience review"}
 BUDGET = {"haiku": 0.5, "sonnet": 3.0, "opus": 8.0}
 TIMEOUT = 1500
 # What a reviewer may do: the analysis' rules (review.permissions: the checkout, read-only git, no network, no writes,

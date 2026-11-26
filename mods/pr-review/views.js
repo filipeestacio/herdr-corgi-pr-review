@@ -1613,7 +1613,7 @@ export function spaceBranches(checkouts) {
   const by = new Map();
   for (const c of checkouts ?? []) {
     if (!c?.slug || !c.branch || c.branch === String(c.base ?? "").replace(/^origin\//, "")) continue;
-    const r = by.get(c.slug) ?? { slug: c.slug, branches: [], roots: {} };
+    const r = by.get(c.slug) ?? { slug: c.slug, ...(c.host ? { host: c.host } : {}), branches: [], roots: {} };
     if (!r.branches.includes(c.branch)) { r.branches.push(c.branch); r.roots[c.branch] = c.root; }
     by.set(c.slug, r);
   }

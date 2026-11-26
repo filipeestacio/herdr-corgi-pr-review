@@ -650,9 +650,9 @@ console.log("ok");
     [{ key: "k", path: "a.py", line: 9, old: false, severity: "low", reason: "T9" }]);
   const st = { a4: "dismissed" }, x = funnel(m.findings, (f) => st[f.id] ?? "open");
   assert.deepEqual(x, { by: [["analysis", 4], ["claude", 1], ["security", 1], ["ai", 1]], reported: 7, merged: 4, unresolved: 3, security: 1, confirmed: 1 });
-  const names = { analysis: "Analysis", claude: "Claude code review", security: "Security review", ai: "AI suggestion" };
+  const names = { analysis: "Analysis", claude: "Code review", security: "Security review", ai: "AI suggestion" };
   assert.equal(funnelLine(x, (k) => names[k]),
-    "Analysis reported 4, Claude code review 1, Security review 1 and AI suggestion 1, 7 in all. Merged by file and line, that is 4 findings. 3 are unresolved, 1 of them on security, 1 of those confirmed by a run.");
+    "Analysis reported 4, Code review 1, Security review 1 and AI suggestion 1, 7 in all. Merged by file and line, that is 4 findings. 3 are unresolved, 1 of them on security, 1 of those confirmed by a run.");
   assert.equal(funnelLine(funnel([m.findings[2]], () => "open")), "analysis reported 1 and ai 1, 2 in all. Merged by file and line, that is 1 finding. 1 is unresolved, none of them on security.");
   assert.equal(funnelLine(funnel([m.findings[1]], () => "fixed")), "analysis reported 1 and claude 1, 2 in all. Merged by file and line, that is 1 finding. None are unresolved.");
   assert.equal(funnelLine(funnel([], () => "open")), "No findings reported.");

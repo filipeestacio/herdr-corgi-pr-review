@@ -5,11 +5,11 @@
 import { div } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar } from "gpui-base";
 import { exec, run, shared, setShared, appHome, readTextFile } from "herdr";
-import { checkScript, parseCheck, report, blockers, found, pretypeArgv } from "./setup.js";
+import { checkScript, parseCheck, report, blockers, found, pretypeArgv, harnessTool } from "./setup.js";
 import { TYPE } from "./views.js"; // the text sizes (U34)
 
 export const SETUP_KEY = "pr-review.setup";
-const MARK = { ok: ["✓", "ansi2"], missing: ["missing", "ansi1"], "optional-missing": ["not installed", "muted"], "logged-out": ["logged out", "ansi3"] };
+const MARK = { ok: ["✓", "ansi2"], missing: ["missing", "ansi1"], "optional-missing": ["not installed", "muted"], "logged-out": ["logged out", "ansi3"], unchecked: ["not checked", "muted"] };
 const GROUPS = [["required", "Required"], ["optional", "Optional"], ["lsp", "Go to definition (language servers; a missing one only turns it off for that language)"]];
 
 export const hasTool = (name) => found(shared(SETUP_KEY), name);
@@ -29,7 +29,9 @@ export function runSetup(view, cx, force = true) {
   if (view.setupBusy || (!force && shared(SETUP_KEY))) return;
   view.setupBusy = true;
   cx.spawn(async (cx) => {
-    const [r, os] = await Promise.all([exec("sh", ["-c", checkScript()], { timeout: 30000 }).catch((e) => ({ stdout: "", stderr: String(e) })),
+    if (!view.cfg) view.cfg = await readConfig().catch(() => ({}));
+    const h = harnessTool(view.cfg), extra = h ? [h.command[0]] : [];
+    const [r, os] = await Promise.all([exec("sh", ["-c", checkScript(extra)], { timeout: 30000 }).catch((e) => ({ stdout: "", stderr: String(e) })),
       exec("uname", ["-s"]).then((x) => (/linux/i.test(x.stdout) ? "linux" : "darwin")).catch(() => "darwin")]);
     setShared(SETUP_KEY, { at: Date.now(), os, ...parseCheck(r.stdout) });
     view.setupBusy = false;
@@ -44,11 +46,11 @@ export async function loadSetup(view, cx) {
   view.setupFirst = true;
 }
 
-const rows = () => { const s = shared(SETUP_KEY); return s ? report(s, s.os) : null; };
+const rows = (view) => { const s = shared(SETUP_KEY); if (!s) return null; const h = harnessTool(view?.cfg); return report(s, s.os, h ? [h] : []); };
 
 // The PR panel's banner when a required program is missing or logged out; null otherwise.
 export function setupBanner(view, t) {
-  const r = rows(), b = r ? blockers(r) : [];
+  const r = rows(view), b = r ? blockers(r) : [];
   if (view.setupFirst && b.length && view.view !== "setup") { view.view = "setup"; view.setupFirst = false; }
   if (!b.length || view.view === "setup") return null;
   return h_flex().flex_none().px(14).py(6).gap(8).items_center().bg(t.ansi1 + "1c").border_b(1).border_color(t.border).text_size(TYPE.small)
@@ -65,15 +67,18 @@ function install(view, row, cx) {
 
 // The first line of Setup: what the list below comes to. rows: [{id, status}], at: when it was checked (ms).
 export function setupSummary(rows, at, now = Date.now()) {
-  const off = rows.filter((x) => x.status === "missing" || x.status === "logged-out"), extra = rows.filter((x) => x.status === "optional-missing").length;
+  const off = blockers(rows), extra = rows.filter((x) => x.status === "optional-missing").length, unknown = rows.filter((x) => x.status === "unchecked").length;
   const min = Math.max(0, Math.round((now - at) / 60000));
   const found = off.length ? `${off.length} of ${rows.length} programs ${off.length === 1 ? "is" : "are"} missing or not signed in: ${off.map((x) => x.id).join(", ")}. Install opens a terminal with the command typed in, not run.`
+    : unknown ? `${unknown} ${unknown === 1 ? "program was" : "programs were"} not checked in the last check; press Check again.`
     : extra ? `Everything required was found; ${extra} optional ${extra === 1 ? "program is" : "programs are"} not installed.` : `All ${rows.length} programs were found.`;
   return `${found} Checked ${min < 1 ? "just now" : min < 60 ? `${min} min ago` : `${Math.round(min / 60)} h ago`}.`;
 }
 
-export function renderSetup(view, t) {
-  const s = shared(SETUP_KEY), r = rows(), blocked = (r ?? []).some((x) => x.status === "missing" || x.status === "logged-out");
+export function renderSetup(view, t, cx) {
+  const s = shared(SETUP_KEY), r = rows(view), blocked = blockers(r ?? []).length > 0;
+  // A row the last check never looked for: look now, while Setup is the screen the person is on.
+  if (r?.some((x) => x.status === "unchecked") && !view.setupBusy && cx) runSetup(view, cx, true);
   const btn = (id, label, click, strong = false, tip = "") => div().id(id).tooltip(tip).flex_none().px(8).h(24).flex().items_center().rounded(5).border_1()
     .border_color(strong ? t.accent : t.border).text_size(TYPE.small).text_color(strong ? t.foreground : t.muted).cursor_pointer()
     .hover((st) => st.text_color(t.foreground)).on_click(click).child(label);
@@ -83,10 +88,10 @@ export function renderSetup(view, t) {
       .child(div().flex_1().min_w(0).truncate().font_semibold().text_size(TYPE.small).child(x.id))
       .when(Boolean(x.install), (e) => e
         .child(btn(`setup-copy-${x.id}`, "Copy", (_e, cx) => { copyText(x.install); view.note = `Copied: ${x.install}`; cx.notify(); }, false, "Copy the install command to the clipboard"))
-        .child(btn(`setup-run-${x.id}`, x.status === "logged-out" ? "Log in in terminal" : "Install in terminal", (_e, cx) => install(view, x, cx), x.need === "required", "Open a terminal with the command typed in, not run: press Enter there"))))
+        .child(btn(`setup-run-${x.id}`, x.status === "logged-out" ? "Log in in terminal" : "Install in terminal", (_e, cx) => install(view, x, cx), x.status === "missing" || x.status === "logged-out", "Open a terminal with the command typed in, not run: press Enter there"))))
     .child(div().pl(92).text_size(TYPE.small).text_color(t.muted).whitespace_normal().child(x.what))
-    .when(Boolean(x.install), (e) => e.child(div().pl(92).text_size(TYPE.small).text_color(t.dim).font_family("JetBrains Mono").child(x.install)))
-    .when(!x.install && x.status !== "ok", (e) => e.child(div().pl(92).text_size(TYPE.small).text_color(t.dim).child("See the project's install page for this OS.")));
+    .when(Boolean(x.cmd ?? x.install), (e) => e.child(div().pl(92).text_size(TYPE.small).text_color(t.dim).font_family("JetBrains Mono").truncate().child(x.cmd ?? x.install)))
+    .when(!x.cmd && !x.install && x.status !== "ok", (e) => e.child(div().pl(92).text_size(TYPE.small).text_color(t.dim).child("See the project's install page for this OS.")));
   return div().flex_1().min_h(0).relative()
     .child(v_flex().id("pr-setup").absolute().inset_0().overflow_y_scroll().p(10).gap(8)
       .child(h_flex().flex_none().gap(8).items_center()
