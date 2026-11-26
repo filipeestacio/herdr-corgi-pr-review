@@ -1251,6 +1251,13 @@ export const withProof = (findings, status = {}) => findings.map((f) => {
 // A tab the mod opens is named "<repo> <context>" ("bookshelf PR #7"): the repo first, so one repo's tabs read
 // together in a tab bar. repo: "owner/name" or its folder; without one, the context alone.
 export const tabName = (repo, context) => [String(repo ?? "").split("/").filter(Boolean).pop(), context].filter(Boolean).join(" ");
+// The --root order for a repository's clone: the parent a person chose for it first, then the configured roots as
+// fallbacks, each once. `chosen` is the shared memory {repo: parent}; another repository's choice is ignored, and
+// "~" stays as it is (worktree.py expands it).
+export function cloneRootsFor(repo, chosen = {}, configured = []) {
+  const flat = (v) => (Array.isArray(v) ? v : [v]).flat().filter(Boolean);
+  return [...new Set([...flat(repo ? chosen?.[repo] : null), ...flat(configured)])];
+}
 export const proofFacts = (p) => !p ? [] : p.state === "running" ? [["Agent", `checking it on ${p.branch ?? "its branch"}${p.terminal ? ` (${p.terminal})` : ""}`]] : [
   ["Result", `${PROOF_WORDS[p.result] ?? p.result} by an agent${p.head ? ` at ${String(p.head).slice(0, 7)}` : ""}${p.reason ? `: ${p.reason}` : ""}`],
   p.command && ["Command", p.command], p.output && ["Output", p.output], p.test && ["Test", p.test]].filter(Boolean);

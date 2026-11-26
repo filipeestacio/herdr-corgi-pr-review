@@ -26,7 +26,7 @@ import { highlightJob, highlightStep, highlightLines, langOf, firstLineOf, color
 import { lookup, warm, contents, where, setTrusted } from "./defs.js";
 import { recommendModel, tierSteps } from "./pr.js";
 import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf, codeModel, priceOf, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch, withSecurity, securityStart } from "./pr.js";
-import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
+import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf, cloneRootsFor } from "./pr.js";
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState, codeOf, isStale } from "./pr.js";
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible, pastTop } from "./views.js";
 import { worst, byFocus, layerAccess, analysisAge, stateHints, noteRule, mergeGroups, mergeFirst, mergeHeld, runLabel, byCause, sessionCost, sessionDir, fixEstimate, fixCostLine } from "./views.js";
@@ -755,6 +755,7 @@ export const ReviewMode = {
     else if (name === "explore") startExplore(arg || null);
     else if (name === "explore-min") this.minimizeExplore(); // the Explore bar's "Minimize"
     else if (name === "explore-open") this.openExploration(arg, cx);
+    else if (name === "clone-folder") this.setCloneRoot(arg, cx); // clone-folder:<path>: the same as Choose folder… after its dialog (a script)
     else if (name === "trust-repo") { // the explored repo, or the folder when it has no github.com remote
       const key = this.ex?.repo ? "pr-review.trustedRepos" : "pr-review.trustedRoots", v = this.ex?.repo ?? this.ex?.root;
       if (v) setShared(key, [v, ...(shared(key) ?? []).filter((x) => x !== v)].slice(0, 200));
@@ -948,6 +949,22 @@ export const ReviewMode = {
   // Herdr's folder for worktrees as its settings.json has it now (read when a checkout is made, as Herdr does).
   async wtDir() { return TH.worktreesDir(await readTextFile(`${appHome()}/settings.json`).catch(() => null), home()); },
 
+  // "Choose folder…" beside "Clone to …": where this repository's clone goes from now on. It only remembers the
+  // folder and asks worktree.py again without --clone, so the banner names the exact destination; the pill clones.
+  chooseCloneRoot(cx) {
+    cx.spawn(async (cx) => { const dir = await pickFolder({ prompt: "Folder for the repository clone" }); if (dir) this.setCloneRoot(dir, cx); });
+  },
+  // What the chooser does with the folder, and `pr-review.clone-folder:<path>` for a script (no dialog to drive).
+  // Kept for this repo alone, newest 50 repositories; the configured roots stay as fallbacks (cloneRootsFor).
+  setCloneRoot(dir, cx) {
+    const repo = this.prSel?.repo;
+    if (!repo || !dir) return cx.notify();
+    const rest = Object.entries(shared("review.cloneRoots") ?? {}).filter(([r]) => r !== repo);
+    setShared("review.cloneRoots", Object.fromEntries([[repo, dir], ...rest].slice(0, 50)));
+    this.makeWorktree(cx); // no --clone: need_clone is the folder the pill would clone into
+    cx.notify();
+  },
+
   makeWorktree(cx, clone = false) {
     const url = this.prSel.url, want = this.prSel.headSha ?? null, job = `${url}|${want}|${clone}`;
     if (this.wtIn === job) return; // the same checkout is being made
@@ -961,7 +978,10 @@ export const ReviewMode = {
     this.cloning = clone; this.checkout = { busy: true }; // shown at the top of the Analysis tab (stateHints)
     this.wtIn = job;
     cx.spawn(async (cx) => {
-      const roots = C.cloneRoots(ctxDoc(), this.ctxId(), this.cfg?.cloneRoot ?? "~/code").flatMap((d) => ["--root", d.replace(/^~(?=\/|$)/, home())]);
+      // The parent a person picked for this repo goes first: a new clone lands there, and the configured roots stay
+      // as fallbacks for an existing clone. Read by repo, so another repo's choice never follows this PR.
+      const order = cloneRootsFor(this.prSel.repo, shared("review.cloneRoots") ?? {}, C.cloneRoots(ctxDoc(), this.ctxId(), this.cfg?.cloneRoot ?? "~/code"));
+      const roots = order.flatMap((d) => ["--root", d.replace(/^~(?=\/|$)/, home())]);
       const env = this.ctxEnv(this.ctxId()), argv = [...env, "python3", `${appHome()}/mods/pr-review/worktree.py`, url, ...roots, "--worktrees", await this.wtDir(), ...local, ...(clone ? ["--clone"] : [])];
       // The checkout from last time still at this head (its HEAD file says so): no fetch, no checkout. A new head
       // (checkHead) comes back here with another sha and runs worktree.py.
@@ -6259,7 +6279,8 @@ export const ReviewMode = {
           .when(Boolean(this.worktree?.path) && !this.trustedPr() && !this.trustAsked(), (e) => e.child(this.trustPrompt(t)))
           .when(Boolean(this.needClone), (e) => e.child(h_flex().flex_none().px(14).py(8).gap(10).items_center().bg(t.ansi3 + "1c").border_b(1).border_color(t.border).text_size(TYPE.small)
             .child(div().flex_1().min_w(0).whitespace_normal().child(`No local clone of ${target.repo ?? "this repo"}: reviewers, whole files, definitions and the AI analysis need one. The diff works without.`))
-            .child(pill("rv-clone", t, this.cloning ? "Cloning…" : `Clone to ${this.needClone.replace(home(), "~")}`, (_e, cx) => { if (!this.cloning) { this.makeWorktree(cx, true); cx.notify(); } }, false, t.foreground).tooltip(`Clone the repository once, so the PR head can be checked out for reviewers and go-to-definition. No clone was found in ${(this.needCloneRoots ?? []).map((d) => d.replace(home(), "~")).join(", ") || "the configured folders"}; cloneRoot in pr-review.config.json may take a list.`))))
+            .child(pill("rv-clone", t, this.cloning ? "Cloning…" : `Clone to ${this.needClone.replace(home(), "~")}`, (_e, cx) => { if (!this.cloning) { this.makeWorktree(cx, true); cx.notify(); } }, false, t.foreground).tooltip(`Clone the repository once, so the PR head can be checked out for reviewers and go-to-definition. No clone was found in ${(this.needCloneRoots ?? []).map((d) => d.replace(home(), "~")).join(", ") || "the configured folders"}; cloneRoot in pr-review.config.json may take a list, and Choose folder… picks another parent for this repository.`))
+            .child(pill("rv-clone-pick", t, "Choose folder…", (_e, cx) => this.chooseCloneRoot(cx)).tooltip(`Pick the folder where ${target.repo ?? "this repository"} is cloned. The review remembers it for this repository. The folders in pr-review.config.json stay as fallbacks.`))))
 
           .when(listShown, (e) => e.child(div().id(`${listId}-wrap`).flex_1().min_h(0).relative().when(held, (x) => x.opacity(0)).on_size_change((size) => { this.listH = size.height; })
 

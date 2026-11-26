@@ -234,6 +234,11 @@ big PRs into cohort passes and a merge pass under one cap.
 - Programs: `git` (2.46 or later for the full push lock), `gh`, `claude`, `python3`, optionally `codex` (with
   permission profiles), `bwrap` on Linux (the probes' sandbox), `acli`, language servers, `code`.
 - Data in `pr-data/` (cache bounded to 200 files / 50 MB); settings in `pr-review.config.json`.
+- The Analysis tab's clone banner: when no clone is found, `worktree.py` exits 3 with the folder it would clone into.
+  The banner offers "Clone to <folder>" and "Choose folder…". The picked parent is kept per repository in shared
+  `review.cloneRoots` (`{ "<owner>/<repo>": "<parent folder>" }`, newest 50) and becomes the first `--root` for that
+  repository. The configured `cloneRoot` folders stay as fallbacks. "Choose folder…" runs the check again without
+  `--clone`, so the banner names the exact destination, and the pill still does the clone.
 
 ## Watch out
 
