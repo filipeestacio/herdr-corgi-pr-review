@@ -36,6 +36,7 @@ S.el = () => {
 S.handle = () => { let val = ""; return new Proxy({}, { get: (_, k) => (k === "then" ? undefined : (...a) => { // an input keeps what set_value gave it
   if (k === "scroll_to_item" && !(Number.isInteger(a[0]) && a[0] >= 0)) S.errs.push(`scroll_to_item(${a[0]}) at ${where()}`);
   if (k === "set_value") val = String(a[0] ?? "");
+  if (k === "focus") S.focusCalls = (S.focusCalls ?? 0) + 1; // a test that asks whether an input took the keyboard counts these
   return k === "value" ? val : k === "is_focused" ? false : undefined;
 }) }); };
 S.vlist = (id, n, sizes, key, render) => {

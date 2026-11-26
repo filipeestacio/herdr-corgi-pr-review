@@ -376,15 +376,18 @@ export function renderCardMenu() {
 const MODEL_ROW = 44, MODELS_H = 470;
 // A search matches the label, the catalog id and the runner id, with case ignored ("sonnet", "anthropic/").
 export const modelMatches = (c, q) => !String(q ?? "").trim() || `${c?.label ?? ""} ${c?.id ?? ""} ${c?.value ?? ""}`.toLowerCase().includes(String(q).trim().toLowerCase());
-let modelsQuery = "", modelsToken = null;
+let modelsQuery = "", modelsToken = null, modelsFocusToken = null;
 // Both at load, like a view's init: a render may not make a handle or an input state.
 const modelsScroll = VirtualListScrollHandle.new();
 const modelsSearch = InputState.new({ placeholder: "Search models" });
 modelsSearch.on("change", (_e, cx) => { modelsQuery = modelsSearch.value(); cx.notify(); }); // mirror it for the frame
-export function renderModels() {
+export function renderModels(cx) {
   const p = props(), t = theme(), overlay = p.overlay;
   // The popup is its own mod instance: the query a script set arrives in the props once per opening.
   if (p.token !== modelsToken) { modelsToken = p.token; modelsQuery = String(p.query ?? ""); modelsSearch.set_value(modelsQuery); }
+  // The keyboard goes onto the search box on the first frame of an opening, once it is in the tree: without it no
+  // change event fires and the typing stays behind the popup. A timer started in a render is fine; a state is not.
+  if (p.token !== modelsFocusToken) { modelsFocusToken = p.token; cx.timer.after(0, () => modelsSearch.focus()); }
   const typed = modelsQuery.trim(), q = typed.toLowerCase();
   const list = pinnedFirst(providerNow() ? providerChoices() : [], providerPinnedIds());
   const rows = q ? list.filter((c) => modelMatches(c, q)) : list;

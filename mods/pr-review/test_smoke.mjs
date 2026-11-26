@@ -1291,7 +1291,7 @@ S.store.set("review.models", { default: { provider: "gateway", providers: [{ nam
   providerModels: catalogModels, pinned: ["m-7", "m-3"] } });
 S.store.set("review.provider", "gateway"); S.store.set("review.model", catalogModels[7].value);
 S.props = { part: "models", overlay: "ov1" };
-frame("models: the provider's full catalog", R.renderModels);
+frame("models: the provider's full catalog", () => R.renderModels(cx));
 {
   const list = S.lists.find((l) => l.id === "rv-models-list");
   assert.equal(list?.n, 243, "the full catalog is one virtual list");
@@ -1300,6 +1300,20 @@ frame("models: the provider's full catalog", R.renderModels);
   S.texts = null;
   const sonnet = { label: "Claude Sonnet 5.5", id: "claude-sonnet-5-5", value: "aircall-llmgateway/anthropic/claude-sonnet-5-5" };
   assert.deepEqual([R.modelMatches(sonnet, "sonnet"), R.modelMatches(sonnet, "ANTHROPIC/"), R.modelMatches(sonnet, "gpt")], [true, true, false], "the search reads label, catalog id and runner id");
+}
+// The search box takes the keyboard on the first frame of an opening, and not again: the first frame asks for the focus
+// after it is drawn, and a later frame of the same opening asks for nothing. The keys themselves cannot be typed here.
+{
+  const timers = [], later = { ...cx, timer: { after: (_ms, f) => timers.push(f), every() {} } };
+  const opening = (token) => { S.props = { part: "models", overlay: "ov1", token }; S.focusCalls = 0; frame(`models: opening ${token}`, () => R.renderModels(later)); };
+  opening(101);
+  assert.deepEqual([timers.length, S.focusCalls], [1, 0], "an opening asks for the focus once, for after the frame");
+  timers.splice(0).forEach((f) => f(later));
+  assert.equal(S.focusCalls, 1, "the focus goes onto the search box");
+  opening(101);
+  assert.deepEqual([timers.length, S.focusCalls], [0, 0], "a later frame of the same opening asks for nothing");
+  opening(102);
+  assert.equal(timers.length, 1, "the next opening asks again");
 }
 S.props = null;
 console.log(`smoke ok: ${shown} frames`);
