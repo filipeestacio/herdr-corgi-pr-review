@@ -377,16 +377,24 @@ const MODEL_ROW = 44, MODELS_H = 470;
 // A search matches the label, the catalog id and the runner id, with case ignored ("sonnet", "anthropic/").
 export const modelMatches = (c, q) => !String(q ?? "").trim() || `${c?.label ?? ""} ${c?.id ?? ""} ${c?.value ?? ""}`.toLowerCase().includes(String(q).trim().toLowerCase());
 let modelsQuery = "", modelsToken = null, modelsFocusToken = null;
-// Both at load, like a view's init: a render may not make a handle or an input state.
-const modelsScroll = VirtualListScrollHandle.new();
-const modelsSearch = InputState.new({ placeholder: "Search models" });
-modelsSearch.on("change", (_e, cx) => { modelsQuery = modelsSearch.value(); cx.notify(); }); // mirror it for the frame
+// The models copy's search state and scroll handle, from initModelsState. InputState.new needs a live host call, so it
+// belongs in init or in an event handler, never at module scope (evaluated with no host call, its change events never
+// fire).
+let modelsSearch = null, modelsScroll = null;
+// Called from the view's init for the models copy: the change mirrors the box into modelsQuery for the frame.
+export function initModelsState(cx) {
+  modelsSearch = InputState.new({ placeholder: "Search models" });
+  modelsSearch.on("change", (_e, cx) => { modelsQuery = modelsSearch.value(); cx.notify(); });
+  modelsScroll = VirtualListScrollHandle.new();
+}
+export const modelsInput = () => modelsSearch; // the state init made, for the tests
 export function renderModels(cx) {
   const p = props(), t = theme(), overlay = p.overlay;
-  // The popup is its own mod instance: the query a script set arrives in the props once per opening.
+  // The dialog is its own mod instance: the query a script set arrives in the props once per opening.
   if (p.token !== modelsToken) { modelsToken = p.token; modelsQuery = String(p.query ?? ""); modelsSearch.set_value(modelsQuery); }
   // The keyboard goes onto the search box on the first frame of an opening, once it is in the tree: without it no
-  // change event fires and the typing stays behind the popup. A timer started in a render is fine; a state is not.
+  // change event fires. A dialog takes the keyboard, so this focus holds (a popup would not). A timer started in a
+  // render is fine; a state is not.
   if (p.token !== modelsFocusToken) { modelsFocusToken = p.token; cx.timer.after(0, () => modelsSearch.focus()); }
   const typed = modelsQuery.trim(), q = typed.toLowerCase();
   const list = pinnedFirst(providerNow() ? providerChoices() : [], providerPinnedIds());
@@ -401,7 +409,7 @@ export function renderModels(cx) {
   return v_flex().id("rv-models").size_full().p(8).gap(8).bg(t.popover).text_color(t.foreground).text_size(TYPE.body)
     .child(div().id("rv-models-search").h(30).flex_none().px(8).flex().items_center().rounded(6).border_1().border_color(t.border).bg(t.background).cursor_text()
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(modelsSearch).h_full().text_size(TYPE.body).text_color(t.foreground)))
-    // The popup takes its height from its content, so this list area has one of its own.
+    // The list area has a height of its own: the dialog is 560 high, and the rows scroll inside this one.
     .child(div().h(MODELS_H).relative()
       .when(!rows.length, (e) => e.child(div().id("rv-models-none").p(8).text_size(TYPE.small).text_color(t.muted).whitespace_normal()
         .child(q ? `No model matches “${typed}”.` : "No provider lists a model to show.")))
@@ -5447,13 +5455,15 @@ export const ReviewMode = {
     this.loadModels(cx);
     this.note = `Provider: ${label}.`; cx.notify();
   },
-  // The full provider catalog (the models menu's "All N models…", or models:search:<text>): a searchable popup;
+  // The full provider catalog (the models menu's "All N models…", or models:search:<text>): a searchable dialog;
   // nothing when there is no model to list. Only the review body (or the panel, when no review body is mounted) opens
-  // it, so the bar's copy does not open a second one. The query travels in the props: the popup is its own instance.
+  // it, so the bar's copy does not open a second one. The query travels in the props: the dialog is its own instance.
+  // A dialog, not a popup: a popup never takes the keyboard, so the search box could not focus. A click beside it
+  // closes it (modal: false), as Esc does, and a click on a row picks and closes.
   openModels(cx, search = "") {
     if (props().part && props().part !== "review") return;
     if (!providerNow() || !providerChoices().length) return;
-    openOverlay({ mod: "pr-review", props: { part: "models", query: search, token: Date.now() }, kind: "popup", width: 520, height: 560 });
+    openOverlay({ mod: "pr-review", props: { part: "models", query: search, token: Date.now() }, kind: "dialog", modal: false, width: 520, height: 560 });
     cx.notify();
   },
   // A rough price before running: input from the diff size, output and thinking from earlier runs; the cap is review.py's.

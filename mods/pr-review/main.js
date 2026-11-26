@@ -29,7 +29,7 @@ import { setupBanner, renderSetup, loadSetup, runSetup, openUrl, readConfig } fr
 import { chip, PRIORITY_TIP, layoutPump } from "./stack.js";
 import { panelState, bodyTab, DONE_DAYS, diffTooLarge, filesToDiff, isOpenPr, byState, listRows, riskSignal, progressText, pendingText, rowMarks, mineGroups, progressRows, removedText, withPick, openSig, panelShown, byRef, fileRisk, leftNow, wrapCode, codeCols, sliceSpans, markLabel, textW, panelButtons, panelHit, panelPress, PANEL_EDGE, spaceFolders, headBranch, spaceBranches, branchPrQuery, branchPrs, spaceOrder, focusedPr, spaceEmpty, worktreePrs } from "./views.js";
 import { keepLast, dragPath, miniRowPx } from "./views.js"; // every cache has a limit; a file head's path to drag; the chip's own row
-import { ReviewMode, startReview, startExplore, saveKey, flowCard, modelPills, modelLabel, currentModel, renderReviews, renderModels, renderAgentBar, renderKeys, renderCardMenu, renderMini, miniModel, resumeMini } from "./review.js";
+import { ReviewMode, startReview, startExplore, saveKey, flowCard, modelPills, modelLabel, currentModel, renderReviews, renderModels, renderAgentBar, renderKeys, renderCardMenu, renderMini, miniModel, resumeMini, initModelsState } from "./review.js";
 import { highlightJob, highlightStep, langOf, firstLineOf, colors, renderLine, editorSyntax } from "./syntax.js";
 import { TYPE } from "./views.js"; // the text sizes (U34)
 import { editorLink, editorCommand, startOpen, setEditors } from "./editor-view.js"; // "Open in <Editor>"
@@ -145,6 +145,10 @@ export default class PrReview extends View {
     if (this.part === "mini") cx.timer.every(5000, (cx) => this.miniPoll(cx));
     // The small copies read Herdr's live data in their frames; asked for data from now on (live.js whenFed), also between.
     if (this.part === "mini" || this.part === "bar") cx.timer.every(500, () => { if (feedIfAsked()) setShared("review.watched", Date.now()); });
+    // The models picker's search: like this.input below, its text state and scroll handle need this live host call, so
+    // initModelsState makes them here, not at module scope, where change events never fired. The change mirrors the
+    // value for the frame; renderModels reads modelsQuery, never InputState.value().
+    if (this.part === "models") initModelsState(cx);
     if (this.part === "bar" || this.part === "reviews" || this.part === "agentbar" || this.part === "keys" || this.part === "cmenu" || this.part === "models" || this.part === "mini") return;
     this.announces = true; // Go to's keys: published while this copy runs, cleared in close()
     this.files = []; this.rows = []; this.sel = null; this.selEnd = null; this.question = "";

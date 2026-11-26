@@ -33,10 +33,12 @@ S.el = () => {
   });
   return p;
 };
-S.handle = () => { let val = ""; return new Proxy({}, { get: (_, k) => (k === "then" ? undefined : (...a) => { // an input keeps what set_value gave it
+S.handle = () => { let val = ""; const events = {}; return new Proxy({}, { get: (_, k) => (k === "then" ? undefined : (...a) => { // an input keeps what set_value gave it
   if (k === "scroll_to_item" && !(Number.isInteger(a[0]) && a[0] >= 0)) S.errs.push(`scroll_to_item(${a[0]}) at ${where()}`);
   if (k === "set_value") val = String(a[0] ?? "");
   if (k === "focus") S.focusCalls = (S.focusCalls ?? 0) + 1; // a test that asks whether an input took the keyboard counts these
+  if (k === "on") events[a[0]] = a[1];
+  if (k === "fire") { events[a[0]]?.({}, a[1] ?? {}); return undefined; } // a test that asks what a handler does fires it: state.fire("change", cx)
   return k === "value" ? val : k === "is_focused" ? false : undefined;
 }) }); };
 S.vlist = (id, n, sizes, key, render) => {

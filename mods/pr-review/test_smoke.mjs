@@ -1291,6 +1291,7 @@ S.store.set("review.models", { default: { provider: "gateway", providers: [{ nam
   providerModels: catalogModels, pinned: ["m-7", "m-3"] } });
 S.store.set("review.provider", "gateway"); S.store.set("review.model", catalogModels[7].value);
 S.props = { part: "models", overlay: "ov1" };
+const modelsView = new PrReview(); modelsView.init({}, cx); // init makes the search state: it needs a live host call
 frame("models: the provider's full catalog", () => R.renderModels(cx));
 {
   const list = S.lists.find((l) => l.id === "rv-models-list");
@@ -1314,6 +1315,27 @@ frame("models: the provider's full catalog", () => R.renderModels(cx));
   assert.deepEqual([timers.length, S.focusCalls], [0, 0], "a later frame of the same opening asks for nothing");
   opening(102);
   assert.equal(timers.length, 1, "the next opening asks again");
+}
+// Typing reaches the list: the change handler made in init mirrors the box into modelsQuery, and the next frame filters
+// by it. At module scope the state never dispatched change, so the list stayed on the opening's query.
+{
+  S.props = { part: "models", overlay: "ov1", token: 11 };
+  const v = new PrReview(); v.init({}, cx); // a fresh opening, as Herdr makes for the overlay copy
+  frame("models: an opening before typing", () => R.renderModels(cx));
+  const input = R.modelsInput();
+  input.set_value("model 7"); input.fire("change", cx);
+  frame("models: the change handler filters the list", () => R.renderModels(cx));
+  const list = S.lists.find((l) => l.id === "rv-models-list");
+  assert.equal(list?.n, 11, "the change handler mirrors the typed value and the list filters by it");
+}
+// The picker opens as a dialog, not a popup: a popup never takes the keyboard, so its search box could not focus. A
+// click beside a dialog closes it (modal: false), as Esc does; a click on a row picks and closes.
+{
+  S.props = { part: "review" }; S.overlays.length = 0;
+  const v = new PrReview(); v.command("models:all", cx);
+  assert.deepEqual(S.overlays.map((o) => [o.kind, o.modal, o.width, o.height]), [["dialog", false, 520, 560]], "the whole catalog is a non-modal dialog");
+  S.overlays.length = 0; v.command("models:search:sonnet", cx);
+  assert.equal(S.overlays[0]?.props?.query, "sonnet", "the script's search still travels in the props");
 }
 S.props = null;
 console.log(`smoke ok: ${shown} frames`);
