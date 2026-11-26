@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
-"""The models the CLIs offer, for the review's model pickers.
+"""The models the CLIs offer and the provider catalogs, for the review's model pickers.
 
-argv[1]: JSON {context: {id, env}} (the PR's context: Claude lists what that account may use).
+argv[1]: JSON {context: {id, env}, provider?: "<name>"} (the PR's context: Claude lists what that account may use; the
+provider is the one the panel picked for this review).
 Prints {claude: [...], codex: [...], harness: [...], harnessName: "<active profile>", harnesses: [{name, label,
-command, ok}], providers: {"<id>": {label, error}}}; a CLI or provider that is missing or doesn't answer gives an
-empty list and an error sentence.
+command, ok}], providers: [{name, label, kind}], provider: "<name>" | null, providerModels: [...], pinned: [...],
+providerError: "<sentence>" | null}; a CLI that is missing or doesn't answer gives an empty list. A provider whose
+request fails gives no entries, or the rows from its cache while the failure lasts, and its sentence in providerError.
+Provider: the declared provider's catalog from its baseUrl, cached raw in pr-data/providers.json. Its picker entries
+are built on every read: text-only rows, then prefix keeps and deny drops on the catalog id; `value` is the id through
+the provider's modelId template, the id the runner receives; a price comes from `pricing`, in USD per million tokens,
+for any kind, with priceOverrides winning. The whole filtered catalog is listed, in catalog order; `shortlist` pins
+catalog ids in its own order and may set their price, and `pinned` names the pins the catalog holds.
 Harness: the active profile's models, from its shortlist, from a declared provider over HTTP (prefix keeps, deny
 drops), from a command that prints one id per line (prefix keeps), or from the legacy harness.modelList.
 Claude: the CLI's initialize control request, the one the Agent SDK's supportedModels() sends. No model is called,
@@ -13,6 +20,7 @@ and hooks, MCP servers and session files stay off. Codex: `codex debug models`, 
 import fnmatch
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -78,6 +86,21 @@ def short(model_id):
     return "/".join(parts[-2:]) if len(parts) >= 3 else str(model_id)
 
 
+def _pair(price):
+    """A shortlist or priceOverrides price as [input, output] USD per million tokens, or None when it is not one."""
+    if isinstance(price, (list, tuple)) and len(price) == 2:
+        try:
+            return [float(price[0]), float(price[1])]
+        except (TypeError, ValueError):
+            return None
+    if isinstance(price, dict) and price.get("input") is not None and price.get("output") is not None:
+        try:
+            return [float(price["input"]), float(price["output"])]
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def _picker(e, label):
     """A shortlist entry as the picker shows it: an id or {id, price}, price in USD per million input and output
     tokens."""
@@ -85,11 +108,9 @@ def _picker(e, label):
     if not mid:
         return None
     got = {"value": mid, "label": short(mid), "description": label}
-    price = e.get("price") if isinstance(e, dict) else None
-    if isinstance(price, (list, tuple)) and len(price) == 2:
-        got["price"] = [float(price[0]), float(price[1])]
-    elif isinstance(price, dict) and price.get("input") is not None and price.get("output") is not None:
-        got["price"] = [float(price["input"]), float(price["output"])]
+    price = _pair(e.get("price")) if isinstance(e, dict) else None
+    if price is not None:
+        got["price"] = price
     return got
 
 
@@ -108,10 +129,23 @@ DEFAULT_TIMEOUT = 8
 
 def _provider(provider_id):
     """A provider's settings and its label, from pr-review.config.json."""
-    providers = llm.config().get("providers")
-    spec = providers.get(provider_id) if isinstance(providers, dict) else None
+    declared = llm.config().get("providers")
+    spec = declared.get(provider_id) if isinstance(declared, dict) else None
     spec = spec if isinstance(spec, dict) else {}
     return spec, str(spec.get("label") or provider_id)
+
+
+def providers():
+    """Every provider pr-review.config.json declares, in its order: {name, label, kind} for the picker. A broken entry
+    is still listed with what it has, so a bad config never hides the others."""
+    got = []
+    declared = llm.config().get("providers")
+    for name, spec in (declared.items() if isinstance(declared, dict) else ()):
+        if not isinstance(name, str) or not name:
+            continue
+        spec = spec if isinstance(spec, dict) else {}
+        got.append({"name": name, "label": str(spec.get("label") or name), "kind": str(spec.get("kind") or "openai")})
+    return got
 
 
 def _cache_path():
@@ -157,47 +191,96 @@ def _said(e, n=120):
 
 
 def _price(pricing):
-    """OpenRouter's per-token pricing as USD per million input and output tokens."""
+    """A row's per-token pricing as USD per million input and output tokens, 4 decimals."""
     try:
         return [round(float(pricing["prompt"]) * 1e6, 4), round(float(pricing["completion"]) * 1e6, 4)]
     except (KeyError, TypeError, ValueError):
         return None
 
 
-def _catalog(data, spec, label, kind):
-    """A provider's answer as picker entries, or None when it is not the shape pr-review knows: an object with a
-    `data` list whose entries have an `id`. priceOverrides win over a catalog price."""
+def _text(row):
+    """Whether a catalog row can answer in text. A row whose architecture.output_modalities is there and holds no
+    "text" is an image, speech, embedding or decision model, and stays out of the picker; a row without the field is
+    kept."""
+    arch = row.get("architecture")
+    mods = arch.get("output_modalities") if isinstance(arch, dict) else None
+    if isinstance(mods, (list, tuple)):
+        return any(str(m).strip().lower() == "text" for m in mods)
+    if isinstance(mods, str):
+        return "text" in mods.lower()
+    return True
+
+
+def _model_id(catalog_id, family, spec, families):
+    """The id the runner receives: the provider's modelId template, with {id} the catalog id, {vendor} the raw family
+    and {family} the family with `families` applied. No template: the catalog id."""
+    template = spec.get("modelId")
+    if not isinstance(template, str) or not template:
+        return catalog_id
+    raw = "" if family is None else str(family)
+    alias = families.get(raw) if isinstance(families, dict) else None
+    values = {"id": catalog_id, "vendor": raw, "family": raw if alias is None else str(alias)}
+    return re.sub(r"\{(id|vendor|family)\}", lambda m: values[m.group(1)], template)
+
+
+def _catalog(data):
+    """A provider's answer as its raw rows, or None when it is not the shape pr-review knows: an object with a `data`
+    list whose entries have an `id`."""
     rows = data.get("data") if isinstance(data, dict) else None
     if not isinstance(rows, list) or not all(isinstance(r, dict) and str(r.get("id") or "").strip() for r in rows):
         return None
+    return rows
+
+
+def _entries(rows, spec, label):
+    """A provider's raw rows as picker entries, built on every read so a mapping or a filter change needs no request.
+    Text-only rows, then prefix keeps and deny drops on the catalog id; `value` goes through the modelId template; a
+    price comes from the row's pricing for any kind, priceOverrides winning. A shortlist pins ids in its own order and
+    may set their price; it does not hide the rest. Returns (entries in catalog order, the pinned ids the catalog
+    holds)."""
+    prefix = str(spec.get("prefix") or "")
+    deny = [g for g in spec.get("deny") or [] if isinstance(g, str)]
     overrides = spec.get("priceOverrides") if isinstance(spec.get("priceOverrides"), dict) else {}
-    got = []
+    families = spec.get("families") if isinstance(spec.get("families"), dict) else {}
+    known = {}
     for row in rows:
-        mid = str(row["id"]).strip()
-        price = _price(row.get("pricing")) if kind == "openrouter" else None
-        over = overrides.get(mid)
-        if isinstance(over, (list, tuple)) and len(over) == 2:
-            try:
-                price = [float(over[0]), float(over[1])]
-            except (TypeError, ValueError):
-                pass
-        entry = {"value": mid, "label": str(row.get("name") or row.get("display_name") or short(mid)),
-                 "description": label}
-        if price:
+        if not isinstance(row, dict):
+            continue
+        mid = str(row.get("id") or "").strip()
+        if not mid or not mid.startswith(prefix) or any(fnmatch.fnmatch(mid, g) for g in deny) or not _text(row):
+            continue
+        price = _price(row.get("pricing")) if isinstance(row.get("pricing"), dict) else None
+        over = _pair(overrides.get(mid))
+        if over is not None:
+            price = over
+        entry = {"id": mid, "value": _model_id(mid, row.get("family"), spec, families),
+                 "label": str(row.get("display_name") or row.get("name") or short(mid)), "description": label}
+        if price is not None:
             entry["price"] = price
-        got.append(entry)
-    return got
+        known.setdefault(mid, entry)
+    pinned = []
+    shortlist = spec.get("shortlist")
+    if isinstance(shortlist, list):
+        for e in shortlist:
+            mid = str((e.get("id") if isinstance(e, dict) else e) or "").strip()
+            if not mid or mid in pinned or mid not in known:
+                continue
+            price = _pair(e.get("price")) if isinstance(e, dict) else None
+            if price is not None:
+                known[mid]["price"] = price
+            pinned.append(mid)
+    return list(known.values()), pinned
 
 
 def _failed(provider_id, sentence):
-    """A request that gave nothing: the cached models when there are any, and the sentence for the person."""
+    """A request that gave nothing: the cached rows when there are any, and the sentence for the person."""
     entry = _cache_read().get(provider_id)
-    kept = entry.get("models") if isinstance(entry, dict) and isinstance(entry.get("models"), list) else []
+    kept = entry.get("rows") if isinstance(entry, dict) and isinstance(entry.get("rows"), list) else []
     return kept, sentence
 
 
 def _fetch(provider_id, spec, label):
-    """One provider's catalog request: (models, error). Never raises for a network, HTTP or shape problem."""
+    """One provider's catalog request: (raw rows, error). Never raises for a network, HTTP or shape problem."""
     kind = str(spec.get("kind") or "openai")
     base = str(spec.get("baseUrl") or "").strip().rstrip("/")
     if not base:
@@ -231,24 +314,34 @@ def _fetch(provider_id, spec, label):
         data = json.loads(body.decode("utf-8", "replace"))
     except ValueError:
         data = None
-    models = _catalog(data, spec, label, kind) if data is not None else None
-    if models is None:
+    rows = _catalog(data) if data is not None else None
+    if rows is None:
         return _failed(provider_id, f"{label} answered in a shape pr-review does not know.")
-    return models, None
+    return rows, None
 
 
-def provider_models(provider_id):
-    """A provider's catalog read over HTTP, cached for six hours and a failure for a minute: (picker entries, error
-    sentence or None)."""
+def provider_catalog(provider_id):
+    """A provider's catalog read over HTTP, cached raw for six hours and a failure for a minute: (picker entries, pinned
+    catalog ids, error sentence or None). The entries are built from the cached rows on every read, so a mapping or
+    filter change follows the config without a request."""
     spec, label = _provider(provider_id)
     entry = _cache_read().get(provider_id)
     entry = entry if isinstance(entry, dict) else {}
+    rows = entry.get("rows") if isinstance(entry.get("rows"), list) else None
     age = CACHE_ERROR_SECONDS if entry.get("error") else CACHE_HOURS * 3600
-    if isinstance(entry.get("models"), list) and _fresh(entry, age):
-        return entry["models"], entry.get("error")
-    models, error = _fetch(provider_id, spec, label)
-    _cache_write(provider_id, {"at": int(time.time()), "models": models, "error": error})
-    return models, error
+    if rows is not None and _fresh(entry, age):
+        entries, pinned = _entries(rows, spec, label)
+        return entries, pinned, entry.get("error")
+    rows, error = _fetch(provider_id, spec, label)
+    _cache_write(provider_id, {"at": int(time.time()), "rows": rows, "error": error})
+    entries, pinned = _entries(rows, spec, label)
+    return entries, pinned, error
+
+
+def provider_models(provider_id):
+    """A provider's catalog: (picker entries, error sentence or None)."""
+    entries, _, error = provider_catalog(provider_id)
+    return entries, error
 
 
 def harness_models(profile, timeout=60):
@@ -314,7 +407,8 @@ def main():
     """One JSON object for the panel. A config or network problem never raises out of it: the object still prints,
     with the errors inside it."""
     req = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}
-    out = {"claude": [], "codex": [], "harness": [], "harnessName": "claude", "harnesses": [], "providers": {}}
+    out = {"claude": [], "codex": [], "harness": [], "harnessName": "claude", "harnesses": [], "providers": [],
+           "provider": None, "providerModels": [], "providerError": None, "pinned": []}
     try:
         out["harnessName"] = llm.active()
         spec = llm.profile()
@@ -324,18 +418,24 @@ def main():
         out["harnesses"] = harnesses()
     except Exception:
         pass
+    try:
+        out["providers"] = providers()
+    except Exception:
+        out["providers"] = []
+    asked = req.get("provider") if isinstance(req, dict) else None
+    names = [p["name"] for p in out["providers"]]
+    active = asked if isinstance(asked, str) and asked else (names[0] if names else None)
+    out["provider"] = active
     if spec is not None:
-        models = spec.get("models") if isinstance(spec.get("models"), dict) else {}
-        provider = models.get("provider")
-        if isinstance(provider, str) and provider and not isinstance(models.get("shortlist"), list):
-            try:  # the panel shows the provider's own error; harness_models then reads the same cached answer
-                out["providers"][provider] = {"label": _provider(provider)[1], "error": provider_models(provider)[1]}
-            except Exception:
-                out["providers"][provider] = {"label": _provider(provider)[1], "error": None}
         try:
             out["harness"] = harness_models(spec)[0]
         except Exception:
             out["harness"] = []
+    if active is not None:
+        try:
+            out["providerModels"], out["pinned"], out["providerError"] = provider_catalog(active)
+        except Exception:
+            out["providerModels"], out["pinned"] = [], []
     try:
         out["claude"] = claude_models(req.get("context"))
     except Exception:

@@ -128,12 +128,18 @@ const putShared = (key, value) => { if (JSON.stringify(shared(key) ?? null) !== 
 const TOUCH_MS = 5 * 60000; // a review's "last touched" on file may be this old before a visit alone writes it again (registerReview)
 // shared("review.registry") is every entry, done ones too, with {at}: for plug-ins that mirror reviews elsewhere
 // (PROVIDERS.md). Written on each registry change, 1.5 s after the last edit.
-// The AI analysis' model: any value the claude CLI offers (models.py), Sonnet until one is picked.
+// The AI analysis' model: the active provider's models first, then the active harness profile's (models.py), else any
+// value the claude CLI offers. Sonnet until one is picked.
 // At least Sonnet (pr.js codeModel): every use reads or judges code, which Haiku is too weak for.
 // A stored pick that the configured list no longer holds (the list changed) falls back to its first model, never to a
-// stale id the harness would reject.
+// stale id the runner would reject. A provider that lists nothing has no model to fall back to.
 const model = () => {
-  const m = shared("review.model"), h = harnessChoices();
+  const m = shared("review.model");
+  if (providerNow()) {
+    const list = providerChoices();
+    return typeof m === "string" && list.some((c) => c.value === m) ? m : list[0]?.value ?? "";
+  }
+  const h = harnessChoices();
   if (h.length) return typeof m === "string" && h.some((c) => c.value === m) ? m : h[0].value;
   if (harnessNow() !== "claude") return typeof m === "string" ? m : "";
   return codeModel(typeof m === "string" && m ? m : "sonnet");
@@ -145,7 +151,7 @@ const modelsFile = () => `${appHome()}/pr-data/models.json`;
 const runLog = (status) => String(status).replace(/\.status$/, "") + ".log";
 const modelsDoc = () => shared("review.models") ?? {};
 // A model's name as its CLI calls it ("Opus 5.5"), else the class label, else the value itself.
-export const modelLabel = (m) => Object.values(modelsDoc()).flatMap((d) => [...(d?.harness ?? []), ...(d?.claude ?? [])]).find((x) => x.value === m)?.label ?? MODELS[m]?.label ?? m;
+export const modelLabel = (m) => Object.values(modelsDoc()).flatMap((d) => [...(d?.providerModels ?? []), ...(d?.harness ?? []), ...(d?.claude ?? [])]).find((x) => x.value === m)?.label ?? MODELS[m]?.label ?? m;
 // Codex's models (one login for every context): from whichever context asked last.
 const codexChoices = () => Object.values(modelsDoc()).map((d) => d?.codex ?? []).find((l) => l.length) ?? [];
 // A configured harness's models (models.py): the ones pr-review.config.json lists, whatever CLI they belong to.
@@ -159,17 +165,79 @@ const harnessNow = () => {
 };
 const harnessLabelOf = (name) => harnessDocs().find((h) => h.name === name)?.label ?? name;
 export const harnessLabel = () => harnessLabelOf(harnessNow());
-const providerErrors = () => Object.values(modelsDoc()).map((d) => Object.values(d?.providers ?? {})).flat()
-  .map((p) => (p?.error ? `${p.label}: ${p.error}` : null)).filter(Boolean);
+export const currentModel = () => model(); // the model the review row picked, for another module that runs a call (triage)
+// The providers pr-review.config.json declares (models.py), in its order: [{name, label, kind}].
+const providerDocs = () => Object.values(modelsDoc()).map((d) => d?.providers).find((l) => Array.isArray(l) && l.length) ?? [];
+// The provider the last listing was for, or the one the person picked in the bar (shared "review.provider").
+const providerNow = () => {
+  const picked = shared("review.provider"), docs = providerDocs();
+  if (picked && docs.some((p) => p.name === picked)) return picked;
+  return Object.values(modelsDoc()).map((d) => d?.provider).find(Boolean) ?? null;
+};
+const providerLabelOf = (name) => providerDocs().find((p) => p.name === name)?.label ?? name;
+const providerLabel = () => providerLabelOf(providerNow()) ?? "the provider";
+// The active provider's models (models.py): the entries the runner receives, each value already the id to pass on.
+// Only the listing for that provider counts: after a switch the old list is not offered while the new one is read.
+const providerChoices = () => {
+  const now = providerNow(), docs = Object.values(modelsDoc()).filter((d) => Array.isArray(d?.providerModels));
+  if (!now) return docs.map((d) => d.providerModels).find((l) => l.length) ?? [];
+  return docs.find((d) => d.provider === now)?.providerModels ?? [];
+};
+// The provider menu: one row per declared provider, ticked on the active one.
+const providerMenuItems = () => providerDocs()
+  .map((p) => [`${p.name === providerNow() ? "✓ " : ""}${p.label}`, false, `provider:${p.name}`]);
+// The catalog ids the provider's shortlist pins (models.py), in config order. An older stored doc has none.
+const providerPinnedIds = () => {
+  const now = providerNow(), docs = Object.values(modelsDoc()).filter((d) => Array.isArray(d?.providerModels));
+  const d = docs.find((x) => x.provider === now) ?? docs[0];
+  return Array.isArray(d?.pinned) ? d.pinned : [];
+};
+// The pinned models first, in their own order, then the rest in catalog order; no model twice.
+const pinnedFirst = (list, pinned) => {
+  const seen = new Set(), out = [];
+  for (const id of pinned ?? []) {
+    const c = list.find((x) => x.id === id || x.value === id);
+    if (c && !seen.has(c.value)) { seen.add(c.value); out.push(c); }
+  }
+  for (const c of list) if (!seen.has(c.value)) { seen.add(c.value); out.push(c); }
+  return out;
+};
+// The active provider's failure sentence (models.py). An older stored doc has no `providerError`: read its
+// object-shaped `providers` errors instead, so a cached pr-data/models.json still explains itself.
+const providerErrors = () => {
+  const sentence = Object.values(modelsDoc()).map((d) => d?.providerError).find(Boolean);
+  if (sentence) return [sentence];
+  return Object.values(modelsDoc()).flatMap((d) => (Array.isArray(d?.providers) ? [] : Object.values(d?.providers ?? {})))
+    .map((p) => (p?.error ? `${p.label}: ${p.error}` : null)).filter(Boolean);
+};
+// A provider that lists no models offers no run: no Claude class, no price, no empty model id. Only a provider does
+// this: without one, the harness path and the Claude classes work as before.
+const noRunModel = () => Boolean(providerNow()) && providerChoices().length === 0;
+const noRunModelText = () => `No model: ${providerLabel()} lists none`;
+const noRunModelTip = () => providerErrors().join(" ") || `${providerLabel()} lists no models. Choose another provider, or add models for it in pr-review.config.json.`;
 // The model id a picker value stands for ("opus" -> "claude-opus-5-5"), from the CLI's list.
 const resolvedOf = (m) => Object.values(modelsDoc()).flatMap((d) => d?.claude ?? []).find((x) => x.value === m)?.resolved ?? m;
 // "$4 / $20 per MTok": input and output.
 const harnessPrice = (m) => Object.values(modelsDoc()).flatMap((d) => d?.harness ?? []).find((c) => c.value === m)?.price ?? null;
-const priceText = (m) => { const p = harnessPrice(m); if (p) return `$${p[0]} / $${p[1]} per MTok`; const r = resolvedOf(m); if (String(r).includes("/")) return "price not reported"; const [i, o] = priceOf(r); return `$${i} / $${o} per MTok`; };
+// A provider model's price comes only from the active provider's entry (models.py, which folds in priceOverrides):
+// undefined when no provider is active (the harness and Claude tables answer), null when the entry names no price.
+const providerPrice = (m) => providerNow() ? (providerChoices().find((c) => c.value === m)?.price ?? null) : undefined;
+const priceText = (m) => {
+  const pp = providerPrice(m);
+  if (pp !== undefined) return pp ? `$${pp[0]} / $${pp[1]} per MTok` : "price not reported";
+  const p = harnessPrice(m);
+  if (p) return `$${p[0]} / $${p[1]} per MTok`;
+  const r = resolvedOf(m);
+  if (String(r).includes("/")) return "price not reported";
+  const [i, o] = priceOf(r);
+  return `$${i} / $${o} per MTok`;
+};
 // The choices for a context: the CLI's aliases (opus, fable, sonnet: each its family's newest model; older models by
 // full id are left out, unless one is the current pick), or the classes until the CLI answered. Never Haiku: every
 // choice here reads or judges code (codeModel).
 const modelChoices = (ctx) => {
+  // The provider's own catalog first: its ids mean nothing to another provider, a harness profile or a Claude class.
+  if (providerNow()) return providerChoices();
   const list = modelsDoc()[ctx]?.claude ?? [], cur = model(), harness = harnessChoices();
   // Another program's ids only: its config list, or nothing. Claude classes and aliases mean nothing to it.
   if (harnessNow() !== "claude") return harness;
@@ -182,8 +250,17 @@ const harnessMenuItems = () => harnessDocs()
   .filter((h) => h.ok || h.name === harnessNow())
   .map((h) => [`${h.name === harnessNow() ? "✓ " : ""}${h.label}${h.ok ? "" : " · not installed"}`, false, `harness:${h.name}`]);
 // The model menu: one builder for the control and pr-review.menu:models; estimate sees the review's diff size.
-const modelMenuItems = (ctx, m, estimate) => modelChoices(ctx)
-  .map((c) => [`${c.value === m ? "✓ " : ""}${c.label} · ${priceText(c.value)} · ${estimate(c.value)}`, false, `model:${c.value}`]);
+// A provider's menu holds its pinned models only, then one row for the searchable full catalog.
+const modelMenuItems = (ctx, m, estimate) => {
+  if (providerNow()) {
+    const list = providerChoices(), pinned = providerPinnedIds();
+    const rows = pinnedFirst(list, pinned).filter((c) => pinned.some((id) => id === c.id || id === c.value))
+      .map((c) => [`${c.value === m ? "✓ " : ""}${c.label} · ${priceText(c.value)} · ${estimate(c.value)}`, false, `model:${c.value}`]);
+    if (list.length > rows.length) rows.push([`All ${list.length} ${list.length === 1 ? "model" : "models"}…`, false, "models:all"]);
+    return rows;
+  }
+  return modelChoices(ctx).map((c) => [`${c.value === m ? "✓ " : ""}${c.label} · ${priceText(c.value)} · ${estimate(c.value)}`, false, `model:${c.value}`]);
+};
 const cacheDir = () => `${appHome()}/pr-data/cache`;
 const valuesOn = () => shared("review.values") !== false; // inline example values (flow traces), on by default
 const clock = (ms) => `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}`;
@@ -246,10 +323,11 @@ const openCodexMenu = () => { const cur = shared("review.codexModel") || ""; ret
 const reviewsPop = () => { const cx = hasTool("codex"); return { width: 500, height: 28 + 60 * (reviewersNow().length + 1) + (cx && codexChoices().length ? 36 : 0) + (cx ? 152 : 60) }; };
 export function renderReviews() {
   const t = theme(), runs = runsOf(shared("review.reviewers") ?? {}), meta = shared("review.meta") ?? {}, pr = shared("review.target"), mine = meta.url === pr?.url;
-  const total = mine ? meta.findings?.total ?? 0 : 0, a = mine ? meta.shown : null, harness = harnessChoices().length > 0, cap = harness ? null : REVIEW_CAP[tierOf(model())];
+  const provider = providerNow(), custom = Boolean(provider) || harnessChoices().length > 0, runner = provider ? providerLabel() : harnessLabel(), noModel = noRunModel();
+  const total = mine ? meta.findings?.total ?? 0 : 0, a = mine ? meta.shown : null, cap = custom ? null : REVIEW_CAP[tierOf(model())];
   const row = (k, label, c, line, bad, right) => h_flex().id(`rv-rr-${k}`).gap(10).px(8).py(6).rounded(7).items_center()
     .child(div().w(8).h(8).flex_none().rounded_full().bg(t[c]))
-    .child(v_flex().flex_1().min_w(0).child(div().font_semibold().child(label)).child(div().text_size(TYPE.small).line_height(1.4).whitespace_normal().text_color(bad ? t.ansi1 : t.muted).child(line)))
+    .child(v_flex().flex_1().min_w(0).child(div().font_semibold().child(label)).child(div().when(noModel && k !== "codex", (x) => x.tooltip(noRunModelTip())).text_size(TYPE.small).line_height(1.4).whitespace_normal().text_color(bad ? t.ansi1 : t.muted).child(line)))
     .children([right].filter(Boolean));
   const cur = codexMenu().find((c) => c.value === (shared("review.codexModel") || "")) ?? codexMenu()[0];
   return v_flex().id("rv-reviews").size_full().p(8).gap(4).bg(t.popover).text_color(t.foreground).text_size(TYPE.body)
@@ -259,16 +337,17 @@ export function renderReviews() {
     .children(reviewersNow().map(([k, [label, c]]) => {
       const r = runs[k], n = r?.count ?? 0, done = r?.state === "done";
       const line = TH.runLine(r, n ? 0 : total, { running: r?.started ? clock(Date.now() - Date.parse(r.started)) : "", took: r?.ms ? clock(r.ms) : null, ago: r?.at ? ago(r.at) : null })
-        + (k === "codex" ? (done ? " · Codex does not report its price" : "") : !r?.state ? (harness ? ` · ${harnessLabel()} sets its budget` : ` · capped at $${cap}`) : "") + (k === "security" && mine && meta.securityOffer ? `. ${meta.securityOffer}` : "");
-      return row(k, label, c, line, r?.state === "failed", r?.state === "running" ? div().flex_none().child(SPIN[0]).frames(SPIN, 90)
+        + (k === "codex" ? (done ? " · Codex does not report its price" : "") : noModel ? ` · ${noRunModelText()}` : !r?.state ? (custom ? ` · ${runner} sets its budget` : ` · capped at $${cap}`) : "") + (k === "security" && mine && meta.securityOffer ? `. ${meta.securityOffer}` : "");
+      return row(k, label, c, line, r?.state === "failed", noModel ? null : r?.state === "running" ? div().flex_none().child(SPIN[0]).frames(SPIN, 90)
         : pill(`rv-rrun-${k}`, t, runLabel(r, k === "codex" || !mine ? null : meta.prices?.[k] ?? null, "", true), () => { run(`pr-review.reviewer:${k}`); closeOverlay(props().overlay); }).flex_none()
-          .tooltip(k === "codex" ? `Run the codex CLI on the PR head, with its own login; its price is not reported. ${TH.CODEX_MAY} On someone else's PR in Restricted Mode it asks once first.` : `One read-only review of the PR head with ${modelLabel(model())}, ${harness ? `${harnessLabel()}'s own budget applies` : `capped at $${cap}`}`));
+          .tooltip(k === "codex" ? `Run the codex CLI on the PR head, with its own login; its price is not reported. ${TH.CODEX_MAY} On someone else's PR in Restricted Mode it asks once first.` : `One read-only review of the PR head with ${modelLabel(model())}, ${custom ? `${runner}'s own budget applies` : `capped at $${cap}`}`));
     }))
     .when(hasTool("codex") && codexChoices().length > 0, (e) => e.child(h_flex().px(8).gap(8).items_center()
       .child(div().text_size(TYPE.small).text_color(t.muted).child("Codex review model"))
       .child(pill("rv-cxm", t, `${cur.label} ▾`, () => openCodexMenu()).tooltip(cur.description || "The model in Codex's own settings"))))
     .child(div().px(8).pt(4).text_size(TYPE.small).line_height(1.45).whitespace_normal().text_color(t.muted)
-      .child(`${harness ? `Reviews · ${harnessLabel()}` : "Claude reviews"}: ${harness ? modelLabel(model()) : accountOf(pr ? prCtx(pr) : C.defaultOf(ctxDoc()))}. ${harness ? "They" : "They"} read the PR head in a checkout, read-only, and send the diff and the files they open to the ${harness ? harnessLabel() : "provider"}.`
+      .child((noModel ? `${noRunModelText()}. ${noRunModelTip()}`
+        : `${custom ? `Reviews · ${runner}` : "Claude reviews"}: ${custom ? modelLabel(model()) : accountOf(pr ? prCtx(pr) : C.defaultOf(ctxDoc()))}. ${custom ? "They" : "They"} read the PR head in a checkout, read-only, and send the diff and the files they open to the ${custom ? runner : "provider"}.`)
         + (hasTool("codex") ? ` Codex review: the codex CLI with its own login. It is a second provider (OpenAI) and gets the same checkout. ${TH.CODEX_MAY}` : "")));
 }
 
@@ -290,6 +369,44 @@ export function renderCardMenu() {
   return v_flex().id("rv-cmenu").size_full().p(4).gap(1).bg(t.popover).text_color(t.foreground).text_size(TYPE.body)
     .children(items.map(([label, danger], k) => div().id(`rv-cm-${k}`).px(10).py(5).rounded(5).cursor_pointer().hover((s) => s.bg(t.hover))
       .text_color(danger ? t.ansi1 : t.foreground).on_click(() => { run(`pr-review.${items[k][2] ?? `cmenu:${k}|${key}`}`); closeOverlay(overlay); }).child(label)));
+}
+
+// The full provider catalog (props {part: "models"}): one searchable virtual row per model, the pinned shortlist
+// first, then catalog order. A click picks the model; Herdr closes the popup on Esc.
+const MODEL_ROW = 44, MODELS_H = 470;
+// A search matches the label, the catalog id and the runner id, with case ignored ("sonnet", "anthropic/").
+export const modelMatches = (c, q) => !String(q ?? "").trim() || `${c?.label ?? ""} ${c?.id ?? ""} ${c?.value ?? ""}`.toLowerCase().includes(String(q).trim().toLowerCase());
+let modelsQuery = "", modelsToken = null;
+// Both at load, like a view's init: a render may not make a handle or an input state.
+const modelsScroll = VirtualListScrollHandle.new();
+const modelsSearch = InputState.new({ placeholder: "Search models" });
+modelsSearch.on("change", (_e, cx) => { modelsQuery = modelsSearch.value(); cx.notify(); }); // mirror it for the frame
+export function renderModels() {
+  const p = props(), t = theme(), overlay = p.overlay;
+  // The popup is its own mod instance: the query a script set arrives in the props once per opening.
+  if (p.token !== modelsToken) { modelsToken = p.token; modelsQuery = String(p.query ?? ""); modelsSearch.set_value(modelsQuery); }
+  const typed = modelsQuery.trim(), q = typed.toLowerCase();
+  const list = pinnedFirst(providerNow() ? providerChoices() : [], providerPinnedIds());
+  const rows = q ? list.filter((c) => modelMatches(c, q)) : list;
+  const mono = settings().font_family ?? "JetBrains Mono", current = model();
+  const row = (c, i) => h_flex().id(`rv-model-row-${i}`).h(MODEL_ROW).flex_none().px(8).gap(10).items_center().rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
+    .child(div().w(14).flex_none().text_color(c.value === current ? t.accent : t.dim).child(c.value === current ? "✓" : ""))
+    .child(v_flex().flex_1().min_w(0).gap(1)
+      .child(div().truncate().child(c.label ?? c.value))
+      .child(div().truncate().font_family(mono).text_size(TYPE.small).text_color(t.dim).child(c.value)))
+    .child(div().flex_none().text_size(TYPE.small).text_color(t.muted).child(priceText(c.value)));
+  return v_flex().id("rv-models").size_full().p(8).gap(8).bg(t.popover).text_color(t.foreground).text_size(TYPE.body)
+    .child(div().id("rv-models-search").h(30).flex_none().px(8).flex().items_center().rounded(6).border_1().border_color(t.border).bg(t.background).cursor_text()
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(modelsSearch).h_full().text_size(TYPE.body).text_color(t.foreground)))
+    // The popup takes its height from its content, so this list area has one of its own.
+    .child(div().h(MODELS_H).relative()
+      .when(!rows.length, (e) => e.child(div().id("rv-models-none").p(8).text_size(TYPE.small).text_color(t.muted).whitespace_normal()
+        .child(q ? `No model matches “${typed}”.` : "No provider lists a model to show.")))
+      .when(rows.length > 0, (e) => e.child(v_virtual_list("rv-models-list", rows.length, MODEL_ROW, (i) => rows[i].value,
+        (range) => rows.slice(range.start, range.end).map((c, k) => row(c, range.start + k)))
+        .track_scroll(modelsScroll)
+        .on_item_click((key) => { setShared("review.model", key); if (overlay) closeOverlay(overlay); }).size_full()))
+      .child(Scrollbar.vertical("rv-models-list").absolute().inset_0()));
 }
 
 // The title bar of the floating agent terminal (props {part: "agentbar", title}): drag it, close it.
@@ -449,8 +566,14 @@ const kbd = (t, k) => div().px(5).min_w(18).h(18).flex().items_center().justify_
 const button = (t, label, border, color) => div().w(BTN).h(28).flex_none().flex().items_center().justify_center().rounded(6).border_1()
   .border_color(border).bg(t.background).text_size(TYPE.small).text_color(color).child(label);
 // The model picker (shared "review.model": the AI analysis, Sonnet by default).
-// The picker's short form: the CLI's aliases (opus, sonnet, …: each its family's newest), else the three classes.
+// The picker's short form: a provider's own models first (at most six), else the CLI's aliases (opus, sonnet, …: each
+// its family's newest), else the three classes.
 export const modelPills = (t, id) => {
+  if (providerNow()) {
+    const list = modelChoices(null).slice(0, 6); // the provider branch ignores the context id
+    return h_flex().gap(4).flex_wrap().children(list.map((c, k) =>
+      pill(`${id}-p${k}`, t, c.label, () => setShared("review.model", c.value), model() === c.value).tooltip(`Use ${c.label} for the AI calls`)));
+  }
   const seen = new Map();
   for (const c of Object.values(modelsDoc()).flatMap((d) => d?.claude ?? [])) if (!c.value.startsWith("claude-") && tierOf(c.value) !== "haiku" && !seen.has(c.value)) seen.set(c.value, c.label);
   const pills = seen.size ? [...seen] : Object.entries(MODELS).filter(([k]) => k !== "haiku").map(([k, v]) => [k, v.label]);
@@ -648,10 +771,13 @@ export const ReviewMode = {
     else if (name === "impact") this.impactCommand(arg, cx); // the Impact section: impact (Find callers), impact:list, impact:<path>:<line> (a card's click)
     else if (name === "model") { if (arg) setShared("review.model", codeModel(arg)); }
     else if (name === "harness") this.pickHarness(arg, cx); // harness:<name>: the harness picked in the bar
-    else if (name === "menu") { // menu:models | menu:harnesses: the same rows as the control (an overlay for a demo or a script)
-      const items = arg === "models" ? modelMenuItems(this.ctxId(), model(), (x) => this.estimate(x)) : harnessMenuItems();
+    else if (name === "provider") this.pickProvider(arg, cx); // provider:<name>: the provider picked in the bar
+    else if (name === "menu") { // menu:models | menu:providers | menu:harnesses: the same rows as the controls (an overlay for a demo or a script)
+      const items = arg === "models" ? modelMenuItems(this.ctxId(), model(), (x) => this.estimate(x)) : arg === "providers" ? providerMenuItems() : harnessMenuItems();
       if (items.length) openOverlay({ mod: "pr-review", props: { part: "cmenu", key: props().overlay ? "menu" : arg, items }, kind: "popup", width: arg === "models" ? 470 : 340, height: 12 + 30 * items.length });
     }
+    else if (name === "models" && arg === "all") this.openModels(cx); // models:all: the models menu's "All N models…"
+    else if (name === "models" && arg.startsWith("search:")) this.openModels(cx, arg.slice(7)); // models:search:<text>: the same list, already filtered (a script)
     // For keys and scripted demos: a card's panel on the Architecture page (card:<node id>), the layers' order
     // (order:reading | order:risk) and Minimize, the same as their clicks.
     else if (name === "card") { this.page = "arch"; this.tab = "steps"; this.archFocus = arg || null; const n = arg ? this.archL()?.nodes.find((x) => x.id === arg) : null; if (n && !this.archWrapOn()) this.hsOf("rv-arch-canvas").x = Math.max(0, n.x - 40); } // and the card in view
@@ -674,7 +800,7 @@ export const ReviewMode = {
     else if (name === "sec-data" || name === "sec-rights") { this.page = "blast"; this.tab = "steps"; this.secPicCommand(name, arg); } // the sections under the boundary map: fold or open; sec-data:<id> chooses a kind of data, sec-rights:all the folded rows
     else if (name === "cross-also") { this.page = "blast"; this.tab = "steps"; this.crossAlso = new Set(this.crossAlso ?? []); if (!this.crossAlso.delete(arg)) this.crossAlso.add(arg); } // a click on "2 more at this place" of a crossing (its key)
     else if (name === "vis") { this.toggleVis(arg); } // a click on a folded or open state diagram over a layer's code (vis|<layer>|<k>)
-    else if (name === "run-model") { const [kind, tier] = String(arg).split(":"); if (["sonnet", "opus"].includes(tier)) this.updateDeep(cx, (d) => ({ ...d, runModels: { ...(d.runModels ?? {}), [`${this.deepKey()}|${kind}`]: tier === this.runTier(kind).tier ? null : tier } })); else this.offerMenu = this.offerMenu === kind ? null : kind; } // run-model:<kind> opens Change model, run-model:<kind>:<tier> picks one
+    else if (name === "run-model") { const [kind, tier] = String(arg).split(":"); if (["sonnet", "opus"].includes(tier)) this.updateDeep(cx, (d) => ({ ...d, runModels: { ...(d.runModels ?? {}), [`${this.deepKey()}|${kind}`]: tier === this.runTier(kind)?.tier ? null : tier } })); else this.offerMenu = this.offerMenu === kind ? null : kind; } // run-model:<kind> opens Change model, run-model:<kind>:<tier> picks one
     else if (name === "scope-row") { this.page = "blast"; this.scopeRow = this.scopeRow === arg ? null : arg || null; } // a click on a row of "What each run checked" (<area> or run:<kind>)
     else if (name === "page-part") { const k = (this.pageParts ?? []).indexOf(arg); if (k >= 0) this.pageScrolls[this.page]?.scroll_to_item(k); }
     // The same model calls as their buttons (a click each, never by themselves): Refresh diagrams, and a card's
@@ -1002,6 +1128,7 @@ export const ReviewMode = {
     const m = model(), url = this.prSel?.url;
     this.aiModel = m;
     if (!url || !this.patch) return;
+    if (mode === "run" && noRunModel()) { this.note = `Could not analyze: ${providerLabel()} lists no models. Choose another provider in the bar.`; return cx.notify(); }
     const job = reviewRequest({ url, pr: url.startsWith("https://") ? url : null, worktree: this.worktree?.path ?? null, files: this.patch, hunks: this.hunks, model: m, context: this.ctxReq(), dir: cacheDir() });
     if (mode === "run") {
       if (this.aiBusy) return;
@@ -1055,6 +1182,7 @@ export const ReviewMode = {
   refreshDiagrams(cx) {
     const url = this.prSel?.url, file = this.aiFile, m = model();
     if (!url || !file || !this.patch || this.diaBusy) return;
+    if (noRunModel()) { this.note = `Could not refresh the diagrams: ${providerLabel()} lists no models. Choose another provider in the bar.`; return cx.notify(); }
     const job = reviewRequest({ url, pr: url.startsWith("https://") ? url : null, worktree: this.worktree?.path ?? null, files: this.patch, hunks: this.hunks, model: m, context: this.ctxReq(), dir: cacheDir() });
     const status = `${file}.diagrams.status`;
     const req = { diagrams: file, also: [job.out, job.latest].filter((x) => x !== file), head: this.head, model: m, context: this.ctxReq(), pr: job.req.pr,
@@ -1159,7 +1287,7 @@ export const ReviewMode = {
       // For the bar's "Dry run" chip and the "Run review" popup (findings: all, and the analysis' own).
       stack: this.prSel ? stackOf(this.ctx, this.prSel.number) : null, // the bar's "Stack: #1 → #2" (views.js stackOf)
       // The "Run review" popup's price per reviewer, on the model picked in the bar (its runs start on that one).
-      prices: this.prSel ? Object.fromEntries(["claude", "security", "resilience"].map((k) => [k, this.runPrice(k, tierOf(model()))])) : null,
+      prices: this.prSel && !noRunModel() ? Object.fromEntries(["claude", "security", "resilience"].map((k) => [k, this.runPrice(k, tierOf(model()))])) : null,
       dry: Boolean(this.cfg?.dryRun), securityOffer: this.secOfferText(), findings: this.prSel ? { total: this.findings().length, analysis: this.findings().filter((f) => f.sources.some((y) => y.reviewer === "analysis")).length } : null });
   },
 
@@ -1378,6 +1506,7 @@ export const ReviewMode = {
   runReviewer(kind, cx, auto = null, use = null) { // auto: why it started by itself (securityNow); use: a model for this run only (runOffer)
     const pr = this.prSel, w = this.worktree;
     if (!reviewersNow().some(([k]) => k === kind) || !pr?.url) return;
+    if (noRunModel()) { this.note = `Could not start ${REVIEWERS[kind][0]}: ${providerLabel()} lists no models. Choose another provider in the bar.`; return cx.notify(); }
     if (!w || w.local) { this.note = !w ? "Could not run: the PR head is not checked out yet" : "Could not run: reviewers need a PR (not a branch diff)"; return cx.notify(); }
     // Codex on someone else's PR in Restricted Mode: asked once per PR (the note says what the run may do), the next click runs it.
     if (kind === "codex" && !this.trustedPr(pr) && this.codexAsked !== pr.url) { this.codexAsked = pr.url; this.note = TH.CODEX_ASK; return cx.notify(); }
@@ -3254,11 +3383,13 @@ export const ReviewMode = {
       ck && !onOverview && link("rv-ck", h_flex().gap(4).children(ck.parts.map(([text, bad]) => div().child(`${bad ? "✗ " : ""}${text}`))), // a symbol, not red: red is the security part's
         (_e, cx) => { this.tab = "steps"; this.page = "overview"; this.pagePart("checks", cx); cx.notify(); }).tooltip(ck.tip),
     ].filter(Boolean);
-    const harnessMenu = harnessMenuItems(), modelMenu = modelMenuItems(this.ctxId(), m, (x) => this.estimate(x));
+    const modelMenu = modelMenuItems(this.ctxId(), m, (x) => this.estimate(x));
     const modelText = this.aiBusy ? `${modelLabel(this.aiBusy.model)} analyzing…` : !modelMenu.length ? "No models" : m ? modelLabel(m) : "Choose a model"; // without the analysis' cost: the Overview's total says it by run, the menu estimates the next one
-    const perr = providerErrors().join(" ");
-    const modelTip = `Pick the model for the AI analysis; each option shows its cost estimate${perr ? ` ${perr}` : ""}`;
-    const noModelTip = perr || "The profile lists no models, and \"models\" in pr-review.config.json (a shortlist, a provider or a command) decides which ones it offers.";
+    const provider = providerNow(), perr = providerErrors().join(" ");
+    const modelTip = `Pick the model for the AI analysis; each option shows its cost estimate${provider ? `. The models come from ${providerLabel()}` : ""}.${perr ? ` ${perr}` : ""}`;
+    const noModelTip = perr || (provider
+      ? `${providerLabel()} lists no models, so there is nothing to pick. Choose another provider, or add models for it in pr-review.config.json.`
+      : "The profile lists no models, and \"models\" in pr-review.config.json (a shortlist, a provider or a command) decides which ones it offers.");
     return h_flex().id("rv-meta").flex_none().flex_wrap().min_h(40).px(16).py(6).gap(10).items_center().border_b(1).border_color(t.border).bg(t.chrome).text_size(TYPE.small).text_color(t.muted)
       .children(facts.flatMap((f, k) => (k ? [sep(), f] : [f])))
       .child(div().flex_1())
@@ -3267,9 +3398,9 @@ export const ReviewMode = {
       .when(!onPage, (e) => e.child(this.showChips(t, "rv-show")).child(sep()))
       .when(Boolean(this.worktree?.path) && !this.trustedPr(), (e) => e.child(link("rv-trust", div().text_color(t.ansi3).child("Restricted Mode · Trust"), (_e, cx) => this.trust("pr", cx))
         .tooltip("Someone else's code: language servers don't run anything from the repository, so go-to-definition may find less. Click to trust this PR.")))
-      .when(harnessMenu.length > 1 || harnessNow() !== "claude", (e) => e.child(link("rv-harness", h_flex().gap(4).child(harnessLabel()).child("▾"),
-        menu("harnesses", harnessMenu, 340))
-        .tooltip("The program the AI calls run on. Picking one writes \"harness\" in pr-review.config.json and lists its models again.")).child(sep()))
+      .when(providerDocs().length > 1, (e) => e.child(link("rv-provider", h_flex().gap(4).child(providerLabel()).child("▾"),
+        menu("providers", providerMenuItems(), 340))
+        .tooltip("The provider the AI models come from. Picking one lists its models again.")).child(sep()))
       .when(modelMenu.length > 0, (e) => e.child(link("rv-model", h_flex().gap(4).child(this.aiBusy ? div().child(SPIN[0]).frames(SPIN, 90) : div()).child(modelText).child("▾"),
         menu("models", modelMenu, 470)).tooltip(modelTip).accessibility_label("Model")))
       .when(!modelMenu.length, (e) => e.child(div().id("rv-model").flex_none().px(6).h(28).flex().items_center().gap(4).tooltip(noModelTip).accessibility_label("Model")
@@ -3517,11 +3648,12 @@ export const ReviewMode = {
       .child(this.pagesGroup(t))
       .child(v_flex().flex_none().px(14).py(10).gap(8).border_b(1).border_color(t.border)
         .when(!ai && !this.aiBusy, (e) => e.child(v_flex().gap(8).py(4)
-          .child(div().text_size(TYPE.body).line_height(1.5).child(`No ${modelLabel(m)} analysis for this diff yet. One thorough run reads the code around the changes and groups them into layers by intent, with explanations, check questions, suspicious lines, merge risk, review effort, repo rule checks, pictures and example values. It can take several minutes.`))
-          .child(h_flex().gap(10).items_center().child(run(`Analyze with ${modelLabel(m)}`))
-            .child(div().text_size(TYPE.small).text_color(t.muted).child(this.estimate(m))))))
+          .child(div().text_size(TYPE.body).line_height(1.5).child(`${noRunModel() ? "No analysis for this diff yet." : `No ${modelLabel(m)} analysis for this diff yet.`} One thorough run reads the code around the changes and groups them into layers by intent, with explanations, check questions, suspicious lines, merge risk, review effort, repo rule checks, pictures and example values. It can take several minutes.`))
+          .when(!noRunModel(), (x) => x.child(h_flex().gap(10).items_center().child(run(`Analyze with ${modelLabel(m)}`))
+            .child(div().text_size(TYPE.small).text_color(t.muted).child(this.estimate(m)))))
+          .when(noRunModel(), (x) => x.child(div().id("rv-no-model").tooltip(noRunModelTip()).text_size(TYPE.small).text_color(t.muted).child(noRunModelText())))))
         .when(Boolean(this.aiBusy), (e) => e.child(h_flex().gap(8).items_center().text_size(TYPE.body).text_color(t.foreground).child(div().child(SPIN[0]).frames(SPIN, 90))
-          .child(div().flex_1().child(`${modelLabel(this.aiBusy.model)} is reading ${this.aiBusy.incremental ? "the new changes" : "the code"}${this.aiBusy.passes ? ` · Pass ${this.aiBusy.pass} of ${this.aiBusy.passes}` : ""} · ${clock(Date.now() - this.aiBusy.started)} · cap $${CAP[tierOf(this.aiBusy.model)]}`))
+          .child(div().flex_1().child(`${modelLabel(this.aiBusy.model)} is reading ${this.aiBusy.incremental ? "the new changes" : "the code"}${this.aiBusy.passes ? ` · Pass ${this.aiBusy.pass} of ${this.aiBusy.passes}` : ""} · ${clock(Date.now() - this.aiBusy.started)}${providerNow() ? "" : ` · cap $${CAP[tierOf(this.aiBusy.model)]}`}`))
           .child(pill("rv-cancel", t, "Cancel", (_e, cx) => this.cancelAi(cx), false, t.ansi1).tooltip("Stop the running analysis"))))
         .when(Boolean(this.aiError), (e) => e.child(div().text_size(TYPE.small).text_color(t.ansi1).whitespace_normal().child(this.aiError)))
         // What is going on (checkout, an analysis waiting for it, reviewer runs), in the text color with a spinner while
@@ -4046,7 +4178,11 @@ export const ReviewMode = {
         .text_color(busy ? t.muted : t.solid_foreground).cursor_pointer().on_click(click).child(busy ? `${label}…` : label))
       .child(div().text_size(TYPE.small).text_color(t.muted).whitespace_normal().child(what));
     return h_flex().gap(12).items_start()
-      .child(card("rv-start-ai", `Analyze with ${modelLabel(m)}`, `Understand the change: layers in reading order, pictures, sample values and a walkthrough. ${this.estimate(m)}.`, (_e, cx) => this.loadAi(cx, "run"), Boolean(this.aiBusy)))
+      .child(noRunModel()
+        ? v_flex().id("rv-start-ai").flex_1().min_w(0).gap(6).p(12).rounded(10).border_1().border_color(t.border).bg(t.surface).tooltip(noRunModelTip())
+          .child(div().id("rv-start-ai-go").flex_none().px(12).h(30).flex().items_center().justify_center().rounded(8).text_size(TYPE.body).font_semibold().bg(t.raised).text_color(t.muted).child("No model"))
+          .child(div().text_size(TYPE.small).text_color(t.muted).whitespace_normal().child(noRunModelText()))
+        : card("rv-start-ai", `Analyze with ${modelLabel(m)}`, `Understand the change: layers in reading order, pictures, sample values and a walkthrough. ${this.estimate(m)}.`, (_e, cx) => this.loadAi(cx, "run"), Boolean(this.aiBusy)))
       .child(card("rv-start-cr", "Run code review", "Find problems: bugs and risks as findings on their lines, each with Fix and Verify.", (_e, cx) => this.runReviewer("claude", cx), Boolean(cr.busy)));
   },
 
@@ -4346,12 +4482,12 @@ export const ReviewMode = {
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.exTopic).h_full().text_size(TYPE.title).text_color(t.foreground)))
         .child(h_flex().gap(10).items_center()
           .child(modelPills(t, "rv-ex-m"))
-          .child(div().text_size(TYPE.small).text_color(t.muted).child(`cap $${CAP[tierOf(m)]}`))
+          .when(!providerNow(), (e) => e.child(div().text_size(TYPE.small).text_color(t.muted).child(`cap $${CAP[tierOf(m)]}`)))
           .child(div().flex_1())
-          .child(div().id("rv-ex-go").tooltip("One model call walks through the code for this topic; the cost is capped").px(14).h(32).flex().items_center().rounded(8).text_size(TYPE.body).font_semibold().bg(busy ? t.raised : t.solid).text_color(busy ? t.muted : t.solid_foreground)
+          .child(div().id("rv-ex-go").tooltip(providerNow() ? "One model call walks through the code for this topic; the provider reports its price and sets no cost cap" : "One model call walks through the code for this topic; the cost is capped").px(14).h(32).flex().items_center().rounded(8).text_size(TYPE.body).font_semibold().bg(busy ? t.raised : t.solid).text_color(busy ? t.muted : t.solid_foreground)
             .cursor_pointer().on_click((_e, cx) => this.runExplore(cx)).child(busy ? "Exploring…" : "Explore")))
         .when(Boolean(busy), (e) => e.child(h_flex().gap(8).items_center().text_size(TYPE.body).text_color(t.muted).child(div().child(SPIN[0]).frames(SPIN, 90))
-          .child(`${modelLabel(busy.model)} is reading the code · ${clock(Date.now() - busy.started)} · cap $${CAP[tierOf(busy.model)]}`)))
+          .child(`${modelLabel(busy.model)} is reading the code · ${clock(Date.now() - busy.started)}${providerNow() ? "" : ` · cap $${CAP[tierOf(busy.model)]}`}`)))
         // A run that gave no answer: what happened and what to do, in one sentence (llm.py failure), with Retry and
         // the model's choice beside it; what the CLI printed only behind "Details".
         .when(Boolean(this.exErr), (e) => e.child(v_flex().id("rv-ex-err").gap(8).p(12).rounded(8).border_1().border_color(t.ansi1 + "66").bg(t.ansi1 + "10")
@@ -4575,7 +4711,7 @@ export const ReviewMode = {
         .child(secOldLine(this.ai, this.taskNow().security) ?? "")))
       // Someone else's PR with reasons (pr.js securityStart offer): why the Run button is there, with its cap.
       .when(data && Boolean(this.secOfferText()), (e) => e.child(div().id("rv-sec-offer").text_size(TYPE.body).whitespace_normal().line_height(1.5).text_color(t.ansi3)
-        .child(`${this.secOfferText()} Run security review: capped at $${REVIEW_CAP[tierOf(model())]}.`)));
+        .child(`${this.secOfferText()} Run security review: ${providerNow() ? "there is no cost cap" : `capped at $${REVIEW_CAP[tierOf(model())]}`}.`)));
     if (empty) return [["head", head], ["empty", this.secEmpty(t)]];
     // A picture only from three changed crossings on: below that the table says it all.
     const map = data && a && changed.length >= 3 ? this.secMap(t, a, ctx, changed) : null;
@@ -4835,9 +4971,11 @@ export const ReviewMode = {
       .when(Boolean(vp), (e) => e.child(div().id("rv-res-why").text_size(TYPE.body).whitespace_normal().line_height(1.45).child(vp.counts.join(" · "))))
       .child(div().text_size(TYPE.small).text_color(t.muted).child(context))
       .when((res.additions ?? []).length > 0, (e) => e.child(this.resAdditions(t, res)));
-    // Another head: the whole page grey, the line that says so and Re-run not.
+    // Another head: the whole page grey, the line that says so and Re-run not, or why there is no model to re-run on.
+    const rt = this.runTier("resilience"), rtier = rt ? rt.chosen ?? rt.tier : null;
     head.when(stale, (e) => e.child(h_flex().gap(8).items_center().text_size(TYPE.small).child(div().text_color(t.ansi3).child(`Analysis of ${short(res.head)}; the PR is at ${short(now)}.`))
-      .child(pill("rv-res-rerun", t, `Re-run (${this.runPrice("resilience", this.runTier("resilience").chosen ?? this.runTier("resilience").tier)})`, (_e, cx) => this.runReviewer("resilience", cx, null, this.runTier("resilience").chosen ?? this.runTier("resilience").tier)))));
+      .child(rtier ? pill("rv-res-rerun", t, `Re-run (${this.runPrice("resilience", rtier)})`, (_e, cx) => this.runReviewer("resilience", cx, null, rtier))
+        : div().text_size(TYPE.small).text_color(t.muted).tooltip(noRunModelTip()).child(noRunModelText()))));
     const shown = this.resAll ? paths : paths.slice(0, 5);
     this.resNums = listed.nums; // "same cause as path 2", "Path 6: lit on the map": by the number shown, never the run's id
     const deps = this.resDeps(t, res, paths, cur, stale);
@@ -4857,7 +4995,7 @@ export const ReviewMode = {
   // The picture "Timing" (timeline.js): per call the limit it runs inside as a frame and what runs inside it, over
   // seconds; a click on a row shows its line, a click on a row's words the path that shows it. Open unless folded.
   resTiming(t, res, stale) {
-    const m = timelineOf(res, this.ai?.arch), open = this.resTimeOpen !== false, tier = this.runTier("resilience").chosen ?? this.runTier("resilience").tier;
+    const m = timelineOf(res, this.ai?.arch), open = this.resTimeOpen !== false, rt = this.runTier("resilience"), tier = rt ? rt.chosen ?? rt.tier : null;
     if (!m) return null;
     return v_flex().id("rv-res-time").gap(6).when(stale, (e) => e.opacity(resFade(t)))
       .child(h_flex().id("rv-res-time-h").gap(8).items_center().cursor_pointer().tooltip(open ? "Fold the picture" : "Timeouts, retries and pauses of each call over seconds").on_click((_e, cx) => { this.resTimeOpen = !open; cx.notify(); })
@@ -4867,7 +5005,8 @@ export const ReviewMode = {
         .child(timelineView(timelineLayout(m), t, "rv-res-tl", { jump: (at, cx) => this.jumpTo(at, cx), go: (id, cx) => this.resGo(id, this.resNums?.get(id), cx), num: (id) => this.resNums?.get(id) ?? null }))
         .when(m.more > 0, (x) => x.child(div().text_size(TYPE.small).text_color(t.muted).child(m.moreLine ?? "")))
         .when(Boolean(m.rerun), (x) => x.child(h_flex().gap(8).items_center().text_size(TYPE.small).child(div().min_w(0).text_color(t.muted).whitespace_normal().child(m.rerun ?? ""))
-          .child(pill("rv-res-time-rerun", t, runLabel(this.find.runs?.resilience, this.runPrice("resilience", tier), "", true), (_e, cx) => this.runReviewer("resilience", cx, null, tier))))));
+          .when(Boolean(tier), (y) => y.child(pill("rv-res-time-rerun", t, runLabel(this.find.runs?.resilience, this.runPrice("resilience", tier), "", true), (_e, cx) => this.runReviewer("resilience", cx, null, tier))))
+          .when(!tier, (y) => y.child(div().text_size(TYPE.small).text_color(t.muted).tooltip(noRunModelTip()).child(noRunModelText()))))));
   },
   // Opens a path and brings it into view (a click on a dependency's case): the path may be under "n more", and its
   // part exists only after the next frame.
@@ -5198,13 +5337,22 @@ export const ReviewMode = {
     return { lines: files.reduce((n, f) => n + (f.add ?? 0) + (f.del ?? 0), 0), files: files.length, rules: (this.ctx?.security_trigger?.reasons ?? []).map((x) => x?.rule).filter(Boolean), risk: this.ai?.mergeRisk?.level ?? null };
   },
   runTier(kind) {
+    if (noRunModel()) return null; // a provider that lists no models has no tier to run on, and no price
     const r = { ...recommendModel(kind, this.runFacts()), chosen: this.deep.runModels?.[`${this.deepKey()}|${kind}`] ?? null };
-    const h = harnessChoices();
-    return h.length && !h.some((c) => c.value === r.chosen) ? { ...r, chosen: model() } : r; // a harness needs a model id, not a class
+    const h = providerNow() ? providerChoices() : harnessChoices();
+    return h.length && !h.some((c) => c.value === r.chosen) ? { ...r, chosen: model() } : r; // a provider or harness needs a model id, not a class
   },
   // What a run of this kind costs on a class: the last run's cost scaled by the classes' output prices, else its cap.
   // ponytail: one past run as the measure; a mean over runs when there are several kinds of PRs to compare.
   runPrice(kind, tier) {
+    // A provider's price is its catalog entry alone: never a class price scaled from the hand-kept table.
+    if (providerNow()) {
+      const p = providerPrice(tier);
+      if (!p) return "price not reported";
+      const r = kind === "analysis" ? (this.ai?.cost > 0 ? { cost: this.ai.cost, model: this.ai.model_id ?? this.ai.model, ms: this.ai.ms } : null) : this.find.runs[kind]?.cost > 0 ? this.find.runs[kind] : null;
+      const was = r?.model ? providerPrice(r.model) : null; // the last run's own catalog price, if this provider lists it
+      return r && was && was[1] > 0 ? `about $${((r.cost * p[1]) / was[1]).toFixed(2)}${r.ms > 0 ? `, ${Math.max(1, Math.round(r.ms / 60000))} min` : ""}` : "price not reported";
+    }
     if (String(tier).includes("/")) return "price not reported"; // a harness names its own model; the CLI reports no price
     const r = kind === "analysis" ? (this.ai?.cost > 0 ? { cost: this.ai.cost, model: this.ai.model_id ?? this.ai.model } : null) : this.find.runs[kind]?.cost > 0 ? this.find.runs[kind] : null;
     const typical = RUN_TYPICAL[kind]?.[tier]; // measured before a first run (pr.js RUN_TYPICAL)
@@ -5215,9 +5363,10 @@ export const ReviewMode = {
   runOffer(kind, t) {
     const START = { security: (tier, cx) => this.runReviewer("security", cx, null, tier), resilience: (tier, cx) => this.runReviewer("resilience", cx, null, tier) }, NAME = { analysis: "Analysis", security: "Security review", resilience: "Resilience review", verify: "Verify", ask: "Ask", fix: "Fix" };
     if (!START[kind]) return null;
+    if (noRunModel()) return h_flex().id(`rv-offer-${kind}`).w_full().min_w(0).text_size(TYPE.small).text_color(t.muted).tooltip(noRunModelTip()).child(noRunModelText());
     const r = this.runTier(kind), tier = r.chosen ?? r.tier, steps = tierSteps(tier), menu = this.offerMenu === kind, label = (x) => MODELS[x]?.label ?? modelLabel(x), last = this.find.runs?.[kind];
-    // A harness picks from the models pr-review.config.json lists; Claude Code picks a class up or down.
-    const h = harnessChoices();
+    // A provider or a harness picks from the models it lists; Claude Code picks a class up or down.
+    const h = providerNow() ? providerChoices() : harnessChoices();
     const choices = h.length
       ? modelChoices(this.ctxId()).map((c) => ({ value: c.value, label: c.label, tip: c.description ? `${c.description}: ${c.value}` : c.value }))
       : [["up", steps.up], ["down", steps.down]].filter(([, x]) => x).map(([dir, x]) => ({ value: x, label: MODELS[x]?.label ?? x, tip: dir === "up" ? "A larger model: slower and dearer, better at long and subtle code" : "A smaller model: faster and cheaper" }));
@@ -5225,7 +5374,7 @@ export const ReviewMode = {
     return h_flex().id(`rv-offer-${kind}`).w_full().min_w(0).gap(8).items_center().flex_wrap().text_size(TYPE.body)
       .child(div().w_full().min_w(0).whitespace_normal().child(r.chosen && r.chosen !== r.tier ? `${NAME[kind]}: ${label(tier)}, your choice; ${label(r.tier)} is recommended because ${r.why}.` : `${NAME[kind]}: ${label(tier)} recommended because ${r.why}.`))
       .child(pill(`rv-offer-run-${kind}`, t, runLabel(last, this.runPrice(kind, tier), last?.at ? ago(last.at) : ""), (_e, cx) => { this.offerMenu = null; START[kind](tier, cx); }, false, t.foreground)
-        .tooltip(`${last?.state === "done" ? "The same run again, paid again: " : ""}one ${label(tier)} call, read-only on the PR head; ${REVIEW_CAP[tier] ? `it stops at $${REVIEW_CAP[tier]}` : "the harness command's own budget applies"}`))
+        .tooltip(`${last?.state === "done" ? "The same run again, paid again: " : ""}one ${label(tier)} call, read-only on the PR head; ${providerNow() ? (providerPrice(tier) ? "the provider reports its price; no cost cap applies" : "no price is reported; no cost cap applies") : REVIEW_CAP[tier] ? `it stops at $${REVIEW_CAP[tier]}` : "the harness command's own budget applies"}`))
       .child(pill(`rv-offer-ch-${kind}`, t, menu ? "Change model ▴" : "Change model ▾", (_e, cx) => { this.offerMenu = menu ? null : kind; cx.notify(); }).tooltip("A class up or down for this run; Haiku is not offered for code"))
       .when(menu, (e) => e.children(choices.map((c, i) => pill(`rv-offer-${i}-${kind}`, t, `${c.label} (${this.runPrice(kind, c.value)})${c.value === tier ? " · chosen" : ""}`, (_e, cx) => choose(c.value, cx)).tooltip(c.tip))));
   },
@@ -5245,20 +5394,22 @@ export const ReviewMode = {
   },
 
   // The CLIs' models for this PR's context (models.py), asked at most once a day per context: Claude lists what that
-  // account may use, Codex what it offers. Kept in shared "review.models" and pr-data/models.json.
+  // account may use, Codex what it offers, and the active provider its catalog. Kept in shared "review.models" and
+  // pr-data/models.json.
   loadModels(cx) {
     const ctx = this.ctxReq(), id = ctx?.id ?? "default", d = modelsDoc()[id], busy = (this.modelsBusy ??= new Set());
-    // The harness's list comes from the config: a changed config asks again rather than waiting out the day.
-    const sig = JSON.stringify([this.cfg?.harness ?? null, this.cfg?.harnesses ?? null, this.cfg?.providers ?? null]);
+    // The runner's list and the provider's come from the config or the pick: a change asks again rather than waiting
+    // out the day.
+    const sig = JSON.stringify([this.cfg?.harness ?? null, this.cfg?.harnesses ?? null, this.cfg?.providers ?? null, shared("review.provider") ?? null]);
     if ((d && Date.now() - d.at < 86400000 && d.sig === sig) || busy.has(id)) return;
     busy.add(id);
     cx.spawn(async (cx) => {
-      const r = await exec("python3", [`${appHome()}/mods/pr-review/models.py`, JSON.stringify({ context: ctx })], { timeout: 90000 }).catch(() => null);
+      const r = await exec("python3", [`${appHome()}/mods/pr-review/models.py`, JSON.stringify({ context: ctx, provider: shared("review.provider") ?? null })], { timeout: 90000 }).catch(() => null);
       let out = null;
       try { out = r?.code === 0 ? JSON.parse(r.stdout) : null; } catch { /* no answer */ }
-      if (!out?.claude?.length && !out?.codex?.length && !out?.harness?.length && !out?.harnesses?.length) return; // busy stays: no second try this session
+      if (!out?.claude?.length && !out?.codex?.length && !out?.harness?.length && !out?.harnesses?.length && !out?.providerModels?.length && !out?.providers?.length) return; // busy stays: no second try this session
       busy.delete(id);
-      const doc = { ...modelsDoc(), [id]: { ...d, at: Date.now(), sig, claude: out.claude ?? [], codex: out.codex ?? [], harness: out.harness ?? [], harnessName: out.harnessName ?? null, harnesses: out.harnesses ?? [], providers: out.providers ?? {} } };
+      const doc = { ...modelsDoc(), [id]: { ...d, at: Date.now(), sig, claude: out.claude ?? [], codex: out.codex ?? [], harness: out.harness ?? [], harnessName: out.harnessName ?? null, harnesses: out.harnesses ?? [], providers: out.providers ?? [], provider: out.provider ?? null, providerModels: out.providerModels ?? [], pinned: out.pinned ?? [], providerError: out.providerError ?? null } };
       setShared("review.models", doc);
       readTextFile(modelsFile()).catch(() => null).then((before) => writeTextFile(modelsFile(), JSON.stringify(doc), before)).catch(() => null); // over the list from before (told nothing, writeTextFile leaves an existing file as it is)
       cx.notify();
@@ -5281,9 +5432,37 @@ export const ReviewMode = {
     run("overlay.close", {}); // the review body has none, so close the top popup/menu
     this.note = `The AI calls now run on ${label}.`; cx.notify();
   },
+  // The provider picked in the bar: a choice for this review, kept in shared "review.provider" (the runner stays a
+  // Setup setting). Its models are listed again, because the old list belongs to another provider.
+  pickProvider(name, cx) {
+    if (!name || name === providerNow()) return;
+    const label = providerLabelOf(name); // read before anything clears the list
+    setShared("review.provider", name); setShared("review.model", null);
+    this.modelsBusy?.delete(this.ctxReq()?.id ?? "default");
+    if (props().overlay) closeOverlay(props().overlay); // only an overlay copy carries this id
+    run("overlay.close", {}); // the review body has none, so close the top popup/menu
+    this.loadModels(cx);
+    this.note = `Provider: ${label}.`; cx.notify();
+  },
+  // The full provider catalog (the models menu's "All N models…", or models:search:<text>): a searchable popup;
+  // nothing when there is no model to list. Only the review body (or the panel, when no review body is mounted) opens
+  // it, so the bar's copy does not open a second one. The query travels in the props: the popup is its own instance.
+  openModels(cx, search = "") {
+    if (props().part && props().part !== "review") return;
+    if (!providerNow() || !providerChoices().length) return;
+    openOverlay({ mod: "pr-review", props: { part: "models", query: search, token: Date.now() }, kind: "popup", width: 520, height: 560 });
+    cx.notify();
+  },
   // A rough price before running: input from the diff size, output and thinking from earlier runs; the cap is review.py's.
   estimate(m) {
     const chars = Math.min(MODELS[tierOf(m)].chars, (this.hunks ?? []).reduce((n, h) => n + h.lines.reduce((k, l) => k + l.length + 1, 0), 0));
+    // A provider model's cost comes from its catalog entry alone: no class price, and no class cap when it names none.
+    if (providerNow()) {
+      const p = providerPrice(m);
+      if (!p) return "cost not reported";
+      const usd = (((chars / 3.5 + 3000) * 4) * p[0] + 15000 * p[1]) / 1e6;
+      return `≈ $${usd.toFixed(2)}`;
+    }
     const [inp, out] = harnessPrice(m) ?? priceOf(resolvedOf(m));
     // ponytail: reading the code with tools multiplies input; ×4 from the first runs, a guess until the ledger says more.
     const usd = (((chars / 3.5 + 3000) * 4) * inp + 15000 * out) / 1e6;

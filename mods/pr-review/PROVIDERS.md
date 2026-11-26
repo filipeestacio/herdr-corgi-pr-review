@@ -99,21 +99,29 @@ All keys optional.
   "globalRules": "PR titles follow Conventional Commits: `type(scope): subject`.",
   "ledger": "~/.local/share/llm-usage",
   "sessionTitles": "~/path/to/titles.json",
-  "harness": "gateway",
+  "harness": "opencode",
   "harnesses": {
-    "gateway": {
+    "opencode": {
       "label": "opencode · Gateway",
       "command": ["opencode", "run", "--model", "{model}"],
       "env": { "OPENAI_BASE_URL": "https://gateway.example/v1", "OPENAI_API_KEY": "${MY_GATEWAY_KEY}" },
-      "timeout": 1800,
-      "models": { "provider": "gw", "prefix": "anthropic/", "deny": ["*-mini"] }
+      "timeout": 1800
     },
     "claude": { "label": "Claude Code", "env": { "ANTHROPIC_BASE_URL": "https://gateway.example" } }
   },
   "providers": {
-    "gw": { "label": "LLM Gateway", "kind": "openai", "baseUrl": "https://gateway.example/v1",
-            "apiKeyEnv": "MY_GATEWAY_KEY", "headers": {}, "timeout": 8,
-            "priceOverrides": { "vendor/model": [2, 10] } },
+    "gateway": {
+      "label": "LLM Gateway",
+      "kind": "openai",
+      "baseUrl": "https://gateway.example/v1",
+      "apiKeyEnv": "MY_GATEWAY_KEY",
+      "headers": {},
+      "timeout": 8,
+      "modelId": "my-runner/{family}/{id}",
+      "families": { "google": "google-ai-studio" },
+      "deny": ["*embedding*", "*-tts*"],
+      "priceOverrides": { "catalog-id": [2, 10] }
+    },
     "openrouter": { "label": "OpenRouter", "kind": "openrouter", "baseUrl": "https://openrouter.ai/api/v1" }
   }
 }
@@ -136,26 +144,48 @@ All keys optional.
   `{"harness": {"command": ["opencode", "run"], "timeout": 1800}}`. It keeps its own `label`, `models` (an argv that
   prints one id per line), `modelList` and `prefix`; an object with none of `command`, `models` or `modelList` is
   ignored, so Claude Code runs.
-- `harnesses`: one entry per profile, by name. `label` is what the menus show; `command` is the argv with `{model}`
-  filled in and `{prompt}` optional (the prompt is appended when the command has no `{prompt}`); `timeout` is the
-  seconds a run may take, in place of the caller's own limit (15 minutes for the analysis and 25 for a reviewer). A
+- `harnesses`: one entry per profile, by name. `label` is what Setup and sentences show; `command` is the argv with
+  `{model}` filled in and `{prompt}` optional (the prompt is appended when the command has no `{prompt}`); `timeout` is
+  the seconds a run may take, in place of the caller's own limit (15 minutes for the analysis and 25 for a reviewer). A
   profile has no cost cap, so a slow CLI can be given more time. `env` values are strings, `null` unsets a variable,
   and `"${VAR}"` reads `VAR` from the environment: when it is not set the run fails with a sentence naming it. The
-  context's env wins where both set the same variable. `models` is `shortlist` (`[{id, price?}]`, no request), or
-  `provider` with `prefix` and `deny` (globs) over a catalog from `providers`, or `command`, an argv that prints one
-  id per line, with `prefix`. A profile named `claude` is the built-in Claude Code command
-  (`claude -p --model`): its `env` and `models` point Claude Code at another endpoint. Any other declared profile
-  needs a `command`: without one the run fails and the sentence names the profile. The harness menu lists a profile
-  when its program is on PATH, plus the active profile even when it is not, marked "not installed": the control
-  never names a profile its own menu does not contain.
-- `providers`: where model catalogs come from, by name. `label` is for sentences; `kind` is `openai`, `anthropic` or
-  `openrouter`; `baseUrl` is read with `/models` appended. `apiKeyEnv` names the variable that holds the key, sent as
-  `Authorization: Bearer` for `openai` and `x-api-key` for `anthropic`; the key is never written to disk, and an empty
-  variable gives a sentence and no request. `openrouter` needs no key. `headers` adds headers to every request;
-  `timeout` is seconds, 8 by default. The catalog is cached for six hours in `pr-data/providers.json`; a failed
-  request is retried after a minute, and cached models keep serving meanwhile. `priceOverrides` maps an id to
-  `[input, output]` USD per million tokens and wins over a catalog price; `openrouter`'s per-token `pricing` is read
-  the same way. Every failure is one sentence for the person, never a traceback.
+  context's env wins where both set the same variable. A profile's `models` feeds the picker only when no `providers`
+  are declared: a `shortlist` (`[{id, price?}]`, no request), or a `command`, an argv that prints one id per line, with
+  `prefix`. A `provider` reference (with `prefix` and `deny`, globs) still fills the harness list from a declared
+  catalog, but the picker lists the provider's catalog once any provider is declared. A profile named `claude` is the
+  built-in Claude Code command (`claude -p --model`): its `env` points Claude Code at another endpoint, and its
+  `models` only feeds the picker. Any other declared profile needs a `command`: without one the run fails and the
+  sentence names the profile.
+- `providers`: where the AI's model catalogs come from, by name. `label` is what sentences and the picker show; `kind`
+  is `openai`, `anthropic` or `openrouter`; `baseUrl` is read with `/models` appended. `apiKeyEnv` names the variable
+  that holds the key, sent as `Authorization: Bearer` for `openai` and `x-api-key` for `anthropic`; the key is never
+  written to disk, and an empty variable gives a sentence and no request. `openrouter` needs no key. `headers` adds
+  headers to every request; `timeout` is seconds, 8 by default.
+- What the picker offers: the whole catalog, in catalog order, after two filters. A row whose
+  `architecture.output_modalities` is there and holds no `text` is dropped (image, speech, embedding and decision
+  models); a row without that field is kept. `prefix` keeps the catalog ids that start with it, then `deny` drops the
+  ids that match its globs. `shortlist` pins ids in its own order (`[{id, price?}]`; an entry may also be the id
+  alone), and its price wins on that entry; it does not hide the rest of the catalog, and an id the catalog does not
+  hold is dropped, not listed.
+- The model menu shows the pinned models first, then, when the catalog lists more than those, one row `All N models…`
+  with N the size of the list. That row opens the whole catalog as a searchable list: the search matches the label and
+  the id, a click picks a model, and Esc closes. The panel reads the pins from `models.py`'s `pinned`, the shortlisted
+  catalog ids the catalog holds, in config order; an older stored listing without it means no pins, and the `All` row
+  still appears whenever the catalog has more rows than the menu shows.
+- `modelId` is the id the runner receives, built from the catalog id with `{id}`, `{vendor}` (its raw family) and
+  `{family}` (the family with `families` applied, such as `{"google": "google-ai-studio"}`); without a `modelId`, the
+  catalog id goes through unchanged.
+- A price comes from the catalog for every `kind`: `pricing.prompt` and `pricing.completion` are per token and shown
+  per million. `priceOverrides` maps a catalog id to `[input, output]` USD per million tokens and wins over the
+  catalog's price.
+- The catalog is cached row by row as the provider returned it for six hours in `pr-data/providers.json`; a failed
+  request is retried after a minute, and the rows from before keep serving meanwhile. The entries are built from
+  those rows each time the catalog is listed, so a change to `modelId`, `families`, `priceOverrides`, `prefix`, `deny`
+  or `shortlist` needs no new request. Every failure is one sentence for the person, never a traceback, and it reaches
+  the picker's tooltip; an empty catalog shows "No models".
+- The provider is chosen per review, not in the config: the review bar shows the control when the config declares more
+  than one, and keeps the pick in shared `review.provider`; with no pick, the first declared provider is used. The
+  runner is separate: `harness` names the profile whose `command` runs the call, and Setup checks its program.
 
 Feature names in the ledger: `Review analysis`, `Review analysis (since last review)`, `Code review`,
 `Security review`, `Codex review`, `PR triage`, `PR fix verification`.

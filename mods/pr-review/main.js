@@ -10,7 +10,7 @@
 // "Walkthrough": the review layout's AI analysis (review.py) read in reading order; it runs only on a click, there,
 // cached in pr-data/cache. UI text is English. "Review": the PR in the review layout (review.js; this mod
 // with props {part: "bar" | "review"}). The list shows a triage line per open PR from cached data (pr.js triageOf);
-// "Triage PRs" (a click) asks Haiku for the why/priority (triage.py).
+// "Triage PRs" (a click) asks the picked model for the why/priority (triage.py).
 // Sources: Mine (open PRs and MRs assigned to you or opened by you, on GitHub and GitLab), This repo (the active
 // space's repo, gh pr list), This space, Review requested (gh search prs), Sessions (the PRs your Claude sessions
 // opened, prs.py); "Open PR…" takes a URL or owner/repo#123. Their context (optional, from a plug-in: context.js,
@@ -29,7 +29,7 @@ import { setupBanner, renderSetup, loadSetup, runSetup, openUrl, readConfig } fr
 import { chip, PRIORITY_TIP, layoutPump } from "./stack.js";
 import { panelState, bodyTab, DONE_DAYS, diffTooLarge, filesToDiff, isOpenPr, byState, listRows, riskSignal, progressText, pendingText, rowMarks, mineGroups, progressRows, removedText, withPick, openSig, panelShown, byRef, fileRisk, leftNow, wrapCode, codeCols, sliceSpans, markLabel, textW, panelButtons, panelHit, panelPress, PANEL_EDGE, spaceFolders, headBranch, spaceBranches, branchPrQuery, branchPrs, spaceOrder, focusedPr, spaceEmpty, worktreePrs } from "./views.js";
 import { keepLast, dragPath, miniRowPx } from "./views.js"; // every cache has a limit; a file head's path to drag; the chip's own row
-import { ReviewMode, startReview, startExplore, saveKey, flowCard, modelPills, modelLabel, renderReviews, renderAgentBar, renderKeys, renderCardMenu, renderMini, miniModel, resumeMini } from "./review.js";
+import { ReviewMode, startReview, startExplore, saveKey, flowCard, modelPills, modelLabel, currentModel, renderReviews, renderModels, renderAgentBar, renderKeys, renderCardMenu, renderMini, miniModel, resumeMini } from "./review.js";
 import { highlightJob, highlightStep, langOf, firstLineOf, colors, renderLine, editorSyntax } from "./syntax.js";
 import { TYPE } from "./views.js"; // the text sizes (U34)
 import { editorLink, editorCommand, startOpen, setEditors } from "./editor-view.js"; // "Open in <Editor>"
@@ -145,7 +145,7 @@ export default class PrReview extends View {
     if (this.part === "mini") cx.timer.every(5000, (cx) => this.miniPoll(cx));
     // The small copies read Herdr's live data in their frames; asked for data from now on (live.js whenFed), also between.
     if (this.part === "mini" || this.part === "bar") cx.timer.every(500, () => { if (feedIfAsked()) setShared("review.watched", Date.now()); });
-    if (this.part === "bar" || this.part === "reviews" || this.part === "agentbar" || this.part === "keys" || this.part === "cmenu" || this.part === "mini") return;
+    if (this.part === "bar" || this.part === "reviews" || this.part === "agentbar" || this.part === "keys" || this.part === "cmenu" || this.part === "models" || this.part === "mini") return;
     this.announces = true; // Go to's keys: published while this copy runs, cleared in close()
     this.files = []; this.rows = []; this.sel = null; this.selEnd = null; this.question = "";
     this.diffList = VirtualListScrollHandle.new(); // the diff's scroll position, to bring a line into view (scrollRow)
@@ -1124,14 +1124,15 @@ export default class PrReview extends View {
     });
   }
 
-  // "Triage PRs" (a click): one Haiku call per context for the open PRs listed (triage.py, feature "PR triage").
+  // "Triage PRs" (a click): one call per context on the picked model (Haiku on the built-in Claude Code profile
+  // without a pick) for the open PRs listed (triage.py, feature "PR triage").
   runTriage(cx) {
     if (this.triaging || !this.triage?.size) return;
     const items = this.listNow().filter((p) => this.triage.has(p.url)).map((p) => ({ url: p.url, context: this.ctxReq(prCtx(p)), title: p.title ?? "", repo: p.repo,
       state: p.state, chips: this.triage.get(p.url).chips, hint: this.triage.get(p.url).why }));
     this.triaging = true;
     cx.spawn(async (cx) => {
-      const r = await exec("python3", [`${appHome()}/mods/pr-review/triage.py`, JSON.stringify({ items, out: triageFile() })], { timeout: 400000 }).catch((e) => ({ code: 1, stderr: String(e) }));
+      const r = await exec("python3", [`${appHome()}/mods/pr-review/triage.py`, JSON.stringify({ items, out: triageFile(), model: currentModel() })], { timeout: 400000 }).catch((e) => ({ code: 1, stderr: String(e) }));
       this.triaging = false;
       if (r.code !== 0) this.note = `Could not triage: ${r.stderr.trim().slice(0, 200)}`;
       this.loadTriage(cx); cx.notify();
@@ -1516,6 +1517,7 @@ export default class PrReview extends View {
     if (this.part === "agentbar") return renderAgentBar();
     if (this.part === "keys") return renderKeys();
     if (this.part === "cmenu") return renderCardMenu();
+    if (this.part === "models") return renderModels();
     if (this.part === "mini") {
       // The view shows other contexts than the list for the Worktrees mod was made for, and no panel is there to
       // write it anew: an empty list as of now, so no PR of the other setup stays up as if it were current.
