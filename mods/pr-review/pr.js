@@ -1678,3 +1678,102 @@ export function secOldLine(ai, sec = []) {
 // loads them. So ⛨ (isSecurity) has one source: a file's mark in the panel is the review's.
 // an: the analysis file ({answer}); fd: the findings file ({findings, status, security}). Either may be null.
 export const knownOf = (an, fd) => ({ analysis: an?.answer ? mapReview(an.answer, []) : null, findings: fd ? withThreats(fd.findings ?? [], fd.security) : null, status: fd?.status ?? null });
+
+// ---- the clones this mod made (pr-data/clones.json), for cleanup.py: which ones it may remove (epoch seconds)
+
+// The registry as cleanup.py reads it; a file that is not a JSON object is no record ({}). Entries may be older or
+// newer than this code, so nothing here trusts a field's type beyond the checks it makes.
+export function clonesDoc(text) {
+  try {
+    const d = JSON.parse(text ?? "null");
+    return d && typeof d === "object" && !Array.isArray(d) ? d : {};
+  } catch { return {}; }
+}
+
+const CLONES_MAX = 200;
+const newestClones = (doc) => {
+  const e = Object.entries(doc);
+  if (e.length <= CLONES_MAX) return doc;
+  return Object.fromEntries(e.sort((a, b) => (Number(b[1]?.used ?? b[1]?.at) || 0) - (Number(a[1]?.used ?? a[1]?.at) || 0)).slice(0, CLONES_MAX));
+};
+
+// The registry after one checkout. The registry is the only proof that a clone is this mod's, so:
+// created: a clone worktree.py made in that run ({at, used} for the repository, same path keeping its first `at`);
+// not created: a clone the mod found, which only refreshes `used` when the entry already names it (an entry proves
+// the mod made that path). A path the mod neither made nor recorded is never added. `path` null uses the entry's.
+export function withClone(doc, { repo, path, now = Date.now(), created = false }) {
+  if (!repo) return doc;
+  const cur = doc[repo] && typeof doc[repo] === "object" && typeof doc[repo].path === "string" ? doc[repo] : null;
+  const used = Math.floor(now / 1000);
+  if (created) {
+    if (!path) return doc;
+    const same = cur?.path === path, at = same && Number.isFinite(cur.at) ? cur.at : used;
+    return newestClones({ ...doc, [repo]: { path, at, used } });
+  }
+  if (!cur || (path && cur.path !== path)) return doc;
+  return newestClones({ ...doc, [repo]: { ...cur, used } });
+}
+
+// The local day, as cleanup.json and shared "review.cleanupDay" write it ("2026-11-26"): the first open in a day.
+export function localDay(now = Date.now()) {
+  const d = new Date(now);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+// pr-data/cleanup.json: the day the daily pass ran (or claimed) and what it removed. A file that cannot be read is
+// no record, so the pass runs rather than never running.
+export const cleanupDoc = clonesDoc;
+export const cleanupDone = (doc, day) => Boolean(day) && (doc?.day === day || doc?.claim === day);
+
+// What the daily pass leaves behind: today is done, whatever it found (a second copy reads this, not the script).
+export function cleanupDoneDoc(doc, day, res = {}, now = Date.now()) {
+  const repos = [...new Set((res.removed ?? []).map((r) => r?.repo).filter(Boolean))];
+  return { ...doc, claim: day, day, at: now, removed: res.count ?? res.removed?.length ?? 0, ...(repos.length ? { repos } : {}) };
+}
+
+// `cleanup.py check` as rows: {repo, path, days, mb, eligible, why}. The script decides eligibility; the panel only
+// shows it. An answer the app cannot read is an empty list, never an error.
+export function cleanupCandidates(text) {
+  let doc;
+  try { doc = JSON.parse(String(text ?? "").trim() || "null"); } catch { return []; }
+  const list = Array.isArray(doc) ? doc : Array.isArray(doc?.candidates) ? doc.candidates : [];
+  const num = (v) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null);
+  return list.filter((c) => c && typeof c === "object" && (c.repo || c.repository)).map((c) => {
+    const why = c.why ? String(c.why) : null;
+    const size = num(c.size ?? c.bytes ?? c.size_bytes);
+    const mb = num(c.mb) ?? (size === null ? null : size / 1e6);
+    const days = num(c.days ?? c.ageDays ?? c.age_days);
+    const eligible = typeof c.eligible === "boolean" ? c.eligible : !why;
+    return { repo: String(c.repo ?? c.repository), path: String(c.path ?? ""), days, mb, eligible, why };
+  });
+}
+
+// One row of that list: "acme/bookshelf · ~/code/bookshelf · 42 days · 180 MB". at() shortens a path for the person.
+export function cleanupLine(c, at = (p) => p) {
+  const days = c?.days == null ? null : `${Math.max(1, Math.round(c.days))} ${Math.round(c.days) === 1 ? "day" : "days"}`;
+  const mb = c?.mb == null ? null : `${Math.max(1, Math.round(c.mb))} MB`;
+  return [c?.repo, c?.path ? at(c.path) : null, days, mb].filter(Boolean).join(" · ");
+}
+
+// `cleanup.py apply` as {removed: [{repo, path}], count}: what the note names. An answer the app cannot read removed
+// nothing it can name, so the panel says nothing.
+export function cleanupRemoved(text) {
+  let doc;
+  try { doc = JSON.parse(String(text ?? "").trim() || "null"); } catch { return { removed: [], count: 0 }; }
+  const arr = Array.isArray(doc) ? doc : Array.isArray(doc?.removed) ? doc.removed : null;
+  if (arr) {
+    const removed = arr.map((x) => (typeof x === "string" ? { repo: x, path: null } : { repo: String(x?.repo ?? ""), path: x?.path ?? null })).filter((x) => x.repo);
+    return { removed, count: removed.length };
+  }
+  const n = typeof doc?.removed === "number" && Number.isFinite(doc.removed) && doc.removed >= 0 ? doc.removed : null;
+  const removed = (Array.isArray(doc?.repos) ? doc.repos : []).map((r) => ({ repo: String(r), path: null })).filter((x) => x.repo);
+  return { removed, count: n ?? removed.length };
+}
+
+// The one muted sentence after a pass that removed something: the count and the repositories. null: say nothing.
+export function cleanupNote(res) {
+  const n = res?.count ?? res?.removed?.length ?? 0;
+  if (!n) return null;
+  const repos = [...new Set((res.removed ?? []).map((r) => r?.repo ?? r).filter(Boolean))].slice(0, 6);
+  return `Removed ${n} old ${n === 1 ? "clone" : "clones"}${repos.length ? `: ${repos.join(", ")}${(res.removed?.length ?? 0) > repos.length || n > repos.length ? " and others" : ""}` : ""}.`;
+}

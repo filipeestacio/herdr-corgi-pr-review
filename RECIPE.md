@@ -239,6 +239,13 @@ big PRs into cohort passes and a merge pass under one cap.
   `review.cloneRoots` (`{ "<owner>/<repo>": "<parent folder>" }`, newest 50) and becomes the first `--root` for that
   repository. The configured `cloneRoot` folders stay as fallbacks. "Choose folder…" runs the check again without
   `--clone`, so the banner names the exact destination, and the pill still does the clone.
+- A clone the mod made goes after 30 idle days, and only then if the tree is clean and the host reports no open PR
+  (`cleanup.py`). Review worktrees already go after 7 days (`worktree.py`). The panel records each clone it made, and
+  when a checkout last used it, in `pr-data/clones.json` (`{"<owner>/<repo>": {"path", "at", "used"}}`, epoch seconds,
+  newest 200 repositories). It runs that pass once a day, on its first open, in the background: one muted sentence
+  when something went, nothing otherwise. `Clean up…` on the PR list shows each clone as `repo · path · 42 days ·
+  180 MB`, a `Clean up all eligible` row, and the reason for each clone that stays; a click on an eligible row
+  removes that one. The panel never deletes a folder itself: both the pass and the list ask `cleanup.py`.
 
 ## Watch out
 

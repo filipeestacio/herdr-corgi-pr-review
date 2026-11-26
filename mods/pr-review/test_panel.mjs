@@ -664,3 +664,124 @@ console.log("panel ok");
   v.prSel = { url: "https://example.com/x", session: null };
   assert.deepEqual(v.routes(), ["agent"], "an unknown host only sends to an agent");
 }
+
+// ---- the clones this mod made: the registry (created: true from worktree.py), the daily pass once a day, and the list
+{
+  const { localDay } = await import("./pr.js");
+  const day = localDay(), CLONES = "/h/pr-data/clones.json", CLEAN = "/h/pr-data/cleanup.json";
+  const was = { writes: S.writes, exec: S.exec };
+  S.writes = true;
+
+  // The registry: a clone worktree.py made in that run is recorded; one it found, with no entry, is not.
+  const reg1 = new PrReview(); reg1.prSel = { repo: "acme/bookshelf" };
+  S.files.delete(CLONES);
+  await reg1.rememberClone("/h/code/bookshelf", true);
+  assert.deepEqual(JSON.parse(S.files.get(CLONES))["acme/bookshelf"]?.path, "/h/code/bookshelf", "a clone the mod made is recorded");
+  const made = JSON.parse(S.files.get(CLONES))["acme/bookshelf"];
+  assert.ok(made.at > 1e9 && made.used >= made.at, "with at and used in epoch seconds");
+  await reg1.rememberClone("/h/code/bookshelf", false);
+  assert.ok(JSON.parse(S.files.get(CLONES))["acme/bookshelf"].used >= made.used, "a checkout of the recorded clone refreshes used");
+  assert.equal(JSON.parse(S.files.get(CLONES))["acme/bookshelf"].at, made.at, "and keeps at");
+  const stranger = new PrReview(); stranger.prSel = { repo: "acme/tools" };
+  await stranger.rememberClone("/h/elsewhere/tools", false);
+  assert.equal(JSON.parse(S.files.get(CLONES))["acme/tools"] ?? null, null, "a clone the mod did not make and never recorded is not added");
+  await stranger.rememberClone("/h/elsewhere/tools", true);
+  assert.equal(JSON.parse(S.files.get(CLONES))["acme/tools"]?.path, "/h/elsewhere/tools", "one it made in that run is");
+
+  // Worktree.py's answer is where the flag comes from: created gates the write, and a found clone only refreshes.
+  const wt = (created, clone = "/h/code/bookshelf") => async (cmd, args) => {
+    if (cmd === "python3" && String(args?.[0]).endsWith("worktree.py") && args[1] !== "since")
+      return { code: 0, stdout: JSON.stringify({ path: "/h/wt/bookshelf/pr-review", head: "abc1234", clone, created }), stderr: "" };
+    return { code: 1, stdout: "", stderr: "stub" };
+  };
+  S.files.delete(CLONES);
+  S.exec = wt(true);
+  const one = new PrReview();
+  one.prSel = { url: "https://github.com/acme/bookshelf/pull/7", repo: "acme/bookshelf", number: 7, headSha: "abc1234", source: "repo", state: "open" };
+  one.makeWorktree(cx); await settle();
+  assert.equal(JSON.parse(S.files.get(CLONES))["acme/bookshelf"]?.path, "/h/code/bookshelf", "a worktree result with created: true records the clone");
+  const afterCreate = JSON.parse(S.files.get(CLONES))["acme/bookshelf"];
+  S.exec = wt(false);
+  const two = new PrReview();
+  two.prSel = { ...one.prSel };
+  two.makeWorktree(cx); await settle();
+  assert.equal(JSON.parse(S.files.get(CLONES))["acme/bookshelf"].at, afterCreate.at, "created: false does not make a new entry");
+  assert.ok(JSON.parse(S.files.get(CLONES))["acme/bookshelf"].used >= afterCreate.used, "it does refresh the entry that names the clone");
+  S.files.delete(CLONES);
+  const three = new PrReview();
+  three.prSel = { ...one.prSel, repo: "acme/tools", url: "https://github.com/acme/tools/pull/8" };
+  three.makeWorktree(cx); await settle();
+  assert.equal(S.files.get(CLONES) ?? null, null, "created: false with no entry writes nothing");
+  S.exec = was.exec;
+
+  // The daily pass: one apply for two copies that open together, once for the day, and the note only when it removed.
+  const calls = [], apply = () => calls.filter((c) => c[0] === "cleanup.py" && c[1] === "apply").length;
+  S.store.set("review.cleanupDay", null); S.files.delete(CLEAN);
+  S.files.set("/h/mods/pr-review/cleanup.py", "# the script");
+  S.exec = async (cmd, args) => {
+    const a = args ?? [];
+    if (cmd !== "python3" || !String(a[0]).endsWith("cleanup.py")) return { code: 1, stdout: "", stderr: "stub" };
+    calls.push([`cleanup.py`, a[1], ...a.slice(2)]);
+    if (a[1] === "apply") return { code: 0, stdout: JSON.stringify({ removed: [{ repo: "acme/bookshelf", path: "/h/code/bookshelf" }], kept: [] }), stderr: "" };
+    return { code: 0, stdout: JSON.stringify({ max_age: 30, candidates: [] }), stderr: "" };
+  };
+  const a = new PrReview(), b = new PrReview();
+  a.init({}, cx); b.init({}, cx); // two copies asked at once
+  await settle(); await settle();
+  assert.equal(apply(), 1, "two copies that asked at once run the pass once");
+  assert.equal(S.store.get("review.cleanupDay"), day, "the day is in shared state");
+  const saved = JSON.parse(S.files.get(CLEAN) ?? "{}");
+  assert.equal(saved.day, day, "and in pr-data/cleanup.json, so a restart does not rerun it");
+  assert.equal(saved.removed, 1, "with what it removed");
+  assert.equal([a, b].map((v) => v.note).filter((x) => x === "Removed 1 old clone: acme/bookshelf.").length, 1, "one copy says what went, in one muted sentence");
+  const c = new PrReview(); c.init({}, cx); await settle();
+  assert.equal(apply(), 1, "a copy that opens later the same day runs nothing");
+  const later = new PrReview(), asked = calls.length;
+  S.store.set("review.cleanupDay", null); S.exec = async () => ({ code: 1, stdout: "", stderr: "stub" });
+  later.init({}, cx); await settle();
+  assert.equal(calls.length, asked, "after a restart the file is what stops the second pass: the script is not asked");
+  assert.equal(apply(), 1, "and nothing is applied again");
+  S.exec = async (cmd, args) => {
+    const a2 = args ?? [];
+    if (cmd !== "python3" || !String(a2[0]).endsWith("cleanup.py")) return { code: 1, stdout: "", stderr: "stub" };
+    calls.push([`cleanup.py`, a2[1], ...a2.slice(2)]);
+    return { code: 0, stdout: JSON.stringify({ max_age: 30, candidates: [{ repo: "acme/bookshelf", path: "/h/code/bookshelf", used: 1, days: 42.3, size: 188743680, eligible: true, why: "" },
+      { repo: "acme/tools", path: "/h/code/tools", used: 2, days: 6.4, size: 1048576, eligible: false, why: "The repository still has an open pull request." }] }), stderr: "" };
+  };
+  S.overlays.length = 0; S.store.set("review.cloneRoots", { "acme/bookshelf": "~/clones" });
+  c.panelCommand("cleanup", cx); await settle();
+  assert.equal(S.overlays.length, 1, "Clean up… opens one menu");
+  const menu = S.overlays[0].props;
+  assert.deepEqual([menu.part, menu.key, menu.title], ["cmenu", "cleanup", "Clones this mod made"]);
+  assert.deepEqual(menu.items[0], ["Clean up all eligible", false, "cleanup-apply-all"], "the first row applies to everything eligible");
+  assert.deepEqual(menu.items[1].slice(1), [false, "cleanup-apply:acme/bookshelf", ""], "an eligible row applies to its repository");
+  assert.equal(menu.items[1][0], "acme/bookshelf · ~/code/bookshelf · 42 days · 189 MB");
+  assert.deepEqual(menu.items[2].slice(1), [false, "cleanup-noop", "The repository still has an open pull request."], "a kept row says why and does nothing");
+  const check = calls.filter((x) => x[1] === "check").at(-1);
+  assert.ok(check.includes("--root") && check.includes("/h/code") && check.includes("/h/clones"), "cleanup.py gets the same roots, including the picked parent");
+  assert.ok(check.includes("--worktrees") && check.includes("/h/.herdr/worktrees"), "and the worktrees folder the review checks out into");
+
+  // A click on a row: apply --repo, then the list again. A failed apply is one red sentence.
+  calls.length = 0; S.overlays.length = 0;
+  c.panelCommand("cleanup-apply:acme/bookshelf", cx); await settle();
+  const one2 = calls.filter((x) => x[1] === "apply");
+  assert.equal(one2.length, 1, "one apply");
+  assert.deepEqual(one2[0].slice(0, 1), ["cleanup.py"]);
+  assert.equal(one2[0][one2[0].indexOf("--repo") + 1], "acme/bookshelf", "for that repository");
+  assert.equal(S.overlays.length, 1, "and the list is made again");
+  S.exec = async (cmd, args) => (String(args?.[0]).endsWith("cleanup.py") ? { code: 1, stdout: "", stderr: "the script said no" } : { code: 1, stdout: "", stderr: "stub" });
+  c.panelCommand("cleanup-apply-all", cx); await settle();
+  assert.equal(c.note, "Could not clean up: the script said no");
+
+  // An empty or unreadable list: one muted sentence, no popup.
+  for (const out of ['{"max_age": 30, "candidates": []}', "not json"]) {
+    S.exec = async () => ({ code: 0, stdout: out, stderr: "" });
+    S.overlays.length = 0; c.note = null;
+    c.panelCommand("cleanup", cx); await settle();
+    assert.equal(S.overlays.length, 0, "no popup for a list with nothing in it");
+    assert.ok(/^Nothing to clean up/.test(c.note ?? ""), "one muted sentence instead");
+    assert.ok(!/Could not/.test(c.note ?? ""), "and it is not an error");
+  }
+  S.writes = was.writes; S.exec = was.exec; S.store.set("review.cloneRoots", null); S.store.set("review.cleanupDay", null);
+  S.files.delete(CLONES); S.files.delete(CLEAN); S.files.delete("/h/mods/pr-review/cleanup.py");
+}

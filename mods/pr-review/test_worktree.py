@@ -78,10 +78,10 @@ with tempfile.TemporaryDirectory() as d:
     def push(text):  # the PR's head moves
         (origin / "a.py").write_text(text); g("commit", "-qam", "pr", cwd=origin); g("update-ref", "refs/pull/7/head", "HEAD", cwd=origin)
         return g("rev-parse", "HEAD", cwd=origin)
-    def run():
+    def run(clone=False):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            worktree.main("https://github.com/acme/api/pull/7")
+            worktree.main("https://github.com/acme/api/pull/7", clone=clone)
         return json.loads(out.getvalue())
     for name in ("api", "old"):  # two clones: a fresh one, and one with an earlier version's review worktree inside
         g("clone", "-q", str(origin), str(base / ("code" if name == "api" else "code-old") / "api"), cwd=base)
@@ -91,12 +91,14 @@ with tempfile.TemporaryDirectory() as d:
     h1 = push("x = 2\n")
     r = run()
     tree = base / "wt" / "api" / "pr-review"
-    assert r == {"path": str(tree), "head": h1, "clone": str(clone)}, r
+    assert r == {"path": str(tree), "head": h1, "clone": str(clone), "created": False}, r
     assert (tree / ".git").is_file() and worktree.detached(tree) and (tree / "a.py").read_text() == "x = 2\n"
     assert not (clone / ".worktrees").exists() and g("status", "--porcelain", cwd=clone) == "", "nothing is made inside the clone"
     (tree / "left.txt").write_text("from the review before\n")
     h2 = push("x = 3\n")
-    assert run() == {"path": str(tree), "head": h2, "clone": str(clone)} and (tree / "a.py").read_text() == "x = 3\n" and not (tree / "left.txt").exists()
+    assert run() == {"path": str(tree), "head": h2, "clone": str(clone), "created": False} and (tree / "a.py").read_text() == "x = 3\n" and not (tree / "left.txt").exists()
+    # The clone is there, so --clone reuses it: created stays false, and the panel must not record it.
+    assert run(clone=True)["created"] is False
     # A person's own checkout of a branch at that path: refused, and nothing in it is touched.
     g("worktree", "remove", "--force", str(tree), cwd=clone); g("worktree", "add", "-q", "-b", "pr-review", str(tree), cwd=clone)
     (tree / "mine.txt").write_text("my work\n")
@@ -153,3 +155,41 @@ with tempfile.TemporaryDirectory() as one, tempfile.TemporaryDirectory() as two:
     except worktree.NeedClone as e:
         assert e.roots == [one, two], e.roots
 print("roots ok")
+
+# --clone makes the clone: created is true, so the panel may record it. Every later run reuses it and says false.
+# The host URLs point at a local mirror through `url.<base>.insteadOf`, so git does the whole clone without a network.
+with tempfile.TemporaryDirectory() as d:
+    base = pathlib.Path(d).resolve()
+    def g(*a, cwd):
+        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+    source = base / "source"
+    source.mkdir()
+    g("init", "-q", "-b", "main", cwd=source)
+    (source / "a.py").write_text("x = 1\n"); g("add", ".", cwd=source); g("commit", "-qm", "base", cwd=source)
+    g("update-ref", "refs/pull/7/head", "HEAD", cwd=source)
+    served = base / "github.com" / "acme" / "api.git"
+    served.parent.mkdir(parents=True)
+    g("clone", "-q", "--mirror", str(source), str(served), cwd=base)
+    config = base / "gitconfig"
+    config.write_text(f'[url "file://{base}/github.com/"]\n\tinsteadOf = https://github.com/\n\tinsteadOf = git@github.com:\n')
+    before = os.environ.get("GIT_CONFIG_GLOBAL")
+    os.environ["GIT_CONFIG_GLOBAL"] = str(config)
+    try:
+        worktree.BASES = [base / "code"]
+        worktree.WORKTREES = base / "wt"
+        def run(clone=False):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                worktree.main("https://github.com/acme/api/pull/7", clone=clone)
+            return json.loads(out.getvalue())
+        made, tree = base / "code" / "api", base / "wt" / "api" / "pr-review"
+        r = run(clone=True)
+        assert r["created"] is True and r["clone"] == str(made) and r["path"] == str(tree) and r["head"], r
+        assert (made / ".git").is_dir() and (tree / "a.py").read_text() == "x = 1\n", r
+        r = run()
+        assert r["created"] is False and r["clone"] == str(made), r
+        r = run(clone=True)
+        assert r["created"] is False and r["clone"] == str(made), r
+    finally:
+        os.environ["GIT_CONFIG_GLOBAL"] = before if before is not None else os.devnull
+print("created ok")

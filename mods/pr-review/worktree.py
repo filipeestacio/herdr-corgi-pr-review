@@ -20,7 +20,8 @@ Earlier versions kept it at <clone>/.worktrees/review: one that is there is used
 anew, never moved and never removed here.
 ponytail: one tree per repo, so two review copies of different PRs of one repo at once take turns; a second tree
 (LRU) when that happens for real.
-Prints {"path", "head", "clone"}; exit 1 with the reason on stderr.
+Prints {"path", "head", "clone", "created"}; `created` is true only when this run made the clone, false when it
+reused one (also with --clone) or worked in --local; exit 1 with the reason on stderr.
 `worktree.py since <checkout> <old> <head> [<path>…]`: what changed from old to head (since_diff), as JSON.
 """
 import json
@@ -79,10 +80,11 @@ def origin_of(path):
 
 
 def clone_for(owner, repo, clone=False, local=None, url=None, hostname=None):
-    """The clone to work in (find_clone); none: a new one under the first root with clone=True, else NeedClone."""
+    """(the clone to work in, whether this run made it) from find_clone; none: a new one under the first root with
+    clone=True, else NeedClone. A clone that was found is never reported as made."""
     found = find_clone(owner, repo, local)
     if found:
-        return found
+        return found, False
     base = BASES[0]
     dest = next((p for p in (base / repo, base / f"{owner}-{repo}") if not p.exists()), None)
     if dest is None:
@@ -102,7 +104,7 @@ def clone_for(owner, repo, clone=False, local=None, url=None, hostname=None):
         r = subprocess.run(["git", "clone", "--filter=blob:none", "--no-checkout", remote, str(dest)],
                            capture_output=True, text=True, timeout=600)
         if r.returncode == 0:
-            return dest
+            return dest, True
         why = (r.stderr or r.stdout).strip()[:300]
     raise RuntimeError(f"git clone: {why or 'no remote to clone from'}")
 
@@ -168,7 +170,7 @@ def main(url, clone=False, local=None):
         raise RuntimeError(f"Not a PR url: {url}")
     owner, _, repo = link["repo"].rpartition("/")  # GitLab's nested group stays in owner
     n = link["number"]
-    clone = clone_for(owner or link["repo"], repo or link["repo"], clone, local, url=url, hostname=link["hostname"])
+    clone, created = clone_for(owner or link["repo"], repo or link["repo"], clone, local, url=url, hostname=link["hostname"])
     # GitHub publishes a PR's head as refs/pull/<n>/head; GitLab as refs/merge-requests/<n>/head.
     gitlab = link["host"] == host.GITLAB
     refspec = f"+refs/merge-requests/{n}/head:refs/review/{n}" if gitlab else f"+refs/pull/{n}/head:refs/review/{n}"
@@ -186,7 +188,7 @@ def main(url, clone=False, local=None):
         git("worktree", "add", "--quiet", "--detach", str(path), head, cwd=clone)
     path.touch()
     prune(path)
-    print(json.dumps({"path": str(path), "head": head, "clone": str(clone)}))
+    print(json.dumps({"path": str(path), "head": head, "clone": str(clone), "created": created}))
 
 
 if __name__ == "__main__":
