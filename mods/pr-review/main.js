@@ -1517,7 +1517,7 @@ export default class PrReview extends View {
     if (this.part === "agentbar") return renderAgentBar();
     if (this.part === "keys") return renderKeys();
     if (this.part === "cmenu") return renderCardMenu();
-    if (this.part === "models") return renderModels();
+    if (this.part === "models") return renderModels(cx);
     if (this.part === "mini") {
       // The view shows other contexts than the list for the Worktrees mod was made for, and no panel is there to
       // write it anew: an empty list as of now, so no PR of the other setup stays up as if it were current.
