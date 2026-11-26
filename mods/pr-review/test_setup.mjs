@@ -1,6 +1,6 @@
 // Run: node test_setup.mjs  (Setup's detection → report mapping, with stubbed PATH lookups; Codex detection)
 import assert from "node:assert/strict";
-import { parseCheck, report, blockers, found, programs, checkScript, pretypeArgv, installHint, harnessTool, harnessCommand } from "./setup.js";
+import { parseCheck, report, blockers, found, programs, checkScript, pretypeArgv, installHint, harnessTools, harnessCommand } from "./setup.js";
 
 const out = (have, auth = "") => programs().map((p) => `${p}=${have.includes(p) ? `/bin/${p}` : ""}`).join("\n") + "\n" + auth;
 const byId = (rows) => Object.fromEntries(rows.map((r) => [r.id, r]));
@@ -63,21 +63,37 @@ assert.equal(out2.gh.status, "logged-out");
 assert.equal(out2.gh.install, "gh auth login");
 assert.deepEqual(blockers(report(parseCheck(out(["git", "gh", "claude", "python3"], "auth:gh=0\nauth:claude=1")))).map((x) => x.id), ["gh or glab"]);
 
-// A custom harness from pr-review.config.json stands in the llm group: the pane lists it and claude is optional.
+// A harness profile from pr-review.config.json stands in the llm group: the pane lists it by its program, and claude
+// is optional. The one-profile shape of 0.15 and before still works.
 const cfg = { harness: { command: ["opencode", "run"] } };
-const hrow = harnessTool(cfg);
-assert.equal(hrow.id, "harness");
+const hrow = harnessTools(cfg)[0];
+assert.equal(hrow.id, "opencode");
 assert.equal(hrow.group, "llm");
 assert.deepEqual(hrow.command, ["opencode", "run"]);
 assert.deepEqual(harnessCommand({ harness: { command: "opencode run" } }), ["opencode", "run"]);
-assert.equal(harnessTool({}), null);
+assert.deepEqual(harnessTools({}), []);
 const hv = parseCheck(out(["git", "glab", "python3"], "auth:glab=1\n") + "opencode=/usr/local/bin/opencode\n");
-const hr = byId(report(hv, "darwin", [hrow]));
-assert.equal(hr.harness.status, "ok");
-assert.equal(hr.harness.cmd, "opencode run");
+const hr = byId(report(hv, "darwin", harnessTools(cfg)));
+assert.equal(hr.opencode.status, "ok");
+assert.equal(hr.opencode.cmd, "opencode run");
 assert.equal(hr.claude.status, "optional-missing"); // still listed, no longer required: the harness is there
-assert.deepEqual(blockers(report(hv, "darwin", [hrow])), []);
+assert.deepEqual(blockers(report(hv, "darwin", harnessTools(cfg))), []);
 assert.ok(checkScript(["opencode"]).includes("opencode"));
+
+// Several named profiles: one row per program, no row for a profile that runs the Claude Code CLI, and a program the
+// check looked for and did not find reads missing.
+const many = { harnesses: {
+  gateway: { label: "Gateway", command: ["opencode", "run", "--model", "{model}"] },
+  cc: { label: "Claude Code", command: ["claude", "-p"] },
+  gone: { label: "Gone CLI", command: ["not-a-real-program"] },
+} };
+const mt = harnessTools(many);
+assert.deepEqual(mt.map((t) => t.id), ["opencode", "not-a-real-program"]);
+assert.match(mt[0].what, /through the harness "Gateway" \(pr-review\.config\.json\)/);
+const mv = byId(report(parseCheck(out(["git", "glab", "python3"], "auth:glab=1\n") + "opencode=\nnot-a-real-program=\n"), "darwin", mt));
+assert.equal(mv.opencode.status, "missing");
+assert.equal(mv["not-a-real-program"].status, "missing");
+assert.equal(mv["not-a-real-program"].what, 'The AI analysis, reviewers, triage and fix verification, through the harness "Gone CLI" (pr-review.config.json)');
 
 // A cached check from an older program list has no key for a row added since: it reads "not checked", not missing,
 // and it does not block; Setup looks again while it is on screen.

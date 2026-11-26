@@ -16,7 +16,7 @@ import { spaces, agents, terminals, watch } from "./live.js";
 import { hostOfLink } from "./host.js"; // never straight from Herdr (live.js says why)
 import { parseReports, findingStatus, mergeFindings, findingCounts, countLine, runsOf, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
 import * as C from "./context.js";
-import { hasTool, copyText, openUrl, loadSetup, readConfig } from "./setup-view.js";
+import { hasTool, copyText, openUrl, loadSetup, readConfig, writeConfig } from "./setup-view.js";
 import { taskList, taskHead, verdictParts, reviewState, certaintyLine, severityTip, componentLine, doesList, checkGroups, costLine, alreadyThere, criteriaGroups, beforeMerge, verdictAction, notChecked, surfaceLine, realRules } from "./pr.js"; // the Overview page
 import { findingSteps, funnel, funnelLine, ownerOf, quickFirst, hasEffort, publicFiles, funnelShort, diffPath } from "./pr.js"; // the Findings tab
 import { withProof, PROOF_WORDS } from "./pr.js"; // Verify with an agent
@@ -135,6 +135,7 @@ const TOUCH_MS = 5 * 60000; // a review's "last touched" on file may be this old
 const model = () => {
   const m = shared("review.model"), h = harnessChoices();
   if (h.length) return typeof m === "string" && h.some((c) => c.value === m) ? m : h[0].value;
+  if (harnessNow() !== "claude") return typeof m === "string" ? m : "";
   return codeModel(typeof m === "string" && m ? m : "sonnet");
 };
 // The models the CLIs offer per context ({at, claude, codex}, models.py), shared so the Reviews popup sees them too;
@@ -149,6 +150,17 @@ export const modelLabel = (m) => Object.values(modelsDoc()).flatMap((d) => [...(
 const codexChoices = () => Object.values(modelsDoc()).map((d) => d?.codex ?? []).find((l) => l.length) ?? [];
 // A configured harness's models (models.py): the ones pr-review.config.json lists, whatever CLI they belong to.
 const harnessChoices = () => Object.values(modelsDoc()).map((d) => d?.harness ?? []).find((l) => l.length) ?? [];
+// The harness profiles the config declares (models.py), the one the last listing was for, and the one the person picked.
+const harnessDocs = () => Object.values(modelsDoc()).map((d) => d?.harnesses ?? []).find((l) => l.length) ?? [];
+const harnessNow = () => {
+  const picked = shared("review.harness"), docs = harnessDocs();
+  if (picked && (!docs.length || docs.some((h) => h.name === picked))) return picked;
+  return Object.values(modelsDoc()).map((d) => d?.harnessName).find(Boolean) ?? "claude";
+};
+const harnessLabelOf = (name) => harnessDocs().find((h) => h.name === name)?.label ?? name;
+export const harnessLabel = () => harnessLabelOf(harnessNow());
+const providerErrors = () => Object.values(modelsDoc()).map((d) => Object.values(d?.providers ?? {})).flat()
+  .map((p) => (p?.error ? `${p.label}: ${p.error}` : null)).filter(Boolean);
 // The model id a picker value stands for ("opus" -> "claude-opus-5-5"), from the CLI's list.
 const resolvedOf = (m) => Object.values(modelsDoc()).flatMap((d) => d?.claude ?? []).find((x) => x.value === m)?.resolved ?? m;
 // "$4 / $20 per MTok": input and output.
@@ -159,10 +171,19 @@ const priceText = (m) => { const p = harnessPrice(m); if (p) return `$${p[0]} / 
 // choice here reads or judges code (codeModel).
 const modelChoices = (ctx) => {
   const list = modelsDoc()[ctx]?.claude ?? [], cur = model(), harness = harnessChoices();
+  // Another program's ids only: its config list, or nothing. Claude classes and aliases mean nothing to it.
+  if (harnessNow() !== "claude") return harness;
   const shown = list.filter((c) => (!c.value.startsWith("claude-") || c.value === cur) && tierOf(c.value) !== "haiku");
   const base = shown.length ? shown : (harness.length ? [] : Object.entries(MODELS).filter(([k]) => k !== "haiku").map(([value, v]) => ({ value, label: v.label, description: "" })));
   return [...harness, ...base.filter((c) => !harness.some((h) => h.value === c.value))];
 };
+// The harness menu: the profiles that can run, plus the active one with why it may not.
+const harnessMenuItems = () => harnessDocs()
+  .filter((h) => h.ok || h.name === harnessNow())
+  .map((h) => [`${h.name === harnessNow() ? "✓ " : ""}${h.label}${h.ok ? "" : " · not installed"}`, false, `harness:${h.name}`]);
+// The model menu: one builder for the control and pr-review.menu:models; estimate sees the review's diff size.
+const modelMenuItems = (ctx, m, estimate) => modelChoices(ctx)
+  .map((c) => [`${c.value === m ? "✓ " : ""}${c.label} · ${priceText(c.value)} · ${estimate(c.value)}`, false, `model:${c.value}`]);
 const cacheDir = () => `${appHome()}/pr-data/cache`;
 const valuesOn = () => shared("review.values") !== false; // inline example values (flow traces), on by default
 const clock = (ms) => `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}`;
@@ -238,16 +259,16 @@ export function renderReviews() {
     .children(reviewersNow().map(([k, [label, c]]) => {
       const r = runs[k], n = r?.count ?? 0, done = r?.state === "done";
       const line = TH.runLine(r, n ? 0 : total, { running: r?.started ? clock(Date.now() - Date.parse(r.started)) : "", took: r?.ms ? clock(r.ms) : null, ago: r?.at ? ago(r.at) : null })
-        + (k === "codex" ? (done ? " · Codex does not report its price" : "") : !r?.state ? (harness ? " · the harness sets its budget" : ` · capped at $${cap}`) : "") + (k === "security" && mine && meta.securityOffer ? `. ${meta.securityOffer}` : "");
+        + (k === "codex" ? (done ? " · Codex does not report its price" : "") : !r?.state ? (harness ? ` · ${harnessLabel()} sets its budget` : ` · capped at $${cap}`) : "") + (k === "security" && mine && meta.securityOffer ? `. ${meta.securityOffer}` : "");
       return row(k, label, c, line, r?.state === "failed", r?.state === "running" ? div().flex_none().child(SPIN[0]).frames(SPIN, 90)
         : pill(`rv-rrun-${k}`, t, runLabel(r, k === "codex" || !mine ? null : meta.prices?.[k] ?? null, "", true), () => { run(`pr-review.reviewer:${k}`); closeOverlay(props().overlay); }).flex_none()
-          .tooltip(k === "codex" ? `Run the codex CLI on the PR head, with its own login; its price is not reported. ${TH.CODEX_MAY} On someone else's PR in Restricted Mode it asks once first.` : `One read-only review of the PR head with ${modelLabel(model())}, ${harness ? "and the harness command's own budget applies" : `capped at $${cap}`}`));
+          .tooltip(k === "codex" ? `Run the codex CLI on the PR head, with its own login; its price is not reported. ${TH.CODEX_MAY} On someone else's PR in Restricted Mode it asks once first.` : `One read-only review of the PR head with ${modelLabel(model())}, ${harness ? `${harnessLabel()}'s own budget applies` : `capped at $${cap}`}`));
     }))
     .when(hasTool("codex") && codexChoices().length > 0, (e) => e.child(h_flex().px(8).gap(8).items_center()
       .child(div().text_size(TYPE.small).text_color(t.muted).child("Codex review model"))
       .child(pill("rv-cxm", t, `${cur.label} ▾`, () => openCodexMenu()).tooltip(cur.description || "The model in Codex's own settings"))))
     .child(div().px(8).pt(4).text_size(TYPE.small).line_height(1.45).whitespace_normal().text_color(t.muted)
-      .child(`${harness ? "Reviews" : "Claude reviews"}: ${harness ? modelLabel(model()) : accountOf(pr ? prCtx(pr) : C.defaultOf(ctxDoc()))}. ${harness ? "They" : "They"} read the PR head in a checkout, read-only, and send the diff and the files they open to the ${harness ? "harness" : "provider"}.`
+      .child(`${harness ? `Reviews · ${harnessLabel()}` : "Claude reviews"}: ${harness ? modelLabel(model()) : accountOf(pr ? prCtx(pr) : C.defaultOf(ctxDoc()))}. ${harness ? "They" : "They"} read the PR head in a checkout, read-only, and send the diff and the files they open to the ${harness ? harnessLabel() : "provider"}.`
         + (hasTool("codex") ? ` Codex review: the codex CLI with its own login. It is a second provider (OpenAI) and gets the same checkout. ${TH.CODEX_MAY}` : "")));
 }
 
@@ -626,6 +647,11 @@ export const ReviewMode = {
     else if (name === "open-gh") { if (this.prSel?.url) openUrl(this.prSel.url); }
     else if (name === "impact") this.impactCommand(arg, cx); // the Impact section: impact (Find callers), impact:list, impact:<path>:<line> (a card's click)
     else if (name === "model") { if (arg) setShared("review.model", codeModel(arg)); }
+    else if (name === "harness") this.pickHarness(arg, cx); // harness:<name>: the harness picked in the bar
+    else if (name === "menu") { // menu:models | menu:harnesses: the same rows as the control (an overlay for a demo or a script)
+      const items = arg === "models" ? modelMenuItems(this.ctxId(), model(), (x) => this.estimate(x)) : harnessMenuItems();
+      if (items.length) openOverlay({ mod: "pr-review", props: { part: "cmenu", key: props().overlay ? "menu" : arg, items }, kind: "popup", width: arg === "models" ? 470 : 340, height: 12 + 30 * items.length });
+    }
     // For keys and scripted demos: a card's panel on the Architecture page (card:<node id>), the layers' order
     // (order:reading | order:risk) and Minimize, the same as their clicks.
     else if (name === "card") { this.page = "arch"; this.tab = "steps"; this.archFocus = arg || null; const n = arg ? this.archL()?.nodes.find((x) => x.id === arg) : null; if (n && !this.archWrapOn()) this.hsOf("rv-arch-canvas").x = Math.max(0, n.x - 40); } // and the card in view
@@ -3228,7 +3254,11 @@ export const ReviewMode = {
       ck && !onOverview && link("rv-ck", h_flex().gap(4).children(ck.parts.map(([text, bad]) => div().child(`${bad ? "✗ " : ""}${text}`))), // a symbol, not red: red is the security part's
         (_e, cx) => { this.tab = "steps"; this.page = "overview"; this.pagePart("checks", cx); cx.notify(); }).tooltip(ck.tip),
     ].filter(Boolean);
-    const modelText = this.aiBusy ? `${modelLabel(this.aiBusy.model)} analyzing…` : modelLabel(m); // without the analysis' cost: the Overview's total says it by run, the menu estimates the next one
+    const harnessMenu = harnessMenuItems(), modelMenu = modelMenuItems(this.ctxId(), m, (x) => this.estimate(x));
+    const modelText = this.aiBusy ? `${modelLabel(this.aiBusy.model)} analyzing…` : !modelMenu.length ? "No models" : m ? modelLabel(m) : "Choose a model"; // without the analysis' cost: the Overview's total says it by run, the menu estimates the next one
+    const perr = providerErrors().join(" ");
+    const modelTip = `Pick the model for the AI analysis; each option shows its cost estimate${perr ? ` ${perr}` : ""}`;
+    const noModelTip = perr || "The profile lists no models, and \"models\" in pr-review.config.json (a shortlist, a provider or a command) decides which ones it offers.";
     return h_flex().id("rv-meta").flex_none().flex_wrap().min_h(40).px(16).py(6).gap(10).items_center().border_b(1).border_color(t.border).bg(t.chrome).text_size(TYPE.small).text_color(t.muted)
       .children(facts.flatMap((f, k) => (k ? [sep(), f] : [f])))
       .child(div().flex_1())
@@ -3237,8 +3267,13 @@ export const ReviewMode = {
       .when(!onPage, (e) => e.child(this.showChips(t, "rv-show")).child(sep()))
       .when(Boolean(this.worktree?.path) && !this.trustedPr(), (e) => e.child(link("rv-trust", div().text_color(t.ansi3).child("Restricted Mode · Trust"), (_e, cx) => this.trust("pr", cx))
         .tooltip("Someone else's code: language servers don't run anything from the repository, so go-to-definition may find less. Click to trust this PR.")))
-      .child(link("rv-model", h_flex().gap(4).child(this.aiBusy ? div().child(SPIN[0]).frames(SPIN, 90) : div()).child(modelText).child("▾"),
-        menu("models", modelChoices(this.ctxId()).map((c) => [`${c.value === m ? "✓ " : ""}${c.label} · ${priceText(c.value)} · ${this.estimate(c.value)}`, false, `model:${c.value}`]), 470)).tooltip("Pick the model for the AI analysis; each option shows its cost estimate").accessibility_label("Model"))
+      .when(harnessMenu.length > 1 || harnessNow() !== "claude", (e) => e.child(link("rv-harness", h_flex().gap(4).child(harnessLabel()).child("▾"),
+        menu("harnesses", harnessMenu, 340))
+        .tooltip("The program the AI calls run on. Picking one writes \"harness\" in pr-review.config.json and lists its models again.")).child(sep()))
+      .when(modelMenu.length > 0, (e) => e.child(link("rv-model", h_flex().gap(4).child(this.aiBusy ? div().child(SPIN[0]).frames(SPIN, 90) : div()).child(modelText).child("▾"),
+        menu("models", modelMenu, 470)).tooltip(modelTip).accessibility_label("Model")))
+      .when(!modelMenu.length, (e) => e.child(div().id("rv-model").flex_none().px(6).h(28).flex().items_center().gap(4).tooltip(noModelTip).accessibility_label("Model")
+        .child(this.aiBusy ? div().child(SPIN[0]).frames(SPIN, 90) : div()).child(modelText)))
       .when(!onPage, (e) => e.child(sep())
       .child(h_flex().gap(10).items_center().child(link("rv-diffmode", div().child(this.diffMode() === "split" ? "Side by side" : "Unified"), () => setShared("review.diff", this.diffMode() === "split" ? "unified" : "split"))
         .tooltip(`The diff ${this.diffMode() === "split" ? "shows the old and the new lines side by side" : "shows old and new lines in one column"}. Click to switch; your choice is kept.`)).child(sep())
@@ -5214,20 +5249,37 @@ export const ReviewMode = {
   loadModels(cx) {
     const ctx = this.ctxReq(), id = ctx?.id ?? "default", d = modelsDoc()[id], busy = (this.modelsBusy ??= new Set());
     // The harness's list comes from the config: a changed config asks again rather than waiting out the day.
-    const sig = JSON.stringify(this.cfg?.harness ?? null);
+    const sig = JSON.stringify([this.cfg?.harness ?? null, this.cfg?.harnesses ?? null, this.cfg?.providers ?? null]);
     if ((d && Date.now() - d.at < 86400000 && d.sig === sig) || busy.has(id)) return;
     busy.add(id);
     cx.spawn(async (cx) => {
       const r = await exec("python3", [`${appHome()}/mods/pr-review/models.py`, JSON.stringify({ context: ctx })], { timeout: 90000 }).catch(() => null);
       let out = null;
       try { out = r?.code === 0 ? JSON.parse(r.stdout) : null; } catch { /* no answer */ }
-      if (!out?.claude?.length && !out?.codex?.length && !out?.harness?.length) return; // busy stays: no second try this session
+      if (!out?.claude?.length && !out?.codex?.length && !out?.harness?.length && !out?.harnesses?.length) return; // busy stays: no second try this session
       busy.delete(id);
-      const doc = { ...modelsDoc(), [id]: { at: Date.now(), sig, claude: out.claude ?? [], codex: out.codex ?? [], harness: out.harness ?? [] } };
+      const doc = { ...modelsDoc(), [id]: { ...d, at: Date.now(), sig, claude: out.claude ?? [], codex: out.codex ?? [], harness: out.harness ?? [], harnessName: out.harnessName ?? null, harnesses: out.harnesses ?? [], providers: out.providers ?? {} } };
       setShared("review.models", doc);
       readTextFile(modelsFile()).catch(() => null).then((before) => writeTextFile(modelsFile(), JSON.stringify(doc), before)).catch(() => null); // over the list from before (told nothing, writeTextFile leaves an existing file as it is)
       cx.notify();
     });
+  },
+  // The harness picked in the bar: written to pr-review.config.json, then its models listed again (the old list belongs
+  // to another program). The pick stays in shared "review.harness" so a run never starts on the previous one's model.
+  async pickHarness(name, cx) {
+    if (!name || name === harnessNow()) return;
+    let doc = null;
+    try { doc = await writeConfig({ harness: name }); } catch {
+      this.note = `Could not write pr-review.config.json. Set "harness" to "${name}" in it yourself.`; cx.notify(); return;
+    }
+    this.cfg = doc;
+    const label = harnessLabelOf(name); // read before the list is cleared: the new profile's label is in it
+    setShared("review.harness", name); setShared("review.models", null); setShared("review.model", null);
+    this.modelsBusy?.delete(this.ctxReq()?.id ?? "default");
+    this.loadModels(cx);
+    if (props().overlay) closeOverlay(props().overlay); // only an overlay copy carries this id
+    run("overlay.close", {}); // the review body has none, so close the top popup/menu
+    this.note = `The AI calls now run on ${label}.`; cx.notify();
   },
   // A rough price before running: input from the diff size, output and thinking from earlier runs; the cap is review.py's.
   estimate(m) {
@@ -5235,7 +5287,7 @@ export const ReviewMode = {
     const [inp, out] = harnessPrice(m) ?? priceOf(resolvedOf(m));
     // ponytail: reading the code with tools multiplies input; ×4 from the first runs, a guess until the ledger says more.
     const usd = (((chars / 3.5 + 3000) * 4) * inp + 15000 * out) / 1e6;
-    return `≈ $${usd.toFixed(2)} · cap $${CAP[tierOf(m)]}`;
+    return `≈ $${usd.toFixed(2)}${harnessChoices().length ? "" : ` · cap $${CAP[tierOf(m)]}`}`;
   },
 
   // Statements with their source: a "spec" tag before spec-only ones (only in the description/ticket, not in the

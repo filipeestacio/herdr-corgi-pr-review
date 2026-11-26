@@ -46,11 +46,20 @@ export function harnessCommand(cfg) {
   return argv[0] ? argv : null;
 }
 
-export function harnessTool(cfg) {
-  const command = harnessCommand(cfg);
-  if (!command) return null;
-  return { id: "harness", need: "required", group: "llm", command, mac: null, linux: null,
-    what: "Your own review harness, run as the command in pr-review.config.json (harness.command): the AI analysis, reviewers, triage and fix verification" };
+// Every harness profile the config declares: one Setup row per program it runs, in the same one-of group as claude.
+// "harnesses" names profiles; "harness" as an object is the one-profile shape of 0.15 and before.
+export function harnessTools(cfg) {
+  const spec = cfg?.harnesses && typeof cfg.harnesses === "object" && !Array.isArray(cfg.harnesses) ? { ...cfg.harnesses } : {};
+  if (cfg?.harness && typeof cfg.harness === "object" && !Array.isArray(cfg.harness)) spec.harness = cfg.harness;
+  const rows = [];
+  for (const [name, profile] of Object.entries(spec)) {
+    const command = harnessCommand({ harness: profile });
+    if (!command || command[0] === "claude") continue; // a profile that runs the Claude Code CLI is the claude row
+    const label = String(profile?.label ?? name);
+    rows.push({ id: command[0], need: "required", group: "llm", command, mac: null, linux: null,
+      what: `The AI analysis, reviewers, triage and fix verification, through the harness "${label}" (pr-review.config.json)` });
+  }
+  return rows;
 }
 
 // Every program name to look up on PATH.

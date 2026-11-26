@@ -8,6 +8,9 @@ key is optional (see PROVIDERS.md):
   language      the language the AI answers in (default "English")
   ledger        a folder: each call appends one JSON line to usage-YYYY-MM.jsonl there; unset: no ledger
   globalRules   conventions every PR is checked against, besides the repo's own rules files
+  harness       the active harness profile's name, or a legacy {command, label, timeout, models, modelList, prefix}
+  harnesses     named profiles: {command, label, env, timeout, models}
+  providers     model catalogs read over HTTP by models.py: {label, kind, baseUrl, apiKeyEnv, headers, timeout, priceOverrides}
 A context ({id, env}) comes from the panel: env vars for the call (null unsets one); id is recorded in the ledger.
 """
 import datetime as dt
@@ -38,11 +41,133 @@ def quote(text, n=200):
     return text if len(text) <= n else text[:n].rstrip() + "…"
 
 
+class MissingEnv(RuntimeError):
+    """A profile env value reads a variable that is not set. name: the variable."""
+
+    def __init__(self, name):
+        super().__init__(name)
+        self.name = name
+
+
+# The profile Claude Code runs as when no config names another: its own argv, so `claude -p` stays the path it knows.
+BUILTIN = {"name": "claude", "label": "Claude Code", "command": ["claude", "-p", "--model", "{model}"], "env": {},
+           "timeout": None, "models": {}, "builtin": True}
+
+
+def _entry(base, spec):
+    """One profile: the keys `spec` has, over `base`'s. `command`, `label` and `timeout` must have the right kind to
+    count, so a broken config keeps the profile it would otherwise have."""
+    spec = spec if isinstance(spec, dict) else {}
+    got = dict(base)
+    if isinstance(spec.get("label"), str) and spec["label"]:
+        got["label"] = spec["label"]
+    cmd = spec.get("command")
+    if isinstance(cmd, (list, tuple)) and cmd:
+        got["command"] = [str(x) for x in cmd]
+    env = spec.get("env")
+    if isinstance(env, dict):
+        got["env"] = {str(k): (None if v is None else str(v)) for k, v in env.items()}
+    timeout = spec.get("timeout")
+    if isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout > 0:
+        got["timeout"] = int(timeout)
+    models = spec.get("models")
+    if isinstance(models, dict):
+        got["models"] = dict(models)
+    elif isinstance(models, (list, tuple)) and models:  # a profile written with the legacy harness.models argv
+        got["models"] = {"command": [str(x) for x in models]}
+    return got
+
+
+def _legacy_spec(cfg):
+    """The legacy harness object, when it can do something: a command, a models argv, or a modelList. An object with
+    none of them is ignored, so Claude Code runs as when no harness is configured (0.15 ran it too)."""
+    legacy = cfg.get("harness")
+    if not isinstance(legacy, dict):
+        return None
+    for key in ("command", "models", "modelList"):
+        got = legacy.get(key)
+        if isinstance(got, (list, tuple)) and got:
+            return legacy
+    return None
+
+
+def _legacy(spec):
+    """A legacy harness object as the profile named "harness": harness.command is its command, harness.models an argv
+    that prints ids, harness.modelList a shortlist, harness.prefix a filter."""
+    got = _entry({"name": "harness", "label": "harness", "command": None, "env": {}, "timeout": None, "models": {},
+                  "builtin": False}, {k: v for k, v in spec.items() if k not in ("models", "modelList", "prefix")})
+    models = {}
+    cmd = spec.get("models")
+    if isinstance(cmd, (list, tuple)) and cmd:
+        models["command"] = [str(x) for x in cmd]
+    if isinstance(spec.get("prefix"), str) and spec["prefix"]:
+        models["prefix"] = spec["prefix"]
+    listed = spec.get("modelList")
+    if isinstance(listed, (list, tuple)) and listed:
+        models["shortlist"] = list(listed)
+    got["models"] = models
+    return got
+
+
+def profiles():
+    """Every harness profile by name: the built-in "claude", config `harnesses`, and a legacy `harness` object with a
+    command as "harness". A broken entry is kept with what it has; a bad config never raises."""
+    cfg = config()
+    got = {"claude": dict(BUILTIN)}
+    named = cfg.get("harnesses")
+    for name, spec in (named.items() if isinstance(named, dict) else ()):
+        if isinstance(name, str) and name:
+            base = got.get(name) or {"name": name, "label": name, "command": None, "env": {}, "timeout": None,
+                                     "models": {}, "builtin": False}
+            got[name] = _entry(base, spec)
+    legacy = _legacy_spec(cfg)
+    if legacy is not None:
+        got["harness"] = _legacy(legacy)
+    return got
+
+
+def active():
+    """The active profile's name: config `harness` when it is a string, a legacy harness object that can do something
+    as "harness", else the built-in "claude"."""
+    harness = config().get("harness")
+    if isinstance(harness, str):
+        return harness
+    return "harness" if _legacy_spec(config()) is not None else "claude"
+
+
+def _is_legacy(prof):
+    """Whether a profile is the legacy harness object, the only no-command profile that runs Claude Code (0.15 did)."""
+    return prof["name"] == "harness" and _legacy_spec(config()) is not None
+
+
+def _profile_arg(given):
+    """A caller's argument as a profile: a profile dict as it is, a name looked up, None the active profile."""
+    return given if isinstance(given, dict) else profile(given)
+
+
+def profile(name=None):
+    """The profile named `name` (default: the active one), as {name, label, command, env, timeout, models, builtin}."""
+    known = profiles()
+    want = active() if name is None else name
+    if isinstance(want, str) and want in known:
+        return known[want]
+    raise RunFailed("Harness", f"No harness profile is named {want!r}. Known profiles: {', '.join(sorted(known))}.",
+                    "harness", {})
+
+
 def harness():
-    """The harness command from pr-review.config.json (harness.command), or None: argv with {model} and {prompt}
-    placeholders; the prompt is appended when the command has no {prompt}."""
-    cmd = (config().get("harness") or {}).get("command")
-    return [str(x) for x in cmd] if isinstance(cmd, list) and cmd else None
+    """The active profile's argv with {model} and {prompt} placeholders, or None for the built-in Claude: the prompt is
+    appended when the command has no {prompt}."""
+    got = profile()
+    return list(got["command"]) if got["command"] and not got["builtin"] else None
+
+
+def harness_label():
+    """The active profile's label, for sentences."""
+    try:
+        return profile()["label"]
+    except RunFailed:
+        return str(active())
 
 
 def harness_argv(cmd, model, prompt):
@@ -75,54 +200,68 @@ def json_in(text):
     return None
 
 
-def run_harness(feature, prompt, *, context=None, model="", schema=None, system=None, timeout=180, cwd=None, meta=None):
-    """Runs the configured harness command and reads its answer: the JSON object it prints (with a schema) or its
-    text. No cost or token count is reported for a command the mod does not own."""
-    cmd = harness()
+def run_harness(feature, prompt, *, context=None, model="", schema=None, system=None, timeout=180, cwd=None, meta=None,
+                profile=None):
+    """Runs a harness profile's command and reads its answer: the JSON object it prints (with a schema) or its text.
+    No cost or token count is reported for a command the mod does not own. The built-in Claude profile is not a
+    harness: it runs through claude()."""
+    prof = _profile_arg(profile)
+    label, cmd = prof["label"], prof["command"]
+    if prof["builtin"]:
+        raise RunFailed(feature, f"No harness is configured: {label} runs through its own command. Set harness in "
+                                "pr-review.config.json to a profile.", "harness", {})
     if not cmd:
-        raise RunFailed(feature, "No harness is configured: set harness.command in pr-review.config.json.", "harness", {})
+        raise RunFailed(feature, f"No command is configured for {label}. Set its command in pr-review.config.json.",
+                        "harness", {})
     if any("{model}" in a for a in cmd) and not model:
-        raise RunFailed(feature, "Choose a model for the harness: its command needs one (harness.command has {model}).",
+        raise RunFailed(feature, f"Choose a model for {label}: its command needs one ({cmd[0]} has {{model}}).",
                         "model", {})
     text = f"{system}\n\n{prompt}" if system else prompt
     if schema is not None:
         text += "\n\nAnswer with one JSON object and nothing else, matching this schema:\n" + json.dumps(schema)
     # A harness has no cost cap, so its own timeout (config harness.timeout, in seconds) may be longer than a CLI's.
-    alive = int((config().get("harness") or {}).get("timeout") or timeout)
+    alive = int(prof.get("timeout") or timeout)
+    try:
+        run_env = env_for(context, profile=prof)
+    except MissingEnv as e:
+        raise RunFailed(feature, f"{label} needs the environment variable {e.name}, and it is not set. Export it and "
+                                "try again.", "harness", {}) from None
     started = time.monotonic()
     try:
         out = subprocess.run(harness_argv(cmd, model, text), capture_output=True, text=True, timeout=alive,
-                             env=env_for(context), cwd=str(cwd or APP))
+                             env=run_env, cwd=str(cwd or APP))
     except subprocess.TimeoutExpired:
-        raise RunFailed(feature, f"The harness run did not answer within {alive} s. Try again.", "timeout", {}) from None
+        raise RunFailed(feature, f"{label} did not answer within {alive} s. Try again.", "timeout", {}) from None
     except FileNotFoundError:
-        raise RunFailed(feature, f"The harness command {cmd[0]!r} was not found. Check harness.command in "
+        raise RunFailed(feature, f"The command for {label} ({cmd[0]!r}) was not found. Check its command in "
                                 "pr-review.config.json.", "harness", {}) from None
     except OSError as e:
-        raise RunFailed(feature, f"The harness command could not start ({e}). Check harness.command in "
+        raise RunFailed(feature, f"The command for {label} could not start ({e}). Check it in "
                                 "pr-review.config.json.", "harness", {}) from None
     ms = int((time.monotonic() - started) * 1000)
     log(feature, (context or {}).get("id") or "default", model or "harness", 0, 0, ms, out.returncode == 0, tool="harness")
     if out.returncode != 0:
         said = (out.stderr or out.stdout or "").strip().splitlines()
-        raise RunFailed(feature, f"The harness run failed: {quote(said[0] if said else f'exit {out.returncode}', 200)}. "
-                                "Choose another model, or check harness.command in pr-review.config.json.", "harness",
+        raise RunFailed(feature, f"{label} failed: {quote(said[0] if said else f'exit {out.returncode}', 200)}. "
+                                "Choose another model, or check its command in pr-review.config.json.", "harness",
                      {"stderr": (out.stderr or "")[:2000]})
     got = json_in(out.stdout)
     if meta is not None:
         meta.update(cost=None, tokens=0, usage={}, ms=ms, model_id=model or "harness", result=got, text=out.stdout)
     if schema is not None:
         if got is None:
-            raise RunFailed(feature, f"The harness answer could not be read ({quote(' '.join(out.stdout.split()), 100)}). "
-                                    "It must print one JSON object.", "unreadable", {"stdout": out.stdout[:2000]})
+            raise RunFailed(feature, f"The answer from {label} could not be read "
+                                    f"({quote(' '.join(out.stdout.split()), 100)}). It must print one JSON object.",
+                            "unreadable", {"stdout": out.stdout[:2000]})
         return got
     return got if got is not None else out.stdout
 
 def config():
     try:
-        return json.loads(CONFIG.read_text()) or {}
+        got = json.loads(CONFIG.read_text())
     except (OSError, ValueError):
         return {}
+    return got if isinstance(got, dict) else {}
 
 
 def language():
@@ -147,15 +286,43 @@ CODEX_LOGIN = re.compile(r"^(CODEX_|OPENAI_)")
 CLOUD = {"CLAUDE_CODE_USE_BEDROCK": ("AWS_",), "CLAUDE_CODE_USE_VERTEX": ("GOOGLE_", "CLOUD_ML_")}
 
 
-def env_for(context, login=LOGIN):
-    """The process env reduced to the allowlist above (login: whose login stays), with the context's vars applied
-    (None unsets). git refuses abbreviated long options in every run: a model's `git blame --con` would else be
-    --contents, past a rule that denies the full name."""
+READ_ENV = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
+
+
+def _env_values(env):
+    """A profile's env with "${VAR}" read from os.environ, None kept as an unset. MissingEnv when a variable is unset."""
+    got = {}
+    for k, v in (env or {}).items():
+        if v is None:
+            got[str(k)] = None
+        elif isinstance(v, str):
+            m = READ_ENV.match(v)
+            if m:
+                if m.group(1) not in os.environ:
+                    raise MissingEnv(m.group(1))
+                got[str(k)] = os.environ[m.group(1)]
+            else:
+                got[str(k)] = os.path.expanduser(v)
+        else:
+            got[str(k)] = str(v)
+    return got
+
+
+def env_for(context, login=LOGIN, profile=None):
+    """The process env reduced to the allowlist above (login: whose login stays), then the profile's env, then the
+    context's (None unsets; the context is more specific). `profile` is a profile dict; None adds no profile env.
+    git refuses abbreviated long options in every run: a model's `git blame --con` would else be --contents, past a
+    rule that denies the full name."""
     mine = (context or {}).get("env") or {}
     on = lambda flag: str(mine.get(flag, os.environ.get(flag, ""))).lower() not in ("", "0", "false")  # noqa: E731
     cloud = tuple(p for flag, prefixes in CLOUD.items() if on(flag) for p in prefixes)
     keep = lambda k: k.upper() in KEEP or k.startswith(KEEP_PREFIX) or bool(login.match(k)) or k.startswith(cloud)  # noqa: E731
     env = {**{k: v for k, v in os.environ.items() if keep(k)}, "GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS": "1"}
+    for k, v in _env_values(_profile_arg(profile).get("env") if profile else {}).items():
+        if v is None:
+            env.pop(k, None)
+        else:
+            env[k] = v
     for k, v in mine.items():
         if v is None:
             env.pop(k, None)
@@ -293,9 +460,19 @@ def claude(feature, prompt, *, context=None, model="sonnet", schema=None, system
     result, text} of the call, for callers that show them.
     skills: keep skills and slash commands (a prompt like "/code-review medium 12") and read the run as a stream, since
     such a command may answer in a fork (parse); everything else stays lean."""
-    if harness():
-        return run_harness(feature, prompt, context=context, model=model, schema=schema, system=system, timeout=timeout,
-                           cwd=cwd, meta=meta)
+    prof = profile()
+    if not prof["builtin"]:
+        if prof["command"]:
+            return run_harness(feature, prompt, context=context, model=model, schema=schema, system=system,
+                               timeout=timeout, cwd=cwd, meta=meta, profile=prof)
+        if not _is_legacy(prof):  # a named profile without a command must not run another provider's CLI
+            raise RunFailed(feature, f"No command is configured for {prof['label']}: set its command in "
+                                    "pr-review.config.json.", "harness", {})
+    try:
+        run_env = env_for(context, profile=prof)
+    except MissingEnv as e:
+        raise RunFailed(feature, f"{prof['label']} needs the environment variable {e.name}, and it is not set. "
+                                "Export it and try again.", "harness", {}) from None
     lean = [a for a in LEAN if not (skills and a == "--disable-slash-commands")]
     if skills:
         lean = ["stream-json" if a == "json" else a for a in lean] + ["--verbose"]  # stream-json needs --verbose with -p
@@ -313,7 +490,7 @@ def claude(feature, prompt, *, context=None, model="sonnet", schema=None, system
     for attempt in (1, 2):  # ponytail: one retry covers the moment a Claude Code self-update swaps the binary
         try:
             out = subprocess.run([*args, *extra], input=prompt, capture_output=True, text=True, timeout=timeout,
-                                 env=env_for(context), cwd=str(cwd or APP))
+                                 env=run_env, cwd=str(cwd or APP))
             break
         except subprocess.TimeoutExpired as e:
             raise failure(feature, None, e.stdout if isinstance(e.stdout, str) else "", e.stderr if isinstance(e.stderr, str) else "", model=model, timeout=timeout) from None
