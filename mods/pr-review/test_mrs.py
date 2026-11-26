@@ -1,4 +1,6 @@
 """Run: python3 test_mrs.py  (a GitLab MR as the PR object the GitHub path makes; subprocess.run is stubbed)"""
+import contextlib
+import io
 import json
 import subprocess
 import mrs
@@ -126,3 +128,54 @@ got = mrs.branches("g/p", ["feat/a", "feat/b", ""])
 assert [p["number"] for p in got] == [1, 2], got
 assert calls[-1][:4] == ["glab", "mr", "list", "--repo"], calls[-1]
 print("branches ok")
+
+# The person's own merge requests: assigned first, then created, an MR in both once, each with its project path.
+ASSIGNED = {**MR, "iid": 7, "web_url": "https://gitlab.com/g/sub/p/-/merge_requests/7"}
+BOTH = {**MR, "iid": 8, "web_url": "https://gitlab.com/g/nested/team/-/merge_requests/8"}
+CREATED = {**MR, "iid": 9, "web_url": "https://gitlab.com/g/other/-/merge_requests/9"}
+NOWEB = {k: v for k, v in MR.items() if k != "web_url"} | {"iid": 10}
+FOREIGN = {**MR, "iid": 11, "web_url": "https://github.com/o/r/pull/12"}
+def scoped(args, **kw):
+    calls.append(args)
+    if "scope=assigned_to_me" in args[-1]:
+        return subprocess.CompletedProcess(args, 0, json.dumps([ASSIGNED]) + "\n" + json.dumps([NOWEB, BOTH]), "")
+    return subprocess.CompletedProcess(args, 0, json.dumps([BOTH, FOREIGN, CREATED]), "")
+calls.clear()
+mrs.subprocess.run = scoped
+got = mrs.mine()
+assert [p["number"] for p in got] == [7, 8, 9], got
+assert [p["repo"] for p in got] == ["g/sub/p", "g/nested/team", "g/other"], got
+assert 10 not in [p["number"] for p in got] and 11 not in [p["number"] for p in got], got
+assert got[0] == {**mrs.to_pr(ASSIGNED), "repo": "g/sub/p"}, got[0]
+needed = {"number", "url", "state", "isDraft", "headRefName", "headRefOid", "baseRefName", "updatedAt", "author"}
+assert needed <= set(got[1]), sorted(got[1])
+assert calls == [["glab", "api", "--paginate", "merge_requests?scope=assigned_to_me&state=opened&per_page=100"],
+                 ["glab", "api", "--paginate", "merge_requests?scope=created_by_me&state=opened&per_page=100"]], calls
+out = io.StringIO()
+with contextlib.redirect_stdout(out):
+    assert mrs.main(["mrs.py", "mine"]) == 0
+assert [p["number"] for p in json.loads(out.getvalue())] == [7, 8, 9], out.getvalue()
+print("mine ok")
+
+# One scope failing keeps the other's list; both failing stops the script with the reason.
+def half(args, **kw):
+    if "scope=created_by_me" in args[-1]:
+        return subprocess.CompletedProcess(args, 1, "", "glab: 403 Forbidden\n")
+    return subprocess.CompletedProcess(args, 0, json.dumps([ASSIGNED]), "")
+mrs.subprocess.run = half
+assert [p["number"] for p in mrs.mine()] == [7]
+
+def other_half(args, **kw):
+    if "scope=assigned_to_me" in args[-1]:
+        return subprocess.CompletedProcess(args, 1, "", "glab: 403 Forbidden\n")
+    return subprocess.CompletedProcess(args, 0, json.dumps([CREATED]), "")
+mrs.subprocess.run = other_half
+assert [p["number"] for p in mrs.mine()] == [9]
+
+mrs.subprocess.run = fake("", 1, "glab: not signed in\nfor host gitlab.com")
+try:
+    mrs.mine()
+    raise AssertionError("two failed glab calls must stop the script")
+except SystemExit as e:
+    assert "not signed in" in str(e), e
+print("mine failures ok")

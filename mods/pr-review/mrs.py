@@ -9,6 +9,7 @@
   python3 mrs.py visibility <group/project>  the project's visibility (public, internal, private)
   python3 mrs.py post <merge request url> <payload.json>   one discussion per comment, then the summary note
   python3 mrs.py branches <group/project> <branch> ...   open MRs of these source branches
+  python3 mrs.py mine                        open MRs assigned to you or opened by you, in the projects you can see
 
 Every call goes through `glab`, which must be signed in (`glab auth login`). A failure prints the reason to stderr and
 exits 1; the caller shows it as the list's or the diff's error.
@@ -198,10 +199,43 @@ def diff(url):
     return run(GLAB + ["mr", "diff", str(ref["iid"]), "--repo", ref["repo"]])
 
 
+def mine():
+    """Open merge requests assigned to the person and open ones they created, across every project they can see, as PR
+    objects with the project's path under `repo`, which ghTarget needs to place them. A merge request whose link does
+    not parse names no project: it is left out. One failed call leaves the other's list; both failing raises."""
+    found, failures, answered = [], [], 0
+    for scope in ("assigned_to_me", "created_by_me"):
+        # Both are global endpoints: no project path and no --hostname, so glab asks the person's own GitLab.
+        try:
+            text = run(GLAB + ["api", "--paginate", f"merge_requests?scope={scope}&state=opened&per_page=100"])
+        except SystemExit as e:
+            failures.append(str(e))
+            continue
+        answered += 1
+        found.extend(pages(text))
+    if not answered:
+        raise SystemExit(failures[0])
+    seen, out = set(), []
+    for m in found:
+        url = m.get("web_url")
+        ref = parse(url)
+        if not ref or url in seen:
+            continue
+        seen.add(url)
+        out.append({**to_pr(m), "repo": ref["repo"]})
+    return out
+
+
 def main(argv):
+    if len(argv) < 2:
+        raise SystemExit(__doc__.strip().splitlines()[0])
+    what = argv[1]
+    if what == "mine":
+        print(json.dumps(mine()))
+        return 0
     if len(argv) < 3:
         raise SystemExit(__doc__.strip().splitlines()[0])
-    what, target = argv[1], argv[2]
+    target = argv[2]
     if what == "list":
         print(json.dumps(list_open(target)))
     elif what == "view":

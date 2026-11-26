@@ -35,16 +35,23 @@ corners and a 1 px `border`:
   row shows the PR's diff. A PR shown here is not repeated in the list below.
 - A yellow banner (`ansi3` ~11 %) "This PR belongs to …" with `Switch to …` and `Clear` when the picked PR's
   context is hidden by the current view.
-- `PRs ▾` opens a 360 px list: source tabs `Mine` (PRs your Claude sessions created) / `This repo` / `Review
-  requested`, an "Open PR… URL or owner/repo#123" field, a `Triage PRs` and a `Setup` pill, then one row per PR:
+- `PRs ▾` opens a 360 px list: source tabs `Mine` / `This repo` / `This space` / `Review requested` / `Sessions`,
+  an "Open PR… URL or owner/repo#123" field, a `Triage PRs` and a `Setup` pill, then one row per PR:
   title, state (`open` `ansi2`, `draft` `muted`, `merged` `ansi5`, `closed` `ansi1`), one pill into the review
-  (`Review`, or `Resume` once started; open and draft PRs only), a second line in `muted` (repo · session title, or
-  @author · review decision · +/− · age), then chips: the risk signal from cached data (`Highest finding: high` in
-  the severity's color, and a tinted `⛨ Security` chip in `ansi1` when an open finding is about security; nothing
-  without a cached analysis or findings) and the triage chips (`● P1` in `ansi1`, `P2` `ansi3`, `P3` `muted`;
-  "Deep review", …) with the "why" in an accent quote bar on the picked one. Merged and closed PRs are folded under
-  a `▸ Merged or closed (n)` row. An empty list is one `muted` sentence that says what to do ("Open a space on a
-  GitHub repo to list its PRs.").
+  (`Review`, or `Resume` once started; open and draft PRs only), a second line in `muted` (repo · @author · review
+  decision · +/− · age, or the session's title), then chips: the risk signal from cached data (`Highest finding:
+  high` in the severity's color, and a tinted `⛨ Security` chip in `ansi1` when an open finding is about security;
+  nothing without a cached analysis or findings) and the triage chips (`● P1` in `ansi1`, `P2` `ansi3`, `P3`
+  `muted`; "Deep review", …) with the "why" in an accent quote bar on the picked one. Merged and closed PRs are
+  folded under a `▸ Merged or closed (n)` row. An empty list is one `muted` sentence that says what to do ("Open a
+  space on a GitHub repo to list its PRs.").
+- `Mine` is fetched, not in memory: open PRs and merge requests assigned to you or opened by you, on GitHub
+  (`gh search prs --assignee=@me`, `--author=@me`) and on GitLab, merged by URL into one list cached in
+  `sources.json` with a ↻. This space's repository comes first, the rest fold under `Other repos or older`. If one
+  host cannot be asked, the list shows the other's and names the host that failed; it errors only when neither
+  answered. `Sessions` is the old `Mine`: the PRs your Claude sessions opened (`prs.json`), read in memory and
+  never reloaded, and the list that still carries the session, so comments reach the agent that wrote the code. A
+  space with no remembered pick starts on `Mine` (`This space` when a branch checked out here has an open PR).
 - The file list (28 px rows, up to 200 px): folder dimmed, file name, `● n` comments in `accent`, `+/−`.
 - A Diff / File toggle and `VS Code ↗` for the open file; File shows the file in a read-only editor (markdown
   rendered).
