@@ -374,7 +374,9 @@ Optional, in `~/.config/herdr-app/pr-review.config.json`:
 
 `language` is what the AI writes in; `cloneRoot` is the folder where a PR's repository is looked for and, when you
 click "Clone to …", cloned into (default `~/code`; with `"cloneRoot": "~/Work/Claude"` a clone goes to
-`~/Work/Claude/<repo>`); `globalRules` are conventions every PR is checked against; `ledger` is a folder for a JSONL
+`~/Work/Claude/<repo>`). It may also be a list of folders, when you keep clones in more than one place:
+`"cloneRoot": ["~/code", "~/aircall"]`; the first is where a new clone goes, and every folder is searched. The
+banner names the folders it searched when it found no clone; `globalRules` are conventions every PR is checked against; `ledger` is a folder for a JSONL
 usage ledger of every LLM call; `dryRun` makes "Submit review" write the payload to
 `pr-data/review-dry-run.json` instead of posting it. `harness` runs your own AI CLI instead of Claude Code, with
 `{model}` and `{prompt}` filled in, and `harness.modelList` names the models the pickers offer (an entry may carry

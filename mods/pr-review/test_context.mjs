@@ -53,3 +53,10 @@ import * as C from "./context.js";
   assert.equal(C.ruleContext(null, "https://github.com/a/b", [{ remote: "(", context: "z" }], "/h"), null); // bad regex
 }
 console.log("ok");
+
+// A person keeps clones in more than one folder: cloneRoot takes a list, and each folder is kept once.
+{
+  const { cloneRoots } = await import("./context.js");
+  assert.deepEqual(cloneRoots({}, "default", ["~/code", "~/aircall", "~/code"]), ["~/code", "~/aircall"]);
+  assert.deepEqual(cloneRoots({ contexts: { a: { cloneRoot: "~/work" } } }, "a", "~/code"), ["~/work", "~/code"]);
+}

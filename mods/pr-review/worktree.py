@@ -50,10 +50,10 @@ def git(*args, cwd=None, timeout=300):
 
 
 class NeedClone(Exception):
-    """No local clone of the repo; `dest` is where --clone would put it."""
-    def __init__(self, dest):
+    """No local clone of the repo; `dest` is where --clone would put it, `roots` the folders that were searched."""
+    def __init__(self, dest, roots=None):
         super().__init__(f"No local clone: {dest}")
-        self.dest = dest
+        self.dest, self.roots = dest, [str(r) for r in (roots or [])]
 
 
 def is_repo(path, owner, repo):
@@ -88,7 +88,7 @@ def clone_for(owner, repo, clone=False, local=None, url=None, hostname=None):
     if dest is None:
         raise RuntimeError(f"No free folder for {owner}/{repo} under {base}")
     if not clone:
-        raise NeedClone(dest)
+        raise NeedClone(dest, BASES)
     base.mkdir(parents=True, exist_ok=True)
     # The space's own checkout already knows the right remote and its login; else try HTTPS, then SSH (a private repo
     # with no credential helper answers only over SSH).
@@ -201,7 +201,7 @@ if __name__ == "__main__":
             WORKTREES = pathlib.Path(opt("--worktrees")).expanduser() if opt("--worktrees") else WORKTREES
             main(sys.argv[1], "--clone" in args, opt("--local"))
     except NeedClone as e:
-        print(json.dumps({"need_clone": str(e.dest)}))
+        print(json.dumps({"need_clone": str(e.dest), "roots": e.roots}))
         sys.exit(3)
     except Exception as e:  # noqa: BLE001 - the panel shows the reason
         print(str(e), file=sys.stderr)

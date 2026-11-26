@@ -476,7 +476,7 @@ export const ReviewMode = {
     this.pageScrolls = Object.fromEntries(PAGES.map(([k]) => [k, ScrollHandle.new()])); // the right pane's pages (page-part:<name>)
     this.order = "reading"; this.flowSel = null;
     this.page = "overview"; this.archMode = "diff"; this.fold = { summary: true, blockers: true, checks: false }; this.blastOpen = false;
-    this.ctx = null; this.since = null; this.sinceOn = false; this.lastReviewed = null; this.verifyBusy = false;
+    this.ctx = null; this.needCloneRoots = null; this.since = null; this.sinceOn = false; this.lastReviewed = null; this.verifyBusy = false;
     this.find = { list: [], runs: {}, status: {}, reports: {} };
     // Reviewer runs and the fixing agent's reports land in pr-data/findings: follow that folder.
     cx.spawn(async (cx) => {
@@ -808,7 +808,7 @@ export const ReviewMode = {
       if (this.wtIn === job) this.wtIn = null;
       this.cloning = false; this.checkout = null;
       if (this.prSel?.url !== url) return;
-      if (r.code === 3) { this.needClone = JSON.parse(r.stdout).need_clone; this.loadContext(cx); cx.notify(); return; }
+      if (r.code === 3) { const n = JSON.parse(r.stdout); this.needClone = n.need_clone; this.needCloneRoots = n.roots ?? []; this.loadContext(cx); cx.notify(); return; }
       this.needClone = null;
       if (r.code !== 0) { this.checkout = { error: r.stderr.trim().slice(0, 200) }; cx.notify(); return; }
       const w = JSON.parse(r.stdout);
@@ -6015,7 +6015,7 @@ export const ReviewMode = {
           .when(Boolean(this.worktree?.path) && !this.trustedPr() && !this.trustAsked(), (e) => e.child(this.trustPrompt(t)))
           .when(Boolean(this.needClone), (e) => e.child(h_flex().flex_none().px(14).py(8).gap(10).items_center().bg(t.ansi3 + "1c").border_b(1).border_color(t.border).text_size(TYPE.small)
             .child(div().flex_1().min_w(0).whitespace_normal().child(`No local clone of ${target.repo ?? "this repo"}: reviewers, whole files, definitions and the AI analysis need one. The diff works without.`))
-            .child(pill("rv-clone", t, this.cloning ? "Cloning…" : `Clone to ${this.needClone.replace(home(), "~")}`, (_e, cx) => { if (!this.cloning) { this.makeWorktree(cx, true); cx.notify(); } }, false, t.foreground).tooltip("Clone the repository once, so the PR head can be checked out for reviewers and go-to-definition"))))
+            .child(pill("rv-clone", t, this.cloning ? "Cloning…" : `Clone to ${this.needClone.replace(home(), "~")}`, (_e, cx) => { if (!this.cloning) { this.makeWorktree(cx, true); cx.notify(); } }, false, t.foreground).tooltip(`Clone the repository once, so the PR head can be checked out for reviewers and go-to-definition. No clone was found in ${(this.needCloneRoots ?? []).map((d) => d.replace(home(), "~")).join(", ") || "the configured folders"}; cloneRoot in pr-review.config.json may take a list.`))))
 
           .when(listShown, (e) => e.child(div().id(`${listId}-wrap`).flex_1().min_h(0).relative().when(held, (x) => x.opacity(0)).on_size_change((size) => { this.listH = size.height; })
 
