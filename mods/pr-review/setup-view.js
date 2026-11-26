@@ -4,8 +4,8 @@
 // prompt but not run: Enter runs it. Also small helpers other files share (clipboard, browser, settings file).
 import { div } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar } from "gpui-base";
-import { exec, run, shared, setShared, appHome, readTextFile } from "herdr";
-import { checkScript, parseCheck, report, blockers, found, pretypeArgv, harnessTool } from "./setup.js";
+import { exec, run, shared, setShared, appHome, readTextFile, writeTextFile } from "herdr";
+import { checkScript, parseCheck, report, blockers, found, pretypeArgv, harnessTools } from "./setup.js";
 import { TYPE } from "./views.js"; // the text sizes (U34)
 
 export const SETUP_KEY = "pr-review.setup";
@@ -19,6 +19,13 @@ export const configFile = () => `${appHome()}/pr-review.config.json`;
 export async function readConfig() {
   try { return JSON.parse(await readTextFile(configFile()) ?? "{}") ?? {}; } catch { return {}; }
 }
+// Set keys in pr-review.config.json, keeping every other key and the person's edits: the harness picker's one write.
+export async function writeConfig(patch) {
+  const before = await readTextFile(configFile()).catch(() => null);
+  const doc = { ...(before ? JSON.parse(before) : {}), ...patch };
+  await writeTextFile(configFile(), JSON.stringify(doc, null, 2) + "\n", before ?? null);
+  return doc;
+}
 
 // Clipboard and browser on macOS and Linux.
 export const copyText = (text) => exec("sh", ["-c", 'printf %s "$0" | (pbcopy 2>/dev/null || wl-copy 2>/dev/null || xclip -selection clipboard 2>/dev/null)', text]).catch(() => null);
@@ -30,7 +37,7 @@ export function runSetup(view, cx, force = true) {
   view.setupBusy = true;
   cx.spawn(async (cx) => {
     if (!view.cfg) view.cfg = await readConfig().catch(() => ({}));
-    const h = harnessTool(view.cfg), extra = h ? [h.command[0]] : [];
+    const extra = harnessTools(view.cfg).map((t) => t.id);
     const [r, os] = await Promise.all([exec("sh", ["-c", checkScript(extra)], { timeout: 30000 }).catch((e) => ({ stdout: "", stderr: String(e) })),
       exec("uname", ["-s"]).then((x) => (/linux/i.test(x.stdout) ? "linux" : "darwin")).catch(() => "darwin")]);
     setShared(SETUP_KEY, { at: Date.now(), os, ...parseCheck(r.stdout) });
@@ -46,7 +53,7 @@ export async function loadSetup(view, cx) {
   view.setupFirst = true;
 }
 
-const rows = (view) => { const s = shared(SETUP_KEY); if (!s) return null; const h = harnessTool(view?.cfg); return report(s, s.os, h ? [h] : []); };
+const rows = (view) => { const s = shared(SETUP_KEY); if (!s) return null; return report(s, s.os, harnessTools(view?.cfg)); };
 
 // The PR panel's banner when a required program is missing or logged out; null otherwise.
 export function setupBanner(view, t) {

@@ -99,7 +99,23 @@ All keys optional.
   "globalRules": "PR titles follow Conventional Commits: `type(scope): subject`.",
   "ledger": "~/.local/share/llm-usage",
   "sessionTitles": "~/path/to/titles.json",
-  "harness": { "command": ["opencode", "run"], "timeout": 1800 }
+  "harness": "gateway",
+  "harnesses": {
+    "gateway": {
+      "label": "opencode · Gateway",
+      "command": ["opencode", "run", "--model", "{model}"],
+      "env": { "OPENAI_BASE_URL": "https://gateway.example/v1", "OPENAI_API_KEY": "${MY_GATEWAY_KEY}" },
+      "timeout": 1800,
+      "models": { "provider": "gw", "prefix": "anthropic/", "deny": ["*-mini"] }
+    },
+    "claude": { "label": "Claude Code", "env": { "ANTHROPIC_BASE_URL": "https://gateway.example" } }
+  },
+  "providers": {
+    "gw": { "label": "LLM Gateway", "kind": "openai", "baseUrl": "https://gateway.example/v1",
+            "apiKeyEnv": "MY_GATEWAY_KEY", "headers": {}, "timeout": 8,
+            "priceOverrides": { "vendor/model": [2, 10] } },
+    "openrouter": { "label": "OpenRouter", "kind": "openrouter", "baseUrl": "https://openrouter.ai/api/v1" }
+  }
 }
 ```
 
@@ -114,11 +130,32 @@ All keys optional.
   `{at, feature, account (the context id), model, cost, tokens, ms, ok, tool}`. The newest 24 months are kept.
   Unset: no ledger.
 - `sessionTitles`: a JSON file `{<Claude session id>: {title}}` with better titles for the "Mine" list.
-- `harness.timeout`: seconds a harness run may take (default: the caller's own limit, 15 minutes for the analysis
-  and 25 for a reviewer). A configured harness has no cost cap, so a slow CLI can be given more time.
-- `harness`: your own review CLI, as the program and its fixed arguments. Setup lists it as `harness`, finds it by
-  its first argument, and counts it as the AI program, so `claude` need not be installed when it is set. The calls
-  that run it are not wired yet.
+- `harness`: the name of the active profile in `harnesses`. Absent: the built-in `claude` profile. A string that
+  names no profile fails the run, and the sentence lists the profiles it knows. The object form from 0.15 and before
+  is one legacy profile named `"harness"`, and it is active:
+  `{"harness": {"command": ["opencode", "run"], "timeout": 1800}}`. It keeps its own `label`, `models` (an argv that
+  prints one id per line), `modelList` and `prefix`; an object with none of `command`, `models` or `modelList` is
+  ignored, so Claude Code runs.
+- `harnesses`: one entry per profile, by name. `label` is what the menus show; `command` is the argv with `{model}`
+  filled in and `{prompt}` optional (the prompt is appended when the command has no `{prompt}`); `timeout` is the
+  seconds a run may take, in place of the caller's own limit (15 minutes for the analysis and 25 for a reviewer). A
+  profile has no cost cap, so a slow CLI can be given more time. `env` values are strings, `null` unsets a variable,
+  and `"${VAR}"` reads `VAR` from the environment: when it is not set the run fails with a sentence naming it. The
+  context's env wins where both set the same variable. `models` is `shortlist` (`[{id, price?}]`, no request), or
+  `provider` with `prefix` and `deny` (globs) over a catalog from `providers`, or `command`, an argv that prints one
+  id per line, with `prefix`. A profile named `claude` is the built-in Claude Code command
+  (`claude -p --model`): its `env` and `models` point Claude Code at another endpoint. Any other declared profile
+  needs a `command`: without one the run fails and the sentence names the profile. The harness menu lists a profile
+  when its program is on PATH, plus the active profile even when it is not, marked "not installed": the control
+  never names a profile its own menu does not contain.
+- `providers`: where model catalogs come from, by name. `label` is for sentences; `kind` is `openai`, `anthropic` or
+  `openrouter`; `baseUrl` is read with `/models` appended. `apiKeyEnv` names the variable that holds the key, sent as
+  `Authorization: Bearer` for `openai` and `x-api-key` for `anthropic`; the key is never written to disk, and an empty
+  variable gives a sentence and no request. `openrouter` needs no key. `headers` adds headers to every request;
+  `timeout` is seconds, 8 by default. The catalog is cached for six hours in `pr-data/providers.json`; a failed
+  request is retried after a minute, and cached models keep serving meanwhile. `priceOverrides` maps an id to
+  `[input, output]` USD per million tokens and wins over a catalog price; `openrouter`'s per-token `pricing` is read
+  the same way. Every failure is one sentence for the person, never a traceback.
 
 Feature names in the ledger: `Review analysis`, `Review analysis (since last review)`, `Code review`,
 `Security review`, `Codex review`, `PR triage`, `PR fix verification`.
@@ -129,14 +166,15 @@ Setup (PRs ▾ → Setup) checks each one and offers the install command; nothin
 Enter in the terminal it opens.
 
 - Required: `git` (2.46 or later for the push lock where a remote has a push URL of its own) and `python3`, plus one
-  member of each group: `gh` or `glab` (logged in), and `claude` (logged in) or the harness from `harness.command`.
-  A group blocks only when none of its members is usable; the pane names it "gh or glab", "claude or harness". A
-  missing member of a satisfied group is listed as not installed, never as required.
+  member of each group: `gh` or `glab` (logged in), and `claude` (logged in) or a harness profile's program. Setup
+  lists one row per harness profile, found by the first word of its command, and those rows share the `llm` group
+  with `claude`: the group blocks only when none of them is usable, and the pane then names its members ("gh or
+  glab", "claude or opencode"). A missing member of a satisfied group is listed as not installed, never as required.
 - Optional: `codex` (the Codex reviewer is offered only when it is on PATH; it needs a Codex with permission
   profiles), `bwrap` on Linux (the sandbox for probes; macOS has `sandbox-exec` built in), `acli` (the Jira ticket
   a PR names).
 - The reviewers run a plain prompt; the `/code-review` and `/security-review` slash commands are not used, so the
-  same path works on Claude Code and on a harness.
+  same path works on Claude Code and on a harness profile.
 - Language servers, for go-to-definition and hover in the diff (each one only turns that language on):
   `typescript-language-server` + `tsc` (TypeScript, JavaScript), `pyright-langserver` (Python), `gopls` (Go),
   `rust-analyzer` (Rust), `jdtls` (Java), `terraform-ls` (Terraform), `clangd` (C, C++). They are found on PATH

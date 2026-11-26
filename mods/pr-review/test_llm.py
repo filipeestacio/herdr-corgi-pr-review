@@ -1,5 +1,6 @@
 """Run: python3 test_llm.py  (no network: subprocess.run is stubbed)."""
 import json
+import os
 import pathlib
 import subprocess
 import tempfile
@@ -204,4 +205,122 @@ assert "The run failed: Overloaded." in str(late), str(late)
 kept = llm.failed(timed)
 assert set(kept) == {"error", "kind", "detail"} and kept["error"] == str(timed) and kept["kind"] == "timeout"
 assert llm.failed(ValueError("no such folder")) == {"error": "no such folder"}
+
+# ---- harness profiles: named profiles with their own env, and the legacy harness object as profile "harness"
+runs = []
+
+
+def capture(args, **kw):
+    runs.append((args, kw))
+    return subprocess.CompletedProcess(args, 0, json.dumps({"answer": {"ok": True}}), "")
+
+
+saved = llm.APP, llm.CONFIG
+saved_env = {k: os.environ.get(k) for k in ("PR_REVIEW_TEST_KEY", "PR_REVIEW_TEST_MISSING", "ANTHROPIC_API_KEY")}
+subprocess.run = capture
+try:
+    with tempfile.TemporaryDirectory() as d:
+        llm.APP, llm.CONFIG = pathlib.Path(d), pathlib.Path(d) / "pr-review.config.json"
+
+        # No config file: the built-in Claude profile is active, its argv runs as today, and there is no harness.
+        assert llm.active() == "claude" and llm.harness() is None and llm.harness_label() == "Claude Code"
+        assert llm.profile()["builtin"] is True and llm.profile()["command"] == ["claude", "-p", "--model", "{model}"]
+        llm.claude("Feature", "p", model="sonnet", schema={"type": "object"})
+        args, kw = runs[-1]
+        assert args[:4] == ["claude", "-p", "--model", "sonnet"], args
+        assert kw["env"]["GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS"] == "1"
+
+        # A broken harnesses entry is kept with what it has, and never raises.
+        llm.CONFIG.write_text(json.dumps({"harnesses": {"bad": "not a profile"}}))
+        assert llm.profiles()["bad"]["name"] == "bad" and llm.profiles()["bad"]["command"] is None
+
+        # A legacy harness object with no command is no harness at all: the Claude path, exactly as 0.15 did.
+        for empty in ({}, {"label": "Half"}):
+            llm.CONFIG.write_text(json.dumps({"harness": empty}))
+            assert llm.active() == "claude" and llm.harness() is None and "harness" not in llm.profiles(), empty
+        llm.claude("Feature", "p", model="sonnet")
+        assert runs[-1][0][:4] == ["claude", "-p", "--model", "sonnet"]
+
+        # The legacy harness object is the profile named "harness": its argv runs, its timeout is used.
+        llm.CONFIG.write_text(json.dumps({"harness": {"command": ["legacy", "run", "--model", "{model}"], "label": "Legacy", "timeout": 42}}))
+        assert llm.active() == "harness" and llm.harness() == ["legacy", "run", "--model", "{model}"]
+        assert llm.profile()["name"] == "harness" and llm.profile()["timeout"] == 42
+        llm.claude("Feature", "p", model="m1", schema={"type": "object"})
+        args, kw = runs[-1]
+        assert args[:4] == ["legacy", "run", "--model", "m1"] and kw["timeout"] == 42, (args, kw["timeout"])
+
+        # A named profile: its argv and env reach the run; ${VAR} reads os.environ; null unsets; the context wins.
+        os.environ["PR_REVIEW_TEST_KEY"] = "secret"
+        os.environ["ANTHROPIC_API_KEY"] = "from-the-window"
+        llm.CONFIG.write_text(json.dumps({
+            "harness": "gateway",
+            "harnesses": {"gateway": {
+                "label": "Gateway", "command": ["gw", "run", "--model", "{model}", "{prompt}"], "timeout": 900,
+                "env": {"OPENAI_BASE_URL": "https://gateway.example/v1", "OPENAI_API_KEY": "${PR_REVIEW_TEST_KEY}",
+                        "ANTHROPIC_API_KEY": None},
+                "models": {"provider": "gw", "prefix": "anthropic/"}}}}))
+        assert llm.active() == "gateway" and llm.harness_label() == "Gateway"
+        env = llm.env_for({"id": "red", "env": {"OPENAI_BASE_URL": "https://context.example/v1"}}, profile=llm.profile())
+        assert env["OPENAI_API_KEY"] == "secret" and env["OPENAI_BASE_URL"] == "https://context.example/v1", env
+        assert "ANTHROPIC_API_KEY" not in env, "a null in the profile unsets it"
+        llm.claude("Feature", "p", model="anthropic/x", context={"id": "red", "env": None}, schema={"type": "object"})
+        args, kw = runs[-1]
+        assert args[:2] == ["gw", "run"] and kw["env"]["OPENAI_API_KEY"] == "secret" and kw["timeout"] == 900
+        assert "ANTHROPIC_API_KEY" not in kw["env"]
+
+        # A ${VAR} that is not set fails the run, in a sentence that names the variable.
+        os.environ.pop("PR_REVIEW_TEST_MISSING", None)
+        cfg = json.loads(llm.CONFIG.read_text())
+        cfg["harnesses"]["gateway"]["env"] = {"OPENAI_API_KEY": "${PR_REVIEW_TEST_MISSING}"}
+        llm.CONFIG.write_text(json.dumps(cfg))
+        for call in (lambda: llm.claude("Feature", "p", model="anthropic/x"),
+                     lambda: llm.run_harness("Feature", "p", model="anthropic/x", profile=llm.profile())):
+            try:
+                call()
+                raise AssertionError("a missing variable must raise")
+            except llm.RunFailed as e:
+                assert e.kind == "harness" and "PR_REVIEW_TEST_MISSING" in str(e) and "Gateway" in str(e), str(e)
+
+        # A named profile with no command refuses the run: it must not send the work to another provider's CLI.
+        llm.CONFIG.write_text(json.dumps({"harness": "typo", "harnesses": {"typo": {"label": "Typo"}}}))
+        for call in (lambda: llm.claude("Feature", "p", model="m"),
+                     lambda: llm.run_harness("Feature", "p", model="m", profile=llm.profile())):
+            try:
+                call()
+                raise AssertionError("a named profile with no command must raise")
+            except llm.RunFailed as e:
+                assert e.kind == "harness" and "Typo" in str(e) and "command" in str(e), str(e)
+
+        # A name no profile has is an error that lists the profiles it knows.
+        llm.CONFIG.write_text(json.dumps({"harness": "nope", "harnesses": {"gateway": {"command": ["gw", "run"]}}}))
+        try:
+            llm.claude("Feature", "p")
+            raise AssertionError("an unknown profile must raise")
+        except llm.RunFailed as e:
+            assert e.kind == "harness" and "nope" in str(e) and "gateway" in str(e) and "claude" in str(e), str(e)
+
+        # A named claude profile with no command is still the built-in Claude Code command.
+        llm.CONFIG.write_text(json.dumps({"harnesses": {"claude": {"env": {"ANTHROPIC_BASE_URL": "https://gateway.example"}}}}))
+        assert llm.active() == "claude" and llm.harness() is None
+        assert llm.profile()["command"] == ["claude", "-p", "--model", "{model}"]
+        llm.claude("Feature", "p", model="sonnet")
+        assert runs[-1][0][:4] == ["claude", "-p", "--model", "sonnet"]
+
+        # The built-in profile named in harnesses: still `claude -p`, now with the profile's env.
+        llm.CONFIG.write_text(json.dumps({"harnesses": {"claude": {
+            "env": {"ANTHROPIC_BASE_URL": "https://gateway.example", "ANTHROPIC_API_KEY": "${PR_REVIEW_TEST_KEY}"},
+            "models": {"provider": "gw"}}}}))
+        assert llm.active() == "claude" and llm.harness() is None
+        llm.claude("Feature", "p", context={"id": "x", "env": None}, model="sonnet")
+        args, kw = runs[-1]
+        assert args[:4] == ["claude", "-p", "--model", "sonnet"] and kw["env"]["ANTHROPIC_BASE_URL"] == "https://gateway.example"
+        assert kw["env"]["ANTHROPIC_API_KEY"] == "secret"
+finally:
+    subprocess.run = real
+    llm.APP, llm.CONFIG = saved
+    for name, value in saved_env.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
 print("ok")
