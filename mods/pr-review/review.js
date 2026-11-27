@@ -1632,8 +1632,10 @@ export const ReviewMode = {
     if (!st.fixHead && !r) return [];
     // A running job whose agent is gone (fixStage "ended") says ended, not the word its own record still carries.
     const ended = job?.state === "running" && this.fstage(f) === "ended";
+    // A session fix names the PR's session; a new tab's fix names its agent, and a sub-agent's its own kind.
+    const target = job?.target === "main" ? "the PR's agent" : job?.target === "session" ? "the PR's session" : "a sub-agent";
     return [
-      job && ["Agent", `${job.target === "main" ? "the PR's agent" : "a sub-agent"}${job.terminal ? ` (${job.terminal})` : ""}, ${ended ? "ended" : job.state === "running" ? fv.status : job.state}`],
+      job && ["Agent", `${target}${job.terminal ? ` (${job.terminal})` : ""}, ${ended ? "ended" : job.state === "running" ? fv.status : job.state}`],
       job?.branch && ["Branch", job.branch],
       ["Commit", r?.commit ? String(r.commit).slice(0, 8) : "none reported yet"],
       r && ["Report", `${r.status === "fixed" ? "The agent reports it fixed" : "The agent declined"}${r.note ? `: ${r.note}` : "."}`],
@@ -2929,7 +2931,9 @@ export const ReviewMode = {
     // agents() has only terminals shown in a pane; a sub-agent runs in the background, so terminals() (hc ls) too.
     const agent = job?.terminal ? agents().find((a) => a.address === job.terminal) ?? terminals().find((x) => x.address === job.terminal && x.state === "live") : null;
     const status = agent?.status === "blocked" ? "waits for your OK" : agent?.status;
-    return job ? { job, commit, status: status ?? (job.target === "main" ? "main agent" : "ended") } : null;
+    // A fix sent to a new tab reads by that tab's agent; one sent to the PR's own session reads by the session, whose
+    // terminal the terminal list may not name (it is not the fix's own agent), not as ended.
+    return job ? { job, commit, status: status ?? (job.target === "main" ? "main agent" : job.target === "session" ? "the PR's session" : "ended") } : null;
   },
   // Comments by id: the pending ones, the sent threads, and other people's GitHub comments ("gh<id>", threads.js
   // ghComment; one already sent to a fix is its thread).
@@ -3032,14 +3036,21 @@ export const ReviewMode = {
     return this.startSessionFix(p, out, cx);
   },
   // "This session": the same folder as a new tab when the PR has no folder of its own (fixBase), so it is put on the
-  // fix's branch first, as startMainFix does. A session's own checkout is a person's tree and is not moved.
+  // fix's branch first, as startMainFix does. A session's own checkout is a person's tree and is not moved. The job is
+  // written once deliver has the text on its way, as startMainFix writes its own only after the send: a text that never
+  // left leaves the finding as it was. It names the session that holds the fix (agent: sendAgent, the same one the
+  // preview named), so its rows can go to that tab, and so a session that ends with nothing to show reads as one more
+  // ended fix rather than staying in progress. A fix preview's own onSent is not used: it records a new tab's job.
   startSessionFix(p, out, cx) {
-    const folder = this.fixBase(), url = this.prSel?.url;
+    const folder = this.fixBase(), url = this.prSel?.url, { agent, label } = this.sendAgent();
     cx.spawn(async (cx) => {
       const at = await this.prepareFixCheckout(folder);
       if (at.error) { this.note = at.error; return cx.notify(); }
       if (this.prSel?.url !== url) return;
-      this.deliver(out.text, cx, out.what, (cx) => p.onSent?.(cx), Boolean(p.guard));
+      this.deliver(out.text, cx, out.what, (cx) => {
+        this.updateThreads(cx, (d) => TH.addFix(d, this.threadKey(), { id: Date.now().toString(36), items: p.fix.items, target: "session", at: Date.now(), state: "running", terminal: agent?.address ?? null, tab: agent?.tab ?? null }));
+        p.fix.sent(cx, { route: "agent", agent: label });
+      }, Boolean(p.guard));
     });
     return cx.notify();
   },
@@ -3202,7 +3213,8 @@ export const ReviewMode = {
   discardFix(job, cx) {
     const key = this.threadKey(), git = (args) => exec("git", ["-C", job.base, ...args], { timeout: 60000 });
     cx.spawn(async (cx) => {
-      if (job.terminal) run("terminal.kill", { terminal: job.terminal });
+      // A session fix's terminal is the PR's own session, which this fix did not start: only a fix's own tab is killed.
+      if (job.terminal && job.target !== "session") run("terminal.kill", { terminal: job.terminal });
       if (job.path) { await git(["worktree", "remove", "--force", job.path]); await git(["branch", "-D", job.branch]); }
       this.updateThreads(cx, (d) => TH.setFix(d, key, job.id, { state: "discarded" }));
       // Its findings are unresolved again: nothing is on its way, and a check it had was on a branch that is gone.

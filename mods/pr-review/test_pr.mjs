@@ -857,12 +857,17 @@ console.log("ok");
   assert.equal(show(se), "+reported -evidence >sent -verified -in_pr");
   assert.equal(se[2].missing, "Fix again: the agent ended without reporting a commit, and nothing landed.");
   assert.equal(se[2].details.length, 4, "what the agent left stays at its step");
+  // The step after it says the same: there is no commit to check, so nothing to verify.
+  assert.equal(se[3].missing, "Nothing to verify: the agent ended without reporting a commit.");
   assert.equal(show(findingSteps({ certainty: "confirmed" }, { s: "progress", fixHead: "h1" }, { stage: "ended" })), "+reported +evidence >sent -verified -in_pr", "the fix's step is still the next one");
+  assert.equal(findingSteps({ certainty: "confirmed" }, { s: "progress", fixHead: "h1" }, { stage: "ended" })[3].missing, "Nothing to verify: the agent ended without reporting a commit.");
   // The other stages keep their words: the same status in progress still asks for the check, and in the PR is all five.
   const sp = findingSteps({ certainty: "confirmed" }, { s: "progress", fixHead: "h1" }, { stage: "progress" });
   assert.equal(show(sp), "+reported +evidence +sent >verified -in_pr");
-  assert.match(sp[3].missing, /^Not verified yet: Verify checks the commit/);
-  assert.equal(show(findingSteps({ certainty: "confirmed" }, { s: "progress", fixHead: "h1", verify: { result: "fixed", head: "h1" } }, { stage: "in_pr" })), "+reported +evidence +sent +verified +in_pr");
+  assert.equal(sp[3].missing, "Not verified yet: Verify checks the commit the fix agent reports, on its branch or in the PR head.");
+  const spi = findingSteps({ certainty: "confirmed" }, { s: "progress", fixHead: "h1", verify: { result: "fixed", head: "h1" } }, { stage: "in_pr" });
+  assert.equal(show(spi), "+reported +evidence +sent +verified +in_pr");
+  assert.deepEqual([spi[3].missing, spi[3].next], [null, false], "in the PR: Verified has its sentence and is not the next step");
   // Checked on the fix branch: verified, not in the PR; on the PR head: all five; an older mark by hand.
   const branch = { s: "progress", fixHead: "h1", verify: { result: "fixed", head: "68999a3", branch: "fix/2-x" } };
   const sb = findingSteps({ certainty: "derived" }, branch, { report: { status: "fixed" } });
@@ -897,6 +902,27 @@ console.log("ok");
   assert.deepEqual(quickFirst(m.findings).map((f) => f.line), [11, 9, 3, 7]);
   assert.deepEqual([hasEffort(m.findings), hasEffort(m.findings.slice(0, 2))], [true, false]);
   console.log("ok findings tab");
+}
+
+// A fix sent to the PR's own session (review.js fixView): its row reads by that session, not as an ended fix, while no
+// live agent is found for its terminal; a live terminal's own status still wins. The view's modules need the render
+// stand-ins for gpui-kit and herdr, so this section loads them the way the render tests do.
+{
+  const { S } = await import("./render_stub.mjs"); // registers the stand-ins for the modules main.js loads
+  const { default: PrReview } = await import("./main.js");
+  const v = new PrReview();
+  v.find = { reports: {} }; v.replies = {};
+  const job = { id: "j1", items: [], target: "session", terminal: "t1", tab: "x", at: Date.now(), state: "running" };
+  const was = S.terminals;
+  S.terminals = [];
+  try {
+    assert.deepEqual([v.fixView(job).status, v.fixView({ ...job, target: "main", terminal: null }).status, v.fixView({ ...job, target: "sub" }).status],
+      ["the PR's session", "main agent", "ended"], "a session job reads by its session, a tab's job by its agent, an ended sub-agent as ended");
+    S.terminals = [{ address: "t1", state: "live", status: "working" }];
+    assert.equal(v.fixView(job).status, "working", "a live terminal's own status is the job's");
+    assert.equal(v.fixView(job).commit, null, "and nothing was reported for it to place");
+  } finally { S.terminals = was; }
+  console.log("ok a session fix's view");
 }
 
 // The security view: the security run's block (findings file) in the analysis' old places, else the analysis' own

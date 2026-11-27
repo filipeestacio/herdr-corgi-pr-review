@@ -1415,6 +1415,61 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     && !got.texts.includes("Fix again: the agent ended without reporting a commit, and nothing landed."), "and its steps still ask for the check");
   v.ffocus = null; S.terminals = wasTerminals; v.landed = null;
 }
+// A fix sent to the PR's own session (review.js startSessionFix): the text still goes through the preview and hc send,
+// and the job it writes names that session, so the finding has a way to its tab and a way to end. Nothing watches the
+// session's work: once its terminal is gone and the job is past ten minutes, the fix ended without a result.
+{
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json") });
+  const { findingSteps } = await import("./pr.js");
+  const f = v.findings().find((x) => ["open", "recheck"].includes(v.fstatus(x)) && !v.fixJob(x));
+  assert.ok(f, "a finding to send to the PR's session");
+  const agent = { address: "t1", tab: "x", tab_name: "corgi-demo #2" };
+  const was = { sendAgent: v.sendAgent, target: v.target, hc: S.hc, terminals: S.terminals, spaces: S.spaces, root: v.root, head: v.head, runs: S.runs };
+  const sent = [];
+  S.hc = async (args) => { sent.push(args); return { code: 0, stdout: JSON.stringify({ address: "t1" }), stderr: "" }; };
+  S.spaces = [{ id: "s1", active: true, folder: "/h/base" }]; v.root ??= "/h/base"; v.head = "h1";
+  v.sendAgent = () => ({ agent, label: "the PR's session, resumed in a new tab (claude --resume)" });
+  v.target = () => agent;
+  const row = (what) => { S.ids = new Set(); S.texts = new Set(); act(v, "findings", what); const got = { ids: [...S.ids], texts: [...S.texts] }; S.ids = S.texts = null; return got; };
+  const under = (word) => (x) => x.startsWith(`${word} · `);
+  try {
+    assert.equal(v.trustedPr(), true, "the PR is trusted and the preview names a live session");
+    v.command(`fix-finding:${f.id}`, cx); await settle();
+    v.fixTarget("session"); assert.equal(v.sendP.fix.target, "session", "This session is offered, and chosen");
+    v.command("send", cx); await settle();
+    const job = v.fixJob(f);
+    assert.deepEqual([job?.target, job?.terminal, job?.tab, job?.items.map((x) => x.id)], ["session", "t1", "x", [f.id]], "one job, for this finding, naming the session that holds it");
+    assert.equal(v.fixes().length, 1, "and no second job in the new tab's name");
+    assert.ok(sent.some(([c, a, text]) => c === "send" && a === "t1" && String(text).includes(f.file)), "and the text went into that session");
+    // The row while the session is there: in progress, with a way to its tab, and facts that name the session.
+    S.terminals = [{ address: "t1", state: "live", status: "working" }]; v.ffocus = f.id;
+    assert.deepEqual([v.fstage(f), v.fgroup(f)], ["progress", "progress"]);
+    let got = row("a fix in the PR's session");
+    assert.ok(got.texts.some(under("Fix in progress")), "the row says Fix in progress");
+    assert.ok(got.ids.includes(`rv-fgo-${f.id}`) && got.texts.includes("Go to tab"), "with Go to tab");
+    assert.deepEqual(v.fixFacts(f).find(([l]) => l === "Agent"), ["Agent", "the PR's session (t1), working"], "its facts name the session, not a sub-agent");
+    // The session is gone and the job is past ten minutes: nothing came back, so the fix ended and the finding is
+    // unresolved again, with Fix again and nothing left to verify.
+    const key = v.threadKey();
+    v.threadDoc = { ...v.threadDoc, [key]: { ...(v.threadDoc[key] ?? {}), fixes: [{ ...job, at: Date.now() - 601000 }] } };
+    S.terminals = [];
+    assert.deepEqual([v.fstage(f), v.fgroup(f)], ["ended", "unresolved"]);
+    assert.equal(v.stageTip(f), "A fix was sent to the PR's session 10 min ago; it ended without reporting a commit and nothing landed.");
+    got = row("a fix in a session that is gone");
+    assert.ok(got.texts.some(under("Unresolved")) && got.texts.includes("fix ended without a result"), "the row reads Unresolved, with the fix ended badge");
+    assert.ok(got.ids.includes(`rv-fga-${f.id}`) && got.texts.includes("Fix again: the agent ended without reporting a commit, and nothing landed."), "and it offers Fix again");
+    assert.ok(!got.ids.includes(`rv-fgo-${f.id}`), "with nowhere to go");
+    assert.equal(findingSteps(f, v.find.status[f.id], { report: v.find.reports[f.id], facts: v.fixFacts(f), stage: v.fstage(f) })[3].missing,
+      "Nothing to verify: the agent ended without reporting a commit.", "and Verified says there is nothing to check");
+    assert.deepEqual(v.fixFacts(f).find(([l]) => l === "Agent"), ["Agent", "the PR's session (t1), ended"]);
+    // Fix again goes as Discard sends it, but that terminal is the person's own session: nothing kills it.
+    S.runs = [];
+    v.discardFix(v.fixJob(f), cx); await settle();
+    assert.deepEqual(S.runs.filter(([c]) => c === "terminal.kill"), [], "no terminal is killed for a session's fix");
+    assert.deepEqual([v.fixOf(f.id), v.fixJob(f)?.state], [null, "discarded"], "and the record goes, so the finding is unresolved again");
+    v.ffocus = null;
+  } finally { v.sendAgent = was.sendAgent; v.target = was.target; S.hc = was.hc; S.terminals = was.terminals; S.spaces = was.spaces; v.root = was.root; v.head = was.head; S.runs = was.runs; }
+}
 // "Go to fix" on a finding row goes where the job says: to its tab, then the pane there, when the job names a tab; to a
 // peek at its terminal when it names only that; and nowhere when it names neither.
 {

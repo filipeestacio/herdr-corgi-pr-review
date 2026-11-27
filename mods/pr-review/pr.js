@@ -495,7 +495,7 @@ export function fixStage({ job = null, landed = null, verified = null, head = nu
 export function fixEndedLine({ job = null, terminalLive = false, verified = null, head = null, now = Date.now() } = {}) {
   if (!job) return null;
   if (fixStage({ job, verified, head, working: fixStillWorking({ job, terminalLive, now }) }) !== "ended") return null;
-  const target = job.target === "main" ? "a main agent" : "a sub-agent";
+  const target = job.target === "main" ? "a main agent" : job.target === "session" ? "the PR's session" : "a sub-agent";
   return `A fix was sent to ${target}${job.at ? ` ${agoSpan(now - job.at)}` : ""}; it ended without reporting a commit and nothing landed.`;
 }
 
@@ -1250,7 +1250,8 @@ export const STEPS = [["reported", "Reported"], ["evidence", "Evidence"], ["sent
 export function findingSteps(f, st = null, { report = null, facts = [], stage = null } = {}) {
   const v = st?.verify ?? null, declined = report?.status === "wontfix", at = (x) => String(x ?? "").slice(0, 7), word = String(v?.result ?? "").replace("_", " ");
   // A fix that ended with nothing on its way (fixStage "ended") did not arrive anywhere: its step is not reached, and
-  // that step is the next one, saying to send it again rather than to check a commit there is not.
+  // that step is the next one, saying to send it again rather than to check a commit there is not. Verified says the
+  // same instead of asking for a check on a commit no agent reported.
   const ended = stage === "ended";
   const done = { reported: true, evidence: f.certainty === "confirmed", sent: Boolean(st?.fixHead) && !declined && !ended,
     verified: v?.result === "fixed" || (st?.s === "fixed" && !v), in_pr: v?.result === "fixed" && !v.branch };
@@ -1263,7 +1264,8 @@ export function findingSteps(f, st = null, { report = null, facts = [], stage = 
       : "No evidence yet: nothing that ran shows it.",
     sent: ended ? "Fix again: the agent ended without reporting a commit, and nothing landed."
       : declined ? `No fix on its way: the agent declined${report.note ? `, ${report.note}` : "."}` : "No fix sent yet: Fix hands the finding to an agent.",
-    verified: !v ? "Not verified yet: Verify checks the commit the fix agent reports, on its branch or in the PR head."
+    verified: ended ? "Nothing to verify: the agent ended without reporting a commit."
+      : !v ? "Not verified yet: Verify checks the commit the fix agent reports, on its branch or in the PR head."
       : `Not verified: the check ${v.branch ? `on ${v.branch} ` : ""}at ${at(v.head)} says ${word}${v.reason ? `, ${v.reason}` : "."}`,
     in_pr: v?.branch ? "Verified on the fix branch, not in the PR yet: Apply to PR brings it in, then Verify checks the PR head."
       : "Marked fixed by hand: no check has read the PR head.",
