@@ -1870,6 +1870,9 @@ export function tabTerminal(list, { space = null, name = "" } = {}) {
 // A tab that is up with an agent that never reported ready: the tab stays, the text is not sent, and the note names
 // the tab. what: the noun for the text ("fix text", "question", "review").
 export const notReadyNote = (name, what) => `The tab "${name}" is up but its agent did not report ready; the ${what} was not sent.`;
+// A fix tab that never reported ready: its text was not sent, so no fix job was written and what was being fixed is
+// left as it was.
+export const fixNotSentNote = (name) => `The tab "${name}" is up but its agent did not report ready; the fix text was not sent and no fix record was kept, so it can be tried again.`;
 
 // The one muted sentence after a pass that removed something: the count and the repositories. null: say nothing.
 export function cleanupNote(res) {

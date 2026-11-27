@@ -1387,7 +1387,7 @@ console.log("ok");
 // hands its arguments to the harness) starts bare and is sent the text once its agent reports ready. The readiness is
 // the status `hc get` gives a terminal: an app it reported, and idle or done.
 {
-  const { tabTaskDelivery, agentReady, tabTerminal, notReadyNote } = await import("./pr.js");
+  const { tabTaskDelivery, agentReady, tabTerminal, notReadyNote, fixNotSentNote } = await import("./pr.js");
   const { harnessProfile } = await import("./pr.js");
   const claude = harnessProfile({}), plain = harnessProfile({ harness: "plain", harnesses: { plain: { command: ["plain", "run"] } } });
   const work = harnessProfile({ harness: "work", harnesses: { work: { command: ["work", "run"], agent: ["aircode", "harness", "opencode"] } } });
@@ -1407,5 +1407,6 @@ console.log("ok");
   assert.equal(tabTerminal(tabs, { space: "s3", name: "bookshelf fix PR #7" }), null, "no tab of that name in that space");
   assert.equal(tabTerminal([{ address: "t5", where: "bookshelf fix PR #7" }], { space: "s1", name: "bookshelf fix PR #7" })?.address, "t5", "a list entry without labels still matches by its where");
   assert.equal(notReadyNote("bookshelf fix PR #7", "fix text"), 'The tab "bookshelf fix PR #7" is up but its agent did not report ready; the fix text was not sent.');
+  assert.equal(fixNotSentNote("bookshelf fix PR #7"), 'The tab "bookshelf fix PR #7" is up but its agent did not report ready; the fix text was not sent and no fix record was kept, so it can be tried again.');
   console.log("ok how a new agent tab gets the text: an argument for Claude Code, a send for a harness");
 }
