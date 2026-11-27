@@ -201,6 +201,8 @@ Explore shows Overview, Layers, Architecture and Files for a topic, without a di
   `Main agent` as a new tab in the PR's checkout (the active harness profile's `agent` command when it has one, else
   Claude Code), and `This session` when the PR has a live agent and is trusted without a stranger's comment, the only
   target that types into an existing session.
+  A fix that runs in the PR's checkout commits its work and pushes it to the PR's branch when it is done; a sub-agent
+  fix never pushes, and `Apply to PR` brings it in.
   `Fix several…` lets you tick which findings one agent fixes together. Security findings go one at a time.
   The Findings tab lists every finding in six groups: Unresolved, Fix in progress, Fix ready, In the PR, Verified and
   Won't fix. Each group follows git and the one check, not the journey. `worktree.py contains` says whether the fix

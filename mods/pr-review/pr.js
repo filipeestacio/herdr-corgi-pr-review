@@ -1,6 +1,6 @@
 // Pure helpers for the PR review panel (tested by test_pr.mjs).
 
-import { parseLink, webUrl } from "./host.js"; // a link names its host (host.js)
+import { parseLink, webUrl, hostWord } from "./host.js"; // a link names its host (host.js)
 
 // Numbers each diff line once (as the shipped changes panel does): number is the line on its side (new, removed:
 // old); o and n are the old and new line numbers where the line has one.
@@ -706,15 +706,25 @@ export const countLine = (c) => (!c.total ? "No findings" : [`${c.unresolved} un
   c.progress && `${c.progress} fix in progress`, c.ready && `${c.ready} fix ready`, c.in_pr && `${c.in_pr} in the PR`,
   c.verified && `${c.verified} verified`, c.wontfix && `${c.wontfix} won't fix`].filter(Boolean).join(" · "));
 
+// The push a fix in the PR's checkout does when it is done: the work goes to the branch the PR merges from, so the
+// change is in the PR and not stranded in a local tree. A sub-agent gets no push (null): its branch waits for Apply to PR.
+export function pushNote(pr, branch = null) {
+  return `When you are done, commit your work and push it to the branch this ${hostWord(pr?.url)} merges from` +
+    (branch ? `: \`git push origin HEAD:${branch}\`.` : ` (\`git rev-parse --abbrev-ref HEAD\` names it when a branch is checked out).`) +
+    " If the push is refused, say so in the report; do not report a finding as fixed when its commit is not on the remote.";
+}
+
 // One prompt asking the PR's agent to fix findings and to report each back as a JSON line in `report`.
-export function fixPrompt(findings, pr, report, lang) {
+// push: {branch} when the fix runs in the PR's checkout (the branch, null when unknown); null for a sub-agent.
+export function fixPrompt(findings, pr, report, lang, push = null) {
   const items = findings.map((f, i) => [`${i + 1}. [${f.id}] ${f.severity} · ${f.reviewer} · \`${f.file}\`:${f.line}${f.end && f.end !== f.line ? `–${f.end}` : ""}: ${f.title}`,
     f.detail, f.suggestion ? `Suggestion:${/\n/.test(f.suggestion) ? "\n" : " "}${f.suggestion}` : null].filter(Boolean).join("\n")); // a list or a code block starts on its own line
   return [`${pr ? `PR #${pr.number} "${pr.title}"${pr.url ? ` (${pr.url})` : ""}` : "This branch"}: please fix ${findings.length === 1 ? "this review finding" : `these ${findings.length} review findings`}.`,
     ...items,
+    push ? pushNote(pr, push.branch) : null,
     `Report each finding back once it is handled: append one JSON line per finding to ${report}, for example\n` +
     `echo '{"id": "${findings[0]?.id ?? "<id>"}", "status": "fixed", "commit": "<sha>", "note": "briefly, what you did"}' >> ${report}\n` +
-    `(status "wontfix" with the reason in note when you don't fix it).`].join("\n\n") + answerIn(lang);
+    `(status "wontfix" with the reason in note when you don't fix it).`].filter(Boolean).join("\n\n") + answerIn(lang);
 }
 
 // ---- open reviews (pr-data/open-reviews.json; review.js writes it, shared "review.open" / "review.registry" publish it)

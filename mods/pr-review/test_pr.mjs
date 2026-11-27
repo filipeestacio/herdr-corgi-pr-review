@@ -367,6 +367,30 @@ const fp = fixPrompt([{ id: "a1", severity: "high", reviewer: "codex", file: "a.
 assert.ok(fp.includes("[a1] high · codex · `a.js`:3–4: T") && fp.includes(">> /r.jsonl") && fp.includes('"id": "a1"'));
 assert.ok(fp.includes("\nSuggestion: S\n"), "a short suggestion stays on its line");
 assert.ok(fixPrompt([{ id: "a2", severity: "low", reviewer: "ai", file: "a.js", line: 1, title: "T", detail: "D", suggestion: "```js\nx()\n```" }], null, "/r").includes("Suggestion:\n```js\nx()\n```"), "a code block starts on its own line");
+// A fix that runs in the PR's checkout commits and pushes to the branch the PR merges from, before the report
+// instruction. A sub-agent (push null) gets today's text byte for byte and never pushes.
+const one = [{ id: "a3", severity: "high", reviewer: "codex", file: "a.js", line: 3, title: "T", detail: "D" }];
+const gh = { number: 7, title: "Fix", url: "https://github.com/o/r/pull/7" }, gl = { number: 7, title: "Fix", url: "https://gitlab.com/o/r/-/merge_requests/7" };
+const plain = fixPrompt(one, gh, "/r.jsonl");
+assert.equal(fixPrompt(one, gh, "/r.jsonl", null, null), plain, "push null: the text is unchanged");
+assert.ok(!plain.includes("commit your work") && !plain.includes("git push") && !plain.includes("rev-parse"), "a sub-agent fix carries no push");
+const known = fixPrompt(one, gh, "/r.jsonl", null, { branch: "feat/x" });
+assert.ok(known.includes("When you are done, commit your work and push it to the branch this PR merges from: `git push origin HEAD:feat/x`. " +
+  "If the push is refused, say so in the report; do not report a finding as fixed when its commit is not on the remote."), "the known branch, with the push command");
+assert.ok(known.indexOf("git push origin HEAD:feat/x") < known.indexOf("Report each finding back once it is handled"), "before the report instruction");
+const unknown = fixPrompt(one, gh, "/r.jsonl", null, { branch: null });
+assert.ok(unknown.includes("branch this PR merges from (`git rev-parse --abbrev-ref HEAD` names it when a branch is checked out).") && !unknown.includes("git push origin HEAD:"), "an unknown branch: git names it");
+assert.ok(fixPrompt(one, gl, "/r.jsonl", null, { branch: "feat/x" }).includes("the branch this MR merges from: `git push origin HEAD:feat/x`"), "GitLab's MR");
+// The comments prompt gets the same block, in the same place (before the replies contract), and the sub-agent's text stays.
+const { fixCommentsPrompt } = await import("./threads.js");
+const cm = [{ id: "c1", file: "a.py", start: 3, end: 3, text: "Rename." }], cPlain = fixCommentsPrompt({ pr: gl, comments: cm, file: "/r.jsonl" });
+assert.equal(fixCommentsPrompt({ pr: gl, comments: cm, file: "/r.jsonl", push: null }), cPlain, "a sub-agent comment fix is unchanged");
+assert.ok(!cPlain.includes("commit your work") && !cPlain.includes("git push"));
+const cKnown = fixCommentsPrompt({ pr: gl, comments: cm, file: "/r.jsonl", push: { branch: "feat/x" } });
+assert.ok(cKnown.includes("the branch this MR merges from: `git push origin HEAD:feat/x`") && cKnown.includes("If the push is refused, say so in the report"), "the MR's word, the same block");
+assert.ok(cKnown.indexOf("git push origin HEAD:feat/x") < cKnown.indexOf("Answer each point once it is handled"), "before the replies contract");
+const cUnknown = fixCommentsPrompt({ pr: gh, comments: cm, file: "/r.jsonl", push: { branch: null } });
+assert.ok(cUnknown.includes("branch this PR merges from (`git rev-parse --abbrev-ref HEAD` names it when a branch is checked out)."), "the comments prompt names git when the branch is unknown");
 console.log("ok");
 
 // Open reviews: created once (startedAt kept), merged by url, merged/closed PRs turn done after a day, done ones

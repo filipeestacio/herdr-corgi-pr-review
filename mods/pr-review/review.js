@@ -2023,11 +2023,11 @@ export const ReviewMode = {
   // list is what is ticked so far, which may be nothing yet); alone: how many security findings it leaves out.
   fix(list, cx, pool = null, alone = 0) {
     if (!list.length && !pool) return;
-    const report = `${findDir()}/${hash(this.prSel.url)}.jsonl`;
+    const report = `${findDir()}/${hash(this.prSel.url)}.jsonl`, pr = this.prSel ?? null; // this view's PR: a fix in its checkout pushes to its branch
     const labels = list.map((f) => `${f.title} (${f.file}:${f.line})`), target = pool ? this.sendP?.fix?.target : null;
     this.previewFix(cx, { what: "Fix with agent", own: labels.join("\n"), ownLabel: list.length === 1 ? "FINDING" : "FINDINGS", items: list.map((f) => ({ kind: "finding", id: f.id })), labels,
       pool, alone, target,
-      prompt: (sub) => [fixPrompt(list, this.pr, report, this.lang()), sub ? TH.worktreeNote(sub.branch, sub.path) : null].filter(Boolean).join("\n\n"),
+      prompt: (sub) => [fixPrompt(list, pr, report, this.lang(), sub ? null : { branch: pr?.head ?? null }), sub ? TH.worktreeNote(sub.branch, sub.path) : null].filter(Boolean).join("\n\n"),
       sent: (cx) => { for (const f of list) this.setFinding(f, "progress", cx, { fixHead: this.headNow() }); this.clearSel(cx); } });
   },
   // "Fix several…": the reviewer picks which unresolved findings one agent fixes together. Security findings about
@@ -2059,11 +2059,11 @@ export const ReviewMode = {
     this.fixTogether(ids, this.findings().filter((f) => findings.includes(f.id)), cx);
   },
   fixTogether(ids, list, cx) {
-    const c = this.commentFix(ids), report = `${findDir()}/${hash(this.prSel.url)}.jsonl`, found = list.map((f) => `${f.title} (${f.file}:${f.line})`);
+    const c = this.commentFix(ids), report = `${findDir()}/${hash(this.prSel.url)}.jsonl`, pr = this.prSel ?? null, found = list.map((f) => `${f.title} (${f.file}:${f.line})`);
     this.previewFix(cx, { what: "Fix with agent", ownLabel: "SELECTED",
       own: [`COMMENTS · ${c.comments.length}`, ...c.labels, "", `FINDINGS · ${list.length}`, ...found].join("\n"),
       items: [...c.items, ...list.map((f) => ({ kind: "finding", id: f.id }))], labels: [...c.labels, ...found],
-      prompt: (sub) => TH.fixBothPrompt(c.prompt(sub, null), fixPrompt(list, this.pr, report, this.lang())), foreign: c.foreign,
+      prompt: (sub) => TH.fixBothPrompt(c.prompt(sub, null), fixPrompt(list, pr, report, this.lang())), foreign: c.foreign, // the comments' part carries the push for the whole task
       sent: (cx, how) => { for (const f of list) this.setFinding(f, "progress", cx, { fixHead: this.headNow() }); c.sent(cx, how); } });
   },
   // The findings ticked in the Findings tab's Unresolved group. Only what can still be ticked counts: unresolved, no
@@ -2806,8 +2806,11 @@ export const ReviewMode = {
     const comments = this.commentsById(ids), said = (c) => `${c.by ? `@${c.by} on ${brandOf(this.prSel?.url) ?? "the host"} · ` : ""}${c.file} ${uiLine(c)}: ${c.text}`;
     // foreign: one of them is a GitHub comment by someone else (threads.js foreignComment): its fix never runs
     // unattended and never in the PR's own session, whatever the PR's trust (previewFix, startSubFix, sessionOffered).
+    // push: a fix in the PR's checkout commits and pushes to the PR's branch; a sub-agent's prompt has its worktree
+    // note instead, and never pushes.
+    const pr = this.prSel ?? null;
     return { comments, items: comments.map((c) => ({ kind: "comment", id: c.id })), labels: comments.map(said), foreign: TH.hasForeign(comments, shared("gh.login")),
-      prompt: (sub, lang = this.lang()) => TH.fixCommentsPrompt({ pr: this.pr, comments, file: this.repliesFile(), lang, login: shared("gh.login"), ...sub }),
+      prompt: (sub, lang = this.lang()) => TH.fixCommentsPrompt({ pr, comments, file: this.repliesFile(), lang, login: shared("gh.login"), push: sub ? null : { branch: pr?.head ?? null }, ...sub }),
       sent: (cx, how) => {
         const key = this.threadKey(), pending = TH.withIds(this.comments).filter((c) => ids.includes(c.id)), had = new Set(this.threads().map((t) => t.id));
         if (pending.length) { this.comments = TH.withIds(this.comments).filter((c) => !ids.includes(c.id)); this.persist(cx); }
