@@ -983,11 +983,11 @@ export const ReviewMode = {
 
   makeWorktree(cx, clone = false) {
     const url = this.prSel.url, want = this.prSel.headSha ?? null, job = `${url}|${want}|${clone}`;
-    if (this.wtIn === job) return; // the same checkout is being made
+    if (this.wtIn === job) return; // the same checkout is being made: its end resumes what waits
     this.worktree = null;
     if (this.prSel.space && this.root) {
       this.worktree = { url, head: this.head, path: this.root, local: true }; putShared("review.worktree", this.worktree); this.applyTrust();
-      this.loadSince(cx); this.loadContext(cx); return;
+      this.loadSince(cx); this.loadContext(cx); this.resumePending(cx); return;
     }
     // A PR you didn't open may use the active space's checkout of its repo (cwd); your own PRs keep the dedicated clones.
     const local = this.prSel.source && this.root ? ["--local", this.root] : [];
@@ -1019,20 +1019,33 @@ export const ReviewMode = {
       this.rememberClone(w.clone ?? null, w.created === true).catch(() => null);
       if (!shared("gh.login")) exec("gh", ["api", "user", "--jq", ".login"]).then((r) => { if (r.code === 0) { setShared("gh.login", r.stdout.trim()); this.applyTrust(); } }).catch(() => null);
       this.applyTrust();
-      if (this.pendingRun) { this.pendingRun = false; this.loadAi(cx, "run"); }
-      const queued = this.pendingReviewer; this.pendingReviewer = null;
-      if (queued) { // a reviewer clicked while the head moved: it starts now, or says why it cannot
-        if (headMoved(this.prSel?.headSha, this.worktree?.head)) this.note = "Could not start the review: the PR's new head was not checked out.";
-        else this.runReviewer(queued.kind, cx, null, queued.use);
-      }
-      const fix = this.pendingFix; this.pendingFix = null;
-      if (fix) { // a fix sent while the head moved: it starts now, or says why it cannot
-        if (headMoved(this.prSel?.headSha, this.worktree?.head)) this.note = "Could not start the fix: the PR's new head was not checked out.";
-        else this.startFixNow(fix.p, fix.out, cx);
-      }
+      this.resumePending(cx);
       this.loadSince(cx); this.loadContext(cx); this.loadInfra(cx);
       cx.notify();
     });
+  },
+
+  // A run, a reviewer or a fix that waited for the PR's head: it starts once the checkout has it, wherever that
+  // checkout comes from. makeWorktree calls this at every end that reaches one: a checkout it made, one it found
+  // already at the head, and a space's own checkout, which it never moves. An end with no checkout (a failed run, a
+  // clone to make) leaves the wait for the next one. Each one is cleared before it starts, so it starts at most once.
+  resumePending(cx) {
+    const w = this.worktree, head = this.prSel?.headSha, local = Boolean(w?.local), moved = headMoved(head, w?.head);
+    if (this.pendingRun) { this.pendingRun = false; this.loadAi(cx, "run"); }
+    const reviewer = this.pendingReviewer; this.pendingReviewer = null;
+    if (reviewer) { // a reviewer clicked while the head moved: it starts now, or says why it cannot
+      if (local) this.runReviewer(reviewer.kind, cx, null, reviewer.use); // a space's own checkout: runReviewer says it cannot
+      else if (moved) this.note = "Could not start the review: the PR's new head was not checked out.";
+      else this.runReviewer(reviewer.kind, cx, null, reviewer.use);
+    }
+    const fix = this.pendingFix; this.pendingFix = null;
+    if (fix) { // a fix sent while the head moved: it starts now, or says why it cannot
+      if (local) { // a space's own checkout is never moved: the fix runs in it as it is
+        this.startFixNow(fix.p, fix.out, cx);
+        if (this.sending && !this.note) this.note = "The fix runs in this space's own checkout, which the review does not move.";
+      } else if (moved) this.note = "Could not start the fix: the PR's new head was not checked out.";
+      else this.startFixNow(fix.p, fix.out, cx);
+    }
   },
 
   // pr-data/clones.json: the clones this mod made, by repository, so cleanup.py can remove them once they are idle
@@ -1211,8 +1224,9 @@ export const ReviewMode = {
       if (this.aiBusy) return;
       if (!job.req.hunks.length) { this.aiError = "No diff"; return cx.notify(); }
       // The checkout is at another head than the PR's (a push): check the new head out first, then run; a run must never
-      // read the old commits. makeWorktree starts it again (pendingRun) when the checkout is made.
-      if (headMoved(this.prSel.headSha, this.worktree?.head)) {
+      // read the old commits. makeWorktree starts it again (pendingRun) when the checkout is made. A space's own
+      // checkout is never moved, so the run reads it as it is (the head note says which commits it read).
+      if (!this.worktree?.local && headMoved(this.prSel.headSha, this.worktree?.head)) {
         this.pendingRun = true; this.note = "The PR head moved: checking it out, then starting the analysis."; this.makeWorktree(cx); return cx.notify();
       }
       if (!this.worktree && !this.prSel.space) { this.pendingRun = true; return cx.notify(); } // the Analysis tab says it waits (stateHints)
@@ -2693,7 +2707,10 @@ export const ReviewMode = {
       this.makeWorktree(cx);
       return cx.notify();
     }
-    return this.startFixNow(p, out, cx);
+    const local = target !== "sub" && w?.local && headMoved(this.prSel?.headSha, w.head);
+    const r = this.startFixNow(p, out, cx);
+    if (local && this.sending && !this.note) this.note = "The fix runs in this space's own checkout, which the review does not move.";
+    return r;
   },
   startFixNow(p, out, cx) {
     const target = p.fix?.target;

@@ -1351,7 +1351,41 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
           const made2 = await queue("session");
           assert.deepEqual([made2.length, noTab(), started.length, Boolean(v.pendingFix)], [1, 0, 0, true], "the session waits for the checkout too: nothing is typed yet");
           v.pendingFix = null;
-        } finally { v.worktree = w; v.prSel = { ...v.prSel, headSha: head }; v.makeWorktree = mk; v.sendP = null; }
+          // A checkout that already has the PR's head needs no queue and no note: the tab starts now. (The review's
+          // own head may still be the older one; what counts is the checkout the tab works in.)
+          { v.worktree = { url: v.prSel.url, head: "new", path: "/h/w" }; v.prSel = { ...v.prSel, headSha: "new" };
+            S.runs.length = 0; started.length = 0; v.pendingFix = null;
+            v.command("fix:gh89", cx); await settle(); v.fixTarget("main");
+            v.command("send", cx);
+            assert.deepEqual([Boolean(v.pendingFix), noTab(), v.note], [false, 0, null], "the checkout is at the head: no queue and no note");
+            await settle();
+            assert.equal(noTab(), 1, "the tab starts at once");
+          }
+          // The wait does not depend on how the checkout comes about: one already at the PR's head (makeWorktree's
+          // `same` path, no worktree.py) resumes the queued fix once, also when two renders ask for that job.
+          { await queue("main"); const fix = v.pendingFix;
+            S.files.set("/h/w/.git", "gitdir: /h/w.git/worktrees/pr-review\n"); S.files.set("/h/w.git/worktrees/pr-review/HEAD", "new\n");
+            S.store.set("review.worktree", { url: v.prSel.url, head: "new", path: "/h/w" });
+            let checkouts = 0; S.exec = async (cmd, args) => { if (cmd === "python3" && String(args?.[0]).endsWith("worktree.py")) checkouts++; return { code: 1, stdout: "", stderr: "stub" }; };
+            S.runs.length = 0; started.length = 0; v.pendingFix = fix; v.makeWorktree = mk;
+            v.makeWorktree(cx); v.makeWorktree(cx); // two renders ask for the same checkout before it ends
+            await settle();
+            v.makeWorktree(cx); await settle(); // and one after: it finds nothing queued
+            assert.deepEqual([checkouts, noTab(), Boolean(v.pendingFix)], [0, 1, false], "already at the head: the queued fix starts once, with no checkout job");
+          }
+          // A space's own checkout is never moved: the fix starts on it as it is, and the note says so.
+          { v.worktree = { url: v.prSel.url, head: "old", path: "/h/base", local: true }; v.prSel = { ...v.prSel, headSha: "new" };
+            S.runs.length = 0; started.length = 0; v.pendingFix = null; v.makeWorktree = mk; v.note = null;
+            v.command("fix:gh89", cx); await settle(); v.fixTarget("main");
+            v.command("send", cx);
+            assert.deepEqual([Boolean(v.pendingFix), noTab(), v.note], [false, 0, "The fix runs in this space's own checkout, which the review does not move."], "no queue, and the note says why it runs on the old commits");
+            await settle();
+            assert.equal(noTab(), 1, "and the tab starts on that checkout");
+            // A reviewer queued meanwhile is consumed too, and says it cannot read a space's own checkout.
+            v.pendingReviewer = { kind: "claude", use: null }; v.resumePending(cx);
+            assert.deepEqual([Boolean(v.pendingReviewer), v.note], [false, "Could not run: reviewers need a PR (not a branch diff)"], "the queued reviewer does not stay behind");
+          }
+        } finally { v.worktree = w; v.prSel = { ...v.prSel, headSha: head }; v.makeWorktree = mk; v.sendP = null; S.store.delete("review.worktree"); S.files.delete("/h/w/.git"); S.files.delete("/h/w.git/worktrees/pr-review/HEAD"); }
       }
       // A reply in the thread of the stranger's comment (it is a thread since its fix was sent).
       const th = v.threads().find((t) => t.id === "gh88"); assert.equal(th?.by, "stranger");

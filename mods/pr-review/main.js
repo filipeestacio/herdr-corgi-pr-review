@@ -539,7 +539,7 @@ export default class PrReview extends View {
     let unchanged = false;
     if (context !== this.context) {
       if (this.context && this.memo.has(this.context)) this.remember(this.context);
-      this.context = context; this.branchSig = null; this.root = null; this.files = []; this.open = null; this.rows = []; this.sel = null; this.selEnd = null; this.pr = null; this.error = null; this.patch = null; this.branchFiles = null; this.scrollRow = "top"; this.headNote = null; this.pendingReviewer = null; this.pendingFix = null;
+      this.context = context; this.branchSig = null; this.root = null; this.files = []; this.open = null; this.rows = []; this.sel = null; this.selEnd = null; this.pr = null; this.error = null; this.patch = null; this.branchFiles = null; this.scrollRow = "top"; this.headNote = null; this.pendingRun = false; this.pendingReviewer = null; this.pendingFix = null;
       const hit = this.memo.get(context);
       if (hit) {
         Object.assign(this, hit.state);
