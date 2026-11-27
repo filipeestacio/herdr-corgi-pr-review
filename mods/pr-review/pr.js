@@ -1912,12 +1912,65 @@ export function tabTerminal(list, { space = null, name = "" } = {}) {
   const named = (x) => Boolean(name) && where(x).includes(name);
   return [...(list ?? [])].reverse().find((x) => x && named(x) && (space == null || !x.labels || x.labels["herdr.space"] === space)) ?? null;
 }
-// A tab that is up with an agent that never reported ready: the tab stays, the text is not sent, and the note names
-// the tab. what: the noun for the text ("fix text", "question", "review").
-export const notReadyNote = (name, what) => `The tab "${name}" is up but its agent did not report ready; the ${what} was not sent.`;
-// A fix tab that never reported ready: its text was not sent, so no fix job was written and what was being fixed is
-// left as it was.
-export const fixNotSentNote = (name) => `The tab "${name}" is up but its agent did not report ready; the fix text was not sent and no fix record was kept, so it can be tried again.`;
+// ---- a delivery an agent tab has yet to receive
+
+// A harness tab starts bare, so its text waits in pr-data/pending-tabs.json from before the wait until a copy of the
+// mod sends it (agent-tab.js). Newest first, five at most; dropped after fifteen minutes or three failed sends. what:
+// the noun for the text ("fix text", "question", "review"). A tab that exists but whose agent is not ready yet keeps
+// its record: the text is pending, not lost.
+export const PENDING_MAX = 5, PENDING_MS = 15 * 60 * 1000, PENDING_TRIES = 3;
+// The copy that opened the tab may still be finishing its own send for a moment after it recorded the text: a tick
+// leaves the record alone that long, so the opener's own claim and send are not raced by another copy.
+export const PENDING_GRACE_MS = 3000;
+const PENDING_WHAT = ["fix text", "question", "review"];
+
+const pendingRec = (r) => {
+  if (!r || typeof r !== "object" || typeof r.id !== "string" || !r.id || typeof r.name !== "string" || !r.name || typeof r.text !== "string" || !r.text) return null;
+  return { id: r.id, name: r.name, space: typeof r.space === "string" ? r.space : null, folder: typeof r.folder === "string" ? r.folder : null,
+    text: r.text, what: PENDING_WHAT.includes(r.what) ? r.what : "text", prUrl: typeof r.prUrl === "string" ? r.prUrl : null, by: typeof r.by === "string" ? r.by : null,
+    at: Number.isFinite(r.at) ? r.at : 0, tries: Number.isInteger(r.tries) && r.tries > 0 ? r.tries : 0 };
+};
+// The document's records. A file that is missing, malformed or holds something else reads as empty: one bad write can
+// never stop a later copy from delivering.
+export function pendingTabs(text) {
+  let d;
+  try { d = JSON.parse(String(text ?? "").trim()); } catch { return []; }
+  const arr = Array.isArray(d) ? d : Array.isArray(d?.tabs) ? d.tabs : [];
+  return arr.map(pendingRec).filter(Boolean);
+}
+// The text of the document, as one small object.
+export const pendingFileText = (tabs) => `${JSON.stringify({ tabs: tabs ?? [] }, null, 1)}\n`;
+// A new record, newest first, capped at five. A record with the same id is replaced.
+export function pendingAdd(tabs, rec, now = Date.now()) {
+  const r = pendingRec({ ...rec, at: now, tries: 0 });
+  if (!r) return [...(tabs ?? [])];
+  return [r, ...(tabs ?? []).filter((x) => x.id !== r.id)].slice(0, PENDING_MAX);
+}
+export const pendingRemove = (tabs, id) => (tabs ?? []).filter((x) => x.id !== id);
+// The same record again after `hc send` failed, with one more try; null when the third failure drops it.
+export function pendingRetry(tabs, rec) {
+  const tries = (rec?.tries ?? 0) + 1;
+  return tries >= PENDING_TRIES ? null : [{ ...rec, tries }, ...(tabs ?? []).filter((x) => x.id !== rec?.id)].slice(0, PENDING_MAX);
+}
+// What a copy does with a record now: "send" when its tab's agent is ready; "wait" while the tab is missing, its agent
+// is busy, its program ended, or the copy that opened it may still send ("expire" and "drop" happen first, whatever
+// the tab says); "expire" after fifteen minutes; "drop" once three sends failed.
+export function pendingState(rec, terminal, now = Date.now()) {
+  if (!rec) return "drop";
+  const age = now - (rec.at ?? 0);
+  if (age > PENDING_MS) return "expire";
+  if ((rec.tries ?? 0) >= PENDING_TRIES) return "drop";
+  if (age < PENDING_GRACE_MS) return "wait";
+  return agentReady(terminal) ? "send" : "wait";
+}
+// The note while a delivery waits: the tab is up and the text is pending, not lost.
+export const pendingWaitNote = (name, what) => `The tab "${name}" is up but its agent did not report ready; the ${what} will be sent when the agent is ready.`;
+// The note once a copy sent the text; reload: a copy other than the one that opened the tab finished the delivery.
+export const pendingSentNote = (name, what, reload = false) => `The ${what} was sent to the tab "${name}"${reload ? " after a reload" : ""}.`;
+// The note when a record is too old to wait any longer. The tab was there; no agent of it ever reported ready.
+export const pendingExpiredNote = (name, what) => `The tab "${name}" never reported ready; its ${what} was not sent.`;
+// The note when three sends failed and the record is dropped.
+export const pendingFailedNote = (name, what, tries = PENDING_TRIES) => `The ${what} for the tab "${name}" was not sent: hc send failed ${tries} times.`;
 
 // The one muted sentence after a pass that removed something: the count and the repositories. null: say nothing.
 export function cleanupNote(res) {

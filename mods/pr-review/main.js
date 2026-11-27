@@ -24,8 +24,8 @@ import { parsePrRef, ghTarget, pruneSources, mergeMine, codeModel, windowActive,
 import { cleanupCandidates, cleanupLine, cleanupNote, cleanupRemoved, cleanupDoc, cleanupDone, cleanupDoneDoc, localDay } from "./pr.js"; // the clones this mod made, and their one daily cleanup
 import { hostOfLink, parseRemote, parseLink, hostWord } from "./host.js";
 import * as C from "./context.js";
-import { agentArgs, harnessProfile, harnessAgent, notReadyNote } from "./pr.js"; // a new agent tab with the PR's text: the harness profile's own command, else Claude Code
-import { startAgentTab } from "./agent-tab.js"; // starts it and gets the text there (an argument, or a send once the agent reports ready)
+import { agentArgs, harnessProfile, harnessAgent, pendingWaitNote } from "./pr.js"; // a new agent tab with the PR's text: the harness profile's own command, else Claude Code
+import { startAgentTab, deliverPending } from "./agent-tab.js"; // starts it and gets the text there (an argument, or a send once the agent reports ready, from a record any copy finishes)
 import { loadDiff, saveDiff } from "./diffcache.js";
 import { setupBanner, renderSetup, loadSetup, runSetup, openUrl, readConfig } from "./setup-view.js";
 import { chip, PRIORITY_TIP, layoutPump } from "./stack.js";
@@ -182,6 +182,7 @@ export default class PrReview extends View {
     // `herdr-app check` runs init for real (always the panel: a check has no props). What is set above is enough for
     // its one frame: no command loop, no task (setup check, prs.py, prs.lock) and no timer starts there.
     if (checking()) return;
+    this.startPendings(cx); // a delivery an earlier copy recorded and did not finish: any copy finishes it
     if (this.part === "review") return this.initReview(cx);
     // The pick from before (shared "pr.selected") is known at once: the list is not drawn (nor fetched) while prs.json
     // is read, and the branch's diff is only made when the branch is what the panel shows.
@@ -220,6 +221,22 @@ export default class PrReview extends View {
     // The same check as in render, for a panel not drawn (behind another panel of its stack, a hidden column): Worktrees
     // started there meanwhile, or the view changed and the chip emptied the list, and its PR marks come without a frame.
     cx.timer.every(2000, () => this.wtCheck());
+  }
+
+  // Any copy finishes a delivery an earlier one left pending (agent-tab.js records the text before a harness tab
+  // waits): once at init, then at most every 2 s, never in a frame. A record is claimed with a compare-and-swap write
+  // before `hc send`, so two copies that pass at the same moment send it once. Nothing is read while `herdr-app check`
+  // runs (init returns before this).
+  startPendings(cx) {
+    const pass = () => {
+      if (this.pendingBusy) return;
+      this.pendingBusy = true;
+      deliverPending({ uid: this.uid, note: (text) => { this.note = text; cx.notify(); } })
+        .catch(() => [])
+        .finally(() => { this.pendingBusy = false; });
+    };
+    cx.spawn(pass);
+    cx.timer.every(2000, pass);
   }
 
   // A key command or scripted click for the panel (pr-review.<c>).
@@ -804,14 +821,14 @@ export default class PrReview extends View {
           // The active harness profile's own interactive command when it has one, else Claude Code (pr.js agentArgs).
           // Claude Code takes the prompt as its argument; a harness tab starts bare and is sent it once its agent
           // reports ready (agent-tab.js). A newer send, or another PR, supersedes the wait.
-          const name = tabName(origin?.repo ?? this.root, origin ? `${hostWord(origin.url)} #${origin.number}` : "review");
+          const name = tabName(origin?.repo ?? this.root, origin ? `${hostWord(origin.url)} #${origin.number}` : "review"), what_ = what === "Review" ? "review" : "question";
           const url = origin?.url, gen = (this.tabGen = (this.tabGen ?? 0) + 1), perm = guard ? (harnessAgent(profile) ? " with someone else's comment; it runs with the harness's own permissions" : " in manual mode (it holds someone else's comment)") : "";
-          const r = await startAgentTab(cx, { profile, space: this.spaceFor(ctx, this.root), folder: this.root ?? location().cwd, name, text: prompt,
+          const r = await startAgentTab(cx, { profile, space: this.spaceFor(ctx, this.root), folder: this.root ?? location().cwd, name, text: prompt, what: what_, prUrl: url, by: this.uid,
             argv: agentArgs({ profile, env: this.ctxEnv(ctx), model: walkModel(), ask: guard, trusted: false }),
             stopped: () => this.tabGen !== gen || this.prSel?.url !== url,
             onOpen: () => { o.done = true; done(cx); this.sending = false; cx.notify(); } });
           if (r.stopped || this.tabGen !== gen) return;
-          if (!r.sent) this.note = notReadyNote(name, what === "Review" ? "review" : "question");
+          if (!r.sent) this.note = pendingWaitNote(name, what_);
           else if (r.delivery === "send") this.note = `${what}: started a new ${runner} tab "${name}" and sent it there${perm}.`;
           else this.note = `${what}: started a new ${runner} tab${perm}.`;
         }

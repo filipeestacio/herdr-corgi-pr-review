@@ -170,7 +170,9 @@ Explore shows Overview, Layers, Architecture and Files for a topic, without a di
   "Submit review" sent to the agent session, and "Fix" go to the PR's session
   agent if it is live, else `claude --resume <session>` in a new tab, else this space's agent, else a new
   agent tab (the active harness profile's `agent` command when it has one, else `claude`), with the prompt as its task.
-  A fix's "Main agent" is always a new tab; "Fix" only types into a session through its "This session" target.
+  A fix's "Main agent" is always a new tab; "Fix" only types into a session through its "This session" target. A
+  harness tab's text is recorded in `pr-data/pending-tabs.json` before it waits, and any copy of the mod sends it once
+  the agent is ready.
 - Clicking a diff line selects it (shift-click a range); type and Enter adds a comment; `j/k` next/previous
   change, `n/p` file, `c` comment, Esc clears.
 - In the review layout, a click on a line number (or `c` on the selected line) opens the composer there;

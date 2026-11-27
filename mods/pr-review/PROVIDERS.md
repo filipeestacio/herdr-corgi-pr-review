@@ -161,7 +161,11 @@ All keys optional.
   context's env wins where both set the same variable. `agent` is the argv that opens the same harness interactively,
   such as `["aircode", "harness", "opencode"]`: a new agent tab for PR text (a fix, Ask, Send review) starts it in
   place of Claude Code, and the text is sent once its agent reports ready; a Claude Code tab takes the text as its
-  command's last argument. Two commands, two jobs: `command` is the headless call that
+  command's last argument. The text of such a tab is recorded in `pr-data/pending-tabs.json` before the wait starts, so
+  a note that another action supersedes, or a tab whose agent never reports ready, leaves it pending instead of losing
+  it: any copy of the mod sends it once the agent is ready, and two copies that pass the document at the same moment
+  send it once. A pending delivery is dropped after fifteen minutes or three failed sends, with one sentence. Two
+  commands, two jobs: `command` is the headless call that
   runs the analysis, the reviewers, triage and fix verification and prints the answer, and `agent` is the program you
   would type to work in that harness yourself. The tab gets the context's `env`, as every program pr-review starts for
   that context does; `agent` takes no placeholders, and Setup checks `command`'s program, not `agent`'s. `agent` is

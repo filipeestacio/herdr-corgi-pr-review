@@ -1389,8 +1389,10 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
       // A "Main agent" fix on a harness profile writes its job only once the text was sent: a tab that never got the
       // text must not leave a fix record saying it runs. Until the call returns the panel derives a "starting" state
       // from the pending start (never a job), and drops it either way.
-      { const cfg = v.cfg, wasHc = S.hc, wasTimer = cx.timer, realNow = Date.now;
+      { const cfg = v.cfg, wasHc = S.hc, wasTimer = cx.timer, wasWrites = S.writes, realNow = Date.now;
         v.cfg = { ...cfg, harness: "work", harnesses: { work: { label: "OpenCode", command: ["opencode", "run"], agent: ["aircode", "harness", "opencode"] } } };
+        S.writes = true; // a harness tab's text is recorded before its wait (pr-data/pending-tabs.json)
+        S.files.delete("/h/pr-data/pending-tabs.json");
         const free = v.findings().filter((x) => ["open", "recheck"].includes(v.fstatus(x)) && !v.fixJob(x)), [fSent, fStopped, fLate] = free;
         assert.ok(fSent && fStopped && fLate, "three open findings to send to a fix tab");
         const name = () => S.runs.filter(([c]) => c === "tab.new").at(-1)?.[1].name;
@@ -1410,23 +1412,31 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
             [beforeSent, beforeSent + 1, "main", "t9", "progress", null], "no job at the send, one after it with the tab's terminal, and no provisional state left");
           assert.ok(calls.some(([c, a]) => c === "send" && a === "t9"), "the fix text went to the tab");
           assert.equal(v.note, `Fix: the OpenCode tab "${name()}" is ready; the fix text was sent.`);
-          // Superseded while the tab boots: nothing is written and the note stays the one that named the tab.
+          // Superseded while the tab boots: no job is written, the note stays the one that named the tab, and the text
+          // stays in the pending document for any copy to send.
           await preview(fStopped);
-          const before = v.fixes().length;
+          const before = v.fixes().length, sentHere = [];
+          S.writes = true; S.files.delete("/h/pr-data/pending-tabs.json");
           S.hc = async (args) => { if (args[0] === "ls") { v.tabGen = (v.tabGen ?? 0) + 1; return { code: 0, stdout: JSON.stringify({ terminals: [] }), stderr: "" }; }
+            if (args[0] === "send") sentHere.push(args);
             return { code: 0, stdout: JSON.stringify({ address: "t9" }), stderr: "" }; };
           cx.timer = { after(_ms, done) { setImmediate(() => done(cx)); }, every() {} };
           S.runs.length = 0; v.command("send", cx); await settle();
           assert.deepEqual([v.fixes().length, v.fstatus(fStopped), v.fixStarting], [before, "open", null], "a superseded wait writes no job and leaves the finding alone");
           assert.equal(v.note, `Fix: started a new OpenCode tab "${name()}" in the background; the fix text is sent when its agent reports ready.`, "the note is the one that named the tab, not a failure");
+          const left = JSON.parse(S.files.get("/h/pr-data/pending-tabs.json") ?? "{}").tabs ?? [];
+          assert.deepEqual([sentHere, left.map((r) => [r.name, r.what, r.text.length > 0, r.by === v.uid, r.prUrl === v.prSel.url])],
+            [[], [[name(), "fix text", true, true, true]]], "the superseded wait sends nothing and leaves the text in the record");
           // The provisional state is the panel's own: it reads as a fix on its way, and it is never a job.
           v.fixStarting = { ids: [fStopped.id], name: "corgi-demo fix github #2", at: Date.now() };
           assert.deepEqual([v.fgroup(fStopped), v.fixJob(fStopped), v.fixes().length], ["progress", null, before], "a pending start reads as in progress, with no job written");
           v.ffocus = fStopped.id; S.ids = new Set(); S.texts = new Set(); act(v, "findings", "a fix tab that is still booting"); const boot = { ids: [...S.ids], texts: [...S.texts] }; S.ids = S.texts = null;
           assert.ok(boot.ids.includes(`rv-ffb-${fStopped.id}`) && boot.texts.includes("Starting · its agent"), "and the row says it is starting");
           v.ffocus = null; v.fixStarting = null;
-          // The agent never reports ready: nothing is written, and the finding can be tried again.
+          // The agent never reports ready: nothing is written as a job, the finding can be tried again, and the text
+          // keeps its record, with the note that says a copy will send it when the agent is ready.
           await preview(fLate);
+          S.files.delete("/h/pr-data/pending-tabs.json");
           let skew = 0; // the 60 s wait: the first `hc ls` takes the clock past its end
           S.hc = async (args) => { if (args[0] === "ls") { skew = 61000; return { code: 0, stdout: JSON.stringify({ terminals: [] }), stderr: "" }; }
             return { code: 0, stdout: JSON.stringify({ address: "t9" }), stderr: "" }; };
@@ -1434,12 +1444,13 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
           S.runs.length = 0; Date.now = () => realNow() + skew;
           try { v.command("send", cx); await settle(); } finally { Date.now = realNow; }
           assert.deepEqual([v.fixes().length, v.fstatus(fLate), v.fixStarting], [beforeLate, "open", null], "a tab that never reported ready writes no job");
-          assert.equal(v.note, `The tab "${name()}" is up but its agent did not report ready; the fix text was not sent and no fix record was kept, so it can be tried again.`);
+          assert.equal(v.note, `The tab "${name()}" is up but its agent did not report ready; the fix text will be sent when the agent is ready.`);
+          assert.deepEqual((JSON.parse(S.files.get("/h/pr-data/pending-tabs.json") ?? "{}").tabs ?? []).map((r) => [r.name, r.what]), [[name(), "fix text"]], "the record stays for a later tick");
           assert.equal(v.fgroup(fLate), "unresolved", "the finding is still unresolved");
           v.ffocus = fLate.id; S.ids = new Set(); S.texts = new Set(); act(v, "findings", "after a fix text that was never sent"); const got = { ids: [...S.ids], texts: [...S.texts] }; S.ids = S.texts = null;
           v.ffocus = null;
           assert.ok(got.ids.includes(`rv-ffx-${fLate.id}`) && got.texts.includes("Fix with agent…"), "and it still offers to fix the finding again");
-        } finally { v.cfg = cfg; S.hc = wasHc; cx.timer = wasTimer; Date.now = realNow; v.sendP = null; v.fixStarting = null; S.runs.length = 0; }
+        } finally { v.cfg = cfg; S.hc = wasHc; cx.timer = wasTimer; Date.now = realNow; S.writes = wasWrites; S.files.delete("/h/pr-data/pending-tabs.json"); v.sendP = null; v.fixStarting = null; S.runs.length = 0; }
       }
       // A PR head the review's checkout has not seen: a fix in that checkout (the new tab, or the session) waits for the
       // checkout, as a run does (#13), and starts once it is at the PR's head.
@@ -1562,6 +1573,68 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     S.props = null; S.store.set("editor.choice", null);
   }
   EV.forgetEditors(); S.exec = null;
+}
+// A harness tab's text is a record, not a local variable: a superseded wait or a tab that never reported ready leaves
+// it in pr-data/pending-tabs.json, and any copy finishes the delivery once the agent is ready (agent-tab.js
+// deliverPending, on init and on a 2 s tick). The record is claimed with a compare-and-swap write that removes it
+// before `hc send`, so two copies that pass at the same moment send it once.
+{
+  const { deliverPending, startAgentTab } = await import("./agent-tab.js");
+  const { pendingTabs, harnessProfile } = await import("./pr.js");
+  const FILE = "/h/pr-data/pending-tabs.json", NAME = "corgi-demo fix github #2";
+  const hadFile = S.files.has(FILE), fileWas = S.files.get(FILE);
+  const was = { hc: S.hc, runs: S.runs, writes: S.writes, exec: S.exec, props: S.props, store: new Map(S.store) };
+  const rec = (extra = {}) => ({ id: "p1", name: NAME, space: "s1", folder: "/h/base", text: "Fix this finding.", what: "fix text", prUrl: "https://github.com/o/r/pull/7", by: "copy1", at: Date.now() - 5000, ...extra });
+  const tab = (state = "idle") => ({ address: "t9", where: NAME, created_ms: Date.now() - 4000, labels: { "herdr.space": "s1" }, ...(state ? { status: { app: "opencode", state } } : {}) });
+  let calls = [];
+  const hcTab = (state = "idle") => { calls = []; S.hc = async (args) => { calls.push(args);
+    if (args[0] === "ls") return { code: 0, stdout: JSON.stringify({ terminals: [tab(state)] }), stderr: "" };
+    if (args[0] === "get") return { code: 0, stdout: JSON.stringify(tab(state)), stderr: "" };
+    return { code: 0, stdout: JSON.stringify({ address: "t9" }), stderr: "" }; }; };
+  try {
+    S.writes = true; S.runs = []; S.exec = async () => ({ code: 0, stdout: "", stderr: "" });
+    // A later tick on a fresh copy: the ready tab gets the text once, the record goes, and the copy says it sent it.
+    S.files.set(FILE, JSON.stringify({ tabs: [rec()] })); hcTab();
+    S.props = {};
+    const fresh = new PrReview(); fresh.init({}, cx); await settle();
+    assert.equal(fresh.note, `The fix text was sent to the tab "${NAME}" after a reload.`, "the copy that finished another's delivery says so");
+    assert.deepEqual(calls.filter((a) => a[0] === "send"), [["send", "t9", "Fix this finding."]], "sent once, to the ready tab");
+    assert.deepEqual(pendingTabs(S.files.get(FILE)), [], "the record is gone");
+    // A second tick sends nothing: there is no record left.
+    calls = []; const said = []; await deliverPending({ uid: "copy2", note: (t) => said.push(t) });
+    assert.deepEqual([calls, said, pendingTabs(S.files.get(FILE))], [[], [], []], "a finished delivery is never sent again");
+    // Two copies starting at the same moment: both read the same record, one claim lands, one send.
+    S.files.set(FILE, JSON.stringify({ tabs: [rec()] })); hcTab();
+    const both = await Promise.all([deliverPending({ uid: "a", note: () => {} }), deliverPending({ uid: "b", note: () => {} })]);
+    assert.deepEqual([calls.filter((a) => a[0] === "send").length, both.flat().map((x) => x.action).sort(), pendingTabs(S.files.get(FILE))], [1, ["sent", "taken"], []], "one copy sent it, the other found the record gone");
+    // A tab whose agent is still working: the record waits, nothing is sent, nothing is dropped.
+    S.files.set(FILE, JSON.stringify({ tabs: [rec({ at: Date.now() - 5000 })] })); hcTab("working");
+    const waiting = await deliverPending({ uid: "copy2", note: (t) => said.push(t) });
+    assert.deepEqual([waiting.map((x) => x.action), calls.filter((a) => a[0] === "send"), pendingTabs(S.files.get(FILE)).map((r) => r.id)], [["wait"], [], ["p1"]], "a busy agent keeps the record");
+    // Older than fifteen minutes: dropped with one note, and its tab is not even looked for.
+    calls = []; const expired = []; S.files.set(FILE, JSON.stringify({ tabs: [rec({ at: Date.now() - 16 * 60 * 1000 })] }));
+    await deliverPending({ uid: "copy2", note: (t) => expired.push(t) });
+    assert.deepEqual([expired, pendingTabs(S.files.get(FILE)), calls], [[`The tab "${NAME}" never reported ready; its fix text was not sent.`], [], []], "one note, no tab asked for, the record gone");
+    // A failed send keeps the record with the count, and the third failure drops it with its note.
+    S.files.set(FILE, JSON.stringify({ tabs: [rec()] })); calls = [];
+    S.hc = async (args) => { calls.push(args);
+      if (args[0] === "ls") return { code: 0, stdout: JSON.stringify({ terminals: [tab()] }), stderr: "" };
+      if (args[0] === "get") return { code: 0, stdout: JSON.stringify(tab()), stderr: "" };
+      return { code: 1, stdout: "", stderr: "no such terminal" }; };
+    await deliverPending({ uid: "copy2", note: () => {} });
+    assert.deepEqual(pendingTabs(S.files.get(FILE)).map((r) => r.tries), [1], "a failed send is written back with one more try");
+    await deliverPending({ uid: "copy2", note: () => {} });
+    const dropped = []; await deliverPending({ uid: "copy2", note: (t) => dropped.push(t) });
+    assert.deepEqual([pendingTabs(S.files.get(FILE)), dropped], [[], [`The fix text for the tab "${NAME}" was not sent: hc send failed 3 times.`]], "three failures drop the record with one note");
+    // Claude Code takes the text as its argument: no record, no `hc` call, a tab with the task.
+    S.files.delete(FILE); S.runs = []; calls = [];
+    const r = await startAgentTab(cx, { profile: harnessProfile({}), space: "s1", folder: "/h/base", name: "corgi-demo fix github #2", argv: ["claude"], text: "Fix this." });
+    assert.deepEqual([r.delivery, r.sent, S.runs.filter(([c]) => c === "tab.new").map(([, o]) => o.task), S.files.has(FILE), calls], ["arg", true, ["Fix this."], false, []], "Claude Code's tab gets the text as its argument and leaves no record");
+  } finally {
+    S.hc = was.hc; S.runs = was.runs; S.writes = was.writes; S.exec = was.exec; S.props = was.props;
+    if (hadFile) S.files.set(FILE, fileWas); else S.files.delete(FILE);
+    S.store.clear(); for (const [k, val] of was.store) S.store.set(k, val);
+  }
 }
 await settle();
 assert.deepEqual(late, [], "a spawned task threw");
