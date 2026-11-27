@@ -15,6 +15,7 @@ import { exec, hc, run, focused, pickFolder, theme, settings, readTextFile, writ
 import { spaces, agents, terminals, watch } from "./live.js";
 import { hostOfLink, parseLink, hostWord, hostLong } from "./host.js"; // never straight from Herdr (live.js says why)
 import { parseReports, findingStatus, mergeFindings, findingCounts, countLine, runsOf, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
+import { agentArgs, harnessProfile, harnessAgent } from "./pr.js"; // a new agent tab: the harness profile's own command, else Claude Code
 import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig, writeConfig } from "./setup-view.js";
 import { taskList, taskHead, verdictParts, reviewState, certaintyLine, severityTip, componentLine, doesList, checkGroups, costLine, alreadyThere, criteriaGroups, beforeMerge, verdictAction, notChecked, surfaceLine, realRules } from "./pr.js"; // the Overview page
@@ -762,7 +763,7 @@ export const ReviewMode = {
     else if (name === "add-finding") { const f = this.findingById(arg); if (f) this.findingComment(f, cx); } // a finding's "Add to review"
     else if (name === "route") this.route = arg; // github | agent: where Submit and single comments go
     else if (name === "fix") { if (arg) this.fixComments(arg.split(","), cx); else this.fixSelected(cx); } // fix:<comment id>[,<id>…], else everything selected, comments and findings (the preview opens)
-    else if (name === "fix-target") this.fixTarget(arg); // sub | main, in the open preview
+    else if (name === "fix-target") this.fixTarget(arg); // sub | main | session, in the open preview
     else if (name === "explore") startExplore(arg || null);
     else if (name === "explore-min") this.minimizeExplore(); // the Explore bar's "Minimize"
     else if (name === "explore-open") this.openExploration(arg, cx);
@@ -1019,6 +1020,11 @@ export const ReviewMode = {
       if (queued) { // a reviewer clicked while the head moved: it starts now, or says why it cannot
         if (headMoved(this.prSel?.headSha, this.worktree?.head)) this.note = "Could not start the review: the PR's new head was not checked out.";
         else this.runReviewer(queued.kind, cx, null, queued.use);
+      }
+      const fix = this.pendingFix; this.pendingFix = null;
+      if (fix) { // a fix sent while the head moved: it starts now, or says why it cannot
+        if (headMoved(this.prSel?.headSha, this.worktree?.head)) this.note = "Could not start the fix: the PR's new head was not checked out.";
+        else this.startFixNow(fix.p, fix.out, cx);
       }
       this.loadSince(cx); this.loadContext(cx); this.loadInfra(cx);
       cx.notify();
@@ -1723,7 +1729,7 @@ export const ReviewMode = {
         // space and tab shown before the review are still the ones shown after it. Its name says where to find it.
         const name = tabName(origin?.repo ?? this.root, origin?.number ? `ask ${hostWord(origin.url)} #${origin.number}` : "ask");
         run("tab.new", { space: this.spaceFor(this.ctxId(), origin?.cwd, this.root), folder: plan.where, name, focus: false,
-          argv: TH.tabArgs({ env: this.ctxEnv(this.ctxId()), model: model(), ask: true, trusted: this.trustedPr() }), task: text });
+          argv: agentArgs({ profile: harnessProfile(this.cfg), env: this.ctxEnv(this.ctxId()), model: model(), ask: true, trusted: this.trustedPr() }), task: text });
         this.note = `Started the agent tab "${name}" in the background with your question. The finding stays as it is.`;
         return cx.notify();
       }
@@ -2449,8 +2455,11 @@ export const ReviewMode = {
   sendAgent() {
     const origin = this.prSel, space = origin?.space ?? focused()?.space ?? null;
     const agent = origin?.session ? this.sessionAgent(origin) : space ? this.target(space) : null;
-    return { agent, label: TH.agentLabel(agent, origin?.session ? "the PR's session, resumed in a new tab (claude --resume)" : "a new Claude tab in this repo") };
+    return { agent, label: TH.agentLabel(agent, origin?.session ? "the PR's session, resumed in a new tab (claude --resume)" : `a new ${this.runnerName()} tab in this repo`) };
   },
+  // What a new agent tab is called in sentences: the active harness profile's label when its tab runs that profile's own
+  // command (`agent`, pr.js harnessProfile), else Claude.
+  runnerName() { const p = harnessProfile(this.cfg); return harnessAgent(p) ? p.label : "Claude"; },
   // Nothing is typed into an agent's session without this preview: who gets it, the reviewer's own words apart, the
   // exact text (editable). go(text, cx): what "Send to agent" does with the confirmed text (default: deliver it).
   // guard: the text holds someone else's GitHub comment (threads.js foreignComment): it goes to a new agent tab in
@@ -2467,7 +2476,7 @@ export const ReviewMode = {
     if (p.fix?.pool && !p.fix.items.length) return; // "Fix several…" with nothing ticked: the button is off
     const out = TH.confirm(p, this.sendText.value());
     this.sendP = null;
-    if (p.fix?.target === "sub") return this.startSubFix(p, out.text, cx);
+    if (p.fix) return this.startFix(p, out, cx); // sub | main | session
     if (p.verify) return this.startVerify(p, out.text, cx);
     if (p.go) p.go(out.text, cx);
     else this.deliver(out.text, cx, out.what, (cx) => p.onSent?.(cx), Boolean(p.guard));
@@ -2524,7 +2533,7 @@ export const ReviewMode = {
   commentFix(ids) {
     const comments = this.commentsById(ids), said = (c) => `${c.by ? `@${c.by} on ${brandOf(this.prSel?.url) ?? "the host"} · ` : ""}${c.file} ${uiLine(c)}: ${c.text}`;
     // foreign: one of them is a GitHub comment by someone else (threads.js foreignComment): its fix never runs
-    // unattended and never in the PR's own session, whatever the PR's trust (previewFix, startSubFix, mainOffered).
+    // unattended and never in the PR's own session, whatever the PR's trust (previewFix, startSubFix, sessionOffered).
     return { comments, items: comments.map((c) => ({ kind: "comment", id: c.id })), labels: comments.map(said), foreign: TH.hasForeign(comments, shared("gh.login")),
       prompt: (sub, lang = this.lang()) => TH.fixCommentsPrompt({ pr: this.pr, comments, file: this.repliesFile(), lang, login: shared("gh.login"), ...sub }),
       sent: (cx, how) => {
@@ -2542,7 +2551,7 @@ export const ReviewMode = {
     this.previewFix(cx, { what: "Fix with agent", ownLabel: `${f.comments.some((c) => c.from === "github") ? "" : "YOUR "}COMMENT${n === 1 ? "" : "S"}`, own: f.labels.join("\n\n"), items: f.items, prompt: (sub) => f.prompt(sub), labels: f.labels, sent: f.sent, foreign: f.foreign });
   },
   // The preview with the target choice; prompt(sub) gives the text for a sub-agent (sub: {branch, path, head}: its
-  // worktree and the PR head it starts from) or, with null, for the main agent.
+  // worktree and the PR head it starts from) or, with null, for a new tab or the PR's session.
   previewFix(cx, { what, own, ownLabel, items, labels, prompt, sent, pool = null, alone = 0, target = null, foreign = false }) {
     const ids = items.map((x) => x.id), branch = TH.fixBranch(this.prSel?.number, ids), repo = this.prSel?.repo, base = this.fixBase();
     cx.spawn(async (cx) => {
@@ -2555,20 +2564,54 @@ export const ReviewMode = {
         this.updateThreads(cx, (d) => TH.addFix(d, this.threadKey(), job));
         sent(cx, { route: "agent", agent: label });
       } });
-      this.sendP.fix = { target: "sub", ...sub, items, labels, prompt, sent, pool, alone, foreign };
-      if (target) this.fixTarget(target);
+      // A sub-agent needs Claude Code (startSubFix runs claude --bg): without it the new tab is the default.
+      this.sendP.fix = { target: null, ...sub, items, labels, prompt, sent, pool, alone, foreign };
+      this.fixTarget(target ?? (this.subOffered() ? "sub" : "main"));
+      if (!this.sendP.fix.target) this.fixTarget("main"); // the target it had is no longer offered: the new tab always is
     });
   },
-  // "Main agent" is a choice only when the PR has a live agent session and the PR is trusted: someone else's PR is
+  // "Sub-agent" runs `claude --bg` (threads.js subAgentArgs), which no harness profile replaces: offered only when
+  // Setup found Claude Code.
+  subOffered() { return hasTool("claude"); },
+  // "This session" is a choice only when the PR has a live agent session and the PR is trusted: someone else's PR is
   // fixed in a separate checkout, never in a session with its own rights. Nor is a task that holds someone else's
-  // GitHub comment (sendP.fix.foreign): that session's permissions are its own, and the text is a stranger's.
-  mainOffered() { return Boolean(this.sendAgent().agent) && this.trustedPr() && !this.sendP?.fix?.foreign; },
+  // GitHub comment (sendP.fix.foreign): that session's permissions are its own, and the text is a stranger's. The new
+  // tab (target "main") is always offered; this is the only target that types into an existing session.
+  sessionOffered() { return Boolean(this.sendAgent().agent) && this.trustedPr() && !this.sendP?.fix?.foreign; },
+  sessionWhy() {
+    if (this.sendP?.fix?.foreign) return "the text holds someone else's comment, which is untrusted";
+    if (!this.trustedPr()) return "this is someone else's PR, so its code is only changed in a separate checkout";
+    return "this PR has no live agent session";
+  },
   // The target switch in the preview: the text follows (a sub-agent gets its worktree note).
   fixTarget(target) {
     const f = this.sendP?.fix;
-    if (!f || f.target === target || (target === "main" && !this.mainOffered())) return;
+    if (!f || f.target === target) return;
+    if (target === "sub" && !this.subOffered()) return;
+    if (target === "session" && !this.sessionOffered()) return;
     f.target = target;
     this.sendText.set_value(f.prompt(target === "sub" ? f : null));
+  },
+  // "Send" on a fix preview, by target. A new tab and the PR's session work in the PR's checkout, so a head that
+  // checkout has not seen is checked out first, as for a run (review.js loadAi, startReviewer): nothing starts on the
+  // old commits. A sub-agent needs no queue: it branches from the head the preview named (startSubFix, threads.js
+  // fixStart). A space's own checkout is the person's tree and is not moved, so it starts as it is.
+  startFix(p, out, cx) {
+    const w = this.worktree, target = p.fix?.target;
+    if (target !== "sub" && w && !w.local && headMoved(this.prSel?.headSha, w.head)) {
+      this.pendingFix = { p, out };
+      this.note = "The PR head moved: checking it out, then starting the fix.";
+      this.makeWorktree(cx);
+      return cx.notify();
+    }
+    return this.startFixNow(p, out, cx);
+  },
+  startFixNow(p, out, cx) {
+    const target = p.fix?.target;
+    if (target === "sub") return this.startSubFix(p, out.text, cx);
+    if (target === "main") return this.startMainFix(p, out.text, cx);
+    // "session": the one target that types into an existing session (main.js deliver, hc send).
+    return this.deliver(out.text, cx, out.what, (cx) => p.onSent?.(cx), Boolean(p.guard));
   },
   // The push lock for an agent that works in a worktree of `base` (threads.js noPushEnv): every remote of the clone
   // gets a push URL no git can open, and git itself is asked where it would push now. A remote it would still push
@@ -2600,6 +2643,24 @@ export const ReviewMode = {
       } catch (e) { this.note = `Not started: ${String(e).replace(/^Error: /, "")}`; }
       finally { this.sending = false; cx.notify(); }
     });
+  },
+  // "Main agent" is a new tab, never a send into a session: the active harness profile's own interactive command when
+  // it has one, else Claude Code (pr.js agentArgs), in the PR's checkout (or the review's checkout of the PR head).
+  // Nothing is branched and nothing is pushed by the mod; a tab can push, so the preview says so.
+  startMainFix(p, text, cx) {
+    const f = p.fix, folder = this.fixBase(), profile = harnessProfile(this.cfg), runner = this.runnerName();
+    if (!folder) { this.note = "Not started: the PR has no local checkout or worktree to start a tab in"; return cx.notify(); }
+    const trusted = this.trustedPr() && !f.foreign; // someone else's comment: the tab asks first, on this machine's settings only
+    this.sending = true; this.note = null;
+    try {
+      const name = tabName(this.prSel?.repo ?? this.root, this.prSel?.number ? `fix ${hostWord(this.prSel.url)} #${this.prSel.number}` : "fix");
+      run("tab.new", { space: this.spaceFor(this.ctxId(), folder), folder, name, focus: false,
+        argv: agentArgs({ profile, env: this.ctxEnv(this.ctxId()), model: model(), ask: !trusted, trusted }), task: text });
+      this.updateThreads(cx, (d) => TH.addFix(d, this.threadKey(), { id: Date.now().toString(36), items: f.items, target: "main", at: Date.now(), state: "running" }));
+      f.sent(cx, { route: "agent", agent: `${runner} tab · ${name}` });
+      this.note = `Fix: started a new ${runner} tab "${name}" in the background with the fix. Nothing was typed into another session.`;
+    } catch (e) { this.note = `Not started: ${String(e).replace(/^Error: /, "")}`; }
+    finally { this.sending = false; cx.notify(); }
   },
   // A finding's buttons in the Findings tab, by where it stands. At most one is lit, the next step: "Add to review" on
   // an unresolved finding, "Go to fix" while the agent works or after a failed check, "Apply to PR" once the fix is
@@ -3222,15 +3283,15 @@ export const ReviewMode = {
   },
 
   // The preview before an agent starts or anything is typed into a session: what it is about (the finding or the
-  // reviewer's words), who gets it (a fix: the choice between a sub-agent and the PR's agent, each with what separates
-  // it from the PR), the facts (threads.js sendFacts: account, what it gets, what it may do, push, result, cost) and
-  // the exact text, editable. Only the button at the bottom sends.
+  // reviewer's words), who gets it (a fix: a sub-agent, a new tab, or the PR's session, each with what separates it from
+  // the PR), the facts (threads.js sendFacts: account, what it gets, what it may do, push, result, cost) and the exact
+  // text, editable. Only the button at the bottom sends.
   sendPopover(t) {
     const p = this.sendP, fix = p.fix, sub = fix?.target === "sub", kind = fix ? fix.target : p.verify ? "verify" : p.ask?.kind ?? null, short = (x) => (x ? String(x).replace(home(), "~") : null);
-    const live = this.sendAgent().agent, name = live ? p.agent.split(" · ")[0] : null;
-    const facts = kind ? TH.sendFacts({ kind, account: accountOf(this.ctxId()), trusted: this.trustedPr(), foreign: Boolean(fix?.foreign), branch: fix?.branch ?? p.verify?.branch, name: p.ask?.name ?? name, chat: p.ask?.chat, where: short(p.ask?.where), model: modelLabel(model()), estimate: kind === "sub" ? fixEstimate(tierOf(model())) : null }) : [];
+    const live = this.sendAgent().agent, name = live ? p.agent.split(" · ")[0] : null, runner = this.runnerName(), place = short(fix ? this.fixBase() : null);
+    const facts = kind ? TH.sendFacts({ kind, account: accountOf(this.ctxId()), trusted: this.trustedPr(), foreign: Boolean(fix?.foreign), branch: fix?.branch ?? p.verify?.branch, name: p.ask?.name ?? name, chat: p.ask?.chat, where: short(p.ask?.where) ?? (kind === "main" ? place : null), model: modelLabel(model()), estimate: kind === "sub" ? fixEstimate(tierOf(model())) : null }) : [];
     const picking = Boolean(fix?.pool), n = fix?.items.length ?? 0, some = !picking || n > 0, ready = !this.sending && some, text = this.sendText.value();
-    const go = this.sending ? "Sending…" : p.verify ? "Start verify agent" : sub ? (picking && n ? `Start fix agent for ${n} ${n === 1 ? "finding" : "findings"}` : "Start fix agent") : fix ? "Send to main agent"
+    const go = this.sending ? "Sending…" : p.verify ? "Start verify agent" : sub ? (picking && n ? `Start fix agent for ${n} ${n === 1 ? "finding" : "findings"}` : "Start fix agent") : fix ? (fix.target === "session" ? "Send to session" : "Start fix tab")
       : p.ask ? { new: "Start agent", resume: "Resume its session", live: p.ask.chat ? "Draft in chat" : "Paste to agent" }[p.ask.kind] : "Send to agent";
     const head = (label) => div().text_size(TYPE.small).font_semibold().text_color(t.muted).child(label);
     const choice = (k, title, what) => h_flex().id(`rv-fix-${k}`).gap(10).px(6).py(4).rounded(6).items_start().cursor_pointer().hover((s) => s.bg(t.hover))
@@ -3255,10 +3316,14 @@ export const ReviewMode = {
       .when(!picking && Boolean(p.own), (e) => e.child(v_flex().gap(4).child(head(p.ownLabel))
         .child(div().max_h(110).overflow_hidden().p(8).rounded(6).border_l(3).border_color(t.accent).bg(t.surface).text_size(TYPE.small).line_height(1.45).whitespace_normal().child(p.own))))
       .when(Boolean(fix) && some, (e) => e.child(v_flex().gap(1).child(head("WHO FIXES IT"))
-        .child(choice("sub", "Sub-agent", `A new agent in a separate checkout, on the new branch ${fix.branch} from ${this.worktree?.local ? "this branch's head" : "the PR head"}${fix.head ? ` ${fix.head.slice(0, 7)}` : ""}. It works apart from the PR's checkout and hands its fix to nobody: nothing reaches the PR until you apply it.`))
-        .when(this.mainOffered(), (x) => x.child(choice("main", "Main agent", `${name}, the PR's own agent session. It changes the PR's checkout directly, with its own permissions; nothing separates the fix from the PR.`)))
-        .when(!this.mainOffered(), (x) => x.child(div().pl(32).text_size(TYPE.small).text_color(t.muted).whitespace_normal()
-          .child(`The PR's own agent is not offered: ${this.trustedPr() ? "this PR has no live agent session" : "this is someone else's PR, so its code is only changed in a separate checkout"}.`)))))
+        .when(this.subOffered(), (x) => x.child(choice("sub", "Sub-agent", `A new agent in a separate checkout, on the new branch ${fix.branch} from ${this.worktree?.local ? "this branch's head" : "the PR head"}${fix.head ? ` ${fix.head.slice(0, 7)}` : ""}. It works apart from the PR's checkout and hands its fix to nobody: nothing reaches the PR until you apply it.`)
+          .tooltip("Needs Claude Code: the sub-agent starts as a background claude agent, which a harness profile cannot replace")))
+        .when(!this.subOffered(), (x) => x.child(div().pl(32).text_size(TYPE.small).text_color(t.muted).whitespace_normal()
+          .child("The sub-agent is not offered: it needs Claude Code, and Setup did not find it.")))
+        .child(choice("main", "Main agent", `A new ${runner} tab${place ? ` in ${place}` : ""}, with this text as its task. It works in the PR's checkout like a tab you open there yourself: nothing separates the fix from the PR, and it can push.`))
+        .when(this.sessionOffered(), (x) => x.child(choice("session", "This session", `${name}, the PR's own agent session. The text is typed into its terminal, so it joins that session's context. It changes the PR's checkout with its own permissions.`)))
+        .when(!this.sessionOffered(), (x) => x.child(div().pl(32).text_size(TYPE.small).text_color(t.muted).whitespace_normal()
+          .child(`This session is not offered: ${this.sessionWhy()}.`)))))
       .when(!kind, (e) => e.child(h_flex().gap(6).items_center().text_size(TYPE.small).child(div().text_color(t.muted).child("To")).child(div().flex_1().min_w(0).whitespace_normal().font_semibold().child(p.agent))))
       .when(facts.length > 0 && some, (e) => e.child(v_flex().id("rv-send-facts").p(8).gap(3).rounded(6).border_1().border_color(t.border)
         .children(facts.map(([label, what]) => h_flex().gap(8).items_start().text_size(TYPE.small).line_height(1.45)
@@ -6646,7 +6711,7 @@ export const ReviewMode = {
     });
   },
   // A new Claude in a fresh worktree on the verify branch at the PR head; the findings are marked as being checked.
-  // Someone else's PR: manual mode with the user's settings only (threads.js permissionArgs), as for a fix agent.
+  // Someone else's PR: manual mode with the user's settings only (pr.js permissionArgs), as for a fix agent.
   startVerify(p, text, cx) {
     const v = p.verify, base = this.fixBase(), trusted = this.trustedPr(), n = v.ids.length;
     if (!base) { this.note = "Not started: the PR has no local checkout to make the agent's checkout from"; return cx.notify(); }

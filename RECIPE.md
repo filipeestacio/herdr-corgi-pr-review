@@ -169,7 +169,8 @@ Explore shows Overview, Layers, Architecture and Files for a topic, without a di
 - Agent status isn't shown; agents are only targets: the panel's "Send to agent" (a branch without a PR) and "Ask", the review layout's
   "Submit review" sent to the agent session, and "Fix" go to the PR's session
   agent if it is live, else `claude --resume <session>` in a new tab, else this space's agent, else a new
-  `claude` tab, with the prompt as its task.
+  agent tab (the active harness profile's `agent` command when it has one, else `claude`), with the prompt as its task.
+  A fix's "Main agent" is always a new tab; "Fix" only types into a session through its "This session" target.
 - Clicking a diff line selects it (shift-click a range); type and Enter adds a comment; `j/k` next/previous
   change, `n/p` file, `c` comment, Esc clears.
 - In the review layout, a click on a line number (or `c` on the selected line) opens the composer there;
@@ -193,6 +194,10 @@ Explore shows Overview, Layers, Architecture and Files for a topic, without a di
   Run starts one in the background on a checkout of the PR head; findings appear inline and under Findings.
 - `Fix with agent…` sends findings to an agent, which reports back per finding. The preview names the account's
   config folder, what the agent gets and may do, and that it cannot push (`git push` and `gh pr create` are denied).
+  It offers three targets: `Sub-agent` in its own worktree, only with Claude Code installed (it runs `claude --bg`),
+  `Main agent` as a new tab in the PR's checkout (the active harness profile's `agent` command when it has one, else
+  Claude Code), and `This session` when the PR has a live agent and is trusted without a stranger's comment, the only
+  target that types into an existing session.
   `Fix several…` lets you tick which findings one agent fixes together; security findings go one at a time. The finding reads "Fix sent" and stays
   unresolved (in the diff, counted, a blocker when high) with the agent, branch, commit and report. "Verify fixes"
   in the Findings tab checks a reported commit on its fix branch ("Verified on the fix branch, not in the PR yet")

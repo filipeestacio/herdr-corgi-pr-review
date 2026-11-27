@@ -24,7 +24,7 @@ import { parsePrRef, ghTarget, pruneSources, mergeMine, codeModel, windowActive,
 import { cleanupCandidates, cleanupLine, cleanupNote, cleanupRemoved, cleanupDoc, cleanupDone, cleanupDoneDoc, localDay } from "./pr.js"; // the clones this mod made, and their one daily cleanup
 import { hostOfLink, parseRemote, parseLink, hostWord } from "./host.js";
 import * as C from "./context.js";
-import { tabArgs } from "./threads.js"; // a new Claude tab with the PR's text: no MCP servers
+import { agentArgs, harnessProfile, harnessAgent } from "./pr.js"; // a new agent tab with the PR's text: the harness profile's own command, else Claude Code
 import { loadDiff, saveDiff } from "./diffcache.js";
 import { setupBanner, renderSetup, loadSetup, runSetup, openUrl, readConfig } from "./setup-view.js";
 import { chip, PRIORITY_TIP, layoutPump } from "./stack.js";
@@ -538,7 +538,7 @@ export default class PrReview extends View {
     let unchanged = false;
     if (context !== this.context) {
       if (this.context && this.memo.has(this.context)) this.remember(this.context);
-      this.context = context; this.branchSig = null; this.root = null; this.files = []; this.open = null; this.rows = []; this.sel = null; this.selEnd = null; this.pr = null; this.error = null; this.patch = null; this.branchFiles = null; this.scrollRow = "top"; this.headNote = null; this.pendingReviewer = null;
+      this.context = context; this.branchSig = null; this.root = null; this.files = []; this.open = null; this.rows = []; this.sel = null; this.selEnd = null; this.pr = null; this.error = null; this.patch = null; this.branchFiles = null; this.scrollRow = "top"; this.headNote = null; this.pendingReviewer = null; this.pendingFix = null;
       const hit = this.memo.get(context);
       if (hit) {
         Object.assign(this, hit.state);
@@ -784,6 +784,7 @@ export default class PrReview extends View {
     const { space } = location(), origin = this.prSel;
     if (!space || this.sending || !(this.root || this.pr)) return;
     const ctx = this.ctxId(), agent = guard ? null : origin?.session ? this.sessionAgent(origin) : this.target(origin?.space ?? space);
+    const profile = harnessProfile(this.cfg), runner = harnessAgent(profile) ? profile.label : "Claude";
     this.sending = true; this.note = null;
     cx.spawn(async (cx) => {
       try {
@@ -797,8 +798,9 @@ export default class PrReview extends View {
           run("tab.new", { space: this.spaceFor(ctx, origin.cwd, this.root), folder: origin.cwd, name: tabName(origin.repo, `${hostWord(origin.url)} #${origin.number}`), argv: [...this.ctxEnv(origin.sessionContext ?? ctx), "claude", "--resume", origin.session], task: prompt });
           this.note = `${what}: resumed the PR's session in a new tab`;
         } else {
-          run("tab.new", { space: this.spaceFor(ctx, this.root), folder: this.root ?? location().cwd, name: tabName(origin?.repo ?? this.root, origin ? `${hostWord(origin.url)} #${origin.number}` : "review"), argv: tabArgs({ env: this.ctxEnv(ctx), model: walkModel(), ask: guard, trusted: false }), task: prompt });
-          this.note = `${what}: started a new Claude tab${guard ? " in manual mode (it holds someone else's comment)" : ""}`;
+          // The active harness profile's own interactive command when it has one, else Claude Code (pr.js agentArgs).
+          run("tab.new", { space: this.spaceFor(ctx, this.root), folder: this.root ?? location().cwd, name: tabName(origin?.repo ?? this.root, origin ? `${hostWord(origin.url)} #${origin.number}` : "review"), argv: agentArgs({ profile, env: this.ctxEnv(ctx), model: walkModel(), ask: guard, trusted: false }), task: prompt });
+          this.note = `${what}: started a new ${runner} tab${guard ? (harnessAgent(profile) ? " with someone else's comment; it runs with the harness's own permissions" : " in manual mode (it holds someone else's comment)") : ""}`;
         }
         done(cx);
       } catch (e) { this.note = `Not sent: ${e}`; }

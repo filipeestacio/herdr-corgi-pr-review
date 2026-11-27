@@ -1774,6 +1774,49 @@ export function cleanupRemoved(text) {
   return { removed, count: n ?? removed.length };
 }
 
+// ---- a new agent tab for PR text: the active harness profile's own command, else Claude Code
+
+// No MCP server for an agent working on PR code: the task quotes PR text that may carry injected instructions, and the
+// context's servers (mail, calendar, docs) would let them reach outside. The same rule as the model runs (llm.py).
+export const NO_MCP = ["--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}'];
+// A trusted PR: auto (the classifier approves the harmless commands, reads, edits, commit, tests, and asks about risky
+// ones). An untrusted one: the task quotes its text and findings, which may carry injected instructions, and its
+// checkout's .claude/settings.json could allow anything or run hooks, so: manual, said outright (not left to the
+// settings), and only the user's own settings (the review shows "waits for your OK").
+export function permissionArgs(trusted) {
+  return trusted ? ["--permission-mode", "auto"] : ["--permission-mode", "manual", "--setting-sources", "user"];
+}
+// A new Claude tab that gets PR text: "Fix with agent" (the PR's checkout), "Ask an agent…" (a question about a
+// finding) and "Send review" (the comments to a new session). No MCP servers, as for every agent that reads PR text.
+// ask: Ask's permission mode by trust (a trusted PR: manual with the checkout's settings; someone else's: manual with
+// the user's own only).
+export const tabArgs = ({ env = [], model, ask = false, trusted = false }) =>
+  [...env, "claude", "--model", model, ...NO_MCP, ...(!ask ? [] : trusted ? ["--permission-mode", "manual"] : permissionArgs(false))];
+
+// The active harness profile from pr-review.config.json, as llm.py reads it: `harness` names one in `harnesses`, the
+// legacy object is one profile named "harness", and with neither the built-in Claude Code profile runs. A profile
+// named "claude" is Claude Code whatever it sets, so its `agent` is not used.
+export function harnessProfile(cfg) {
+  const named = cfg?.harnesses && typeof cfg.harnesses === "object" && !Array.isArray(cfg.harnesses) ? cfg.harnesses : {};
+  const h = cfg?.harness;
+  if (h && typeof h === "object" && !Array.isArray(h)) {
+    // The legacy object counts only when it can do something (llm.py _legacy_spec): else Claude Code is the active profile.
+    const can = ["command", "models", "modelList"].some((k) => Array.isArray(h[k]) && h[k].length);
+    return can ? { name: "harness", label: String(h.label ?? "harness"), agent: h.agent, builtin: false } : { name: "claude", label: "Claude Code", agent: undefined, builtin: true };
+  }
+  const name = typeof h === "string" && h ? h : "claude", spec = named[name] && typeof named[name] === "object" ? named[name] : {};
+  return { name, label: String(spec.label ?? (name === "claude" ? "Claude Code" : name)), agent: spec.agent, builtin: name === "claude" };
+}
+// Whether a new tab on that profile opens the harness itself: `agent` is an argv to a program, and the built-in
+// Claude Code profile has its own argv (tabArgs).
+export const harnessAgent = (profile) => !profile?.builtin && Array.isArray(profile?.agent) && profile.agent.length > 0;
+
+// The argv of a new agent tab that gets PR text: the profile's `agent` (the command that opens it interactively, such
+// as ["aircode", "harness", "opencode"]) with env (the context's command prefix) in front, else Claude Code's argv
+// (tabArgs). The profile's `command` stays the headless call the analysis and the reviewers run (llm.py).
+export const agentArgs = ({ profile, env = [], model, ask = false, trusted = false }) =>
+  harnessAgent(profile) ? [...env, ...profile.agent.map(String)] : tabArgs({ env, model, ask, trusted });
+
 // The one muted sentence after a pass that removed something: the count and the repositories. null: say nothing.
 export function cleanupNote(res) {
   const n = res?.count ?? res?.removed?.length ?? 0;

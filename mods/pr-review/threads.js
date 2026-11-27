@@ -2,7 +2,7 @@
 // as threads under their lines (pr-data/threads.json, per PR, bounded), the agent answers each by id in
 // pr-data/replies/<pr hash>.jsonl, GitHub replies come from its review comments. Plus what a GitHub submit posts
 // (exactly the ticked items) and the preview before anything is typed into an agent's session.
-import { hash, ghReview, lineLabel, answerIn, secByEffect } from "./pr.js";
+import { hash, ghReview, lineLabel, answerIn, secByEffect, NO_MCP, permissionArgs } from "./pr.js";
 
 export const MAX_PRS = 50, MAX_THREADS = 100;
 export const STATUSES = ["fixed", "answered", "wontfix", "question"];
@@ -261,14 +261,9 @@ export function subAgentArgs({ parent, cwd, name, env = [], task, job, auto = fa
   return ["run", "--bg", "--json", "--no-notify", "--name", name, "--cwd", cwd, ...(parent ? ["--parent", parent] : ["--no-parent"]),
     "--label", `pr-review.${kind}=${job}`, "--", ...lock, ...env, "claude", "--model", model, ...NO_MCP, "--disallowedTools", ...deny, ...permissionArgs(auto), task];
 }
-// A new Claude tab that gets PR text: "Ask an agent…" (a question about a finding) and "Send review" (the comments
-// to a new session). No MCP servers, as for every agent that reads PR text. ask: Ask's permission mode by trust (a
-// trusted PR: manual with the checkout's settings; someone else's: manual with the user's own only).
-export const tabArgs = ({ env = [], model, ask = false, trusted = false }) =>
-  [...env, "claude", "--model", model, ...NO_MCP, ...(!ask ? [] : trusted ? ["--permission-mode", "manual"] : permissionArgs(false))];
-// No MCP server for an agent working on PR code: the task quotes PR text that may carry injected instructions, and the
-// context's servers (mail, calendar, docs) would let them reach outside. The same rule as the model runs (llm.py).
-export const NO_MCP = ["--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}'];
+// A new Claude tab that gets PR text (tabArgs) and the Claude flags it shares with a sub-agent (NO_MCP) live in pr.js,
+// next to agentArgs: a tab on a harness profile starts that profile's own command instead.
+export { tabArgs, NO_MCP } from "./pr.js";
 // A fix agent never pushes, never opens a PR and never hands its fix to another session (hc send): the task says so,
 // and these deny rules refuse the commands in any permission mode, also in the usual wrappers (git -C, git -c, env,
 // sh -c). The list takes any number of rules, so an option with one value has to follow it (permissionArgs).
@@ -299,14 +294,6 @@ export function pushLockOpen(stdout, remotes) {
   const lines = String(stdout ?? "").split("\n").filter(Boolean), open = lines.filter((l) => !l.startsWith(PUSH_OFF));
   return lines.length < remotes.length || open.length ? (open.length ? open : ["?"]) : [];
 }
-// A trusted PR: auto (the classifier approves the harmless commands, reads, edits, commit, tests, and asks about risky
-// ones). An untrusted one: the task quotes its text and findings, which may carry injected instructions, and its
-// checkout's .claude/settings.json could allow anything or run hooks, so: manual, said outright (not left to the
-// settings), and only the user's own settings (the review shows "waits for your OK").
-export function permissionArgs(trusted) {
-  return trusted ? ["--permission-mode", "auto"] : ["--permission-mode", "manual", "--setting-sources", "user"];
-}
-
 // Apply to PR: a cherry-pick of the branch's commits onto the PR's checkout, only when that checkout is clean.
 // onHead: false when that checkout does not contain the commit the fix started from (it is on another branch than the
 // PR's): a cherry-pick there would put the fix on the wrong branch.
@@ -382,16 +369,19 @@ export const showCounts = ({ rows, findings = 0, agents = 0 }) => ({ mine: rows.
 // ---- what a send preview says before an agent starts (review.js sendPopover)
 
 // The facts above the buttons, as [label, text] rows: who runs it and on which account, what it gets, what it may do,
-// whether it can push, what comes back and what it costs. kind: "sub" (a fix agent in its own checkout), "main" (the
-// PR's live agent session), "new" (a new agent tab for a question), "live" (a question put into a live agent's
-// input: nothing starts), "resume" (the PR's session, resumed in a new tab), anything else: a live session.
-// model: the label of the model a new agent ("sub", "new") runs on; a live session keeps its own.
+// whether it can push, what comes back and what it costs. kind: "sub" (a fix agent in its own checkout), "main" (a fix
+// agent in a new tab, in the PR's checkout, on the harness profile's interactive command or Claude Code), "session" (a
+// fix typed into the PR's live agent session), "new" (a new agent tab for a question), "live" (a question put into a
+// live agent's input: nothing starts), "resume" (the PR's session, resumed in a new tab).
+// model: the label of the model a new agent ("sub", "new", "main") runs on; a live session keeps its own.
 // "verify": an agent in its own checkout of the PR head that tries to show or refute findings (Verify with an agent).
 // estimate: what one finding usually costs a fix agent (views.js fixEstimate), for kind "sub"; else null.
 // foreign: the text holds someone else's GitHub comment (foreignComment): manual mode whatever the PR's trust.
 export function sendFacts({ kind, account, trusted = false, branch = null, name = null, chat = false, where = null, model = null, estimate = null, foreign = false }) {
-  const own = kind === "sub" || kind === "new" || kind === "verify", who = name ?? "the agent";
+  const own = kind === "sub" || kind === "new" || kind === "verify" || kind === "main", who = name ?? "the agent";
   const starts = { new: `A new agent in a new tab, in the review's checkout of the PR head${where ? ` (${where})` : ""}.`,
+    main: `A new agent tab${where ? ` in ${where}` : ""}, in the PR's checkout, with the text below as its task.`,
+    session: `Nothing new. The text is typed into the terminal of ${who}, the PR's session, in the PR's checkout.`,
     live: `Nothing new. The text goes into the ${chat ? "chat box" : "terminal"} of ${who} as a draft, and you send it there.`,
     resume: `The PR's own session again, in a new tab${where ? ` in ${where}` : ""}. The text is on your clipboard to paste there.`,
     verify: `A new agent in a separate checkout of the PR head${branch ? `, on the new branch ${branch}` : ""}. It can run code from this PR there: the tests and commands it uses as evidence.` }[kind];
@@ -400,16 +390,19 @@ export function sendFacts({ kind, account, trusted = false, branch = null, name 
     : kind === "sub" ? (foreign ? "Nothing without your OK: the text below holds a comment by someone else, which is untrusted, so the agent asks before every edit and command (manual mode, only your own settings), also on a PR you trust."
     : trusted ? "Edit files, run commands and commit in its checkout without asking (auto mode). Risky commands still ask you."
     : "Nothing without your OK: this is someone else's PR, so it asks before every edit and command.")
+    : kind === "main" ? (trusted && !foreign ? "Read, edit and commit in the PR's checkout, as a tab you open there yourself; nothing separates the fix from the PR."
+      : "Nothing without your OK: the text is not trusted, so the tab asks before every edit and command and reads only your own settings.")
     : kind === "new" ? "Read and answer. It asks you before every edit and command (manual mode)." : "Whatever that session allows, in the PR's checkout itself.";
   const result = kind === "verify" ? "A result per finding here: reproduced (the finding becomes confirmed), not reproduced or refuted, each with its evidence. Then its checkout and branch are removed."
     : kind === "sub" ? `A commit on ${branch ?? "its branch"} and a report here. Nothing reaches the PR until you apply it.`
-    : kind === "main" ? "Commits in the PR's checkout and a report here." : `An answer in ${kind === "new" ? "the new tab" : "that session"}. The finding stays as it is.`;
+    : kind === "main" ? "Commits or edits in the PR's checkout, and its answer in the tab."
+    : kind === "session" ? "Commits in the PR's checkout and a report here." : `An answer in ${kind === "new" ? "the new tab" : "that session"}. The finding stays as it is.`;
   return [
     starts && ["Starts", starts],
     ["Runs as", own ? `${account}${model ? ` · ${model}` : ""}` : `${name ?? "The PR's session"}, on its own account and with its own permissions.`],
     ["Gets", own ? "The text below and every file it opens in its checkout. All of it goes to the provider." : "The text below. The session reads what it needs in its own checkout."],
     ["May", may],
-    ["Push", own && kind !== "new" ? `Not through git push: every remote of the checkout, also one with a push URL of its own, and every URL given to git push lead to an address no git can open, whatever calls git push. This is checked before the agent starts. git push, git send-pack and gh pr create are denied${kind === "verify" ? ", as are web tools and the plain network commands (curl, wget, git fetch, installs)" : ""}. The task forbids it too. Not covered: what the agent sets against it on purpose (a push URL of its own through git -c or git config, a cleared environment), git send-pack inside a script, or a push through the GitHub API (gh api, curl)${kind === "sub" && trusted ? "; auto mode may run these without asking" : ""}.` : kind === "new" ? "Only if you approve the command." : "Possible. Nothing here prevents it."],
+    ["Push", kind === "main" ? "Possible. A new tab is not behind the sub-agent's push lock: only a command you approve pushes." : own && kind !== "new" ? `Not through git push: every remote of the checkout, also one with a push URL of its own, and every URL given to git push lead to an address no git can open, whatever calls git push. This is checked before the agent starts. git push, git send-pack and gh pr create are denied${kind === "verify" ? ", as are web tools and the plain network commands (curl, wget, git fetch, installs)" : ""}. The task forbids it too. Not covered: what the agent sets against it on purpose (a push URL of its own through git -c or git config, a cleared environment), git send-pack inside a script, or a push through the GitHub API (gh api, curl)${kind === "sub" && trusted ? "; auto mode may run these without asking" : ""}.` : kind === "new" ? "Only if you approve the command." : "Possible. Nothing here prevents it."],
     ["Result", result],
     // The CLI caps spending only for non-interactive runs (--max-budget-usd needs --print); these agents work in a tab.
     ["Cost", own ? `No spending limit: the CLI caps only non-interactive runs, and this agent works in a tab. Stop it there.${estimate ? ` One finding usually costs ${estimate}${model ? ` on ${model}` : ""}.` : kind === "verify" ? " One finding usually takes a few minutes." : ""} Billed to that account.` : "Billed to that session's account."],

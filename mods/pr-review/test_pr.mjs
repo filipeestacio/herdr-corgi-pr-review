@@ -1321,3 +1321,33 @@ console.log("ok");
     { claim: "2026-11-26", other: 1, day: "2026-11-26", at: 5000, removed: 2, repos: ["a/b", "c/d"] }, "today is done, with what it removed");
   console.log("ok cleanup.py's list and apply as rows, and the one sentence after a pass");
 }
+
+// A new agent tab for PR text: the active harness profile's own interactive command (`agent`) when it has one, else
+// Claude Code's argv (tabArgs). The context's env comes first; the profile's headless `command` is not the tab's.
+{
+  const { agentArgs, harnessProfile, harnessAgent, tabArgs, NO_MCP } = await import("./pr.js");
+  const env = ["env", "-u", "CLAUDE_CONFIG_DIR", "GH_TOKEN=x"], claude = (model, extra = []) => ["claude", "--model", model, ...NO_MCP, ...extra];
+  // A profile with `agent`: its argv as written, env first, and no Claude flags.
+  const work = harnessProfile({ harness: "work", harnesses: { work: { label: "Work", command: ["work", "run", "--model", "{model}"], agent: ["aircode", "harness", "opencode"] } } });
+  assert.deepEqual([work.name, work.label, work.builtin, harnessAgent(work)], ["work", "Work", false, true]);
+  assert.deepEqual(agentArgs({ profile: work, env, model: "opus", ask: true, trusted: true }), [...env, "aircode", "harness", "opencode"], "the profile's own command, after env");
+  assert.deepEqual(agentArgs({ profile: work, model: "opus", ask: true, trusted: true }), ["aircode", "harness", "opencode"], "no env: the command alone");
+  // A profile without `agent`: Claude Code's tab, as before, env first.
+  const plain = harnessProfile({ harness: "plain", harnesses: { plain: { command: ["plain", "run"] } } });
+  assert.equal(harnessAgent(plain), false);
+  assert.deepEqual(agentArgs({ profile: plain, env, model: "sonnet" }), [...env, ...claude("sonnet")], "no agent: Claude Code's argv, the context's env first");
+  assert.deepEqual(agentArgs({ profile: plain, env, model: "sonnet" }), tabArgs({ env, model: "sonnet" }), "the same argv tabArgs builds, not a copy");
+  // The built-in Claude profile, and a profile named claude (Claude Code whatever it sets): never its `agent`.
+  const builtin = harnessProfile({});
+  assert.deepEqual([builtin.name, builtin.label, builtin.builtin, harnessAgent(builtin)], ["claude", "Claude Code", true, false]);
+  assert.deepEqual(agentArgs({ profile: builtin, model: "opus", ask: true, trusted: true }), claude("opus", ["--permission-mode", "manual"]), "the built-in profile: Ask's manual mode");
+  const named = harnessProfile({ harness: "claude", harnesses: { claude: { agent: ["not-claude"] } } });
+  assert.deepEqual([named.builtin, harnessAgent(named), agentArgs({ profile: named, model: "opus" })], [true, false, claude("opus")], "a profile named claude stays Claude Code");
+  // The legacy one-profile object carries `agent` too, and a name no profile has falls back to Claude Code.
+  const legacy = harnessProfile({ harness: { command: ["opencode", "run"], agent: ["aircode", "harness", "opencode"] } });
+  assert.deepEqual([legacy.name, legacy.builtin, agentArgs({ profile: legacy, env: ["env", "A=1"] })], ["harness", false, ["env", "A=1", "aircode", "harness", "opencode"]], "the legacy harness object");
+  assert.equal(harnessProfile({ harness: { agent: ["aircode", "harness", "opencode"] } }).builtin, true, "a legacy object with nothing to run is ignored, as llm.py reads it");
+  const ghost = harnessProfile({ harness: "ghost" });
+  assert.deepEqual([ghost.name, ghost.builtin, harnessAgent(ghost), agentArgs({ profile: ghost, model: "m" })], ["ghost", false, false, claude("m")], "a name with no entry: Claude Code's argv");
+  console.log("ok a new agent tab starts the harness profile's own command, else Claude Code's argv");
+}
