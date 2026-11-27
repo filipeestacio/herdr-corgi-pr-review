@@ -16,7 +16,7 @@ if (!existsSync(FIXTURES)) {
 }
 
 const { default: PrReview } = await import("./main.js");
-const { splitPatch, hunksOf, diffRows, hash, mapReview, lineKey, reviewRequest } = await import("./pr.js");
+const { splitPatch, hunksOf, diffRows, hash, mapReview, lineKey, reviewRequest, runsOf } = await import("./pr.js");
 const { langOf } = await import("./syntax.js");
 const { foldOnOpen, resWatch } = await import("./views.js");
 const R = await import("./review.js");
@@ -305,6 +305,47 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   const v = await open({ ...PR2, analysis: fx("analysis-split.json"), findings: JSON.stringify(doc) });
   v.aiBusy = { model: "sonnet", started: Date.now(), status: "/h/s" }; v.verifyBusy = { started: Date.now(), n: 2 };
   await tour(v, "PR #2 with every run going");
+}
+// A run whose process is gone: one shell probe for every recorded pid, the panel shows it stale, and the answer is kept
+// for the next frames. A run with no pid that started an hour ago is silent; one that started just now keeps running.
+{
+  const v = new PrReview(); v.init({}, cx);
+  const started = new Date(Date.now() - 3600000).toISOString(), fresh = new Date().toISOString();
+  v.find = { ...v.find, runs: runsOf({ claude: { state: "running", busy: true, started, pid: 4242 }, security: { state: "running", busy: true, started, pid: 4343 },
+    resilience: { state: "running", busy: true, started }, codex: { state: "running", busy: true, started: fresh, pid: 4444 } }) };
+  const probes = [], prev = S.exec;
+  S.exec = async (cmd, args = []) => (cmd === "sh" && args[0] === "-c" && String(args[1]).includes("kill -0")
+    ? (probes.push(args.slice(3)), { code: 0, stdout: "4343 4444\n", stderr: "" })
+    : prev ? prev(cmd, args) : { code: 1, stdout: "", stderr: "stub" });
+  v.staleProbe(cx); await settle();
+  assert.deepEqual(probes, [["4242", "4343", "4444"]], "one shell call for every recorded pid");
+  assert.deepEqual(["claude", "security", "resilience", "codex"].map((k) => v.find.runs[k].state), ["stale", "running", "stale", "running"]);
+  assert.deepEqual([v.find.runs.claude.error, v.find.runs.claude.stale, v.find.runs.resilience.error],
+    ["the run's process ended without a result", "gone", "no result after ten minutes"]);
+  assert.equal(S.store.get("review.reviewers").claude.state, "stale", "the Reviews popup reads the stale run from the shared copy");
+  v.staleProbe(cx); await settle();
+  assert.equal(probes.length, 1, "the answer is kept a few seconds: a second frame starts no probe");
+  S.exec = null;
+}
+// A probe that could not run knows nothing: a failed shell call is not every process gone, so the run keeps saying running
+// and the call is kept for the memo rather than made again on every frame. The next probe that answers, with nothing
+// alive, marks it stale.
+{
+  const v = new PrReview(); v.init({}, cx);
+  v.find = { ...v.find, runs: runsOf({ claude: { state: "running", busy: true, started: new Date(Date.now() - 3600000).toISOString(), pid: 4242 } }) };
+  let calls = 0;
+  const prev = S.exec, probe = (cmd, args = []) => cmd === "sh" && args[0] === "-c" && String(args[1]).includes("kill -0");
+  S.exec = async (cmd, args = []) => (probe(cmd, args) ? (calls++, { code: 137, stdout: "", stderr: "killed" })
+    : prev ? prev(cmd, args) : { code: 1, stdout: "", stderr: "stub" });
+  v.staleProbe(cx); await settle();
+  assert.deepEqual([v.find.runs.claude.state, calls], ["running", 1], "a failed probe judges nothing");
+  v.staleProbe(cx); await settle();
+  assert.equal(calls, 1, "the failed call is kept for the memo, not made on every frame");
+  v.staleSeen.at = 0; // the memo has expired
+  S.exec = async (cmd, args = []) => (probe(cmd, args) ? { code: 0, stdout: "", stderr: "" } : prev ? prev(cmd, args) : { code: 1, stdout: "", stderr: "stub" });
+  v.staleProbe(cx); await settle();
+  assert.deepEqual([v.find.runs.claude.state, v.find.runs.claude.stale], ["stale", "gone"], "the next answer, with nothing alive, is read");
+  S.exec = null;
 }
 // Runs failed: the analysis and every reviewer, a verification that said not fixed.
 {

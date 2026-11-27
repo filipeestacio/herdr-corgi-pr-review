@@ -289,6 +289,7 @@ assert.equal(pendingText([{ file: "a.py" }, { file: "a.py" }, { file: "b.py" }])
   const { runLabel } = await import("./views.js");
   assert.equal(runLabel(null, "about $0.27, 1 min"), "Run (about $0.27, 1 min)");
   assert.equal(runLabel({ state: "failed" }, "about $0.27, 1 min"), "Run again (about $0.27, 1 min)");
+  assert.equal(runLabel({ state: "stale", error: "the run's process ended without a result" }, "about $0.40, 2 min"), "Run again (about $0.40, 2 min)", "a stale run is run again, like a failed one");
   assert.equal(runLabel({ state: "done", head: "ccddf9524aec" }, "about $0.27, 1 min", "1 h ago"), "Re-run (about $0.27, 1 min) · last run 1 h ago on ccddf95");
   assert.equal(runLabel({ state: "done" }, null), "Re-run · last run");
   assert.equal(runLabel({ state: "done", head: "ccddf95" }, "about $0.13, 1 min", "13 h ago", true), "Re-run (about $0.13, 1 min)", "the popup says the last run in its line");
@@ -431,6 +432,7 @@ for (const w of [200, 420, 900]) assert.ok(mdHeight(long, w) >= 21 * wrapCount(l
   assert.equal(runSummary(null), "not run"); assert.equal(runSummary({ state: null }), "not run");
   assert.equal(runSummary({ state: "running" }), "running");
   assert.equal(runSummary({ state: "failed", error: "Codex review: no findings file" }), "failed: Codex review: no findings file");
+  assert.equal(runSummary({ state: "stale", error: "the run's process ended without a result" }), "stale: the run's process ended without a result");
   assert.equal(runSummary({ state: "done", count: 0 }), "no findings"); assert.equal(runSummary({ state: "done", count: 2 }), "2 findings");
   assert.equal(runSummary({ state: "done", count: 2 }, 1), "1 finding", "the count on the list now wins over the run's own");
 }
@@ -1197,6 +1199,8 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   // small ✓; clean, but with something left unchecked, is the page's sign in the quiet color. None of them is colored.
   assert.deepEqual(pageBadge("resilience", [], { state: null }), { glyph: "○", color: "dim", form: "quiet", n: 0, state: "none", tip: "Resilience: not run." });
   assert.deepEqual([pageBadge("security", [], { state: "failed" }).state, pageBadge("security", [], { state: "failed" }).tip], ["none", "Security: the run failed, so nothing is known."]);
+  assert.deepEqual([pageBadge("security", [], { state: "stale" }).state, pageBadge("security", [], { state: "stale" }).tip], ["none", "Security: the run ended without a result, so nothing is known."], "a stale run is not clean");
+  assert.match(pageBadge("security", [high], { state: "stale" }).tip, /The last Security run ended without a result\.$/);
   assert.deepEqual([pageBadge("security", [], { state: "running" }).glyph, pageBadge("security", [], { state: "running" }).state], ["⋯", "running"]);
   assert.deepEqual(pageBadge("security", [], { state: "done" }), { glyph: "✓", color: "dim", form: "quiet", n: 0, state: "clean", tip: "Security: checked, nothing unresolved." });
   assert.deepEqual(pageBadge("resilience", [], { state: "done", unsure: "1 path not assessed" }), { glyph: "↯", color: "dim", form: "quiet", n: 0, state: "quiet", tip: "Resilience: no unresolved finding; 1 path not assessed." });
