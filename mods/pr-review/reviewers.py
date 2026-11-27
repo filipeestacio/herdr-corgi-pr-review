@@ -803,11 +803,19 @@ def codex_review(req):
     return from_text(text, req, meta), meta
 
 
+def refresh_base(worktree, base):
+    """The base for "what changed", refreshed. A base that could not be refreshed but still resolves is one note, not
+    a failed run: the reviewers and the review context fetch the same clone at the same time (related.fetch_base
+    serialises them per clone and retries a ref another git process held)."""
+    stale = related.fetch_base(worktree, base)
+    return [stale] if stale else []
+
+
 def main(arg):
     req = json.loads(arg)
     req["model"] = llm.code_model(req.get("model"))  # a reviewer judges code: never haiku (the prose pass stays haiku)
     wt = req["worktree"]
-    git("fetch", "--quiet", "origin", req["base"], cwd=wt)  # the base for "what changed"
+    notes = refresh_base(wt, req["base"])
     started = time.monotonic()
     # Plain prompts, not /code-review or /security-review: their templates run plain git before the model starts,
     # and a run may call git only through safegit.py.
@@ -848,7 +856,7 @@ def main(arg):
         security = {"head": req["head"], "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "picture": made, "rules": RULES, **security_view(answer, findings, pic, changed, wt)}
     for f in findings:
         f.pop("ref", None)
-    notes = [f"/{'code-review' if req['kind'] == 'claude' else 'security-review'} not available: ran as a plain prompt"] if meta.get("fallback") else []
+    notes += [f"/{'code-review' if req['kind'] == 'claude' else 'security-review'} not available: ran as a plain prompt"] if meta.get("fallback") else []
     notes += ["The reviewer answered in text: a text pass turned it into findings"] if meta.get("converted") else []
     notes += ["Codex reports no scope of its own"] if req["kind"] == "codex" else []
     run = {"state": "done", "cost": meta.get("cost"), "ms": int((time.monotonic() - started) * 1000), "model": meta.get("model_id"),
