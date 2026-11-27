@@ -368,10 +368,10 @@ export function scopeTable(analysis, runs = {}) {
   const cell = (x) => (x ? { result: ["finding", "clean", "not_checked"].includes(x.result) ? x.result : "not_checked", note: String(x.note ?? "") } : null);
   return { cols: sources.map(([k]) => k), rows: areas.map((area) => ({ area, cells: Object.fromEntries(sources.map(([k, c]) => [k, cell(c.find((x) => x.area === area))])) })) };
 }
-// A run in words, so "not run", "failed" and "no findings" never look alike. r: a run of runsOf (or {state}); count:
-// its findings on the list now.
-export const runSummary = (r, count = r?.count ?? 0) => (!r?.state ? "not run" : r.state === "running" ? "running" : r.state === "failed" ? `failed: ${r.error || "no error text"}`
-  : count ? `${count} ${count === 1 ? "finding" : "findings"}` : "no findings");
+// A run in words, so "not run", "failed", "stale" and "no findings" never look alike. r: a run of runsOf (or {state});
+// count: its findings on the list now.
+export const runSummary = (r, count = r?.count ?? 0) => (!r?.state ? "not run" : r.state === "running" ? "running" : r.state === "stale" ? `stale: ${r.error || "no result"}`
+  : r.state === "failed" ? `failed: ${r.error || "no error text"}` : count ? `${count} ${count === 1 ? "finding" : "findings"}` : "no findings");
 
 // ---- the Security page's attack surface
 // How exposed an access row is: "open" (reachable without the cloud account's credentials and nothing checks the
@@ -1339,13 +1339,13 @@ export function mergeFirst(items, n = 5, of = (x) => x) {
 }
 
 // The button that starts a run (run: the findings file's runs[kind]): "Run (about $0.27, 1 min)" before a first run,
-// "Run again (…)" after a failed one, and after a finished one "Re-run (about $0.27, 1 min) · last run 1 h ago on
-// ccddf95", so a done run does not read like one still to buy. price: null when not known (Codex); age: "1 h ago";
-// short: without the last run (a place that says it next to the button).
+// "Run again (…)" after a failed or a stale one, and after a finished one "Re-run (about $0.27, 1 min) · last run 1 h
+// ago on ccddf95", so a done run does not read like one still to buy. price: null when not known (Codex); age: "1 h
+// ago"; short: without the last run (a place that says it next to the button).
 export function runLabel(run, price = null, age = "", short = false) {
   const p = price ? ` (${price})` : "";
   if (run?.state === "done") return short ? `Re-run${p}` : `Re-run${p} · last run${age ? ` ${age}` : ""}${run.head ? ` on ${String(run.head).slice(0, 7)}` : ""}`;
-  return `${run?.state === "failed" ? "Run again" : "Run"}${p}`;
+  return `${run?.state === "failed" || run?.state === "stale" ? "Run again" : "Run"}${p}`;
 }
 
 // ---- what the panel lists as relevant (PRs that stuck around: every session PR of every repo, every review opened once)
@@ -1672,7 +1672,7 @@ export function signWords(findings) {
   return [...by].sort(([, a], [, b]) => (a.sev < 0 ? 9 : a.sev) - (b.sev < 0 ? 9 : b.sev) || a.sure - b.sure).map(([k, v]) => `${v.n} ${k}`).join(" · ");
 }
 // A page's sign. kind: overview | arch | security | resilience. findings: the unresolved findings behind the page.
-// run: {state: done | running | failed | null (a run that is optional and did not run), n: the page's own number
+// run: {state: done | running | stale | failed | null (a run that is optional and did not run), n: the page's own number
 // where it counts something else (security: causes, resilience: paths that block) with `unit`, its words ("paths
 // block the merge"), more: a sentence for the tip
 // ("1 path blocks once it is wired."), unsure: what stayed unchecked although the run is done ("1 path not assessed")}.
@@ -1683,10 +1683,11 @@ export function pageBadge(kind, findings, run = {}) {
   const [glyph, name] = PAGE_SIGN[kind] ?? ["!", String(kind)], list = findings ?? [], more = run.more ? ` ${run.more}` : "";
   if (list.length) {
     const s = signOf(list), n = run.n ?? list.length, own = run.unit ? `${n} ${run.unit}. ` : "";
-    return { glyph, color: s.color, form: s.form, n, state: "open", tip: `${name}: ${own}${signWords(list)}.${run.unsure ? ` ${run.unsure[0].toUpperCase()}${run.unsure.slice(1)}.` : ""}${run.state === "failed" ? ` The last ${name} run failed.` : run.state === null ? ` The ${name} run did not run.` : ""}${more}` };
+    return { glyph, color: s.color, form: s.form, n, state: "open", tip: `${name}: ${own}${signWords(list)}.${run.unsure ? ` ${run.unsure[0].toUpperCase()}${run.unsure.slice(1)}.` : ""}${run.state === "failed" ? ` The last ${name} run failed.` : run.state === "stale" ? ` The last ${name} run ended without a result.` : run.state === null ? ` The ${name} run did not run.` : ""}${more}` };
   }
   const quiet = (g, state, tip) => ({ glyph: g, color: "dim", form: "quiet", n: run.n || 0, state, tip: `${name}: ${tip}${more}` });
   if (run.state === "running") return quiet("⋯", "running", "the run is going.");
+  if (run.state === "stale") return quiet("○", "none", "the run ended without a result, so nothing is known.");
   if (run.state === null || run.state === "failed") return quiet("○", "none", run.state === "failed" ? "the run failed, so nothing is known." : "not run.");
   if (run.unsure || run.n) return quiet(glyph, "quiet", `no unresolved finding${run.unsure ? `; ${run.unsure}` : ""}.`);
   return quiet("✓", "clean", "checked, nothing unresolved.");

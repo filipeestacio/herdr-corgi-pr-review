@@ -14,7 +14,7 @@ import { v_flex, h_flex, Scrollbar, TextView, v_virtual_list, VirtualListScrollH
 import { exec, hc, run, focused, pickFolder, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, nextCommand, watchFolder, openOverlay, closeOverlay, props, home, placement } from "herdr";
 import { spaces, agents, terminals, watch } from "./live.js";
 import { hostOfLink, parseLink, hostWord, hostLong } from "./host.js"; // never straight from Herdr (live.js says why)
-import { parseReports, findingStatus, fixStage, landedByFile, fixStillWorking, findingGroup, FINDING_GROUPS, GROUP_WORD, mergeFindings, findingCounts, countLine, runsOf, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
+import { parseReports, findingStatus, fixStage, landedByFile, fixStillWorking, findingGroup, FINDING_GROUPS, GROUP_WORD, mergeFindings, findingCounts, countLine, runsOf, runIsStale, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
 import { agentArgs, harnessProfile, harnessAgent, notReadyNote, fixNotSentNote, tabTaskDelivery } from "./pr.js"; // a new agent tab: the harness profile's own command, else Claude Code
 import { startAgentTab } from "./agent-tab.js"; // starts it and gets the text there (an argument, or a send once the agent reports ready)
 import * as C from "./context.js";
@@ -280,6 +280,12 @@ const ALL_REVIEWERS = { claude: ["Code review", "ansi5"], security: ["Security r
 // mergeFindings): a label and colour here, never a run of their own.
 const REVIEWERS = { ...ALL_REVIEWERS, analysis: ["Analysis", "ansi4"], ai: ["AI note", "ansi3"] }; // the same word as the one-line notes in the diff
 const reviewersNow = () => Object.entries(ALL_REVIEWERS).filter(([k]) => k !== "codex" || hasTool("codex"));
+// A reviewer run that says running while nothing runs it: the panel shows it as stale (pr.js runIsStale). The reason is
+// shown with the state and the row keeps a Run again; the findings file keeps "running", so a late answer still lands.
+const STALE = { gone: "the run's process ended without a result", silent: "no result after ten minutes" };
+// The liveness probe's last answer (this.staleSeen: {at, asked, live}), kept a few seconds, so a frame, a row or the
+// Reviews popup never starts its own probe: one livePids call answers for all of them.
+const PROBE_KEEP = 5000;
 // A finding's six groups (pr.js FINDING_GROUPS, findingGroup) and the colour of each in a heading, a row and a card:
 // the state is the result (Verified only after a check read the PR head), not the journey. The word is GROUP_WORD.
 const GTINT = { unresolved: "muted", progress: "ansi3", ready: "ansi3", in_pr: "ansi3", verified: "ansi2", wontfix: "dim" };
@@ -351,7 +357,8 @@ export function renderReviews() {
         + (k === "codex" ? (done ? " · Codex does not report its price" : "") : noModel ? ` · ${noRunModelText()}` : !r?.state ? (custom ? ` · ${runner} sets its budget` : ` · capped at $${cap}`) : "") + (k === "security" && mine && meta.securityOffer ? `. ${meta.securityOffer}` : "");
       return row(k, label, c, line, r?.state === "failed", noModel ? null : r?.state === "running" ? div().flex_none().child(SPIN[0]).frames(SPIN, 90)
         : pill(`rv-rrun-${k}`, t, runLabel(r, k === "codex" || !mine ? null : meta.prices?.[k] ?? null, "", true), () => { run(`pr-review.reviewer:${k}`); closeOverlay(props().overlay); }).flex_none()
-          .tooltip(k === "codex" ? `Run the codex CLI on the PR head, with its own login; its price is not reported. ${TH.CODEX_MAY} On someone else's PR in Restricted Mode it asks once first.` : `One read-only review of the PR head with ${modelLabel(model())}, ${custom ? `${runner}'s own budget applies` : `capped at $${cap}`}`));
+          .tooltip((k === "codex" ? `Run the codex CLI on the PR head, with its own login; its price is not reported. ${TH.CODEX_MAY} On someone else's PR in Restricted Mode it asks once first.` : `One read-only review of the PR head with ${modelLabel(model())}, ${custom ? `${runner}'s own budget applies` : `capped at $${cap}`}`)
+            + (r?.state === "stale" && pr?.url ? ` The run's own output is in ${findDir()}/${hash(pr.url)}.${k}.log.` : "")));
     }))
     .when(hasTool("codex") && codexChoices().length > 0, (e) => e.child(h_flex().px(8).gap(8).items_center()
       .child(div().text_size(TYPE.small).text_color(t.muted).child("Codex review model"))
@@ -678,7 +685,7 @@ export const ReviewMode = {
     this.ghPoll = pollAfter(null, true, Date.now()); // opening asks GitHub (onSource, refresh): the first tick is GH_MS later
     cx.timer.every(60000, (cx) => this.ghTick(cx)); // a time check; GitHub at most every GH_MS (ghTick)
     cx.timer.every(20000, (cx) => this.fixCostTick(cx)); // a running fix agent's cost so far, from its session log
-    cx.timer.every(10000, (cx) => { this.proofTick(cx); this.probeTick(cx); }); // Verify with an agent and the probes: their answer files, while one runs
+    cx.timer.every(10000, (cx) => { this.proofTick(cx); this.probeTick(cx); this.staleTick(cx); }); // Verify with an agent, the probes and the reviewers' liveness: their answer files and processes, while one runs
     for (const [st, k] of [[this.draft, "draft"], [this.summary, "summary"], [this.itemEdit, "item"], [this.sendText, "send"]]) {
       st.on("focus", (_e, cx) => { this.typing = k; cx.notify(); });
       st.on("blur", (_e, cx) => { if (this.typing === k) this.typing = false; cx.notify(); });
@@ -1350,6 +1357,47 @@ export const ReviewMode = {
     return new Set(String(r?.stdout ?? "").split(/\s+/).filter(Boolean));
   },
 
+  // One batched probe for every reviewer run that still says running: its recorded pid, all in one livePids call, and
+  // never a second call while the last answer is under PROBE_KEEP old or another probe is on its way. Called from a
+  // frame, it only starts the call; settleStale reads the answer on the next frame.
+  staleProbe(cx) {
+    const now = Date.now(), seen = this.staleSeen, pids = [...new Set(Object.values(this.find.runs ?? {})
+      .filter((r) => r?.state === "running" && r.pid != null && r.pid !== "").map((r) => String(r.pid)))];
+    if (!pids.length || this.staleBusy) return;
+    if (seen && now - seen.at < PROBE_KEEP && pids.every((p) => seen.asked.has(p))) return;
+    this.staleBusy = true;
+    cx.spawn(async (cx) => {
+      try {
+        this.staleSeen = { at: Date.now(), asked: new Set(pids), live: await this.livePids(pids) };
+        if (this.settleStale()) { putShared("review.reviewers", this.find.runs); cx.notify(); }
+      } finally { this.staleBusy = false; }
+    });
+  },
+
+  // A run that says running while nothing runs it becomes stale on screen (pr.js runIsStale): its process is gone, or it
+  // has no pid and started over ten minutes ago with no result. It is never written back to the findings file: a run that
+  // answers late still lands. A pid the last probe did not ask about (livePids has no answer for it) is not judged.
+  // -> true when a run changed state.
+  settleStale(now = Date.now()) {
+    const seen = this.staleSeen;
+    let changed = false;
+    for (const r of Object.values(this.find.runs ?? {})) {
+      const pid = r?.pid != null ? String(r.pid) : null, known = pid !== null && Boolean(seen?.asked.has(pid));
+      const st = runIsStale({ run: r, alive: known ? seen.live.has(pid) : undefined, now });
+      if (!st) continue;
+      Object.assign(r, { state: "stale", busy: false, stale: st, error: STALE[st] });
+      changed = true;
+    }
+    return changed;
+  },
+
+  // The same from the panel's 10 s tick: the ten-minute rule needs no probe, so a run with no pid can turn stale while
+  // nothing else asks, and a probe that was never started gets one.
+  staleTick(cx) {
+    this.staleProbe(cx);
+    if (this.settleStale()) { putShared("review.reviewers", this.find.runs); cx.notify(); }
+  },
+
   pollAi(cx, job, url, m) {
     cx.timer.after(5000, (cx) => cx.spawn(async (cx) => {
       if (this.prSel?.url !== url || !this.aiBusy) return;
@@ -1584,12 +1632,8 @@ export const ReviewMode = {
     if (this.prSel?.url !== url) return;
     const d = doc ? JSON.parse(doc) : {};
     this.find = { ...this.find, list: withThreats(d.findings ?? [], d.security), runs: runsOf(d.runs), status: d.status ?? {}, reports: parseReports(rep), security: d.security ?? null, resilience: d.resilience ?? null, loaded: url };
-    const running = Object.values(this.find.runs).filter((r) => r.busy && r.pid);
-    const live = await this.livePids(running.map((r) => r.pid));
-    for (const r of Object.values(this.find.runs)) {
-      if (r.busy && r.pid && !live.has(String(r.pid))) { r.busy = false; r.state = "failed"; r.error = `Stopped without a result (its process is gone). Its output is in ${findDir()}/${hash(url)}.${Object.keys(this.find.runs).find((k) => this.find.runs[k] === r)}.log`; }
-      else if (r.busy && Date.now() - Date.parse(r.started) > 30 * 60000) { r.busy = false; r.state = "failed"; r.error = "Stopped without a result"; }
-    }
+    this.staleProbe(cx); // one batched probe for the runs that still say running; settleStale shows the ones that are gone
+    this.settleStale();
     putShared("review.reviewers", this.find.runs);
     this.securityNow(cx);
     cx.notify();
@@ -5329,10 +5373,10 @@ export const ReviewMode = {
   // The data: this.ai.resilience (op-analysis' withResilience), else the findings file's raw block.
   // An unclear blocker takes the word of its probe on the base (views.js resByProbe), here, so every count agrees.
   resNow() { const res = this.ai?.resilience ?? this.find?.resilience ?? null; return res?.paths && typeof this.probesNow === "function" ? { ...res, paths: resByProbe(res.paths, this.probesNow()) } : res; },
-  // The run in a few words, for the Overview: not run, running, failed, or its paths and blockers.
+  // The run in a few words, for the Overview: not run, running, stale, failed, or its paths and blockers.
   resLine() {
     const res = this.resNow(), r = this.find.runs?.resilience, n = (res?.paths ?? []).length, b = (res?.paths ?? []).filter((p) => p.blocker).length;
-    return res ? `${n} ${n === 1 ? "path" : "paths"}${b ? `, ${b} ${b === 1 ? "blocker" : "blockers"}` : ", all limited"}` : r?.state === "running" ? "running" : r?.state === "failed" ? "failed" : "not run";
+    return res ? `${n} ${n === 1 ? "path" : "paths"}${b ? `, ${b} ${b === 1 ? "blocker" : "blockers"}` : ", all limited"}` : r?.state === "running" ? "running" : r?.state === "stale" ? "stale, no result" : r?.state === "failed" ? "failed" : "not run";
   },
   resPage(t) {
     const res = this.resNow(), run = this.find.runs?.resilience, a = this.ai?.arch ?? null, title = (text) => div().text_size(TYPE.title).font_semibold().child(text);
@@ -6019,7 +6063,7 @@ export const ReviewMode = {
     const ran = { analysis: Boolean(this.ai), ...Object.fromEntries(Object.keys(ALL_REVIEWERS).map((k) => [k, runs[k]?.state === "done"])) };
     return [...new Set(["analysis", ...reviewersNow().map(([k]) => k), ...all.flatMap((x) => x.sources.map((y) => y.reviewer))])].map((k) => {
       const n = all.filter((x) => x.sources.some((y) => y.reviewer === k)).length;
-      return { k, n, text: runs[k]?.state === "running" ? `${name(k)}: running` : n ? `${name(k)} ${n}` : runs[k]?.state === "failed" ? `${name(k)}: failed` : ran[k] ? `${name(k)}: no findings` : `${name(k)}: not run` };
+      return { k, n, text: runs[k]?.state === "running" ? `${name(k)}: running` : n ? `${name(k)} ${n}` : runs[k]?.state === "stale" ? `${name(k)}: stale` : runs[k]?.state === "failed" ? `${name(k)}: failed` : ran[k] ? `${name(k)}: no findings` : `${name(k)}: not run` };
     }).filter((x) => x.k !== "ai" || x.n);
   },
   // The Findings tab: every finding once, one line each, in the six groups of pr.js FINDING_GROUPS (in that order,
@@ -6115,7 +6159,7 @@ export const ReviewMode = {
         // The sources are counts, not switches: a line of text (framed chips read as a second filter beside the bar's
         // "In the diff:"). What the tab can change is the order, and that looks like the Layers / By focus switch.
         .child(h_flex().flex_wrap().gap(6).items_center().text_size(TYPE.small).line_height(1.5).child(div().flex_none().text_color(t.muted).child("By source:"))
-          .children(sources.flatMap((x, k) => [k > 0 && div().flex_none().text_color(t.dim).child("·"), div().id(`rv-fsrcn-${x.k}`).tooltip(x.n ? `Findings ${name(x.k)} is a source of` : runs[x.k]?.state === "failed" ? `${name(x.k)} failed: ${runs[x.k].error ?? "no result"}` : ran[x.k] ? `${name(x.k)} ran and found nothing` : `${name(x.k)} has not run on this PR`)
+          .children(sources.flatMap((x, k) => [k > 0 && div().flex_none().text_color(t.dim).child("·"), div().id(`rv-fsrcn-${x.k}`).tooltip(x.n ? `Findings ${name(x.k)} is a source of` : runs[x.k]?.state === "failed" ? `${name(x.k)} failed: ${runs[x.k].error ?? "no result"}` : runs[x.k]?.state === "stale" ? `${name(x.k)} ended without a result: ${runs[x.k].error ?? "no result"}` : ran[x.k] ? `${name(x.k)} ran and found nothing` : `${name(x.k)} has not run on this PR`)
             .flex_none().text_color(x.n ? t.foreground : t.muted).child(x.text)].filter(Boolean))))
         .when(efforts, (e) => e.child(h_flex().gap(8).items_center().text_size(TYPE.small).child(div().flex_none().text_color(t.muted).child("Sort by"))
           .child(h_flex().id("rv-fsort").gap(2).p(2).rounded(7).border_1().border_color(t.border).children([[false, "Severity", "The usual order: by severity, then by file and line"], [true, "Quickest fix", "The findings with the quickest fixes first; each row then says quick, moderate or heavy, as the analysis sees the fix"]].map(([k, label, tip]) =>
@@ -6560,6 +6604,7 @@ export const ReviewMode = {
     this.schemaTick(cx); // "Schema changes" (schema-view.js): the same
     this.landedTick(cx); // where each fix's commit is in the PR (worktree.py contains), once per head
     this.fileLandedTick(cx); // and the commits since a fix with no reported one, by the file it touched, once per head
+    this.staleProbe(cx); // the reviewers' pids in one shell call, at most once every few seconds: a run that is gone reads stale
     // The diff column's width: card heights wrap to it. on_size_change reports the window in logical px; the column and
     // its rows are laid out in px scaled by the person's zoom (as in settleTop).
     if (this.winW) this.listW = this.winW / (settings().zoom || 1) - this.leftW() - SPLIT - (this.drawerSqueezes() ? 380 : 0);

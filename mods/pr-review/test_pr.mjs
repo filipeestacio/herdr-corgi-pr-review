@@ -559,11 +559,32 @@ console.log("ok");
   assert.ok(m.findings[0].ids.includes(now.asks[0].findings[0]), "an ask finds its finding through ids");
   assert.deepEqual(findingFacts(m.findings[1]), { impact: null, effect: "", preconditions: [], certainty: null, criteria: [], breaks: null, effort: null, reachable_from: [], reachability: null, introduced_here: null, path_certainty: null, path_why: "", reach_conflict: null });
   // Reviewer runs: the state as written, or derived for an entry from before it was.
-  const runs = runsOf({ a: { busy: true, started: "t" }, b: { at: "t", count: 0 }, c: { error: "boom", at: "t" }, d: { state: "failed", error: "x" }, e: { state: "done", scope: { read: ["a.py"], checked: [], skipped: [] }, at: "t" }, f: {} });
-  assert.deepEqual(Object.values(runs).map((r) => r.state), ["running", "done", "failed", "failed", "done", null]);
-  assert.deepEqual([runs.b.scope, runs.b.error, runs.b.count, runs.e.scope.read, runs.d.error], [null, null, 0, ["a.py"], "x"]);
+  const runs = runsOf({ a: { busy: true, started: "t" }, b: { at: "t", count: 0 }, c: { error: "boom", at: "t" }, d: { state: "failed", error: "x" }, e: { state: "done", scope: { read: ["a.py"], checked: [], skipped: [] }, at: "t" }, f: {}, g: { state: "stale", error: "gone" } });
+  assert.deepEqual(Object.values(runs).map((r) => r.state), ["running", "done", "failed", "failed", "done", null, "stale"]);
+  assert.deepEqual([runs.b.scope, runs.b.error, runs.b.count, runs.e.scope.read, runs.d.error, runs.g.error], [null, null, 0, ["a.py"], "x", "gone"]);
   assert.deepEqual(runsOf(undefined), {});
   console.log("ok analysis fields");
+}
+
+// A run that says running while nothing runs it: its process is gone, or it recorded no pid and started more than ten
+// minutes ago with no result. A young run, or a pid the probe could not check, stays running.
+{
+  const { runIsStale } = await import("./pr.js");
+  const start = "2026-11-27T09:57:00+0100", at = Date.parse(start), now = at + 3600000;
+  const run = (x = {}) => ({ state: "running", started: start, ...x });
+  assert.equal(runIsStale({ run: run({ pid: 41 }), alive: true, now }), false, "alive: running");
+  assert.equal(runIsStale({ run: run({ pid: 41 }), alive: false, now }), "gone", "a recorded pid that is gone");
+  assert.equal(runIsStale({ run: run({ pid: 41 }), alive: undefined, now }), false, "a pid the probe could not check is not judged");
+  assert.equal(runIsStale({ run: run({ pid: "41" }), alive: false, now }), "gone", "a pid written as text");
+  assert.equal(runIsStale({ run: run(), now }), "silent", "no pid and an hour with no result");
+  assert.equal(runIsStale({ run: run({ pid: 41 }), alive: false, now: at + 20000 }), false, "younger than 30 s: running, even with a dead pid");
+  assert.equal(runIsStale({ run: run(), now: at + 20000 }), false, "no pid and young");
+  assert.equal(runIsStale({ run: run(), now: at + 9 * 60000 }), false, "no pid and under ten minutes");
+  for (const state of ["done", "failed", "stale", null]) assert.equal(runIsStale({ run: { state, started: start, pid: 41 }, alive: false, now }), false, `a ${state} run is never stale`);
+  assert.equal(runIsStale({ run: { state: "running", started: "not a date", pid: 41 } }), false, "a start that cannot be read is not judged");
+  assert.equal(runIsStale({ run: undefined, alive: false, now }), false);
+  assert.equal(runIsStale({}), false);
+  console.log("ok stale runs");
 }
 
 {
@@ -644,6 +665,7 @@ console.log("ok");
   assert.deepEqual([nc.areas, nc.assumptions.map((x) => x.id), nc.security], [["personal data"], ["s1"], "no findings"]);
   assert.equal(nc.text, "1 area not checked · 1 assumption · security review: no findings");
   assert.equal(notChecked({}).text, "0 areas not checked · 0 assumptions · security review: not run");
+  assert.equal(notChecked({ runs: { security: { state: "stale", error: "the run's process ended without a result" } } }).text, "0 areas not checked · 0 assumptions · security review: stale");
   // The attack surface in one line; the criteria are not repo rules.
   assert.equal(surfaceLine([{ kind: "route", public: true, opened_by_pr: true }, { kind: "queue", used: false }, { kind: "queue", used: true }], [{ area: "secrets", result: "not_checked" }]), "1 way in, 1 public, 1 opened here · 2 rights, 1 unused · secrets: not checked");
   assert.equal(surfaceLine([], []), null);

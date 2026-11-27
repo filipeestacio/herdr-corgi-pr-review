@@ -191,7 +191,8 @@ Explore shows Overview, Layers, Architecture and Files for a topic, without a di
   the time and the cost cap (a harness profile has none: its command and `timeout` decide); it can take minutes.
   After a push, "Only new changes" analyses just the new commits.
 - `Reviews ▾` lists Claude code review, Security review and (when installed) Codex review with their last run;
-  Run starts one in the background on a checkout of the PR head; findings appear inline and under Findings.
+  Run starts one in the background on a checkout of the PR head; findings appear inline and under Findings. A run
+  whose process ended without a result shows `stale` there, with the reason and a `Run again` button.
 - `Fix with agent…` sends findings to an agent, which reports back per finding. The preview names the account's
   config folder, what the agent gets and may do, and that it cannot push (`git push` and `gh pr create` are denied).
   It offers three targets: `Sub-agent` in its own worktree, only with Claude Code installed (it runs `claude --bg`),

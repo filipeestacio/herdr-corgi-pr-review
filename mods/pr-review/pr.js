@@ -632,11 +632,26 @@ export function mergeFindings(findings, suspects = [], status = {}, publicFiles 
   return { findings: out, notes };
 }
 
-// The reviewer runs of the findings file, each with its state: running | done | failed (an entry from before it had
-// one is running while busy, failed with an error, done with a finish time), what it looked at (scope: {read,
-// checked: [{area, result, note}], skipped}, or null) and its error. No entry: it never ran.
+// The reviewer runs of the findings file, each with its state: running | done | failed | stale (an entry from before it
+// had one is running while busy, failed with an error, done with a finish time), what it looked at (scope: {read,
+// checked: [{area, result, note}], skipped}, or null) and its error. No entry: it never ran. stale: a run the panel
+// found ended without a result (runIsStale), never a state the file holds.
 export const runsOf = (runs) => Object.fromEntries(Object.entries(runs ?? {}).map(([k, r]) => [k, { ...r,
-  state: ["running", "done", "failed"].includes(r.state) ? r.state : r.busy ? "running" : r.error ? "failed" : r.at ? "done" : null, scope: r.scope ?? null, error: r.error ?? null }]));
+  state: ["running", "done", "failed", "stale"].includes(r.state) ? r.state : r.busy ? "running" : r.error ? "failed" : r.at ? "done" : null, scope: r.scope ?? null, error: r.error ?? null }]));
+
+// A run that still says running while nothing runs it: "gone" when its pid is recorded and the liveness probe found it
+// dead, "silent" when it recorded no pid (an older build, or a start that left no record) and started over ten minutes
+// ago with no result, false otherwise. alive: the probe's answer for run.pid (true: there, false: gone, undefined: the
+// probe did not check it, and then the run is not judged). A run younger than 30 s is never stale, whatever the probe
+// says: the panel shows it as running, as before.
+export const RUN_YOUNG_MS = 30000, RUN_SILENT_MS = 600000;
+export const runIsStale = ({ run, alive, now = Date.now() } = {}) => {
+  if (run?.state !== "running") return false;
+  const age = now - Date.parse(run.started ?? ""); // a start that cannot be read is not judged
+  if (!(age >= RUN_YOUNG_MS)) return false;
+  if (run.pid != null && run.pid !== "") return alive === false ? "gone" : false;
+  return age > RUN_SILENT_MS ? "silent" : false;
+};
 
 // The one way findings are counted (tab, bar, Overview, the Findings header): unresolved is every group but Verified
 // and Won't fix, so a fix in progress, a fix ready and a fix in the PR still count; high/medium/low and security count
@@ -1063,13 +1078,13 @@ export function verdictAction(rows) {
 
 // What nobody checked: the areas no run reports as checked (the analysis' and the reviewers' own reports; an area one
 // run checked is not counted), the unresolved findings that rest on an assumption, and how far the security review
-// got. → {areas, assumptions, security: "not run" | "running" | "failed" | "no findings" | "n findings", text}
+// got. → {areas, assumptions, security: "not run" | "running" | "stale" | "failed" | "no findings" | "n findings", text}
 export function notChecked({ ai = null, runs = {}, open = [] }) {
   const all = [...(ai?.scope?.checked ?? []), ...Object.values(runs ?? {}).flatMap((r) => r?.scope?.checked ?? [])];
   const seen = new Set(all.filter((c) => c.result !== "not_checked").map((c) => c.area));
   const areas = [...new Set(all.filter((c) => c.result === "not_checked" && !seen.has(c.area)).map((c) => String(c.area).replace(/_/g, " ")))];
   const assumptions = open.filter((f) => f.certainty === "assumed" || f.path_certainty === "assumed"), sr = runs?.security;
-  const security = !sr?.state ? "not run" : sr.state === "running" ? "running" : sr.state === "failed" ? "failed" : sr.count ? count(sr.count, "finding") : "no findings";
+  const security = !sr?.state ? "not run" : sr.state === "running" ? "running" : sr.state === "stale" ? "stale" : sr.state === "failed" ? "failed" : sr.count ? count(sr.count, "finding") : "no findings";
   return { areas, assumptions, security, text: `${count(areas.length, "area")} not checked · ${count(assumptions.length, "assumption")} · security review: ${security}` };
 }
 
