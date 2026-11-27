@@ -14,7 +14,7 @@ import { v_flex, h_flex, Scrollbar, TextView, v_virtual_list, VirtualListScrollH
 import { exec, hc, run, focused, pickFolder, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, nextCommand, watchFolder, openOverlay, closeOverlay, props, home, placement } from "herdr";
 import { spaces, agents, terminals, watch } from "./live.js";
 import { hostOfLink, parseLink, hostWord, hostLong } from "./host.js"; // never straight from Herdr (live.js says why)
-import { parseReports, findingStatus, fixStage, fixEndedLine, landedByFile, fixStillWorking, fixJump, findingGroup, FINDING_GROUPS, GROUP_WORD, mergeFindings, findingCounts, countLine, runsOf, runIsStale, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt, agoSpan } from "./pr.js";
+import { parseReports, findingStatus, fixStage, fixEndedLine, landedByFile, fixStillWorking, fixJump, findingGroup, selectableStage, stageNoFix, FINDING_GROUPS, GROUP_WORD, mergeFindings, findingCounts, countLine, runsOf, runIsStale, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt, agoSpan } from "./pr.js";
 import { agentArgs, harnessProfile, harnessAgent, pendingWaitNote, tabTaskDelivery } from "./pr.js"; // a new agent tab: the harness profile's own command, else Claude Code
 import { startAgentTab } from "./agent-tab.js"; // starts it and gets the text there (an argument, or a send once the agent reports ready)
 import * as C from "./context.js";
@@ -2033,10 +2033,13 @@ export const ReviewMode = {
   // "Fix several…": the reviewer picks which unresolved findings one agent fixes together. Security findings about
   // access or data (pr.js secByEffect) are not offered: each goes alone, so that its change stays one commit to check.
   // A finding that is ⛨ only because a threat stands on it (a flood, a script that stops halfway) is offered.
+  // Nor is one whose fix the derived stage no longer leaves to do (in the PR, ready, verified, on its way): it is the
+  // same rule as the boxes (selectableStage), so the list cannot hand an already-fixed finding to an agent.
   // ticked: the ids ticked so far (the boxes of the Findings tab: "Fix selected (n)…" opens the same preview with them).
   fixSeveral(cx, ticked = []) {
-    const open = this.findings().filter((f) => ["open", "recheck"].includes(this.fstatus(f))), pool = open.filter((f) => !secByEffect(f));
-    this.fix(pool.filter((f) => ticked.includes(f.id)), cx, pool, open.length - pool.length);
+    const open = this.findings().filter((f) => ["open", "recheck"].includes(this.fstatus(f))), stages = this.stages();
+    const alone = open.filter((f) => secByEffect(f)), pool = open.filter((f) => !secByEffect(f) && selectableStage(stages.get(f.id) ?? null));
+    this.fix(pool.filter((f) => ticked.includes(f.id)), cx, pool, alone.length);
   },
   // ONE selection for "Fix selected": the comments ticked (your own, sent threads, other people's GitHub comments) and
   // the findings ticked in the Findings tab. Every place that names it says the same number (the bar's button, the
@@ -2066,22 +2069,45 @@ export const ReviewMode = {
       prompt: (sub) => TH.fixBothPrompt(c.prompt(sub, null), fixPrompt(list, pr, report, this.lang())), foreign: c.foreign, // the comments' part carries the push for the whole task
       sent: (cx, how) => { for (const f of list) this.setFinding(f, "progress", cx, { fixHead: this.headNow() }); c.sent(cx, how); } });
   },
-  // The findings ticked in the Findings tab's Unresolved group. Only what can still be ticked counts: unresolved, no
-  // fix under way, and not a security finding about access or data (those go alone).
+  // The findings ticked in the Findings tab that can still be ticked: unresolved, no fix under way or already in the
+  // PR, and not a security finding about access or data (those go alone). The stage is read with the status, so a row
+  // that became "In the PR" after it was ticked counts for nothing before the prune writes (pruneFindings).
   pickedFindings() { return this.selection().findings; },
   pickedFindingsNow() {
     const ids = TH.selectedOf(this.threadDoc, this.threadKey(), TH.FINDINGS);
-    return ids.length ? this.findings().filter((f) => ids.includes(f.id) && ["open", "recheck"].includes(this.fstatus(f)) && !secByEffect(f)).map((f) => f.id) : [];
+    if (!ids.length) return [];
+    const stages = this.stages();
+    return this.findings().filter((f) => ids.includes(f.id) && ["open", "recheck"].includes(this.fstatus(f)) && !secByEffect(f) && selectableStage(stages.get(f.id) ?? null)).map((f) => f.id);
+  },
+  // A tick that its row can no longer take goes from the selection, once for the whole set and only when one is
+  // actually dropped: a fix that landed in the PR (a push, a reported commit) must not be handed to an agent again.
+  // It runs as the frame is drawn, so that frame already draws the pruned set; the file follows in one write.
+  pruneFindings(cx) {
+    const key = this.threadKey();
+    if (!key) return;
+    const sel = TH.selectedOf(this.threadDoc, key, TH.FINDINGS);
+    if (!sel.length) return;
+    const stages = this.stages(), gone = sel.filter((id) => stages.has(id) && !selectableStage(stages.get(id) ?? null));
+    if (!gone.length) return;
+    const drop = (d) => gone.reduce((doc, id) => (TH.selectedOf(doc, key, TH.FINDINGS).includes(id) ? TH.toggleSelected(doc, key, id, Date.now(), TH.FINDINGS) : doc), d);
+    this.threadDoc = drop(this.threadDoc);
+    this.saveThreads(cx, drop);
   },
   pickFinding(id, cx) {
     const f = this.findingById(id), key = this.threadKey();
-    if (f && ["open", "recheck"].includes(this.fstatus(f)) && !secByEffect(f)) this.updateThreads(cx, (d) => TH.toggleSelected(d, key, f.id, Date.now(), TH.FINDINGS));
+    if (!f || !["open", "recheck"].includes(this.fstatus(f)) || secByEffect(f)) return;
+    const why = stageNoFix(this.fstage(f));
+    if (why) { this.note = why; return cx.notify(); } // nothing left to fix: the row keeps its box, switched off
+    this.updateThreads(cx, (d) => TH.toggleSelected(d, key, f.id, Date.now(), TH.FINDINGS));
   },
-  // A tick in that list: the preview is built again for what is ticked now (branch name and text follow).
+  // A tick in that list: the preview is built again for what is ticked now (branch name and text follow). A finding
+  // with nothing left to fix does not join the list, and says why in the box's own words; one already ticked when its
+  // fix reached the PR still comes out, so a stale tick is never trapped in a preview that is about to send.
   fixPick(id, cx) {
     const f = this.sendP?.fix;
     if (!f?.pool) return;
-    const ids = new Set(f.items.map((x) => x.id));
+    const ids = new Set(f.items.map((x) => x.id)), why = stageNoFix(this.stages().get(id) ?? null);
+    if (why && !ids.has(id)) { this.note = why; return cx.notify(); }
     if (ids.has(id)) ids.delete(id); else ids.add(id);
     this.fix(f.pool.filter((x) => ids.has(x.id)), cx, f.pool, f.alone);
   },
@@ -2706,6 +2732,11 @@ export const ReviewMode = {
   // something else drew the review: the registry's write 1.5 s later, or nothing at all.
   updateThreads(cx, fn) {
     this.threadDoc = fn(this.threadDoc); this.publish(); cx.notify();
+    this.saveThreads(cx, fn);
+  },
+  // The file's write alone, for a change this copy already holds: a prune runs as the frame is drawn, and a frame may
+  // not notify (updateThreads does). The registry and publish() follow the write, as for a tick.
+  saveThreads(cx, fn) {
     cx.spawn(async (cx) => {
       for (let attempt = 0; attempt < 3; attempt++) {
         const before = await readTextFile(threadsFile()).catch(() => null);
@@ -6142,11 +6173,14 @@ export const ReviewMode = {
     // The box stands beside the part of the row that opens the finding, not inside it: its click is its own, on a
     // folded row as on an open one, whatever a press on the row does.
     const picked = new Set(this.pickedFindings()), total = this.selCount();
-    const box = (x) => { const alone = secByEffect(x), sel = picked.has(x.id);
-      return div().id(`rv-fbox-${x.id}`).tooltip(alone ? "Security findings about access or data are fixed one at a time: use Fix with agent… on the card." : "Select to fix this finding with an agent").accessibility_label("Select finding")
-        .w(14).h(14).mt(3).flex_none().rounded(3).border_1().border_color(sel ? t.accent : alone ? t.border : t.input).bg(sel ? t.accent : alone ? t.raised : "#00000000")
+    // A row whose fix is no longer unresolved (in the PR, ready, verified, on its way, declined) keeps its box,
+    // switched off: it has nothing left to fix, so a click ticks nothing (pickFinding, whose note says the same
+    // words). Its group is what the row draws and is already known; a stage of "ended" puts it back in Unresolved.
+    const box = (x, g) => { const alone = secByEffect(x), sel = picked.has(x.id), why = g === "unresolved" ? null : stageNoFix(g), off = alone || Boolean(why);
+      return div().id(`rv-fbox-${x.id}`).tooltip(alone ? "Security findings about access or data are fixed one at a time: use Fix with agent… on the card." : why ?? "Select to fix this finding with an agent").accessibility_label("Select finding")
+        .w(14).h(14).mt(3).flex_none().rounded(3).border_1().border_color(sel ? t.accent : off ? t.border : t.input).bg(sel ? t.accent : off ? t.raised : "#00000000")
         .flex().items_center().justify_center().text_size(TYPE.micro).text_color(t.accent_foreground).child(sel ? "✓" : "")
-        .on_click((_e, cx) => { if (!alone) this.pickFinding(x.id, cx); cx.stop_propagation(); }); };
+        .when(!why, (e) => e.on_click((_e, cx) => { if (!alone) this.pickFinding(x.id, cx); cx.stop_propagation(); })); };
     const row = (x) => {
       const st = this.fstatus(x), g = this.fgroup(x), on = this.ffocus === x.id, col = t[SEV[x.severity]] ?? t.accent, li = this.layerOf(x), settled = g === "verified" || g === "wontfix";
       const wide = on || (x.security && x.severity === "high" && !settled); // an unresolved high security finding keeps its whole title
@@ -6157,7 +6191,7 @@ export const ReviewMode = {
       const next = steps.find((s) => s.next), shown = steps.find((s) => this.fstep?.id === x.id && s.key === this.fstep.key && s.details.length);
       return v_flex().id(`rv-fc-${x.id}`).flex_none().px(8).py(on ? 8 : 4).gap(6).rounded(7).border_l(3).border_color(on ? t.accent : col).when(on, (e) => e.bg(t.surface)).text_size(TYPE.body)
         // A narrow column wraps the row: the place and the state go under the title instead of squeezing it to nothing.
-        .child(h_flex().gap(8).items_start().when(st === "open" || st === "recheck", (e) => e.child(box(x))).child(h_flex().id(`rv-ft-${x.id}`).tooltip("Open this finding and show its line in the diff").flex_1().min_w(0).flex_wrap().gap(8).items_start().cursor_pointer().hover((h) => h.text_color(t.foreground))
+        .child(h_flex().gap(8).items_start().when(st === "open" || st === "recheck", (e) => e.child(box(x, g))).child(h_flex().id(`rv-ft-${x.id}`).tooltip("Open this finding and show its line in the diff").flex_1().min_w(0).flex_wrap().gap(8).items_start().cursor_pointer().hover((h) => h.text_color(t.foreground))
           .on_click((_e, cx) => { this.ffocus = on ? null : x.id; if (!on) this.jumpTo(`${x.file}:${x.line}`, cx); cx.notify(); })
           .child(badge(t, x.severity, col))
           // The effort word stands in a row only while the list is sorted by it (it explains the order); else it is
@@ -6387,9 +6421,10 @@ export const ReviewMode = {
         .when(Boolean(f.security), (x) => x.child(secBadge(t, f).id(`rv-lfsec-${f.id}`).tooltip(secWhy(f) || "A security finding")));
       const sources = div().id(`rv-lfr-${f.id}`).tooltip("Where this finding comes from, each source with its own severity").min_w(0).truncate().text_size(TYPE.small).font_semibold().text_color(t.muted).child(this.sourcesOf(f));
       // An unresolved finding has its box beside the card, folded or open: the same selection as its row in the
-      // Findings tab and as the comments (sideBox; a security finding about access or data: there, switched off).
-      const alone = secByEffect(f), box = (top) => (st === "open" || st === "recheck" ? [sideBox(t, `rv-lfbox-${f.id}`, top, { sel: this.pickedFindings().includes(f.id), off: alone, lit: this.selCount() > 0,
-        tip: alone ? "Security findings about access or data are fixed one at a time: use Fix with agent… on the card." : "Select to fix this finding with an agent" })] : []);
+      // Findings tab and as the comments (sideBox; a security finding about access or data, or one whose fix is
+      // already in the PR: there, switched off).
+      const alone = secByEffect(f), why = g === "unresolved" ? null : stageNoFix(g), box = (top) => (st === "open" || st === "recheck" ? [sideBox(t, `rv-lfbox-${f.id}`, top, { sel: !why && this.pickedFindings().includes(f.id), off: alone || Boolean(why), lit: this.selCount() > 0,
+        tip: alone ? "Security findings about access or data are fixed one at a time: use Fix with agent… on the card." : why ?? "Select to fix this finding with an agent" })] : []);
       if (!open) return div().id(`rv-lf-${f.id}`).tooltip("Open this finding: what it claims, its text, its suggestion and its actions").relative().w_full().h(FIND_FOLDED).pl(GUTTER).pr(16).pt(6).pb(2).cursor_pointer()
         .children(box(12)).child(head(card(h_flex())).size_full().px(12).gap(8).items_center().border_t(1).border_b(1).text_size(TYPE.body)
           .children([certaintyWord(t, f, `rv-lfc-${f.id}`)].filter(Boolean)).child(div().flex_1().min_w(0).truncate().child(f.title)).child(div().flex_none().max_w(300).child(sources)).children([state].filter(Boolean)));
@@ -6694,6 +6729,9 @@ export const ReviewMode = {
       if (!this.resumeQueued) { this.resumeQueued = true; cx.timer.after(0, (cx) => { this.resumeQueued = false; cx.spawn((cx) => this.applyResume(cx)); }); }
       return root;
     }
+    // A tick on a finding whose fix has since reached the PR (a push, a reported commit) goes before the frame reads
+    // the selection, so this frame draws and counts the pruned set and a stale tick never reaches "Fix selected".
+    this.pruneFindings(cx);
     // A page (Overview, Architecture…) or a definition covers the list: skip building it (a big PR's diff is the bulk
     // of a render, and a picture's sideways scroll renders per wheel event); this.items/at/byKey keep the last list.
     const listShown = !this.defFile && !(this.tab === "steps" && this.page);

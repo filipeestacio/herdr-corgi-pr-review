@@ -538,6 +538,15 @@ export const FINDING_GROUPS = [["unresolved", "Unresolved"], ["progress", "Fix i
 export const GROUP_WORD = Object.fromEntries(FINDING_GROUPS);
 export const findingGroup = (stage, status) => status === "dismissed" ? "wontfix" : stage === "ended" ? "unresolved" : stage ?? (status === "fixed" ? "verified" : status === "progress" ? "progress" : "unresolved");
 
+// Whether a finding's box can be ticked for another fix: only a row with no stage of its own (unresolved, or a fix
+// that ended with nothing to apply) is tickable. A fix that is in the PR, ready to apply, verified or declined has
+// nothing left to fix, so a tick it had does not stay (review.js pruneFindings). "progress" is a fix on its way.
+export const selectableStage = (stage) => !["in_pr", "verified", "wontfix", "progress", "ready"].includes(stage);
+// Why a row with this stage cannot be ticked, in the row's note and in its box's tooltip; null when it can. A
+// dismissal says nothing here: its persisted status keeps it out of the tickable rows (review.js pickFinding).
+export const stageNoFix = (stage) => ({ in_pr: "Already in the PR: nothing to fix.", verified: "Verified: nothing to fix.", wontfix: "Won't fix: nothing to fix.",
+  progress: "A fix is in progress: nothing to fix.", ready: "A fix is ready to apply: nothing to fix." })[stage] ?? null;
+
 // ---- one finding per defect (review.js: every view reads this list)
 
 const rank = (x) => RISKS.indexOf(x.severity);
