@@ -102,7 +102,7 @@ export function filesToDiff(files) {
     else if (removed) out.push("deleted file mode 100644");
     else if (f.status === "renamed") out.push(`rename from ${from}`, `rename to ${f.filename}`);
     if (f.patch) out.push(`--- ${added ? "/dev/null" : `a/${from}`}`, `+++ ${removed ? "/dev/null" : `b/${f.filename}`}`, f.patch);
-    else out.push(`Binary files a/${from} and b/${f.filename} differ`, `No diff from GitHub for this file (binary or too large): +${f.additions ?? 0} -${f.deletions ?? 0}`);
+    else out.push(`Binary files a/${from} and b/${f.filename} differ`, `No diff from the host for this file (binary or too large): +${f.additions ?? 0} -${f.deletions ?? 0}`);
   }
   return out.join("\n") + "\n";
 }
@@ -1640,7 +1640,7 @@ export const spaceOrder = (prs, focus) => [...(prs ?? [])].sort((a, b) => Number
 // One sentence for an empty "This space": what is missing. checkouts as for spaceBranches, repos its result.
 export function spaceEmpty(checkouts, repos) {
   if (!(checkouts ?? []).length) return "No pane or agent of this space is in a git repository.";
-  if (!checkouts.some((c) => c.slug)) return "The repositories of this space have no GitHub remote, so there are no PRs to list.";
+  if (!checkouts.some((c) => c.slug)) return "The repositories of this space have no GitHub or GitLab remote, so there are no PRs to list.";
   if (!repos.length) return "Every checkout in this space is on its default branch, so there is no branch to look up a PR for.";
   const names = repos.flatMap((r) => r.branches), shown = names.slice(0, 3).join(", ");
   return `No open PR for ${shown}${names.length > 3 ? ` and ${names.length - 3} more` : ""}. Choose Current branch below to see the diff.`;

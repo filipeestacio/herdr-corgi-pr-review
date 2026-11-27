@@ -84,7 +84,7 @@ const fs = splitPatch(filesToDiff([
 ]));
 assert.deepEqual(fs.map((f) => [f.path, f.status, f.add, f.del, f.binary]), [["a.js", "added", 2, 0, false], ["b.js", "deleted", 0, 1, false], ["n.js", "renamed", 1, 1, false], ["img.png", "modified", 0, 0, true]]);
 assert.equal(fs[2].from, "o.js");
-assert.ok(filesToDiff([{ filename: "i.png", status: "modified" }]).includes("No diff from GitHub for this file"));
+assert.ok(filesToDiff([{ filename: "i.png", status: "modified" }]).includes("No diff from the host for this file"));
 
 // Lock files and big changes fold when a review opens.
 {
@@ -1160,7 +1160,7 @@ assert.ok(textW("Loan status model", 12.5) > textW("Model", 12.5));
   assert.deepEqual(spaceOrder(prs, { slug: "o/a", branch: "feat/x" }).map((p) => p.n), [3, 1, 2], "the focused pane's PR first, merged last");
   assert.deepEqual([focusedPr(prs[2], { slug: "o/a", branch: "feat/x" }), focusedPr(prs[2], { slug: "o/b", branch: "feat/x" }), focusedPr(prs[2], null)], [true, false, false]);
   assert.equal(spaceEmpty([], []), "No pane or agent of this space is in a git repository.");
-  assert.equal(spaceEmpty([co("/c", null, "x")], []), "The repositories of this space have no GitHub remote, so there are no PRs to list.");
+  assert.equal(spaceEmpty([co("/c", null, "x")], []), "The repositories of this space have no GitHub or GitLab remote, so there are no PRs to list.");
   assert.equal(spaceEmpty([co("/b", "o/b", "main")], []), "Every checkout in this space is on its default branch, so there is no branch to look up a PR for.");
   assert.equal(spaceEmpty([co("/a", "o/a", "feat/x")], repos), "No open PR for feat/x, fix/1. Choose Current branch below to see the diff.");
   console.log("ok this space");
