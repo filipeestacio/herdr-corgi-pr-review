@@ -13,12 +13,14 @@ Writes {at, head, open, merged, checks, mergeable, merge_state, stacked_on, stac
 keyed by PR and head; prs.py --prune bounds that folder) and prints it.
 """
 import datetime as dt
+import fcntl
 import json
 import pathlib
 import re
 import subprocess
 import shutil
 import sys
+import time
 from urllib.parse import quote
 
 sys.dont_write_bytecode = True  # a .pyc written into the mod's folder reloads the mod: the view waiting for this run is gone
@@ -170,6 +172,69 @@ def run(cmd, cwd=None, timeout=120):
     return r.stdout if r.returncode in (0, 8) else None  # gh pr checks exits 8 while checks are pending
 
 
+LOCK_NAME = "pr-review-fetch.lock"  # in the clone's git directory: every worktree of the clone fetches into the same refs
+REF_HELD = ("cannot lock ref", "failed to update ref")  # the refs another git process was writing
+
+
+def git_out(*args, cwd, timeout=60):
+    """git's stdout when it exits 0, else "" (a lookup that may find nothing, not a run that must work)."""
+    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def fetch_lock(worktree):
+    """The clone's fetch lock, held: an open file in its git directory (the common one: a worktree's refs/remotes live
+    there too), or None when it cannot be taken. A lock that cannot be taken is not fatal: the fetch then runs
+    unlocked, as it did before there was one. Closing the file releases the lock."""
+    try:
+        gitdir = git_out("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=worktree)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if not gitdir:
+        return None
+    try:
+        f = open(pathlib.Path(gitdir, LOCK_NAME), "a+")  # created on the first fetch, then kept
+    except OSError:
+        return None
+    try:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)  # waits for the fetch that holds it, however long that one runs
+    except OSError:
+        f.close()
+        return None
+    return f
+
+
+def fetch_base(worktree, base, timeout=300):
+    """Refresh refs/remotes/origin/<base> in the clone behind `worktree`: the base for "what changed".
+
+    The reviewers and the review context start together on one clone and each fetch the base, so the loser of the
+    ref update fails with "cannot lock ref". An exclusive lock per clone keeps their fetches apart, and a ref another
+    git process still held is retried once. A fetch that fails while origin/<base> already resolves is not fatal: the
+    run goes on with the last fetch and gets a note to record, so a person reading the review knows the base may be
+    stale. Only without the ref is the failure raised.
+
+    Returns the note (one line) when the base could not be refreshed but the ref exists, else None. Raises RuntimeError
+    when the fetch failed and origin/<base> does not resolve either; a timeout raises as it did before.
+    """
+    lock, err = fetch_lock(worktree), ""
+    try:
+        for attempt in (0, 1):
+            r = subprocess.run(["git", "fetch", "--quiet", "origin", base], cwd=worktree, capture_output=True, text=True, timeout=timeout)
+            if r.returncode == 0:
+                return None
+            err = (r.stderr or r.stdout or "").strip()
+            if attempt == 0 and any(held in err for held in REF_HELD):
+                time.sleep(0.2)  # the git process that held the ref is done writing it
+                continue
+            break
+    finally:
+        if lock:
+            lock.close()  # releases the lock
+    if git_out("rev-parse", "--verify", f"origin/{base}", cwd=worktree):
+        return f"the base could not be refreshed; using the last fetch of origin/{base}"
+    raise RuntimeError(f"git fetch: {err[:200]}")
+
+
 def main(req):
     link = host.parse_link(req["url"])
     if not link:
@@ -186,7 +251,10 @@ def main(req):
     merged, diff = [], None
     if wt and files and pathlib.Path(wt).is_dir():
         base = req.get("base") or "main"
-        run(["git", "fetch", "--quiet", "origin", base], cwd=wt, timeout=300)
+        try:
+            fetch_base(wt, base)  # serialised per clone; a stale base is fine here, the diff then runs on the last fetch
+        except RuntimeError:
+            pass  # as before: a base that cannot be read leaves the page without a diff, never without the page
         diff = run(["git", "diff", "--no-color", "--no-ext-diff", "-U0", f"origin/{base}...{req.get('head') or 'HEAD'}"], cwd=wt)
         log = run(["git", "log", f"origin/{base}", f"--since={MERGED_DAYS}.days.ago", "--format=%x1e%s%x1f%b%x1d", "--name-only", "--", *files[:200]], cwd=wt)
         merged = [{**p, "url": host.web_url({"host": link["host"], "hostname": link["hostname"], "repo": repo, "number": p["number"]})}

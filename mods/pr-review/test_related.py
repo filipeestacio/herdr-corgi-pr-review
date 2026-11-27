@@ -77,3 +77,68 @@ assert [(c["name"], c["bucket"]) for c in checks] == [("Pipeline #12", "pass"), 
 assert (mergeable, state) == ("MERGEABLE", "mergeable"), (mergeable, state)
 assert calls[0][:3] == ["glab", "api", "projects/g%2Fsub%2Fp/merge_requests/7/pipelines?per_page=10"], calls[0]
 print("merge request context ok")
+
+# The base fetch: two runs on one clone fetch one at a time, and a ref another git process still held is retried.
+# Real files in a temp dir; only the fetch itself is stubbed.
+import os  # noqa: E402
+import pathlib  # noqa: E402
+import subprocess  # noqa: E402
+import tempfile  # noqa: E402
+import threading  # noqa: E402
+import time  # noqa: E402
+with tempfile.TemporaryDirectory() as d:
+    g = lambda *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t", *a], cwd=d, check=True, capture_output=True, text=True,  # noqa: E731
+                                  env={**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"})
+    g("init", "-q"), pathlib.Path(d, "f.txt").write_text("x\n"), g("add", "."), g("commit", "-qm", "c")
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=d, capture_output=True, text=True).stdout.strip()
+    real = subprocess.run  # related's own git lookups, which run against the temp dir
+    state = {"calls": 0, "live": 0, "most": 0, "fail": (), "delay": 0.15,
+             "stderr": "error: cannot lock ref 'refs/remotes/origin/main': is at 9b81998 but expected 8f09225"}
+
+    def fetch(args, cwd=None, timeout=120, **kw):
+        if args[:3] != ["git", "fetch", "--quiet"]:
+            return real(args, cwd=cwd, timeout=timeout, **kw)
+        state["calls"] += 1
+        state["live"] += 1
+        state["most"] = max(state["most"], state["live"])
+        try:
+            time.sleep(state["delay"])
+            return subprocess.CompletedProcess(args, 128, "", state["stderr"]) if state["calls"] in state["fail"] \
+                else subprocess.CompletedProcess(args, 0, "", "")
+        finally:
+            state["live"] -= 1
+    subprocess.run = fetch
+    try:
+        # Two runs at once: the second waits for the lock, so the fetches never overlap.
+        done = []
+        threads = [threading.Thread(target=lambda: done.append(related.fetch_base(d, "main"))) for _ in range(2)]
+        [t.start() for t in threads], [t.join() for t in threads]
+        assert done == [None, None] and state["most"] == 1 and state["calls"] == 2, (done, state, "the fetches interleaved")
+        assert pathlib.Path(d, ".git", related.LOCK_NAME).exists(), "the lock lives in the clone's git directory"
+
+        # The first fetch loses the ref to another git process: the retry gets it, and the run goes on without a note.
+        state.update(calls=0, fail=(1,))
+        assert related.fetch_base(d, "main") is None and state["calls"] == 2, (state, "a held ref is retried once")
+
+        # Still failing, but origin/main resolves: the run goes on with the last fetch and a note to record.
+        g("update-ref", "refs/remotes/origin/main", head)
+        state.update(calls=0, fail=(1, 2))
+        note = related.fetch_base(d, "main")
+        assert note == "the base could not be refreshed; using the last fetch of origin/main" and state["calls"] == 2, (note, state)
+
+        # Any other git error is not retried; the ref still resolves, so the run continues with the note.
+        state.update(calls=0, fail=(1,), stderr="fatal: couldn't find remote ref main")
+        assert related.fetch_base(d, "main").startswith("the base could not be refreshed") and state["calls"] == 1, state
+
+        # No ref either: the run fails, as it did before there was a retry.
+        g("update-ref", "-d", "refs/remotes/origin/main")
+        state.update(calls=0, fail=(1, 2),
+                     stderr="error: cannot lock ref 'refs/remotes/origin/main': is at 9b81998 but expected 8f09225")
+        try:
+            related.fetch_base(d, "main")
+            raise AssertionError("a base that cannot be fetched and does not exist must fail the run")
+        except RuntimeError as e:
+            assert str(e).startswith("git fetch:") and "cannot lock ref" in str(e) and state["calls"] == 2, (str(e), state)
+    finally:
+        subprocess.run = real
+print("base fetch ok")

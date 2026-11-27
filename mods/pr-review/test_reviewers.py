@@ -356,4 +356,45 @@ try:
 finally:
     llm.claude, llm.harness = _saved_claude, _saved_harness
 assert _seen == ["aircall-llmgateway/anthropic/claude-opus-5-5", "haiku"], _seen
+
+# The base fetch: a reviewer and the review context start together and both fetch the base of one clone, so the fetch
+# is serialised per clone and a ref another git process held is retried (related.fetch_base). A base that cannot be
+# refreshed while origin/<base> resolves is one line in the run's note: the reviewer still runs on the last fetch.
+import contextlib  # noqa: E402
+import io  # noqa: E402
+with tempfile.TemporaryDirectory() as d:
+    d = os.path.realpath(d)
+    g = lambda *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t", *a], cwd=d, check=True, capture_output=True,  # noqa: E731
+                                  text=True, env={**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"})
+    g("init", "-q"), pathlib.Path(d, "f.txt").write_text("in the PR\n"), g("add", "."), g("commit", "-qm", "c")
+    g("update-ref", "refs/remotes/origin/main", subprocess.run(["git", "rev-parse", "HEAD"], cwd=d, capture_output=True, text=True).stdout.strip())
+    _real = subprocess.run
+    _fetches = []
+    state = {"fail": (), "stderr": "error: cannot lock ref 'refs/remotes/origin/main': is at 9b81998 but expected 8f09225"}
+
+    def _fetch(args, cwd=None, timeout=120, **kw):
+        if args[:3] != ["git", "fetch", "--quiet"]:
+            return _real(args, cwd=cwd, timeout=timeout, **kw)
+        _fetches.append(args)
+        return subprocess.CompletedProcess(args, 128, "", state["stderr"]) if len(_fetches) in state["fail"] else subprocess.CompletedProcess(args, 0, "", "")
+    _saved_reviewer = reviewers.claude_review
+    subprocess.run = _fetch
+    try:
+        assert reviewers.refresh_base(d, "main") == [], "a refreshed base leaves no note"
+        state.update(fail=(2, 3))  # the fetch and its one retry both lose the ref
+        note = reviewers.refresh_base(d, "main")
+        assert note == ["the base could not be refreshed; using the last fetch of origin/main"], note
+        assert len(_fetches) == 3, "the retry once, then no more"
+        # Through a run: that line lands in the run's note and the reviewer still answers.
+        _fetches.clear()
+        state.update(fail=(1, 2))
+        reviewers.claude_review = lambda req: ({"findings": [], "scope": None}, {"model_id": "m", "cost": 0, "ms": 1})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            reviewers.main(json.dumps({"kind": "claude", "url": "u", "number": 2, "base": "main", "head": "h", "model": "sonnet",
+                                       "worktree": d, "file": str(pathlib.Path(d, "findings", "2.json"))}))
+        run = json.loads(out.getvalue())
+        assert run["state"] == "done" and run["note"] == "the base could not be refreshed; using the last fetch of origin/main", run
+    finally:
+        subprocess.run, reviewers.claude_review = _real, _saved_reviewer
 print("ok")
