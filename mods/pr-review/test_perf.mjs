@@ -516,4 +516,34 @@ await settle();
   assert.equal(asked.length, 0, "no fix with a commit: no call");
   S.exec = null;
 }
+// ---- a fix with no reported commit is read from the files its range touched: one git log per head and fix head, not
+// one per finding or per file; a head change costs one more; a failed call leaves the labels as they were.
+{
+  const v = await openReview(PR2()), byFile = new Map();
+  for (const f of v.findings()) byFile.set(f.file, [...(byFile.get(f.file) ?? []), f]);
+  const files = [...byFile.values()].filter((fs) => fs.length >= 2).slice(0, 5), ten = files.flatMap((fs) => fs.slice(0, 2));
+  assert.equal(ten.length, 10, "ten findings in five files");
+  const at = "2026-11-15T10:00:00Z", log = `abc1234\n\n${files[0][0].file}\n${files[1][0].file}\n`;
+  v.worktree = { url: v.prSel.url, head: "h2", path: "/h/w" }; v.head = "h2";
+  v.find = { ...v.find, reports: {}, status: Object.fromEntries(ten.map((f) => [f.id, { s: "progress", fixHead: "h1", at }])) };
+  const calls = [];
+  S.exec = async (cmd, args) => { calls.push(args); return { code: 0, stdout: log, stderr: "" }; };
+  v.fileLandedTick(cx); v.fileLandedTick(cx); await settle();
+  assert.equal(calls.length, 1, "one git log for ten findings in five files, and none while one is on its way");
+  v.fileLandedTick(cx); await settle();
+  assert.equal(calls.length, 1, "a head and fix head it knows asks nothing again");
+  assert.deepEqual(ten.map((f) => v.fgroup(f)), ["in_pr", "in_pr", "in_pr", "in_pr", ...Array(6).fill("ready")], "the touched files are in the PR, the rest are ready");
+  v.worktree = { ...v.worktree, head: "h3" }; v.head = "h3";
+  v.fileLandedTick(cx); await settle();
+  assert.equal(calls.length, 2, "a new head costs one more log for the same fix head");
+  // A call that fails: the labels stay where they were, and a later frame asks again.
+  v.worktree = { ...v.worktree, head: "h4" }; v.head = "h4";
+  let failed = 0;
+  S.exec = async () => { failed++; return { code: 1, stdout: "", stderr: "no such ref" }; };
+  v.fileLandedTick(cx); await settle();
+  assert.equal(v.fgroup(ten[0]), "progress", "nothing is claimed on a failed log");
+  v.fileLandedTick(cx); await settle();
+  assert.equal(failed, 2, "and a later frame asks again");
+  S.exec = null; v.worktree = null;
+}
 console.log("perf ok");

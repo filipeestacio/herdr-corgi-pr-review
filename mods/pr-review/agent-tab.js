@@ -42,9 +42,11 @@ async function waitReady(cx, { space, name, since, stopped }) {
 }
 
 // Starts the tab and gets the text there through the decision tabTaskDelivery makes. Resolves { delivery, name, sent,
-// stopped }: sent is true when the argv held the text or `hc send` took it, stopped is true when the note was
+// stopped, terminal }: sent is true when the argv held the text or `hc send` took it, stopped is true when the note was
 // superseded while waiting (the caller then keeps whatever note replaced it). sent false with stopped false: the tab
-// is up and the text was not sent. onOpen({ delivery, name }) runs once the tab exists, before any wait.
+// is up and the text was not sent. terminal is the tab's terminal when the text was sent to it, else null (Claude Code
+// takes the text as its argument, so no terminal is looked up). onOpen({ delivery, name }) runs once the tab exists,
+// before any wait.
 export async function startAgentTab(cx, { profile, space, folder, name, argv, text, focus = true, stopped = () => false, onOpen = () => {} }) {
   const delivery = tabTaskDelivery(profile), open = { space, folder, name, argv };
   if (!focus) open.focus = false;
@@ -52,11 +54,11 @@ export async function startAgentTab(cx, { profile, space, folder, name, argv, te
   const since = Date.now();
   run("tab.new", open);
   onOpen({ delivery, name });
-  if (delivery === "arg") return { delivery, name, sent: true, stopped: false };
+  if (delivery === "arg") return { delivery, name, sent: true, stopped: false, terminal: null };
   const found = await waitReady(cx, { space, name, since, stopped });
-  if (found.stopped) return { delivery, name, sent: false, stopped: true };
-  if (!found.address) return { delivery, name, sent: false, stopped: false };
+  if (found.stopped) return { delivery, name, sent: false, stopped: true, terminal: null };
+  if (!found.address) return { delivery, name, sent: false, stopped: false, terminal: null };
   const r = await hc(["send", found.address, text]);
   if (r?.code !== 0) throw new Error((r?.stderr || r?.stdout || `hc send ${found.address}`).trim().slice(0, 200));
-  return { delivery, name, sent: true, stopped: false };
+  return { delivery, name, sent: true, stopped: false, terminal: found.address };
 }
