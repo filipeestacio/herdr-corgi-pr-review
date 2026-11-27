@@ -498,7 +498,8 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   for (const k of ["worktrees.api", "worktrees.providers", "worktrees.prs.review"]) Map.prototype.set.call(S.store, k, null);
   const checks = [], cx2 = { ...cx, timer: { ...cx.timer, every(ms, fn) { if (ms === 2000) checks.push(fn); } } };
   const behind = new PrReview(); behind.init({}, cx2); await flush();
-  assert.deepEqual([checks.length, S.store.get("worktrees.prs.review")], [1, null], "no Worktrees yet: nothing written");
+  assert.ok(checks.length >= 1, "the panel checks every 2 s"); // the Worktrees list and the pending deliveries
+  assert.equal(S.store.get("worktrees.prs.review"), null, "no Worktrees yet: nothing written");
   Map.prototype.set.call(S.store, "worktrees.api", { version: 1 }); reset(); checks.forEach((f) => f(cx2));
   assert.ok(n.writes.includes("worktrees.prs.review") && S.store.get("worktrees.prs.review").prs.some((x) => x.number === 8), "Worktrees appeared: the list is written without a frame");
   reset(); checks.forEach((f) => f(cx2)); assert.deepEqual(n.writes, [], "checked again: nothing written");

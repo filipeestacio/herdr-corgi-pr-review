@@ -15,7 +15,7 @@ import { exec, hc, run, focused, pickFolder, theme, settings, readTextFile, writ
 import { spaces, agents, terminals, watch } from "./live.js";
 import { hostOfLink, parseLink, hostWord, hostLong } from "./host.js"; // never straight from Herdr (live.js says why)
 import { parseReports, findingStatus, fixStage, landedByFile, fixStillWorking, findingGroup, FINDING_GROUPS, GROUP_WORD, mergeFindings, findingCounts, countLine, runsOf, runIsStale, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
-import { agentArgs, harnessProfile, harnessAgent, notReadyNote, fixNotSentNote, tabTaskDelivery } from "./pr.js"; // a new agent tab: the harness profile's own command, else Claude Code
+import { agentArgs, harnessProfile, harnessAgent, pendingWaitNote, tabTaskDelivery } from "./pr.js"; // a new agent tab: the harness profile's own command, else Claude Code
 import { startAgentTab } from "./agent-tab.js"; // starts it and gets the text there (an argument, or a send once the agent reports ready)
 import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig, writeConfig } from "./setup-view.js";
@@ -1967,7 +1967,7 @@ export const ReviewMode = {
         // Claude Code gets the question as its argument; a harness tab starts bare and is sent it once ready.
         const profile = harnessProfile(this.cfg), name = tabName(origin?.repo ?? this.root, origin?.number ? `ask ${hostWord(origin.url)} #${origin.number}` : "ask");
         const url = origin?.url, gen = (this.tabGen = (this.tabGen ?? 0) + 1);
-        const r = await startAgentTab(cx, { profile, space: this.spaceFor(this.ctxId(), origin?.cwd, this.root), folder: plan.where, name, text, focus: false,
+        const r = await startAgentTab(cx, { profile, space: this.spaceFor(this.ctxId(), origin?.cwd, this.root), folder: plan.where, name, text, what: "question", prUrl: url, by: this.uid, focus: false,
           argv: agentArgs({ profile, env: this.ctxEnv(this.ctxId()), model: model(), ask: true, trusted: this.trustedPr() }),
           stopped: () => this.tabGen !== gen || this.prSel?.url !== url,
           onOpen: ({ delivery }) => {
@@ -1976,7 +1976,7 @@ export const ReviewMode = {
             cx.notify();
           } });
         if (r.stopped || this.tabGen !== gen) return cx.notify();
-        if (!r.sent) this.note = notReadyNote(name, "question");
+        if (!r.sent) this.note = pendingWaitNote(name, "question");
         else if (r.delivery === "send") this.note = `Sent your question to the agent tab "${name}". The finding stays as it is.`;
         return cx.notify();
       }
@@ -2899,9 +2899,9 @@ export const ReviewMode = {
   // it has one, else Claude Code (pr.js agentArgs), in the PR's checkout (or the review's checkout of the PR head).
   // Nothing is branched and nothing is pushed by the mod; a tab can push, so the preview says so. Claude Code gets the
   // fix as its argument; a harness tab starts bare and the text is sent once its agent reports ready (agent-tab.js).
-  // A newer tab, or another PR, supersedes a wait: this copy sends nothing and its note stays the other one's. The job
-  // is written only once the text is sent, so a tab that never got it leaves the finding as it was; until then the
-  // panel shows the in-memory "starting" state, never a running job.
+  // A newer tab, or another PR, supersedes a wait: this copy stops waiting, and the text stays recorded, so any copy
+  // sends it once the agent is ready. The job is written only once the text was sent, so a tab that never got it leaves
+  // the finding as it was; until then the panel shows the in-memory "starting" state, never a running job.
   startMainFix(p, text, cx) {
     const f = p.fix, folder = this.fixBase(), profile = harnessProfile(this.cfg), runner = this.runnerName();
     if (!folder) { this.note = "Not started: the PR has no local checkout or worktree to start a tab in"; return cx.notify(); }
@@ -2913,7 +2913,7 @@ export const ReviewMode = {
     cx.spawn(async (cx) => {
       try {
         const r = await startAgentTab(cx, {
-          profile, space, folder, name, text, focus: false,
+          profile, space, folder, name, text, what: "fix text", prUrl: url, by: this.uid, focus: false,
           argv: agentArgs({ profile, env: this.ctxEnv(this.ctxId()), model: model(), ask: !trusted, trusted }),
           stopped: () => this.tabGen !== gen || this.prSel?.url !== url,
           onOpen: ({ delivery }) => {
@@ -2925,7 +2925,7 @@ export const ReviewMode = {
           },
         });
         if (r.stopped || this.tabGen !== gen) return;
-        if (!r.sent) { this.note = fixNotSentNote(name); return cx.notify(); }
+        if (!r.sent) { this.note = pendingWaitNote(name, "fix text"); return cx.notify(); }
         this.updateThreads(cx, (d) => TH.addFix(d, this.threadKey(), { id: Date.now().toString(36), items: f.items, target: "main", at: Date.now(), state: "running", terminal: r.terminal ?? null }));
         f.sent(cx, { route: "agent", agent: `${runner} tab · ${name}` });
         this.note = r.delivery === "send" ? `Fix: the ${runner} tab "${name}" is ready; the fix text was sent.`

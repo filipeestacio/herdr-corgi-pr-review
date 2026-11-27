@@ -1437,7 +1437,7 @@ console.log("ok");
 // hands its arguments to the harness) starts bare and is sent the text once its agent reports ready. The readiness is
 // the status `hc get` gives a terminal: an app it reported, and idle or done.
 {
-  const { tabTaskDelivery, agentReady, tabTerminal, notReadyNote, fixNotSentNote } = await import("./pr.js");
+  const { tabTaskDelivery, agentReady, tabTerminal } = await import("./pr.js");
   const { harnessProfile } = await import("./pr.js");
   const claude = harnessProfile({}), plain = harnessProfile({ harness: "plain", harnesses: { plain: { command: ["plain", "run"] } } });
   const work = harnessProfile({ harness: "work", harnesses: { work: { command: ["work", "run"], agent: ["aircode", "harness", "opencode"] } } });
@@ -1456,7 +1456,54 @@ console.log("ok");
   assert.equal(tabTerminal(tabs, { space: "s1", name: "bookshelf ask" })?.address, "t4", "the name is part of the where label");
   assert.equal(tabTerminal(tabs, { space: "s3", name: "bookshelf fix PR #7" }), null, "no tab of that name in that space");
   assert.equal(tabTerminal([{ address: "t5", where: "bookshelf fix PR #7" }], { space: "s1", name: "bookshelf fix PR #7" })?.address, "t5", "a list entry without labels still matches by its where");
-  assert.equal(notReadyNote("bookshelf fix PR #7", "fix text"), 'The tab "bookshelf fix PR #7" is up but its agent did not report ready; the fix text was not sent.');
-  assert.equal(fixNotSentNote("bookshelf fix PR #7"), 'The tab "bookshelf fix PR #7" is up but its agent did not report ready; the fix text was not sent and no fix record was kept, so it can be tried again.');
   console.log("ok how a new agent tab gets the text: an argument for Claude Code, a send for a harness");
+}
+
+// The small document a harness tab's text waits in (pr-data/pending-tabs.json): newest first, five at most, dropped
+// by age or after three failed sends. One malformed write never stops a later copy, so a file that is not the document
+// reads as empty. "Which records are deliverable now" follows the tab: ready, busy or gone, and the two time limits.
+{
+  const P = await import("./pr.js");
+  const at = 1_700_000_000_000, rec = (n, extra = {}) => ({ id: `r${n}`, name: `corgi-demo fix github #${n}`, space: "s1", folder: "/h/base", text: `Fix ${n}.`,
+    what: "fix text", prUrl: "https://github.com/o/r/pull/7", by: "copy1", at, ...extra });
+  const ready = { status: { app: "opencode", state: "idle" } }, busy = { status: { app: "opencode", state: "working" } }, finished = { state: "finished", status: null };
+  const old = (extra = {}) => rec(1, { at: at - P.PENDING_GRACE_MS - 1, ...extra });
+  assert.deepEqual(P.pendingTabs(null), []);
+  assert.deepEqual(P.pendingTabs(""), []);
+  assert.deepEqual(P.pendingTabs("{not json"), [], "a malformed file reads as empty");
+  assert.deepEqual(P.pendingTabs('{"tabs":"no"}'), [], "a document of another shape reads as empty");
+  assert.deepEqual(P.pendingTabs(JSON.stringify({ tabs: [{ id: "a" }, rec(1)] })).map((r) => r.id), ["r1"], "a record without a name and text is not read");
+  assert.deepEqual(P.pendingTabs(JSON.stringify([rec(1)])).map((r) => r.id), ["r1"], "a bare list is taken too");
+  assert.deepEqual(P.pendingTabs(P.pendingFileText([rec(1), rec(2)])).map((r) => [r.id, r.text, r.tries]), [["r1", "Fix 1.", 0], ["r2", "Fix 2.", 0]], "the document round-trips");
+  // Five newest: the records are written newest first and the sixth is the last.
+  let tabs = [];
+  for (let i = 1; i <= 7; i++) tabs = P.pendingAdd(tabs, rec(i), at + i);
+  assert.deepEqual(tabs.map((r) => r.id), ["r7", "r6", "r5", "r4", "r3"], "the newest five, newest first");
+  assert.equal(tabs[0].at, at + 7, "the record was written now");
+  assert.equal(tabs[0].tries, 0);
+  assert.deepEqual(P.pendingAdd(tabs, rec(7), at + 8).map((r) => r.id), ["r7", "r6", "r5", "r4", "r3"], "a record with the same id is replaced, not doubled");
+  assert.deepEqual(P.pendingRemove(tabs, "r5").map((r) => r.id), ["r7", "r6", "r4", "r3"], "remove by id");
+  assert.deepEqual(P.pendingRemove(tabs, "gone").map((r) => r.id), tabs.map((r) => r.id), "an id that is not there removes nothing");
+  // A failed send is written back with one more try; the third failure drops the record.
+  const one = P.pendingAdd([], rec(1), at);
+  assert.deepEqual(P.pendingRetry(one, one[0]), [{ ...one[0], tries: 1 }], "one more try, the same record and the same age");
+  assert.deepEqual(P.pendingRetry(P.pendingRetry(one, one[0]), { ...one[0], tries: 1 }), [{ ...one[0], tries: 2 }]);
+  assert.equal(P.pendingRetry(one, { ...one[0], tries: 2 }), null, "the third failure drops it");
+  // Deliverable now: only a ready agent, after the copy that opened the tab had its grace.
+  assert.equal(P.pendingState(old(), ready, at), "send", "a ready agent sends");
+  assert.equal(P.pendingState(old(), busy, at), "wait", "a working agent waits");
+  assert.equal(P.pendingState(old(), null, at), "wait", "a tab that is not there yet (or was closed) waits");
+  assert.equal(P.pendingState(old(), finished, at), "wait", "a program that ended is never sent to");
+  assert.equal(P.pendingState(rec(1), ready, at), "wait", "the copy that opened the tab may still be sending");
+  assert.equal(P.pendingState(rec(1, { at: at - P.PENDING_MS - 1 }), ready, at), "expire", "older than fifteen minutes");
+  assert.equal(P.pendingState(old({ tries: 3 }), ready, at), "drop", "three failed sends");
+  assert.equal(P.pendingState(old({ at: at - P.PENDING_MS - 1, tries: 3 }), ready, at), "expire", "too old comes first, whatever the tries say");
+  assert.equal(P.pendingState(null, ready, at), "drop", "no record, nothing to do");
+  // The one sentence each case shows.
+  assert.equal(P.pendingWaitNote("corgi-demo fix github #7", "fix text"), 'The tab "corgi-demo fix github #7" is up but its agent did not report ready; the fix text will be sent when the agent is ready.');
+  assert.equal(P.pendingSentNote("corgi-demo fix github #7", "fix text", true), 'The fix text was sent to the tab "corgi-demo fix github #7" after a reload.');
+  assert.equal(P.pendingSentNote("corgi-demo fix github #7", "question"), 'The question was sent to the tab "corgi-demo fix github #7".');
+  assert.equal(P.pendingExpiredNote("corgi-demo fix github #7", "fix text"), 'The tab "corgi-demo fix github #7" never reported ready; its fix text was not sent.');
+  assert.equal(P.pendingFailedNote("corgi-demo fix github #7", "fix text"), 'The fix text for the tab "corgi-demo fix github #7" was not sent: hc send failed 3 times.');
+  console.log("ok a harness tab's text is a small document: five newest, dropped by age or after three tries, sent when the agent is ready");
 }
