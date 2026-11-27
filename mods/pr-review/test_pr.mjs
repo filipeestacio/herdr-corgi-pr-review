@@ -53,6 +53,15 @@ assert.equal(pr.headMoved(null, "a2"), false, "no PR head: nothing to compare");
 assert.equal(pr.headMoved("a1", null), false, "no checkout head: nothing to compare");
 assert.equal(pr.headMoved(undefined, undefined), false, "neither known");
 assert.equal(pr.headMoved("a1", undefined), false, "a checkout head that is not known yet");
+// A checkout marker whose spawn is gone: but only when it names this job, and past the watchdog unless the copy has
+// no start time at all. A marker inside the watchdog is a checkout still in flight, and one for another job is not
+// this attempt's to clear.
+assert.equal(pr.checkoutAbandoned({ job: "u|h|false", running: "u|h|false", at: 1000, now: 1000 + 1000 }), false, "fresher than the watchdog");
+assert.equal(pr.checkoutAbandoned({ job: "u|h|false", running: "u|h|false", at: 1000, now: 1000 + pr.WATCHDOG }), false, "exactly at the watchdog");
+assert.equal(pr.checkoutAbandoned({ job: "u|h|false", running: "u|h|false", at: 1000, now: 1000 + pr.WATCHDOG + 1 }), true, "older than the watchdog");
+assert.equal(pr.checkoutAbandoned({ job: "u|h|false", running: "u|h|false", now: 999999 }), true, "no start time: an older copy");
+assert.equal(pr.checkoutAbandoned({ job: "u|h|false", running: "u|h|true", at: 1000, now: 999999 }), false, "another job's marker");
+assert.equal(pr.checkoutAbandoned({ job: "u|h|false", at: 1000, now: 999999 }), false, "nothing running");
 
 const review = buildReview({ pr: { number: 7, title: "Fix" }, comments: [{ file: "a.js", ...gone, hunk: "-c", text: "Why removed?" }, { file: "b.js", text: " Name? " }] });
 assert.equal(review, "PR #7 \"Fix\": code review with 2 points. Work through the points one by one: answer questions, make the requested changes. At the end, say briefly per point what you did." +

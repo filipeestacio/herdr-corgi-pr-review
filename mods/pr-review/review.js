@@ -28,7 +28,7 @@ import { highlightJob, highlightStep, highlightLines, langOf, firstLineOf, color
 import { lookup, warm, contents, where, setTrusted } from "./defs.js";
 import { recommendModel, tierSteps } from "./pr.js";
 import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf, codeModel, priceOf, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch, withSecurity, securityStart } from "./pr.js";
-import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf, cloneRootsFor, clonesDoc, withClone, headMoved } from "./pr.js";
+import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf, cloneRootsFor, clonesDoc, withClone, headMoved, checkoutAbandoned } from "./pr.js";
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState, codeOf, isStale } from "./pr.js";
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible, pastTop } from "./views.js";
 import { worst, byFocus, layerAccess, analysisAge, stateHints, noteRule, mergeGroups, mergeFirst, mergeHeld, runLabel, byCause, sessionCost, sessionDir, fixEstimate, fixCostLine } from "./views.js";
@@ -637,6 +637,9 @@ const ago = (iso) => { const m = Math.round((Date.now() - Date.parse(iso)) / 600
 
 export const ReviewMode = {
   initReview(cx) {
+    // A marker from before a reload (or a spawn that threw) says a checkout runs when none does; makeWorktree could
+    // never start this job again. A copy starts clean.
+    this.wtIn = null; this.wtAt = null; this.wtRetried = null;
     this.tab = "files"; this.cur = 0; this.focusHunk = null; this.fsel = null; this.sug = null;
     this.ai = null; this.aiBusy = false; this.aiError = null; this.aiModel = null; this.diaBusy = null; this.diaError = null;
     this.prog = { visited: new Set(), checked: {}, handled: {}, seen: new Set() };
@@ -981,9 +984,24 @@ export const ReviewMode = {
     cx.notify();
   },
 
+  // A note for a queued action: written, and a frame asked for, only when the copy does not say this already. A guard
+  // runs again at every poll, and setting the same text again redrew the copy for nothing (the flashing pane).
+  noteOnce(text, cx) {
+    if (this.note === text) return false;
+    this.note = text; cx.notify(); return true;
+  },
+
   makeWorktree(cx, clone = false) {
     const url = this.prSel.url, want = this.prSel.headSha ?? null, job = `${url}|${want}|${clone}`;
-    if (this.wtIn === job) return; // the same checkout is being made: its end resumes what waits
+    if (this.wtIn === job) {
+      // The spawn that set this marker never cleared it (a reload during the checkout, or a throw before that line),
+      // so no completion will resume what waits. Past the watchdog it gets one fresh attempt, with its own note.
+      // A marker still inside the watchdog is a checkout in flight: its end resumes the queue, so only wait.
+      if (!checkoutAbandoned({ job, running: this.wtIn, at: this.wtAt, now: Date.now() }) || this.wtRetried === job) return;
+      this.wtRetried = job;
+      this.wtIn = null; this.wtAt = null;
+      this.noteOnce(`The earlier checkout of this ${hostWord(url)} did not finish; trying again.`, cx);
+    }
     this.worktree = null;
     if (this.prSel.space && this.root) {
       this.worktree = { url, head: this.head, path: this.root, local: true }; putShared("review.worktree", this.worktree); this.applyTrust();
@@ -992,7 +1010,7 @@ export const ReviewMode = {
     // A PR you didn't open may use the active space's checkout of its repo (cwd); your own PRs keep the dedicated clones.
     const local = this.prSel.source && this.root ? ["--local", this.root] : [];
     this.cloning = clone; this.checkout = { busy: true }; // shown at the top of the Analysis tab (stateHints)
-    this.wtIn = job;
+    this.wtIn = job; this.wtAt = Date.now();
     cx.spawn(async (cx) => {
       // The parent a person picked for this repo goes first: a new clone lands there, and the configured roots stay
       // as fallbacks for an existing clone. Read by repo, so another repo's choice never follows this PR.
@@ -1004,7 +1022,7 @@ export const ReviewMode = {
       const had = shared("review.worktree"), same = !clone && want && had?.url === url && had.head === want && !had.local && await worktreeAt(had.path, want);
       const r = same ? { code: 0, stdout: JSON.stringify({ head: want, path: had.path }) } : await exec(argv[0], argv.slice(1), { timeout: 600000 })
         .catch((e) => ({ code: 1, stderr: String(e) }));
-      if (this.wtIn === job) this.wtIn = null;
+      if (this.wtIn === job) { this.wtIn = null; this.wtAt = null; }
       this.cloning = false; this.checkout = null;
       if (this.prSel?.url !== url) return;
       if (r.code === 3) { const n = JSON.parse(r.stdout); this.needClone = n.need_clone; this.needCloneRoots = n.roots ?? []; this.loadContext(cx); cx.notify(); return; }
@@ -1227,7 +1245,9 @@ export const ReviewMode = {
       // read the old commits. makeWorktree starts it again (pendingRun) when the checkout is made. A space's own
       // checkout is never moved, so the run reads it as it is (the head note says which commits it read).
       if (!this.worktree?.local && headMoved(this.prSel.headSha, this.worktree?.head)) {
-        this.pendingRun = true; this.note = "The PR head moved: checking it out, then starting the analysis."; this.makeWorktree(cx); return cx.notify();
+        this.pendingRun = true;
+        this.noteOnce("The PR head moved: checking it out, then starting the analysis.", cx);
+        this.makeWorktree(cx); return;
       }
       if (!this.worktree && !this.prSel.space) { this.pendingRun = true; return cx.notify(); } // the Analysis tab says it waits (stateHints)
       // Every hunk goes along: review.py inlines what fits and lets the model read the rest (no "too large" cut).
@@ -1613,8 +1633,8 @@ export const ReviewMode = {
     // read the old head; makeWorktree starts this reviewer again when the checkout is at the wanted head.
     if (headMoved(pr.headSha, w.head)) {
       this.pendingReviewer = { kind, use };
-      this.note = "The PR head moved: checking it out, then starting the review.";
-      this.makeWorktree(cx); return cx.notify();
+      this.noteOnce("The PR head moved: checking it out, then starting the review.", cx);
+      this.makeWorktree(cx); return;
     }
     // Codex on someone else's PR in Restricted Mode: asked once per PR (the note says what the run may do), the next click runs it.
     if (kind === "codex" && !this.trustedPr(pr) && this.codexAsked !== pr.url) { this.codexAsked = pr.url; this.note = TH.CODEX_ASK; return cx.notify(); }
@@ -2703,9 +2723,9 @@ export const ReviewMode = {
     const w = this.worktree, target = p.fix?.target;
     if (target !== "sub" && w && !w.local && headMoved(this.prSel?.headSha, w.head)) {
       this.pendingFix = { p, out };
-      this.note = "The PR head moved: checking it out, then starting the fix.";
+      this.noteOnce("The PR head moved: checking it out, then starting the fix.", cx);
       this.makeWorktree(cx);
-      return cx.notify();
+      return;
     }
     const local = target !== "sub" && w?.local && headMoved(this.prSel?.headSha, w.head);
     const r = this.startFixNow(p, out, cx);
