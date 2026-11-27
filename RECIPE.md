@@ -210,6 +210,8 @@ Explore shows Overview, Layers, Architecture and Files for a topic, without a di
   touch its file since it was sent, which is weaker than a verified fix. Verify is the only model call. It reads the PR
   head and moves a fixed finding to Verified, a broken one back to Unresolved, and leaves an unclear one as it was. A
   fix in progress, ready or in the PR keeps its finding unresolved: in the diff, counted, and a blocker when high.
+  While a fix's agent works, its row offers `Go to tab` to select that tab and focus its pane, and a job recorded
+  before the tab was known offers `Go to fix` to peek at its terminal.
 - "Ask an agent…" pastes the finding into the live agent's terminal in a floating window without sending it (or
   into a chat mod's bubble, PROVIDERS.md); without a live agent it starts one in a new tab, in manual mode, on the
   review's checkout of the PR head. Its preview says which of these happens.

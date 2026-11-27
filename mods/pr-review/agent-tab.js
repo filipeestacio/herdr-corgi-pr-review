@@ -15,21 +15,25 @@ const doc = (text) => { try { return JSON.parse(String(text ?? "")); } catch { r
 // `hc ls --json` prints {terminals: [...]}; a bare list is taken too, so a version that prints one still works.
 const terminalsIn = (text) => { const d = doc(text); return Array.isArray(d) ? d : Array.isArray(d?.terminals) ? d.terminals : []; };
 const getTerminal = async (address) => { const r = await hc(["get", address, "--json"]).catch(() => null); return r?.code === 0 ? doc(r.stdout) : null; };
+// The tab a terminal is in, as Herdr labels the terminals it starts (herdr.tab); null when it carries no such label.
+const tabId = (t) => (typeof t?.labels?.["herdr.tab"] === "string" && t.labels["herdr.tab"] ? t.labels["herdr.tab"] : null);
 const pendingFile = () => `${appHome()}/pr-data/pending-tabs.json`;
 
 // The terminal of the tab just started: `hc ls` names the tab in its `where`, and `hc get` says which space it is in
-// (labels["herdr.space"]), when it was created and what its agent reports. The newest match wins: `hc` lists terminals
-// in creation order, another space may hold a tab of the same name, and an older tab of that name may still be open.
+// (labels["herdr.space"]), which tab that is (labels["herdr.tab"], as `tab`), when it was created and what its agent
+// reports. The newest match wins: `hc` lists terminals in creation order, another space may hold a tab of the same
+// name, and an older tab of that name may still be open.
 async function findTab({ space, name, since }) {
   const r = await hc(["ls", "--json"]).catch(() => null);
   const named = terminalsIn(r?.stdout).filter((x) => Boolean(name) && typeof x?.where === "string" && x.where.includes(name));
   const got = await Promise.all(named.map((x) => getTerminal(x.address)));
-  return tabTerminal(got.filter((t) => !Number.isFinite(t?.created_ms) || t.created_ms >= since - 2000), { space, name });
+  const t = tabTerminal(got.filter((x) => !Number.isFinite(x?.created_ms) || x.created_ms >= since - 2000), { space, name });
+  return t ? { ...t, tab: tabId(t) } : null;
 }
 
-// Waits for that terminal's agent to report ready. Resolves { address } when it is ready, { address, finished: true }
-// when its program ended first (a plain shell is never ready either), { stopped: true } when stopped() says the note
-// is superseded, and {} when 60 s pass without either.
+// Waits for that terminal's agent to report ready. Resolves { address, tab } when it is ready, { address, tab,
+// finished: true } when its program ended first (a plain shell is never ready either), { stopped: true } when stopped()
+// says the note is superseded, and { address, tab } with no address when 60 s pass without either.
 async function waitReady(cx, { space, name, since, stopped }) {
   const until = Date.now() + READY_MS;
   let found = null;
@@ -38,10 +42,10 @@ async function waitReady(cx, { space, name, since, stopped }) {
     const t = found ? await getTerminal(found.address) : await findTab({ space, name, since });
     if (t) {
       found = t;
-      if (agentReady(t)) return { address: t.address };
-      if (t.state === "finished") return { address: t.address, finished: true };
+      if (agentReady(t)) return { address: t.address, tab: tabId(t) };
+      if (t.state === "finished") return { address: t.address, tab: tabId(t), finished: true };
     }
-    if (Date.now() >= until) return { address: found?.address ?? null };
+    if (Date.now() >= until) return { address: found?.address ?? null, tab: tabId(found) };
     await pause(cx, POLL_MS);
   }
 }
@@ -86,11 +90,11 @@ async function restorePending(rec) {
 }
 
 // Starts the tab and gets the text there through the decision tabTaskDelivery makes. Resolves { delivery, name, sent,
-// stopped, terminal }: sent is true when the argv held the text or `hc send` took it, stopped is true when the note was
-// superseded while waiting (the caller then keeps whatever note replaced it). sent false with stopped false: the tab
+// stopped, terminal, tab }: sent is true when the argv held the text or `hc send` took it, stopped is true when the note
+// was superseded while waiting (the caller then keeps whatever note replaced it). sent false with stopped false: the tab
 // is up and the text waits in pr-data/pending-tabs.json for any copy to send. A send another copy claimed counts as
-// sent: the text goes out once. terminal is the tab's terminal when the
-// text was sent to it, else null (Claude Code takes the text as its argument, so no terminal is looked up).
+// sent: the text goes out once. terminal is the tab's terminal when the text was sent to it, else null (Claude Code
+// takes the text as its argument, so no terminal is looked up), and tab is that terminal's tab when Herdr labels it.
 // what: the noun for the text in the notes and the record ("fix text", "question", "review"); by: the copy that
 // opened the tab; prUrl: the PR the text is for. onOpen({ delivery, name }) runs once the tab exists, before any wait.
 export async function startAgentTab(cx, { profile, space, folder, name, argv, text, what = "text", prUrl = null, by = null, focus = true, stopped = () => false, onOpen = () => {} }) {
@@ -100,22 +104,22 @@ export async function startAgentTab(cx, { profile, space, folder, name, argv, te
   const since = Date.now();
   run("tab.new", open);
   onOpen({ delivery, name });
-  if (delivery === "arg") return { delivery, name, sent: true, stopped: false, terminal: null };
+  if (delivery === "arg") return { delivery, name, sent: true, stopped: false, terminal: null, tab: null };
   const rec = { id: `${since.toString(36)}-${Math.random().toString(36).slice(2, 8)}`, name, space, folder, text, what, prUrl, at: since, by };
   const recorded = await recordPending(rec);
   const found = await waitReady(cx, { space, name, since, stopped });
-  if (found.stopped) return { delivery, name, sent: false, stopped: true, terminal: null };
-  if (!found.address) return { delivery, name, sent: false, stopped: false, terminal: null };
+  if (found.stopped) return { delivery, name, sent: false, stopped: true, terminal: null, tab: null };
+  if (!found.address) return { delivery, name, sent: false, stopped: false, terminal: null, tab: null };
   // Claimed before the send: a tick of another copy that took the record sends the text instead, and this copy never
   // sends it a second time.
   if (recorded) {
     const claim = await claimPending(rec.id);
-    if (claim === "gone") return { delivery, name, sent: true, stopped: false, terminal: found.address };
-    if (claim === "busy") return { delivery, name, sent: false, stopped: false, terminal: null }; // a tick will send it
+    if (claim === "gone") return { delivery, name, sent: true, stopped: false, terminal: found.address, tab: found.tab ?? null };
+    if (claim === "busy") return { delivery, name, sent: false, stopped: false, terminal: null, tab: null }; // a tick will send it
   }
   const r = await hc(["send", found.address, text]);
   if (r?.code !== 0) { await restorePending(rec); throw new Error((r?.stderr || r?.stdout || `hc send ${found.address}`).trim().slice(0, 200)); }
-  return { delivery, name, sent: true, stopped: false, terminal: found.address };
+  return { delivery, name, sent: true, stopped: false, terminal: found.address, tab: found.tab ?? null };
 }
 
 // One pass over the pending deliveries, for a copy that just started or on its 2 s tick: sends each record whose tab's

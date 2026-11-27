@@ -146,7 +146,8 @@ export const toggleSelected = (doc, key, id, now = Date.now(), field = "selected
 export const clearSelected = (doc, key, now = Date.now(), field = "selected") => bound(doc, key, threadsOf(doc, key), now, { [field]: [] });
 
 // Fix jobs: {id, branch, path (its worktree), base (the PR's checkout), head (where the branch starts), items: [{kind:
-// "comment" | "finding", id}], terminal, target: "sub" | "main", at, state: "running" | "applied" | "discarded"}.
+// "comment" | "finding", id}], terminal, tab (the Herdr tab that terminal is in), target: "sub" | "main", at, state:
+// "running" | "applied" | "discarded"}.
 // A sub-agent's fix stays on its branch until the reviewer applies it; nothing hands it on by itself.
 export const fixesOf = (doc, key) => doc?.[key]?.fixes ?? [];
 export const addFix = (doc, key, job, now = Date.now()) => bound(doc, key, threadsOf(doc, key), now, { fixes: [...fixesOf(doc, key).filter((f) => f.id !== job.id), job].slice(-MAX_FIXES) });

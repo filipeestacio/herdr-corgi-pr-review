@@ -1334,6 +1334,33 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
     && !got.texts.includes("Fix again: the agent ended without reporting a commit, and nothing landed."), "and its steps still ask for the check");
   v.ffocus = null; S.terminals = wasTerminals; v.landed = null;
 }
+// "Go to fix" on a finding row goes where the job says: to its tab, then the pane there, when the job names a tab; to a
+// peek at its terminal when it names only that; and nowhere when it names neither.
+{
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json") });
+  const f = v.findings().find((x) => ["open", "recheck"].includes(v.fstatus(x)) && !v.fixJob(x));
+  assert.ok(f, "a finding with no fix yet");
+  const key = v.threadKey(), job = (extra) => ({ id: "jgo", items: [{ kind: "finding", id: f.id }], target: "main", at: Date.now(), state: "running", ...extra });
+  const fixes = (list) => { v.threadDoc = { ...v.threadDoc, [key]: { ...(v.threadDoc[key] ?? {}), fixes: list } }; };
+  const row = (what) => { S.ids = new Set(); S.texts = new Set(); S.runs = []; act(v, "findings", what); const got = { ids: [...S.ids], texts: [...S.texts] }; S.ids = S.texts = null; return got; };
+  v.ffocus = f.id;
+  fixes([job({ tab: "tab9", terminal: "t9" })]);
+  let got = row("a fix in its tab");
+  assert.equal(v.fgroup(f), "progress", "a young job is in progress");
+  assert.ok(got.ids.includes(`rv-fgo-${f.id}`) && got.texts.includes("Go to tab"), "the row offers the fix agent's tab");
+  click(`rv-fgo-${f.id}`, "go to the fix tab");
+  assert.deepEqual(S.runs, [["tab.select", { id: "tab9" }], ["pane.focus", { terminal: "t9" }]], "the tab is selected, then its pane focused");
+  fixes([job({ terminal: "t9" })]);
+  got = row("a job from before the tab was recorded");
+  assert.ok(got.ids.includes(`rv-fgo-${f.id}`) && got.texts.includes("Go to fix") && !got.texts.includes("Go to tab"), "the row offers a peek at the terminal");
+  click(`rv-fgo-${f.id}`, "go to the fix terminal");
+  assert.deepEqual(S.runs, [["terminal.peek", { terminal: "t9" }]], "the terminal is peeked at, as before");
+  fixes([job({})]);
+  got = row("a job with neither a tab nor a terminal");
+  assert.ok(!got.ids.includes(`rv-fgo-${f.id}`), "no way to go to it is offered");
+  assert.ok(got.ids.includes(`rv-ffb-${f.id}`), "the row still says its fix is running");
+  v.ffocus = null;
+}
 // One selection: a box works on a folded row and on an open one; comments (your own and other people's GitHub
 // comments) and findings are ticked into the same selection, every place says its one number, and "Fix selected"
 // hands all of it to one agent. Nothing is written to GitHub for a GitHub comment.
@@ -1476,12 +1503,12 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
           S.hc = async (args) => { calls.push(args);
             const tab = S.runs.filter(([c]) => c === "tab.new").at(-1)?.[1];
             if (args[0] === "ls") return { code: 0, stdout: JSON.stringify({ terminals: tab ? [{ address: "t9", where: tab.name, created_ms: Date.now() }] : [] }), stderr: "" };
-            if (args[0] === "get") return { code: 0, stdout: JSON.stringify({ address: "t9", where: tab?.name, created_ms: Date.now(), status: { app: "opencode", state: "idle" } }), stderr: "" };
+            if (args[0] === "get") return { code: 0, stdout: JSON.stringify({ address: "t9", where: tab?.name, created_ms: Date.now(), labels: { "herdr.tab": "tab9" }, status: { app: "opencode", state: "idle" } }), stderr: "" };
             if (args[0] === "send") jobsAtSend = v.fixes().length;
             return { code: 0, stdout: JSON.stringify({ address: "t9" }), stderr: "" }; };
           beforeSent = v.fixes().length; S.runs.length = 0; v.command("send", cx); await settle();
-          assert.deepEqual([jobsAtSend, v.fixes().length, v.fixJob(fSent)?.target, v.fixJob(fSent)?.terminal, v.fstatus(fSent), v.fixStarting],
-            [beforeSent, beforeSent + 1, "main", "t9", "progress", null], "no job at the send, one after it with the tab's terminal, and no provisional state left");
+          assert.deepEqual([jobsAtSend, v.fixes().length, v.fixJob(fSent)?.target, v.fixJob(fSent)?.terminal, v.fixJob(fSent)?.tab, v.fstatus(fSent), v.fixStarting],
+            [beforeSent, beforeSent + 1, "main", "t9", "tab9", "progress", null], "no job at the send, one after it with the tab's terminal and tab, and no provisional state left");
           assert.ok(calls.some(([c, a]) => c === "send" && a === "t9"), "the fix text went to the tab");
           assert.equal(v.note, `Fix: the OpenCode tab "${name()}" is ready; the fix text was sent.`);
           // Superseded while the tab boots: no job is written, the note stays the one that named the tab, and the text

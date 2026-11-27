@@ -510,6 +510,11 @@ export const agoSpan = (ms) => { const m = Math.round(ms / 60000); return !Numbe
 export const fixStillWorking = ({ job, terminalLive = false, now = Date.now() } = {}) =>
   Boolean(job && job.state === "running" && ((job.terminal && terminalLive) || (job.at && now - job.at < 600000)));
 
+// Where a fix's "Go to fix" goes: to the tab that holds its agent when the job names one (agent-tab.js records the
+// tab's id with the job), else to a peek at its terminal, else nowhere. A text that is only a shell or a mod has no
+// terminal and no tab, and a job sent before the tab was recorded keeps its terminal alone.
+export const fixJump = (job) => job?.tab ? { kind: "tab", id: job.tab, terminal: job.terminal ?? null } : job?.terminal ? { kind: "peek", terminal: job.terminal } : null;
+
 // The commits that touched one path, from the output of `git log --format=%h --name-only <since>..<head>`, in the log's
 // order (newest first). A line of hex is a commit id; every other line is a path, matched exactly. An empty path, or one
 // no commit changed, gives no commits.
