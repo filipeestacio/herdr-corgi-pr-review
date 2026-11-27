@@ -1219,3 +1219,18 @@ console.log("ok");
   assert.equal(sameCause(api, same), false, "the same effect sentence in two files is not one cause by itself");
   console.log("ok one effect near by is one finding");
 }
+
+// The clone parent a person chose for a repository goes first, ahead of the configured roots (worktree.py's --root
+// order: the first folder is where a new clone goes). The choice is keyed by repo and "~" stays as typed.
+{
+  const { cloneRootsFor } = await import("./pr.js");
+  const configured = ["~/code", "~/work"];
+  assert.deepEqual(cloneRootsFor("acme/bookshelf", {}, configured), ["~/code", "~/work"], "no choice: the configured roots, as they were");
+  assert.deepEqual(cloneRootsFor("acme/bookshelf", { "acme/bookshelf": "~/clones" }, configured), ["~/clones", "~/code", "~/work"], "a choice comes first");
+  assert.deepEqual(cloneRootsFor("acme/bookshelf", { "acme/bookshelf": "~/code", "acme/other": "~/elsewhere" }, ["~/code", "~/code", "~/work"]),
+    ["~/code", "~/work"], "a choice already in the list, and a repeated root, stay once");
+  assert.deepEqual(cloneRootsFor("acme/other", { "acme/bookshelf": "~/clones" }, configured), configured, "another repository's choice is ignored");
+  assert.deepEqual(cloneRootsFor("acme/bookshelf", { "acme/bookshelf": "~/clones" }, []), ["~/clones"], "an empty configured list still takes the choice");
+  assert.deepEqual(cloneRootsFor("acme/bookshelf", { "acme/bookshelf": "~/clones" }), ["~/clones"], "no configured list at all");
+  console.log("ok a chosen clone parent comes first, for its repository only");
+}

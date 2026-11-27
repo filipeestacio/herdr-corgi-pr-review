@@ -47,8 +47,10 @@ setShared("pr-review.contexts", {
   sessions ("Mine").
 - **show / reveal**: lists and "in progress" show only the contexts the view shows. A picked PR the view hides
   gets a banner with "Switch to <label>" (when `reveal` is set).
-- **Clones**: an existing clone is looked for under every context's `cloneRoot` and the `cloneRoot` setting; a new
-  one goes to the PR's context's `cloneRoot`, else the setting.
+- **Clones**: an existing clone is looked for under every context's `cloneRoot`, the `cloneRoot` setting and the
+  folder a person chose for that repository with "Choose folder…" (shared `review.cloneRoots`, newest 50 repos). A
+  new clone goes into the chosen folder for that repository, else the PR's context's `cloneRoot`, else the setting.
+  The configured folders stay as fallbacks.
 
 ## 2. What pr-review publishes
 
@@ -60,6 +62,7 @@ setShared("pr-review.contexts", {
 | `review.meta` | `{url, pending, model, busy, error, shown: {model, cost, exact, mergeRisk, effort}}` | the analysis state and the pending comment count, for the bar |
 | `review.layout` | `"review"` or `"pr-review"` | the review layout's name (`"pr-review"` when another layout already had the name `review`) |
 | `review.worktree` | `{url, head, path}` | the checkout of the PR head |
+| `review.cloneRoots` | `{"<owner>/<repo>": "<parent folder>"}`, newest 50 repositories | a folder picked with "Choose folder…" for that repository's clone; it is the first folder the clone check searches and where the clone goes |
 | `review.mini` | `{kind: "review" \| "explore", head, title, repo, url, mark: {glyph, word, color, security, words} \| null, open, run: "running" \| "done" \| "failed" \| null}` or `null` | the minimized entry as data, for a bar that draws it itself (props `headless`); written by the `mini` part when it changes |
 | `pr-review.setup` | `{at, os, found: {program: path \| null}, auth: {gh, claude}}` | after a Setup check |
 
@@ -130,7 +133,9 @@ All keys optional.
 - `language`: what the AI writes in (analysis, reviewer verdicts, fix checks) and asks your agent to answer in.
   Prompts are English either way. Default English.
 - `cloneRoot`: where clones go when no context says otherwise. Default `~/code`; for example `"~/Work/Claude"`.
-  The checkouts made from a clone (the review's, a fix agent's) are not kept there but in Herdr's folder for
+  A folder picked with "Choose folder…" beside "Clone to …" wins for that repository alone and is remembered in
+  shared `review.cloneRoots` (`{ "<owner>/<repo>": "<parent folder>" }`, newest 50). The configured roots stay as
+  fallbacks. The checkouts made from a clone (the review's, a fix agent's) are not kept there but in Herdr's folder for
   worktrees (`worktrees.directory` in Herdr's `settings.json`, default `~/.herdr/worktrees`).
 - `globalRules`: conventions every PR is checked against, next to the repo's own CLAUDE.md, AGENTS.md,
   CONTRIBUTING.md, `.github/*instructions*.md` and ADRs.
