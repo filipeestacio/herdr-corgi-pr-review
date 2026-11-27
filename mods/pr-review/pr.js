@@ -82,6 +82,13 @@ export const isStale = (a, head, now) => a?.code != null && !(a.head && head && 
 // An unknown head on either side is nothing to compare, so it counts as no move.
 export const headMoved = (prHead, checkoutHead) => Boolean(prHead && checkoutHead && prHead !== checkoutHead);
 
+// How long a checkout may run before its marker counts as left behind: review.js makeWorktree clears wtIn when its
+// spawn ends, so a marker older than this belongs to a spawn that was interrupted (a reload) or threw.
+export const WATCHDOG = 120000;
+// A checkout marker for this job that no running spawn will clear. A copy from before the start time was recorded has
+// none, and counts as abandoned. Another job's marker is not this attempt's to clear.
+export const checkoutAbandoned = ({ job, running, at, now }) => Boolean(job && running === job && (!at || now - at > WATCHDOG));
+
 // The first row of the next (dir 1) or previous (-1) block of changed lines from row i; -1 when none.
 export function nextChange(rows, i, dir) {
   const starts = rows.map((r, j) => (r.kind === "+" || r.kind === "-") && !(rows[j - 1]?.kind === "+" || rows[j - 1]?.kind === "-") ? j : -1).filter((j) => j >= 0);

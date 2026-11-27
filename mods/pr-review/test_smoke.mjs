@@ -1509,5 +1509,46 @@ frame("models: the provider's full catalog", () => R.renderModels(cx));
   S.overlays.length = 0; v.command("models:search:sonnet", cx);
   assert.equal(S.overlays[0]?.props?.query, "sonnet", "the script's search still travels in the props");
 }
+// A checkout marker whose spawn never cleared it (a reload during the checkout, or a throw): makeWorktree returned at
+// its top for ever, so a queued reviewer never started and every poll set the same note and repainted. Past the
+// watchdog it gets one fresh attempt and one note; a fresh marker still waits, and a repeated note is drawn once.
+{
+  const url = "https://github.com/saefty/corgi-demo/pull/2", target = { url, repo: "saefty/corgi-demo", number: 2, title: "feat(events): loan events", base: "main", source: "mine", headSha: "new" };
+  const job = `${url}|new|false`, realExec = S.exec;
+  const v = new PrReview();
+  v.prSel = target; v.head = "new"; v.find = { list: [], runs: {}, status: {}, reports: {} };
+  const count = { checkouts: 0, reviewers: 0 };
+  S.exec = async (cmd, args = []) => {
+    if (cmd === "python3" && String(args[0]).endsWith("worktree.py")) { count.checkouts++; return { code: 0, stdout: JSON.stringify({ head: "new", path: "/h/w" }), stderr: "" }; }
+    if (cmd === "sh" && String(args[2]).endsWith("reviewers.py")) count.reviewers++;
+    return { code: 1, stdout: "", stderr: "stub" };
+  };
+  S.store.delete("review.worktree");
+  try {
+    v.worktree = { url, head: "old", path: "/h/w" }; v.wtIn = job; v.wtAt = Date.now() - 130000;
+    v.pendingReviewer = { kind: "claude", use: null };
+    v.makeWorktree(cx); await settle();
+    assert.deepEqual([count.checkouts, count.reviewers, v.worktree?.head, v.wtIn], [1, 1, "new", null], "past the watchdog: one checkout, the queued reviewer starts, the marker goes");
+    assert.equal(v.note, "The earlier checkout of this PR did not finish; trying again.", "one note says the checkout was tried again");
+    // A marker inside the watchdog is a checkout in flight: no second job, and the queue stays for its end.
+    count.checkouts = 0; count.reviewers = 0;
+    v.worktree = { url, head: "old", path: "/h/w" }; v.wtIn = job; v.wtAt = Date.now();
+    v.pendingReviewer = { kind: "claude", use: null };
+    v.makeWorktree(cx); await settle();
+    assert.deepEqual([count.checkouts, count.reviewers, v.pendingReviewer?.kind, v.wtIn], [0, 0, "claude", job], "a fresh marker waits: nothing runs and the queue stays");
+    // The queued action's note is set and the frame asked for only when its text changes.
+    let paints = 0; const counted = { ...cx, notify() { paints++; } };
+    v.makeWorktree = () => {}; v.wtIn = null; v.note = null; v.pendingReviewer = null;
+    v.runReviewer("claude", counted); v.runReviewer("claude", counted);
+    assert.deepEqual([paints, v.note, Boolean(v.pendingReviewer)], [1, "The PR head moved: checking it out, then starting the review.", true], "the same note twice: one frame");
+  } finally { S.exec = realExec; S.store.delete("review.worktree"); }
+}
+// A reload starts a copy clean: a marker left behind is never inherited.
+{
+  const v = new PrReview(); v.wtIn = "u|h|false"; v.wtAt = 1; v.wtRetried = "u|h|false";
+  const was = S.store.get("review.target"); S.store.set("review.target", null); S.props = { part: "review" };
+  try { v.init({}, cx); } finally { S.store.set("review.target", was); }
+  assert.deepEqual([v.wtIn, v.wtAt, v.wtRetried], [null, null, null], "init clears a leftover marker");
+}
 S.props = null;
 console.log(`smoke ok: ${shown} frames`);
