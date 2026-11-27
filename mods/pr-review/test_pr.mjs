@@ -201,7 +201,7 @@ assert.deepEqual(rangeOf(again, "+3", "+3"), [lo, lo]);
 console.log("ok");
 
 // Findings: reports (last line wins, half lines skipped) never settle a finding; moved code asks for a recheck.
-const { parseReports, findingStatus, fixStage, fixEndedLine, landedByFile, fixStillWorking, fixJump, findingGroup, FINDING_GROUPS, GROUP_WORD, fixPrompt, mergeFindings, findingCounts, countLine, agoSpan } = await import("./pr.js");
+const { parseReports, findingStatus, fixStage, fixEndedLine, landedByFile, fixStillWorking, fixJump, findingGroup, selectableStage, stageNoFix, FINDING_GROUPS, GROUP_WORD, fixPrompt, mergeFindings, findingCounts, countLine, agoSpan } = await import("./pr.js");
 const reps = parseReports('{"id":"a","status":"wontfix"}\n{"id":"a","status":"fixed","commit":"abc"}\n{"id":"b","sta');
 assert.deepEqual(Object.keys(reps), ["a"]);
 const fa = { id: "a", head: "h1", code: "x()" }, fb = { id: "b", head: "h1", code: "y()" };
@@ -304,6 +304,15 @@ assert.equal(findingGroup("in_pr", "progress"), "in_pr", "the stage wins over th
 assert.equal(findingGroup("ready", "dismissed"), "wontfix", "a dismissal is the person's, and git cannot undo it");
 assert.deepEqual(["open", "progress", "dismissed"].map((s) => findingGroup("ended", s)), ["unresolved", "unresolved", "wontfix"], "a fix that ended with nothing puts the finding back in Unresolved, whatever it was sent under");
 assert.equal(GROUP_WORD.in_pr, "In the PR");
+// A row can be ticked for another fix only when it has no stage of its own: a fix in the PR, ready, verified or
+// declined has nothing left to fix, and one on its way has nothing to add. A fix that ended with nothing is unresolved.
+assert.deepEqual(["in_pr", "verified", "wontfix", "progress", "ready"].map(selectableStage), [false, false, false, false, false], "nothing to fix");
+assert.deepEqual([null, undefined, "unresolved", "ended"].map(selectableStage), [true, true, true, true], "unresolved rows are tickable, and a fix that ended with nothing left the finding unresolved");
+assert.equal(selectableStage("a stage nobody knows"), true, "a stage this list does not name does not block a tick");
+// The note and the box's tooltip say why, in the same words; a row that can be ticked says nothing.
+assert.deepEqual([stageNoFix("in_pr"), stageNoFix("verified")], ["Already in the PR: nothing to fix.", "Verified: nothing to fix."]);
+assert.deepEqual([null, undefined, "unresolved", "ended"].map(stageNoFix), [null, null, null, null]);
+assert.ok(["wontfix", "progress", "ready"].every((s) => /: nothing to fix\.$/.test(stageNoFix(s))), "every stage that blocks a tick says so");
 {
   // One finding per defect: same file and new-side line merge, the highest severity leads, every source stays.
   const A = (id, file, line, severity, extra = {}) => ({ id, reviewer: "analysis", step: "k1", file, line, end: line, severity, category: "structure", title: `T ${id}`, detail: `D ${id}`, suggestion: "", ...extra });

@@ -1155,6 +1155,87 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   assert.ok(!got.texts.some((x) => x.startsWith("Fix selected")) && !got.ids.includes(`rv-fbox-${plain[0].id}`), "a finding with a fix sent has no box");
   v.command(`pick-finding:${plain[0].id}`, cx); assert.deepEqual(v.pickedFindings(), [], "nor can it be ticked by its command");
 }
+// A tick on a finding whose fix reaches the PR afterwards: the next frame draws no tick, "Fix selected" does not count
+// it, and its box takes no click. One write prunes the selection, not one per frame. A fix that ended with nothing
+// leaves its finding unresolved, so it stays tickable; one on its way is not.
+{
+  const TH = await import("./threads.js"), { secByEffect } = await import("./pr.js");
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json") });
+  const open_ = v.findings().filter((f) => ["open", "recheck"].includes(v.fstatus(f)) && !secByEffect(f));
+  const tab = (what) => { S.ids = new Set(); S.texts = new Set(); act(v, "findings", what); const got = { ids: [...S.ids], texts: [...S.texts] }; S.ids = S.texts = null; return got; };
+  act(v, "files", "the diff with the findings' cards");
+  const card = (f) => [...v.byKey].find(([, it]) => it.t === "find" && it.f.id === f.id)?.[0];
+  const f = open_.find((x) => card(x)), ended = open_.find((x) => x !== f), onWay = open_.find((x) => x !== f && x !== ended);
+  assert.ok(f && ended && onWay, `three unresolved findings to tick (${open_.length}), the first also a card in the diff`);
+  tab("before the push"); S.clicks.get(`rv-fbox-${f.id}`)(null, cx);
+  assert.deepEqual(v.pickedFindings(), [f.id], "ticked while the finding is unresolved");
+  // The agent reported its commit, and the head carries it: the stage is In the PR, and nothing is left to fix.
+  const written = [], save = v.saveThreads;
+  v.saveThreads = function (c, fn) { written.push(fn); return save.call(this, c, fn); };
+  try {
+    v.find = { ...v.find, reports: { ...v.find.reports, [f.id]: { id: f.id, status: "fixed", commit: "c1", note: "done" } } };
+    v.landed = { head: v.headNow(), map: { c1: "in" } };
+    let got = tab("the frame after the push");
+    assert.equal(v.fstage(f), "in_pr", "the reported commit is in the PR");
+    assert.deepEqual([v.pickedFindings(), TH.selectedOf(v.threadDoc, v.threadKey(), TH.FINDINGS)], [[], []], "the tick went, from the frame's copy and from the store");
+    assert.ok(got.ids.includes(`rv-fbox-${f.id}`) && !S.clicks.has(`rv-fbox-${f.id}`), "its box is still drawn, switched off: a click on it does nothing");
+    assert.ok(!got.texts.some((x) => x.startsWith("Fix selected")) && got.texts.includes("Fix several…"), "Fix selected does not count it");
+    assert.equal(written.length, 1, "one write drops the tick");
+    tab("a second frame"); tab("a third frame");
+    assert.equal(written.length, 1, "and the frames after it write nothing: the set is already pruned");
+    v.note = null; v.command(`pick-finding:${f.id}`, cx);
+    assert.deepEqual([v.pickedFindings(), v.note], [[], "Already in the PR: nothing to fix."], "the command refuses it, with one note that says why");
+    // Its card in the diff: the box there is switched off too, and a press on it ticks nothing.
+    S.ids = new Set(); act(v, "files", "the diff after the push"); const ids = [...S.ids]; S.ids = null;
+    assert.ok(ids.includes(`rv-lfbox-${f.id}`), "the card's box is still drawn");
+    v.note = null; v.press = { x: 122 - 20, w: 900, shift: false }; v.onItem(card(f), cx);
+    assert.deepEqual([v.pickedFindings(), v.note], [[], "Already in the PR: nothing to fix."], "a press on the card's box ticks nothing, and says why");
+  } finally { v.saveThreads = save; }
+  // A fix whose agent ended with nothing to show: the finding is unresolved again, so its box still ticks.
+  const job = { id: "j9", branch: "fix/2-e", path: "/h/f-j9", base: "/h/w", head: "h1", items: [{ kind: "finding", id: ended.id }], target: "main", terminal: null, at: Date.now() - 601000, state: "running" };
+  v.threadDoc = { ...v.threadDoc, [v.threadKey()]: { ...(v.threadDoc[v.threadKey()] ?? {}), fixes: [job] } };
+  let got = tab("a fix that ended with nothing");
+  assert.equal(v.fstage(ended), "ended", "the job's agent is gone and no commit came back");
+  assert.ok(S.clicks.has(`rv-fbox-${ended.id}`), "its box still takes a click");
+  S.clicks.get(`rv-fbox-${ended.id}`)(null, cx);
+  assert.deepEqual(v.pickedFindings(), [ended.id], "an ended fix leaves the finding tickable");
+  // A fix on its way: nothing to tick until its agent reports.
+  v.threadDoc = { ...v.threadDoc, [v.threadKey()]: { ...(v.threadDoc[v.threadKey()] ?? {}), fixes: [] } };
+  v.command("clear-selection", cx); v.fixStarting = { ids: [onWay.id], name: "corgi-demo fix github #2", at: Date.now() };
+  got = tab("a fix tab that is still booting");
+  assert.equal(v.fstage(onWay), "progress", "its agent may still work");
+  assert.ok(got.ids.includes(`rv-fbox-${onWay.id}`) && !S.clicks.has(`rv-fbox-${onWay.id}`), "a fix on its way has a box with no click");
+  v.note = null; v.command(`pick-finding:${onWay.id}`, cx);
+  assert.deepEqual([v.pickedFindings(), v.note], [[], "A fix is in progress: nothing to fix."], "and its command says why");
+  v.fixStarting = null; v.landed = null;
+}
+// "Fix several…" offers only what can still be ticked: a finding whose fix is in the PR is not in its list, and a tick
+// on it changes nothing and says why. The security findings that go on their own are still counted as left out.
+{
+  const { secByEffect } = await import("./pr.js");
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json") });
+  const open_ = v.findings().filter((f) => ["open", "recheck"].includes(v.fstatus(f)));
+  const plain = open_.filter((f) => !secByEffect(f)), alone = open_.filter((f) => secByEffect(f));
+  const [mine, inPr] = plain;
+  assert.ok(mine && inPr && alone.length, "an unresolved finding, one whose fix is in the PR, and one that goes alone");
+  v.find = { ...v.find, reports: { ...v.find.reports, [inPr.id]: { id: inPr.id, status: "fixed", commit: "c1", note: "done" } } };
+  v.landed = { head: v.headNow(), map: { c1: "in" } };
+  assert.equal(v.fstage(inPr), "in_pr", "its fix is in the PR");
+  v.command("fix-several", cx); await settle();
+  let p = v.sendP.fix, ids = p.pool.map((f) => f.id);
+  assert.deepEqual([ids.includes(mine.id), ids.includes(inPr.id), p.alone], [true, false, alone.length], "the list offers the unresolved one only, and still counts the security findings it leaves out");
+  assert.deepEqual(ids.slice().sort(), plain.filter((f) => f.id !== inPr.id).map((f) => f.id).sort(), "every unresolved finding that can still be ticked, and nothing else");
+  S.texts = new Set(); draw(v, "the Fix several list"); const said = [...S.texts]; S.texts = null;
+  assert.ok(said.includes(`FINDINGS · tick the ones one agent should fix together · 0 of ${p.pool.length} ticked`), "and the preview's own count is the list it offers");
+  // Its command is refused, in the words its box would give, and the preview stays exactly as it was.
+  v.note = null; const before = v.sendP.fix;
+  v.command(`fix-pick:${inPr.id}`, cx);
+  assert.deepEqual([v.sendP.fix, v.sendP.fix.items.map((x) => x.id), v.note], [before, [], "Already in the PR: nothing to fix."], "a tick on it changes nothing and says why");
+  // The one with nothing sent joins the preview as before.
+  v.command(`fix-pick:${mine.id}`, cx); await settle(); p = v.sendP.fix;
+  assert.deepEqual(p.items.map((x) => x.id), [mine.id], "the unresolved finding is ready for one agent");
+  v.sendP = null; v.landed = null;
+}
 // The Findings tab's six groups, in the order of pr.js FINDING_GROUPS and with the empty ones left out: where a fix is
 // comes from git (landed: in | patch | out), and the status only settles what git cannot see (a dismissal, a check).
 {
