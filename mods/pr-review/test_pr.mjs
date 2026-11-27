@@ -1234,3 +1234,83 @@ console.log("ok");
   assert.deepEqual(cloneRootsFor("acme/bookshelf", { "acme/bookshelf": "~/clones" }), ["~/clones"], "no configured list at all");
   console.log("ok a chosen clone parent comes first, for its repository only");
 }
+
+// The clones this mod made (pr-data/clones.json): only one the mod created is recorded, a found one refreshes the
+// entry that already names it, and an unrecorded checkout is never written. The list is newest 200.
+{
+  const { clonesDoc, withClone, localDay } = await import("./pr.js");
+  const now = new Date(2026, 10, 26, 10, 30).getTime(), sec = Math.floor(now / 1000);
+  assert.equal(localDay(now), "2026-11-26");
+  assert.equal(localDay(new Date(2026, 0, 3).getTime()), "2026-01-03", "the day and the month are padded");
+  assert.deepEqual(clonesDoc(null), {});
+  assert.deepEqual(clonesDoc(""), {});
+  assert.deepEqual(clonesDoc("[1,2]"), {}, "an array is no registry");
+  assert.deepEqual(clonesDoc("{broken"), {}, "a broken file is no registry");
+  assert.deepEqual(clonesDoc('{"a/b": {"path": "/x"}}'), { "a/b": { path: "/x" } });
+
+  const made = withClone({}, { repo: "acme/bookshelf", path: "/h/code/bookshelf", now, created: true });
+  assert.deepEqual(made, { "acme/bookshelf": { path: "/h/code/bookshelf", at: sec, used: sec } }, "a clone the mod made is recorded, in epoch seconds");
+  const again = withClone(made, { repo: "acme/bookshelf", path: "/h/code/bookshelf", now: now + 86400000, created: false });
+  assert.deepEqual(again["acme/bookshelf"], { path: "/h/code/bookshelf", at: sec, used: sec + 86400 }, "a found clone only refreshes used, and keeps the first at");
+  assert.equal(again["acme/bookshelf"].path, "/h/code/bookshelf");
+  const moved = withClone(made, { repo: "acme/bookshelf", path: "/h/code/bookshelf-2", now: now + 3600000, created: true });
+  assert.deepEqual(moved["acme/bookshelf"], { path: "/h/code/bookshelf-2", at: sec + 3600, used: sec + 3600 }, "a clone made anew starts its at now");
+  const other = withClone(made, { repo: "acme/bookshelf", path: "/h/code/elsewhere", now: now + 3600000, created: false });
+  assert.equal(other, made, "a path the mod did not make and never recorded is not written");
+  const stranger = withClone({}, { repo: "acme/tools", path: "/h/person/tools", now, created: false });
+  assert.deepEqual(stranger, {}, "an unrecorded clone is never added");
+  const known = withClone(made, { repo: "acme/bookshelf", now: now + 60000, created: false });
+  assert.equal(known["acme/bookshelf"].used, sec + 60, "without a path the entry's own path is the one used");
+  assert.equal(withClone(made, { repo: "acme/bookshelf", now, created: true }), made, "created without a path records nothing");
+  assert.equal(withClone(made, { repo: "", path: "/x", now, created: true }), made, "no repository, no entry");
+  const untimed = withClone({ "a/b": { path: "/h/code/b" } }, { repo: "a/b", path: "/h/code/b", now, created: false });
+  assert.deepEqual(untimed["a/b"], { path: "/h/code/b", used: sec }, "an entry from before keeps what it had, and gets its use");
+
+  const many = Object.fromEntries(Array.from({ length: 201 }, (_x, i) => [`r${i}`, { path: `/c/${i}`, at: i, used: i }]));
+  const bound = withClone(many, { repo: "new/repo", path: "/c/new", now, created: true });
+  assert.equal(Object.keys(bound).length, 200, "the registry keeps 200 repositories");
+  assert.equal(bound.r0 ?? null, null, "the least recently used goes");
+  assert.deepEqual(Object.keys(bound).slice(0, 2), ["new/repo", "r200"], "the newest comes first");
+  console.log("ok the clone registry records only what this mod made, and refreshes what it did");
+}
+
+// `cleanup.py check` and `apply` as rows and as the note after a pass: the script decides, the panel shows it.
+{
+  const { cleanupCandidates, cleanupLine, cleanupRemoved, cleanupNote, cleanupDoc, cleanupDone, cleanupDoneDoc } = await import("./pr.js");
+  const check = JSON.stringify({ max_age: 30, candidates: [
+    { repo: "acme/bookshelf", path: "/h/code/bookshelf", used: 1795000000, days: 42.3, size: 188743680, eligible: true, why: "" },
+    { repo: "acme/tools", path: "/h/code/tools", used: 1795500000, days: 6.4, size: 1048576, eligible: false, why: "The repository still has an open pull request." }] });
+  const rows = cleanupCandidates(check);
+  assert.deepEqual(rows, [
+    { repo: "acme/bookshelf", path: "/h/code/bookshelf", days: 42.3, mb: 188.74368, eligible: true, why: null },
+    { repo: "acme/tools", path: "/h/code/tools", days: 6.4, mb: 1.048576, eligible: false, why: "The repository still has an open pull request." }]);
+  assert.equal(cleanupLine(rows[0]), "acme/bookshelf · /h/code/bookshelf · 42 days · 189 MB");
+  assert.equal(cleanupLine(rows[0], (p) => p.replace("/h", "~")), "acme/bookshelf · ~/code/bookshelf · 42 days · 189 MB", "a path is shortened for the person");
+  assert.equal(cleanupLine({ repo: "a/b", path: "/x", days: 1, mb: 0.4 }), "a/b · /x · 1 day · 1 MB", "one day, and no zero MB");
+  assert.equal(cleanupLine({ repo: "a/b" }), "a/b", "a row with only its repository still reads");
+  assert.deepEqual(cleanupCandidates("not json"), [], "an answer the app cannot read is an empty list");
+  assert.deepEqual(cleanupCandidates('{"candidates": null}'), []);
+  assert.deepEqual(cleanupCandidates('{"candidates": [{"path": "/x", "eligible": true}]}'), [], "a candidate with no repository is not one");
+  assert.deepEqual(cleanupCandidates(JSON.stringify([{ repo: "a/b", path: "/x", why: "The folder is gone." }]))[0].eligible, false, "a why with no eligible flag keeps the clone");
+  assert.deepEqual(cleanupCandidates(JSON.stringify([{ repo: "a/b", path: "/x" }]))[0].eligible, true, "no why and no flag: the script did not object");
+
+  const apply = JSON.stringify({ removed: [{ repo: "acme/bookshelf", path: "/h/code/bookshelf" }], kept: [{ repo: "acme/tools", path: "/h/code/tools", why: "x" }] });
+  assert.deepEqual(cleanupRemoved(apply), { removed: [{ repo: "acme/bookshelf", path: "/h/code/bookshelf" }], count: 1 });
+  assert.deepEqual(cleanupRemoved('{"removed": 2, "repos": ["a/b", "c/d"]}'), { removed: [{ repo: "a/b", path: null }, { repo: "c/d", path: null }], count: 2 });
+  assert.deepEqual(cleanupRemoved(""), { removed: [], count: 0 }, "an answer the app cannot read removed nothing it can name");
+  assert.deepEqual(cleanupRemoved(JSON.stringify([{ repo: "a/b" }, "c/d", {}])), { removed: [{ repo: "a/b", path: null }, { repo: "c/d", path: null }], count: 2 });
+  assert.equal(cleanupNote({ removed: [], count: 0 }), null, "nothing removed: the panel says nothing");
+  assert.equal(cleanupNote(cleanupRemoved(apply)), "Removed 1 old clone: acme/bookshelf.");
+  assert.equal(cleanupNote({ removed: [{ repo: "a/b" }, { repo: "c/d" }], count: 2 }), "Removed 2 old clones: a/b, c/d.");
+  const many = { removed: Array.from({ length: 9 }, (_x, i) => ({ repo: `o/r${i}` })), count: 9 };
+  assert.equal(cleanupNote(many), "Removed 9 old clones: o/r0, o/r1, o/r2, o/r3, o/r4, o/r5 and others.", "the note names a few, then says there are more");
+
+  assert.deepEqual(cleanupDoc('{"day": "2026-11-25"}'), { day: "2026-11-25" });
+  assert.equal(cleanupDone({ day: "2026-11-26" }, "2026-11-26"), true, "the pass ran today");
+  assert.equal(cleanupDone({ claim: "2026-11-26" }, "2026-11-26"), true, "another copy claimed today");
+  assert.equal(cleanupDone({ day: "2026-11-25" }, "2026-11-26"), false);
+  assert.equal(cleanupDone({}, ""), false);
+  assert.deepEqual(cleanupDoneDoc({ claim: "2026-11-26", other: 1 }, "2026-11-26", { removed: [{ repo: "a/b" }, { repo: "c/d" }], count: 2 }, 5000),
+    { claim: "2026-11-26", other: 1, day: "2026-11-26", at: 5000, removed: 2, repos: ["a/b", "c/d"] }, "today is done, with what it removed");
+  console.log("ok cleanup.py's list and apply as rows, and the one sentence after a pass");
+}

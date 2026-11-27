@@ -17,10 +17,11 @@
 // PROVIDERS.md) follows its rules; a picked one is kept in shared "pr.picked" so the selection survives remounts.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, Editor, EditorState, TextView, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
-import { focused, exec, hc, run, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, home, layout, props, watchFolder, nextCommand, checking } from "herdr";
+import { focused, exec, hc, run, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, home, layout, props, watchFolder, nextCommand, checking, openOverlay } from "herdr";
 import { spaces, panes, agents, terminals, feed, feedIfAsked, whenFed } from "./live.js"; // never straight from Herdr: one read and this copy is drawn on every agent's status change
 import { diffRows, buildPrompt, splitPatch, selection, nextChange, lineLabel, anchorRow, buildReview, hunksOf, hash, uiLine, reviewRequest, mapReview, triageOf, isSecurity, withThreats, knownOf } from "./pr.js";
 import { parsePrRef, ghTarget, pruneSources, mergeMine, codeModel, windowActive, pollDue, pollAfter, tabName } from "./pr.js";
+import { cleanupCandidates, cleanupLine, cleanupNote, cleanupRemoved, cleanupDoc, cleanupDone, cleanupDoneDoc, localDay } from "./pr.js"; // the clones this mod made, and their one daily cleanup
 import { hostOfLink, parseRemote } from "./host.js";
 import * as C from "./context.js";
 import { tabArgs } from "./threads.js"; // a new Claude tab with the PR's text: no MCP servers
@@ -62,6 +63,8 @@ const SOURCES = [["mine", "Mine"], ["repo", "This repo"], ["space", "This space"
 const SRC_TIP = { mine: "Open PRs and MRs assigned to you or opened by you, on GitHub and GitLab", repo: "Open PRs in this space's repository", space: "PRs of the branches checked out in this space, in its panes and its agents' worktrees", review: "Open PRs waiting for your review", session: "PRs your Claude sessions opened" };
 const sourcesFile = () => `${appHome()}/pr-data/sources.json`;
 const SOURCE_MS = 3 * 60 * 1000, SOURCE_KEEP = 20, PICKED_KEEP = 20;
+// "Clean up…" with nothing to list: one muted sentence and no popup.
+const NO_CLONES = "Nothing to clean up: a clone this mod made goes after 30 idle days, when its tree is clean and its host has no open PR.";
 const GH_FIELDS = "number,title,author,headRefName,headRefOid,baseRefName,updatedAt,isDraft,reviewDecision,additions,deletions,url";
 const REVIEW = { APPROVED: ["approved", "ansi2"], CHANGES_REQUESTED: ["changes requested", "ansi1"], REVIEW_REQUIRED: ["review required", "ansi3"] };
 const BRANCH = "branch"; // shared "pr.selected": the current branch was picked (not a PR)
@@ -183,6 +186,7 @@ export default class PrReview extends View {
     if (visible() && this.branchPicked) this.refresh(cx);
     // Key commands (keys.json "pr-review.<name>"): picker (the PR list), source:mine|repo|space|review|session, merged, setup, walkthrough, review, finish.
     this.listen(cx, (c, cx) => this.panelCommand(c, cx));
+    this.cleanupDaily(cx); // the first open of the day: cleanup.py apply in the background, never in front of the list
     cx.spawn(async (cx) => {
       try {
         await this.loadPrs(cx);
@@ -220,6 +224,10 @@ export default class PrReview extends View {
     else if (c === "picker") { this.picking = !this.picking; if (this.picking) this.loadSource(cx); }
     else if (c === "setup") { this.view = "setup"; runSetup(this, cx, false); }
     else if (c === "setup:close") this.view = "diff"; // Setup's "Close"
+    // The clones this mod made: the list ("Clean up…") and its two applies. cleanup.py decides what may go.
+    else if (c === "cleanup") this.cleanupList(cx);
+    else if (c === "cleanup-apply-all") this.cleanupApply(cx, null);
+    else if (name === "cleanup-apply" && arg) this.cleanupApply(cx, arg);
     else if (c === "walkthrough") this.openWalk(cx, false);
     else if (c === "review") this.reviewNow(cx);
     // review:<number | owner/repo#number | url>: a row's "Resume" (a review in progress) or "Review" (a listed PR).
@@ -247,6 +255,87 @@ export default class PrReview extends View {
       if (pr) this.pickTarget(pr, cx);
       else if (ref) { this.openRefInput.set_value(arg); this.openRef(cx); }
     }
+  }
+
+  // ---- the clones this mod made (pr-data/clones.json): cleanup.py decides what may go, and removes it; this copy
+  // never deletes a folder. The daily pass and the list use the same script with the same roots.
+
+  // The roots worktree.py gets: the configured ones, every context's, and each parent a person picked with
+  // "Choose folder…" for any repository. cleanup.py refuses a path that is a clone root itself, so it needs them all.
+  cleanupRoots(cfg = this.cfg) {
+    const configured = C.cloneRoots(ctxDoc(), this.ctxId(), cfg?.cloneRoot ?? "~/code");
+    const picked = Object.values(shared("review.cloneRoots") ?? {}).filter((d) => typeof d === "string");
+    return [...new Set([...configured, ...picked])].flatMap((d) => ["--root", d.replace(/^~(?=\/|$)/, home())]);
+  }
+
+  // One run of the script with the arguments worktree.py gets about its clone (its folder for worktrees included, so
+  // it finds a review checkout still there). Its answer, or null when it did not run.
+  async cleanupRun(mode, repo = null) {
+    const cfg = this.cfg?.cloneRoot === undefined ? await readConfig() : this.cfg; // the daily pass runs before init reads it
+    const args = [`${appHome()}/mods/pr-review/cleanup.py`, mode, ...this.cleanupRoots(cfg), "--worktrees", await this.wtDir(), ...(repo ? ["--repo", repo] : [])];
+    return exec("python3", args, { timeout: 600000 }).catch(() => null);
+  }
+
+  // The first open of the day: cleanup.py apply, behind the list, and one sentence only when it removed something.
+  // The day is claimed with one compare-and-swap write of pr-data/cleanup.json, so of two copies one write fails and
+  // that copy does not run it; shared "review.cleanupDay" is the fast path, the file the one a restart reads.
+  cleanupDaily(cx) {
+    const day = localDay();
+    if (shared("review.cleanupDay") === day) return;
+    cx.spawn(async (cx) => {
+      try {
+        // An installed copy from before the script existed has nothing to run (and `herdr-app check` never gets here).
+        if ((await readTextFile(`${appHome()}/mods/pr-review/cleanup.py`).catch(() => null)) === null) return;
+        const file = `${appHome()}/pr-data/cleanup.json`, before = await readTextFile(file).catch(() => null), doc = cleanupDoc(before);
+        if (cleanupDone(doc, day)) { setShared("review.cleanupDay", day); return; }
+        const claim = `${JSON.stringify({ ...doc, claim: day }, null, 1)}\n`;
+        try { await writeTextFile(file, claim, before); } catch { return; } // another copy claimed today: it runs the pass
+        setShared("review.cleanupDay", day);
+        const r = await this.cleanupRun("apply");
+        const res = r?.code === 0 ? cleanupRemoved(r.stdout) : { removed: [], count: 0 };
+        const note = cleanupNote(res);
+        if (note) { this.note = note; cx.notify(); }
+        // Today is done whatever happened: a failed pass is not tried again until tomorrow.
+        await writeTextFile(file, `${JSON.stringify(cleanupDoneDoc(doc, day, res), null, 1)}\n`, claim).catch(() => null);
+      } catch { /* never in the way of the list */ }
+    });
+  }
+
+  // "Clean up…": the list cleanup.py check gives, or one muted sentence and no popup. A list the app cannot read is
+  // an empty list, not an error.
+  cleanupList(cx) {
+    this.note = null;
+    cx.spawn(async (cx) => {
+      const r = await this.cleanupRun("check");
+      const rows = r?.code === 0 ? cleanupCandidates(r.stdout) : [];
+      if (!rows.length) { this.note = NO_CLONES; return cx.notify(); }
+      this.openCleanup(rows);
+    });
+  }
+
+  // The popup: "Clean up all eligible" when there is one, then a row per clone with its age and size; the ones that
+  // stay carry their reason and do nothing.
+  openCleanup(rows) {
+    const at = (p) => p.replace(home(), "~"), items = [];
+    if (rows.some((c) => c.eligible)) items.push(["Clean up all eligible", false, "cleanup-apply-all"]);
+    for (const c of rows) items.push([cleanupLine(c, at), false, c.eligible ? `cleanup-apply:${c.repo}` : "cleanup-noop", c.eligible ? "" : c.why ?? "This clone stays."]);
+    // 30 px a row; a reason under it takes one 17 px line per ~520 px of text, so a long one is not cut.
+    const height = 12 + 30 + items.reduce((h, it) => h + 30 + (it[3] ? 17 * Math.max(1, Math.ceil(textW(it[3], TYPE.small) / 520)) : 0) + 1, 0);
+    openOverlay({ mod: "pr-review", props: { part: "cmenu", key: "cleanup", title: "Clones this mod made", items }, kind: "popup", width: 560, height });
+  }
+
+  // "Clean up all eligible" (repo null) or one row: cleanup.py applies and the list is made again, so a clone that
+  // stays now says why. The row clicked has closed its menu already.
+  cleanupApply(cx, repo) {
+    cx.spawn(async (cx) => {
+      const r = await this.cleanupRun("apply", repo);
+      if (!r || r.code !== 0) { this.note = `Could not clean up: ${(r?.stderr ?? "").trim().slice(0, 200) || "cleanup.py failed"}`; return cx.notify(); }
+      const note = cleanupNote(cleanupRemoved(r.stdout));
+      const after = await this.cleanupRun("check"), rows = after?.code === 0 ? cleanupCandidates(after.stdout) : [];
+      this.note = note ?? (rows.length ? null : NO_CLONES);
+      if (rows.length) this.openCleanup(rows);
+      cx.notify();
+    });
   }
 
   key() { return this.prSel?.url ?? JSON.stringify(location()); }
@@ -1640,7 +1729,8 @@ export default class PrReview extends View {
       : h_flex().min_h(42).flex_none().flex_wrap().justify_end().px(14).py(5).gap(8).items_center().border_b(1).border_color(t.border)
         .child(div().flex_1().min_w(110).truncate().font_semibold().child(state === "setup" ? "Setup" : "Pull requests"))
         .when(state === "picking", (e) => e.child(pill(`pr-explore-${this.uid}`, t, "Explore…", () => startExplore(location().cwd ?? null), false, "Explore a topic: ask about something in this repo's code, in the review layout"))
-          .child(pill(`pr-setup-${this.uid}`, t, "Setup", (_e, cx) => { this.picking = false; this.view = "setup"; runSetup(this, cx, false); cx.notify(); }, false, "Check which programs this mod needs are installed")))
+          .child(pill(`pr-setup-${this.uid}`, t, "Setup", (_e, cx) => { this.picking = false; this.view = "setup"; runSetup(this, cx, false); cx.notify(); }, false, "Check which programs this mod needs are installed"))
+          .child(pill(`pr-cleanup-${this.uid}`, t, "Clean up…", () => run("pr-review.cleanup"), false, "List the clones this mod made that can go, and clean them up")))
         .when(state === "picking" && Boolean(this.prSel ?? this.branchPicked), (e) => e.child(pill(`pr-pick-done-${this.uid}`, t, `Back to ${chosen} →`, (_e, cx) => { this.picking = false; cx.notify(); }, false, this.prSel ? `Return to PR ${chosen}` : "Return to the current branch's diff")));
     // The selected PR's tabs: Diff | Walkthrough, its size; a branch diff also offers its files as they are now.
     const seg = (k, label, click) => div().id(`pr-tab-${k}-${this.uid}`).px(10).h(22).flex().items_center().rounded(5).cursor_pointer().text_size(TYPE.small).tooltip(k === "diff" ? "Changed files and the diff; click a line to comment" : "The review's AI analysis in reading order, if you ran it")

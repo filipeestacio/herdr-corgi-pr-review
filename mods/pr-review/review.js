@@ -26,7 +26,7 @@ import { highlightJob, highlightStep, highlightLines, langOf, firstLineOf, color
 import { lookup, warm, contents, where, setTrusted } from "./defs.js";
 import { recommendModel, tierSteps } from "./pr.js";
 import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf, codeModel, priceOf, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch, withSecurity, securityStart } from "./pr.js";
-import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf, cloneRootsFor } from "./pr.js";
+import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf, cloneRootsFor, clonesDoc, withClone } from "./pr.js";
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState, codeOf, isStale } from "./pr.js";
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible, pastTop } from "./views.js";
 import { worst, byFocus, layerAccess, analysisAge, stateHints, noteRule, mergeGroups, mergeFirst, mergeHeld, runLabel, byCause, sessionCost, sessionDir, fixEstimate, fixCostLine } from "./views.js";
@@ -362,13 +362,18 @@ export function renderKeys() {
       h_flex().gap(10).items_center().child(h_flex().w(74).flex_none().gap(3).children(k.split(" ").map((x) => kbd(t, x)))).child(div().text_color(t.muted).child(what))));
 }
 
-// A small menu (props {part: "cmenu", key, items: [[label, danger, command?]]}): an item runs pr-review.<command>, or
-// for a comment card's "⋯" pr-review.cmenu:<index>|<card key>, in the review copy.
+// A small menu (props {part: "cmenu", key, title?, items: [[label, danger, command?, why?]]}): an item runs
+// pr-review.<command>, or for a comment card's "⋯" pr-review.cmenu:<index>|<card key>, in the review copy. `title` is
+// one muted line above the items; `why` is a second, muted line on an item that does nothing when clicked (the clones
+// cleanup.py keeps, and the reason).
 export function renderCardMenu() {
-  const t = theme(), { key, items = [], overlay } = props();
+  const t = theme(), { key, items = [], title, overlay } = props();
   return v_flex().id("rv-cmenu").size_full().p(4).gap(1).bg(t.popover).text_color(t.foreground).text_size(TYPE.body)
-    .children(items.map(([label, danger], k) => div().id(`rv-cm-${k}`).px(10).py(5).rounded(5).cursor_pointer().hover((s) => s.bg(t.hover))
-      .text_color(danger ? t.ansi1 : t.foreground).on_click(() => { run(`pr-review.${items[k][2] ?? `cmenu:${k}|${key}`}`); closeOverlay(overlay); }).child(label)));
+    .when(Boolean(title), (e) => e.child(div().px(10).pt(6).pb(4).text_size(TYPE.small).whitespace_normal().text_color(t.muted).child(title)))
+    .children(items.map(([label, danger, cmd, why], k) => div().id(`rv-cm-${k}`).px(10).py(5).rounded(5).cursor_pointer().hover((s) => s.bg(t.hover))
+      .text_color(danger ? t.ansi1 : t.foreground).on_click(() => { run(`pr-review.${cmd ?? `cmenu:${k}|${key}`}`); closeOverlay(overlay); })
+      .child(div().truncate().child(label))
+      .when(Boolean(why), (e) => e.child(div().text_size(TYPE.small).line_height(1.4).whitespace_normal().text_color(t.muted).child(why)))));
 }
 
 // The full provider catalog (props {part: "models"}): one searchable virtual row per model, the pinned shortlist
@@ -998,12 +1003,32 @@ export const ReviewMode = {
       this.head ??= w.head;
       this.worktree = { url, head: w.head, path: w.path };
       putShared("review.worktree", this.worktree);
+      // The registry cleanup.py reads: only a clone worktree.py made in this run adds a repository, and only an entry
+      // that already names this clone (so the mod made it) is refreshed. A failed write never breaks the checkout.
+      this.rememberClone(w.clone ?? null, w.created === true).catch(() => null);
       if (!shared("gh.login")) exec("gh", ["api", "user", "--jq", ".login"]).then((r) => { if (r.code === 0) { setShared("gh.login", r.stdout.trim()); this.applyTrust(); } }).catch(() => null);
       this.applyTrust();
       if (this.pendingRun) { this.pendingRun = false; this.loadAi(cx, "run"); }
       this.loadSince(cx); this.loadContext(cx); this.loadInfra(cx);
       cx.notify();
     });
+  },
+
+  // pr-data/clones.json: the clones this mod made, by repository, so cleanup.py can remove them once they are idle
+  // ({repo: {path, at, used}}, epoch seconds; newest 200 repositories). A clone found at a person's own checkout is
+  // not recorded (pr.js withClone), because only a clone the mod made may go. A stale write means another copy wrote
+  // first, so this one reads the file again; a write that still fails is dropped and the checkout goes on.
+  async rememberClone(path, created) {
+    const repo = this.prSel?.repo;
+    if (!repo) return;
+    const file = `${appHome()}/pr-data/clones.json`;
+    for (let k = 0; k < 2; k++) {
+      const before = await readTextFile(file).catch(() => null), doc = clonesDoc(before);
+      const next = withClone(doc, { repo, path, now: Date.now(), created });
+      if (next === doc) return;
+      try { await writeTextFile(file, `${JSON.stringify(next, null, 1)}\n`, before); return; }
+      catch { if (k) return; } // a file changed under the write: once more, from what is there now
+    }
   },
 
   // What changed since the head you last reviewed (worktree.py since: git in the checkout, no LLM). The Files tab

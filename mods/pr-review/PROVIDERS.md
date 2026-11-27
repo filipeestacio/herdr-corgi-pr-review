@@ -64,7 +64,10 @@ setShared("pr-review.contexts", {
 | `review.worktree` | `{url, head, path}` | the checkout of the PR head |
 | `review.cloneRoots` | `{"<owner>/<repo>": "<parent folder>"}`, newest 50 repositories | a folder picked with "Choose folder…" for that repository's clone; it is the first folder the clone check searches and where the clone goes |
 | `review.mini` | `{kind: "review" \| "explore", head, title, repo, url, mark: {glyph, word, color, security, words} \| null, open, run: "running" \| "done" \| "failed" \| null}` or `null` | the minimized entry as data, for a bar that draws it itself (props `headless`); written by the `mini` part when it changes |
+| `review.cleanupDay` | `"2026-11-26"`, the local day | when the panel claims the day's clone cleanup, once. `pr-data/cleanup.json` keeps the same day for a restart |
 | `pr-review.setup` | `{at, os, found: {program: path \| null}, auth: {gh, claude}}` | after a Setup check |
+
+**The clones this mod made** are recorded in `pr-data/clones.json`: `{"<owner>/<repo>": {"path": "/abs/clone", "at": 1795000000, "used": 1795600000}}`, epoch seconds, newest 200 repositories. `at` is when the clone was made, `used` when a checkout last used it, and only a clone `worktree.py` reports as `created` is added: a clone of the person's that the review found is never recorded, because only a clone this mod made may be removed. `cleanup.py check` lists what may go, with the reason for each one it keeps. `cleanup.py apply` removes them, and `apply --repo <owner/repo>` narrows to one repository. Both take the clone roots as repeated `--root` and Herdr's worktrees folder as `--worktrees`.
 
 **Draw the minimized entry in your own bar**: keep the `mini` part in the layout with props `{"part": "mini", "headless": true}`
 in a block of 0 px (it draws nothing, but takes Go to's `pr.goto` and writes `review.mini`), draw `review.mini`, and
