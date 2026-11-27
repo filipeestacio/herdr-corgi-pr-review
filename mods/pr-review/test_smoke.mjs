@@ -327,6 +327,26 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   assert.equal(probes.length, 1, "the answer is kept a few seconds: a second frame starts no probe");
   S.exec = null;
 }
+// A probe that could not run knows nothing: a failed shell call is not every process gone, so the run keeps saying running
+// and the call is kept for the memo rather than made again on every frame. The next probe that answers, with nothing
+// alive, marks it stale.
+{
+  const v = new PrReview(); v.init({}, cx);
+  v.find = { ...v.find, runs: runsOf({ claude: { state: "running", busy: true, started: new Date(Date.now() - 3600000).toISOString(), pid: 4242 } }) };
+  let calls = 0;
+  const prev = S.exec, probe = (cmd, args = []) => cmd === "sh" && args[0] === "-c" && String(args[1]).includes("kill -0");
+  S.exec = async (cmd, args = []) => (probe(cmd, args) ? (calls++, { code: 137, stdout: "", stderr: "killed" })
+    : prev ? prev(cmd, args) : { code: 1, stdout: "", stderr: "stub" });
+  v.staleProbe(cx); await settle();
+  assert.deepEqual([v.find.runs.claude.state, calls], ["running", 1], "a failed probe judges nothing");
+  v.staleProbe(cx); await settle();
+  assert.equal(calls, 1, "the failed call is kept for the memo, not made on every frame");
+  v.staleSeen.at = 0; // the memo has expired
+  S.exec = async (cmd, args = []) => (probe(cmd, args) ? { code: 0, stdout: "", stderr: "" } : prev ? prev(cmd, args) : { code: 1, stdout: "", stderr: "stub" });
+  v.staleProbe(cx); await settle();
+  assert.deepEqual([v.find.runs.claude.state, v.find.runs.claude.stale], ["stale", "gone"], "the next answer, with nothing alive, is read");
+  S.exec = null;
+}
 // Runs failed: the analysis and every reviewer, a verification that said not fixed.
 {
   const doc = JSON.parse(fx("findings-split.json")), at = new Date().toISOString(), id = doc.findings[0].id;

@@ -1287,7 +1287,9 @@ export const ReviewMode = {
       this.clearHeadNote(); // a new analysis may well be for the head now shown
       this.securityNow(cx); // the findings file may have been read before the analysis: its resilience block is derived on the analysis (withResilience)
       this.aiFile = text ? job.out : fallback ? job.latest : null;
-      if (status?.busy && status.pid && !(await this.livePids([status.pid])).has(String(status.pid))) {
+      // livePids: null when that probe could not run (or no run is busy): the run is left as it is, not called ended.
+      const live = status?.busy && status.pid ? await this.livePids([status.pid]) : null;
+      if (live && !live.has(String(status.pid))) {
         this.aiError = `The run ended without a result (its process is gone). Its output is in ${runLog(job.status)}.`;
         const before = await readTextFile(job.status).catch(() => null);
         await writeTextFile(job.status, JSON.stringify({ error: this.aiError }), before).catch(() => null);
@@ -1350,16 +1352,20 @@ export const ReviewMode = {
   },
 
   // The processes still running among these: one shell probe, so a stale "busy" is known without a per-pid spawn.
+  // -> the live ones, an empty set when none of them is alive, or null when the call failed (a non-zero exit, no answer,
+  // a thrown call): then nothing is known, which is not "none alive", and every caller leaves its run as it is.
   async livePids(pids) {
     const list = [...new Set((pids ?? []).filter((x) => x !== null && x !== undefined).map(String))];
     if (!list.length) return new Set();
     const r = await exec("sh", ["-c", 'for p in "$@"; do kill -0 "$p" 2>/dev/null && echo "$p"; done', "sh", ...list]).catch(() => null);
-    return new Set(String(r?.stdout ?? "").split(/\s+/).filter(Boolean));
+    if (!r || (r.code ?? 0) !== 0) return null;
+    return new Set(String(r.stdout ?? "").split(/\s+/).filter(Boolean));
   },
 
   // One batched probe for every reviewer run that still says running: its recorded pid, all in one livePids call, and
   // never a second call while the last answer is under PROBE_KEEP old or another probe is on its way. Called from a
-  // frame, it only starts the call; settleStale reads the answer on the next frame.
+  // frame, it only starts the call; settleStale reads the answer on the next frame. A call that fails is kept too (with
+  // no answer), so it is retried after the memo rather than on every frame.
   staleProbe(cx) {
     const now = Date.now(), seen = this.staleSeen, pids = [...new Set(Object.values(this.find.runs ?? {})
       .filter((r) => r?.state === "running" && r.pid != null && r.pid !== "").map((r) => String(r.pid)))];
@@ -1376,13 +1382,13 @@ export const ReviewMode = {
 
   // A run that says running while nothing runs it becomes stale on screen (pr.js runIsStale): its process is gone, or it
   // has no pid and started over ten minutes ago with no result. It is never written back to the findings file: a run that
-  // answers late still lands. A pid the last probe did not ask about (livePids has no answer for it) is not judged.
-  // -> true when a run changed state.
+  // answers late still lands. Nothing is judged for a pid the last probe did not ask about, or when that probe failed
+  // (livePids answered null). -> true when a run changed state.
   settleStale(now = Date.now()) {
     const seen = this.staleSeen;
     let changed = false;
     for (const r of Object.values(this.find.runs ?? {})) {
-      const pid = r?.pid != null ? String(r.pid) : null, known = pid !== null && Boolean(seen?.asked.has(pid));
+      const pid = r?.pid != null ? String(r.pid) : null, known = pid !== null && Boolean(seen?.live) && seen.asked.has(pid);
       const st = runIsStale({ run: r, alive: known ? seen.live.has(pid) : undefined, now });
       if (!st) continue;
       Object.assign(r, { state: "stale", busy: false, stale: st, error: STALE[st] });
@@ -1402,7 +1408,10 @@ export const ReviewMode = {
     cx.timer.after(5000, (cx) => cx.spawn(async (cx) => {
       if (this.prSel?.url !== url || !this.aiBusy) return;
       const st = JSON.parse(await readTextFile(job.status).catch(() => null) ?? "null");
-      if (st?.busy && st.pid && !(await this.livePids([st.pid])).has(String(st.pid))) {
+      // null: the probe could not run (or no pid to ask about). A run that cannot be told apart from a live one is kept
+      // as it is and polled again, never called ended on a failed call.
+      const live = st?.busy && st.pid ? await this.livePids([st.pid]) : null;
+      if (live && !live.has(String(st.pid))) {
         // The process is gone: the run ended without a result. Say so instead of showing it as running for ever.
         const why = `The run ended without a result (its process is gone). Its output is in ${runLog(job.status)}.`;
         const before = await readTextFile(job.status).catch(() => null);
