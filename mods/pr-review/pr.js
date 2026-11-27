@@ -472,6 +472,14 @@ export function fixStage({ job = null, landed = null, verified = null, head = nu
   return job?.state === "running" ? "progress" : null;
 }
 
+// Whether a fix's agent is still working, the way a run's state is read: a job record stays "running" long after its
+// agent ended (it ends only on apply or discard), so the record alone cannot say. Its terminal alive is the proof
+// (terminalLive: the terminal list says "live"), and a job younger than ten minutes counts as working too: a tab whose
+// terminal could not be identified, or an agent whose terminal the list no longer names. Anything else is gone, and a
+// fix with no reported commit is then read from its file (review.js fileFixHead).
+export const fixStillWorking = ({ job, terminalLive = false, now = Date.now() } = {}) =>
+  Boolean(job && job.state === "running" && ((job.terminal && terminalLive) || (job.at && now - job.at < 600000)));
+
 // The commits that touched one path, from the output of `git log --format=%h --name-only <since>..<head>`, in the log's
 // order (newest first). A line of hex is a commit id; every other line is a path, matched exactly. An empty path, or one
 // no commit changed, gives no commits.

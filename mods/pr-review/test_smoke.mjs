@@ -1174,14 +1174,52 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   assert.ok(got.ids.includes(`rv-fch-${touched.id}`), "In the PR offers Verify");
   assert.ok(v.verifyList().some((f) => f.id === touched.id), "and Verify's list has it, on the fix head it was sent at");
   assert.equal(calls.length, 1, "a drawn frame asks for no second log");
-  assert.equal(v.stageTip(touched), "A commit touching library/reminders.py landed after this fix was sent: abc1234 (not verified)");
-  assert.equal(v.stageTip(untouched), "The fix has no commit to check, and the file did not change since it was sent.");
+  assert.equal(v.stageTip(touched), "A commit touching library/reminders.py landed after this fix was sent: abc1234 (not verified). Its agent is no longer running and no commit was reported, so this answer comes from the file's commits.");
+  assert.equal(v.stageTip(untouched), "The fix has no commit to check, and the file did not change since it was sent. Its agent is no longer running and no commit was reported, so this answer comes from the file's commits.");
   // A reported commit answers by worktree.py contains, and its tooltip says so.
   v.find = { ...v.find, reports: { [touched.id]: { id: touched.id, status: "fixed", commit: "c1" } } };
   v.landed = { head: "h9", map: { c1: "in" } };
   assert.equal(v.fgroup(touched), "in_pr");
   assert.equal(v.stageTip(touched), "The fix commit is in the PR (not verified)", "the exact path keeps its own tooltip");
   S.exec = null; v.worktree = null; v.landed = null;
+}
+// Whether a fix's agent is still working: a live terminal, else a job under ten minutes old (pr.js fixStillWorking). A
+// job record stays "running" long after its agent ended, so while it may still report a commit the row keeps the job's
+// word, "Fix in progress" and Go to fix, also when a commit touched its file meanwhile. Once the agent is gone the file
+// answers: In the PR with Verify, and a tooltip that says why.
+{
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json") });
+  const f = v.findings().find((x) => x.file === "library/reminders.py");
+  assert.ok(f, "a finding in a file a commit touched");
+  const at = new Date().toISOString(), log = "abc1234\n\n" + f.file + "\n", calls = [], wasTerminals = S.terminals;
+  v.worktree = { url: v.prSel.url, head: "h9", path: "/h/w" }; v.head = "h9";
+  v.find = { ...v.find, reports: {}, status: { [f.id]: { s: "progress", fixHead: "h1", at } } };
+  S.exec = async (cmd, args) => { if (cmd === "git" && args[2] === "log") { calls.push(args); return { code: 0, stdout: log, stderr: "" }; } return { code: 1, stdout: "", stderr: "stub" }; };
+  // The fix job: a sub-agent's, with no commit reported. Its age decides, unless its terminal is alive.
+  const job = (age) => ({ id: "j9", branch: "fix/2-z", path: "/h/f-j9", base: "/h/w", head: "h1", items: [{ kind: "finding", id: f.id }], target: "sub", terminal: "t9", at: Date.now() - age, state: "running" });
+  const fixes = (list) => { v.threadDoc = { ...v.threadDoc, [v.threadKey()]: { ...(v.threadDoc[v.threadKey()] ?? {}), fixes: list } }; };
+  const tab = (what) => { S.ids = new Set(); S.texts = new Set(); act(v, "findings", what); const got = { ids: [...S.ids], texts: [...S.texts] }; S.ids = S.texts = null; return got; };
+  S.terminals = [];
+  fixes([job(0)]); v.fileLandedTick(cx); await settle();
+  assert.deepEqual([calls.length, v.fileFix(f), v.fgroup(f)], [0, null, "progress"], "a young job is still working: not read from its file, and git is not asked");
+  v.ffocus = f.id;
+  let got = tab("a fix agent still working");
+  assert.ok(got.texts.includes("Fix in progress") && !got.texts.some((x) => x === "In the PR · 1"), "the row keeps the job's word: nothing is listed In the PR");
+  assert.ok(got.ids.includes(`rv-fgo-${f.id}`), "and Go to fix opens its terminal");
+  assert.equal(v.stageTip(f), "A fix agent is working on this finding; nothing is checked yet.", "its tooltip says the agent is working");
+  // Ten minutes on, its terminal gone: the agent ended without a commit, so the file's commit answers, with Verify.
+  fixes([job(600000)]); v.fileLandedTick(cx); await settle();
+  assert.deepEqual([calls.length, v.fileFix(f)?.shas, v.fgroup(f)], [1, ["abc1234"], "in_pr"], "an old job with no live terminal: the file's commit answers");
+  got = tab("after its agent ended");
+  assert.ok(got.texts.some((x) => x === "In the PR · 1") && !got.texts.includes("Fix in progress"), "the row says In the PR");
+  assert.ok(got.ids.includes(`rv-fch-${f.id}`), "and it offers Verify");
+  assert.equal(v.stageTip(f), "A commit touching library/reminders.py landed after this fix was sent: abc1234 (not verified). Its agent is no longer running and no commit was reported, so this answer comes from the file's commits.");
+  // The same old job, its terminal alive: working still, whatever its age.
+  S.terminals = [{ address: "t9", state: "live" }];
+  v.fileLandedTick(cx); await settle();
+  assert.deepEqual([v.fileFix(f), v.fgroup(f)], [null, "progress"], "a live terminal keeps it working, however old the job");
+  assert.equal(v.stageTip(f), "A fix agent is working on this finding; nothing is checked yet.");
+  v.ffocus = null; S.exec = null; S.terminals = wasTerminals; v.worktree = null;
 }
 // One selection: a box works on a folded row and on an open one; comments (your own and other people's GitHub
 // comments) and findings are ticked into the same selection, every place says its one number, and "Fix selected"
@@ -1327,8 +1365,8 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
             if (args[0] === "send") jobsAtSend = v.fixes().length;
             return { code: 0, stdout: JSON.stringify({ address: "t9" }), stderr: "" }; };
           beforeSent = v.fixes().length; S.runs.length = 0; v.command("send", cx); await settle();
-          assert.deepEqual([jobsAtSend, v.fixes().length, v.fixJob(fSent)?.target, v.fstatus(fSent), v.fixStarting],
-            [beforeSent, beforeSent + 1, "main", "progress", null], "no job at the send, one after it, and no provisional state left");
+          assert.deepEqual([jobsAtSend, v.fixes().length, v.fixJob(fSent)?.target, v.fixJob(fSent)?.terminal, v.fstatus(fSent), v.fixStarting],
+            [beforeSent, beforeSent + 1, "main", "t9", "progress", null], "no job at the send, one after it with the tab's terminal, and no provisional state left");
           assert.ok(calls.some(([c, a]) => c === "send" && a === "t9"), "the fix text went to the tab");
           assert.equal(v.note, `Fix: the OpenCode tab "${name()}" is ready; the fix text was sent.`);
           // Superseded while the tab boots: nothing is written and the note stays the one that named the tab.

@@ -192,7 +192,7 @@ assert.deepEqual(rangeOf(again, "+3", "+3"), [lo, lo]);
 console.log("ok");
 
 // Findings: reports (last line wins, half lines skipped) never settle a finding; moved code asks for a recheck.
-const { parseReports, findingStatus, fixStage, landedByFile, findingGroup, FINDING_GROUPS, GROUP_WORD, fixPrompt, mergeFindings, findingCounts, countLine } = await import("./pr.js");
+const { parseReports, findingStatus, fixStage, landedByFile, fixStillWorking, findingGroup, FINDING_GROUPS, GROUP_WORD, fixPrompt, mergeFindings, findingCounts, countLine } = await import("./pr.js");
 const reps = parseReports('{"id":"a","status":"wontfix"}\n{"id":"a","status":"fixed","commit":"abc"}\n{"id":"b","sta');
 assert.deepEqual(Object.keys(reps), ["a"]);
 const fa = { id: "a", head: "h1", code: "x()" }, fb = { id: "b", head: "h1", code: "y()" };
@@ -245,6 +245,16 @@ assert.deepEqual(landedByFile("a1b2c3d\n\ndocs/old => new.md\n", "docs/old => ne
 assert.deepEqual(landedByFile("a1b2c3d\n\ndocs/old => new.md\n", "docs/new.md"), [], "and matches nothing else");
 assert.deepEqual(landedByFile("", "src/one.ts"), [], "an empty log");
 assert.deepEqual(landedByFile("a1b2c3d\n\nsrc/other.ts\n", "src/one.ts"), [], "a file no commit touched");
+// Whether a fix's agent is still working: its terminal is alive, or its job is younger than ten minutes. A job record
+// stays "running" long after its agent ended, so the record alone does not say.
+const clock = 1700000000000, agoMs = (ms) => clock - ms;
+assert.equal(fixStillWorking({ job: { state: "running", terminal: "t1", at: agoMs(3600000) }, terminalLive: true, now: clock }), true, "a live terminal: working, however old the job");
+assert.equal(fixStillWorking({ job: { state: "running", terminal: "t1", at: agoMs(3600000) }, terminalLive: false, now: clock }), false, "its terminal is gone and the job is old: not working");
+assert.equal(fixStillWorking({ job: { state: "running", at: agoMs(60000) }, now: clock }), true, "no terminal, younger than ten minutes: still working");
+assert.equal(fixStillWorking({ job: { state: "running", at: agoMs(600000) }, terminalLive: true, now: clock }), false, "no terminal, ten minutes old: not working, live or not");
+assert.equal(fixStillWorking({ job: { state: "applied", terminal: "t1", at: agoMs(1000) }, terminalLive: true, now: clock }), false, "a job that is not running: never working");
+assert.equal(fixStillWorking({ job: { state: "running" }, terminalLive: true, now: clock }), false, "no `at` and no terminal: nothing says it is working");
+assert.equal(fixStillWorking({ job: null, terminalLive: true, now: clock }), false, "no job at all");
 // The six groups, and the word each shows; a status is the fallback for what git cannot see.
 assert.deepEqual(FINDING_GROUPS.map(([k, w]) => [k, w]), [["unresolved", "Unresolved"], ["progress", "Fix in progress"], ["ready", "Fix ready"], ["in_pr", "In the PR"], ["verified", "Verified"], ["wontfix", "Won't fix"]]);
 assert.deepEqual(["open", "recheck", "progress", "fixed", "dismissed"].map((s) => findingGroup(null, s)), ["unresolved", "unresolved", "progress", "verified", "wontfix"]);

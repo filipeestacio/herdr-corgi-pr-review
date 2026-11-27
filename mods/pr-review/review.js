@@ -14,7 +14,7 @@ import { v_flex, h_flex, Scrollbar, TextView, v_virtual_list, VirtualListScrollH
 import { exec, hc, run, focused, pickFolder, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, nextCommand, watchFolder, openOverlay, closeOverlay, props, home, placement } from "herdr";
 import { spaces, agents, terminals, watch } from "./live.js";
 import { hostOfLink, parseLink, hostWord, hostLong } from "./host.js"; // never straight from Herdr (live.js says why)
-import { parseReports, findingStatus, fixStage, landedByFile, findingGroup, FINDING_GROUPS, GROUP_WORD, mergeFindings, findingCounts, countLine, runsOf, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
+import { parseReports, findingStatus, fixStage, landedByFile, fixStillWorking, findingGroup, FINDING_GROUPS, GROUP_WORD, mergeFindings, findingCounts, countLine, runsOf, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
 import { agentArgs, harnessProfile, harnessAgent, notReadyNote, fixNotSentNote, tabTaskDelivery } from "./pr.js"; // a new agent tab: the harness profile's own command, else Claude Code
 import { startAgentTab } from "./agent-tab.js"; // starts it and gets the text there (an argument, or a send once the agent reports ready)
 import * as C from "./context.js";
@@ -1683,11 +1683,14 @@ export const ReviewMode = {
   fileLog(head, fixHead) { return this.fileLogs?.[`${head}|${fixHead}`] ?? null; },
   // The fix head a finding's place depends on the file log for, or null: a fix sent on an older head, no commit
   // reported, not declined and not discarded, the finding not dismissed, and no check on this head that would answer.
+  // Its agent is still working (pr.js fixStillWorking: a live terminal, or under ten minutes old) while it may yet
+  // report a commit, so nothing is read from the file then.
   fileFixHead(f) {
     const st = this.find.status[f.id] ?? {}, r = this.find.reports[f.id], job = this.fixJob(f), head = this.headNow(), fixHead = st.fixHead ?? null;
     if (!fixHead || !head || fixHead === head || st.s === "dismissed") return null;
     if (this.startingFix(f.ids)) return null; // a fix tab still booting: nothing was sent, so git has nothing to say
     if (r?.commit || r?.status === "wontfix" || job?.state === "discarded") return null;
+    if (fixStillWorking({ job, now: Date.now(), terminalLive: Boolean(job?.terminal) && terminals().some((x) => x.address === job.terminal && x.state === "live") })) return null;
     const v = st.verify;
     if (v?.head === head && !v.branch) return null; // a check read this head: its answer stands
     return fixHead;
@@ -1724,11 +1727,11 @@ export const ReviewMode = {
     const g = this.fgroup(f), job = this.fixMeta(f), by = this.fileFix(f), applied = Boolean(this.fixJob(f)?.appliedAt || this.fixJob(f)?.state === "applied");
     if (g === "in_pr") {
       if (job?.commit) return "The fix commit is in the PR (not verified)";
-      if (by?.shas.length) return `A commit touching ${f.file} landed after this fix was sent: ${by.shas.slice(0, 3).join(", ")} (not verified)`;
+      if (by?.shas.length) return `A commit touching ${f.file} landed after this fix was sent: ${by.shas.slice(0, 3).join(", ")} (not verified). Its agent is no longer running and no commit was reported, so this answer comes from the file's commits.`;
       return GTIP.in_pr;
     }
     if (g === "ready") {
-      if (!job?.commit && by && !by.shas.length) return "The fix has no commit to check, and the file did not change since it was sent.";
+      if (!job?.commit && by && !by.shas.length) return "The fix has no commit to check, and the file did not change since it was sent. Its agent is no longer running and no commit was reported, so this answer comes from the file's commits.";
       if (applied) return "Applied once, but the PR head does not carry this change any more: a force-push or a rebase took it away.";
     }
     return GTIP[g] ?? "";
@@ -1743,10 +1746,19 @@ export const ReviewMode = {
   },
   // Whether this panel is waiting to send a fix's text (startMainFix): a state held in memory, never a fix job.
   startingFix(ids) { const s = this.fixStarting; return Boolean(s && s.ids.some((id) => ids.includes(id))); },
+  // Which of the running fix jobs' terminals are alive, as one string: a fix's stage depends on it (pr.js
+  // fixStillWorking), so stages() is made again when a terminal comes or goes. Empty when no running job names one, and
+  // then Herdr is not asked.
+  fixLiveSig() {
+    const jobs = this.fixes().filter((j) => j.state === "running" && j.terminal);
+    if (!jobs.length) return "";
+    const live = terminals();
+    return jobs.map((j) => `${j.terminal}:${live.some((x) => x.address === j.terminal && x.state === "live") ? 1 : 0}`).join("|");
+  },
   // Every finding's stage in one pass (pr.js fixStage), kept while the findings, their statuses, the fix jobs, the head
   // and git's answer stay the same: a frame asks this from every row, heading and count.
   stages() {
-    const deps = [this.findings(), this.find.status, this.find.reports, this.threadDoc, this.threadKey(), this.headNow(), this.landed, this.fixStarting, this.fileLogs];
+    const deps = [this.findings(), this.find.status, this.find.reports, this.threadDoc, this.threadKey(), this.headNow(), this.landed, this.fixStarting, this.fileLogs, this.fixLiveSig()];
     if (this.stageMemo && deps.every((d, i) => d === this.stageMemo.deps[i])) return this.stageMemo.map;
     const head = this.headNow(), landed = this.landedNow(head);
     const map = new Map(this.findings().map((f) => {
@@ -2841,7 +2853,7 @@ export const ReviewMode = {
         });
         if (r.stopped || this.tabGen !== gen) return;
         if (!r.sent) { this.note = fixNotSentNote(name); return cx.notify(); }
-        this.updateThreads(cx, (d) => TH.addFix(d, this.threadKey(), { id: Date.now().toString(36), items: f.items, target: "main", at: Date.now(), state: "running" }));
+        this.updateThreads(cx, (d) => TH.addFix(d, this.threadKey(), { id: Date.now().toString(36), items: f.items, target: "main", at: Date.now(), state: "running", terminal: r.terminal ?? null }));
         f.sent(cx, { route: "agent", agent: `${runner} tab · ${name}` });
         this.note = r.delivery === "send" ? `Fix: the ${runner} tab "${name}" is ready; the fix text was sent.`
           : `Fix: started a new ${runner} tab "${name}" in the background with the fix. Nothing was typed into another session.`;
