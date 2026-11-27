@@ -204,13 +204,23 @@ Explore shows Overview, Layers, Architecture and Files for a topic, without a di
   A fix that runs in the PR's checkout commits its work and pushes it to the PR's branch when it is done; a sub-agent
   fix never pushes, and `Apply to PR` brings it in.
   `Fix several…` lets you tick which findings one agent fixes together. Security findings go one at a time.
+  A `Main agent` or `This session` fix works in the review's checkout of the PR head, which `worktree.py` leaves on no
+  branch, so that checkout is put on the local branch `pr-review/<number>` first (a dirty checkout starts nothing, and
+  the note says to commit or stash); a commit there is on a branch and not only in the reflog of a detached HEAD.
+  While an agent still works in that checkout, a PR head that moves sets one note and leaves the checkout where it is,
+  so the tree the agent was started on does not move under it; a later check moves the head once that fix ends, and
+  detaches the tree again with the `pr-review/<number>` branch left on disk. If that folder is on a branch of someone
+  else's, `worktree.py` refuses it and the Analysis tab says which branch it is on and offers `Detach checkout` (only
+  for a clean tree), instead of the review reporting no local checkout at all.
   The Findings tab lists every finding in six groups: Unresolved, Fix in progress, Fix ready, In the PR, Verified and
   Won't fix. Each group follows git and the one check, not the journey. `worktree.py contains` says whether the fix
   agent's commit is in the PR head, as an ancestor or as the same change on another commit (a cherry-pick, a rebase, a
   reworded message). So Fix ready (Apply to PR, Discard) becomes In the PR (Verify) once the head carries the fix. A
-  force-push that takes the change away turns it back. A fix with no reported commit is judged by the commits that
-  touch its file since it was sent, which is weaker than a verified fix. Verify is the only model call. It reads the PR
-  head and moves a fixed finding to Verified, a broken one back to Unresolved, and leaves an unclear one as it was. A
+  force-push that takes the change away turns it back. A fix whose agent reported nothing is judged by the commits that
+  touch its file since it was sent, which is weaker than a verified fix; a report that says fixed but names no commit,
+  or one this clone does not have, says exactly that on its row and offers Fix again, because there is nothing to
+  apply. Verify is the only model call. It reads the PR head and moves a fixed finding to Verified, a broken one back
+  to Unresolved, and leaves an unclear one as it was. A
   fix in progress, ready or in the PR keeps its finding unresolved: in the diff, counted, and a blocker when high.
   While a fix's agent works, its row offers `Go to tab` to select that tab and focus its pane, and a job recorded
   before the tab was known offers `Go to fix` to peek at its terminal.
@@ -242,8 +252,9 @@ big PRs into cohort passes and a merge pass under one cap.
   of both sides of the diff; and their part of the Architecture page), `syntax.js` (highlighting), `defs.js` + `lsp_bridge.py` (go-to-definition through language
   servers kept warm by one local bridge), `impact.js` + `impact-view.js` (the Impact picture: changed functions
   and their callers, from the bridge's `/symbols` and `/references`), `context.js` (optional contexts), `setup.js` + `setup-view.js`
-  (Setup), and Python helpers: `prs.py` (PRs from Claude transcripts + `gh pr view`), `worktree.py` (a reusable
-  checkout of the PR head, `<worktrees.directory>/<repo>/pr-review`, never a folder inside the clone), `review.py` (the analysis), `reviewers.py`, `verify.py`, `triage.py`, `related.py`
+  (Setup), and Python helpers: `prs.py` (PRs from Claude transcripts + `gh pr view`), `worktree.py` (the PR head's
+  checkout, `<worktrees.directory>/<repo>/pr-review-<number>`: one per PR, three per repository, never a folder inside
+  the clone), `review.py` (the analysis), `reviewers.py`, `verify.py`, `triage.py`, `related.py`
   (related PRs, CI checks, mergeability), `llm.py` (`claude -p` with a JSON schema and a budget cap, optional
   ledger, the harness profiles) and `models.py` (the CLIs' and the providers' model catalogs).
 - `herdr`: `exec`, `hc send`, `run` (`tab.new`, `tab.select`, `layout.switch`, `pane.focus`,
@@ -258,9 +269,10 @@ big PRs into cohort passes and a merge pass under one cap.
   repository. The configured `cloneRoot` folders stay as fallbacks. "Choose folder…" runs the check again without
   `--clone`, so the banner names the exact destination, and the pill still does the clone.
 - A clone the mod made goes after 30 idle days, and only then if the tree is clean and the host reports no open PR or MR
-  (`cleanup.py`). Review worktrees already go after 7 days (`worktree.py`). The panel records each clone it made, and
-  when a checkout last used it, in `pr-data/clones.json` (`{"<owner>/<repo>": {"path", "at", "used"}}`, epoch seconds,
-  newest 200 repositories). It runs that pass once a day, on its first open, in the background: one muted sentence
+  (`cleanup.py`). Review worktrees already go after 7 days, and a repository keeps three (`worktree.py`). The panel
+  records each clone it made, and when a checkout last used it, in `pr-data/clones.json`
+  (`{"<owner>/<repo>": {"path", "at", "used"}}`, epoch seconds, newest 200 repositories). It runs that pass once a
+  day, on its first open, in the background: one muted sentence
   when something went, nothing otherwise. `Clean up…` on the PR list shows each clone as `repo · path · 42 days ·
   180 MB`, a `Clean up all eligible` row, and the reason for each clone that stays; a click on an eligible row
   removes that one. The panel never deletes a folder itself: both the pass and the list ask `cleanup.py`.

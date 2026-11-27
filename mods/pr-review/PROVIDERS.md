@@ -140,9 +140,10 @@ All keys optional.
   A folder picked with "Choose folder…" beside "Clone to …" wins for that repository alone and is remembered in
   shared `review.cloneRoots` (`{ "<owner>/<repo>": "<parent folder>" }`, newest 50). The configured roots stay as
   fallbacks. The checkouts made from a clone (the review's, a fix agent's) are not kept there but in Herdr's folder for
-  worktrees (`worktrees.directory` in Herdr's `settings.json`, default `~/.herdr/worktrees`). A fix that runs in the
-  PR's checkout commits its work and pushes it to the PR's branch when it is done; a sub-agent fix never pushes, and
-  `Apply to PR` brings it in.
+  worktrees (`worktrees.directory` in Herdr's `settings.json`, default `~/.herdr/worktrees`). A fix in the review's own
+  checkout is put on the local branch `pr-review/<number>` before its agent starts, and it commits and pushes to the
+  PR's branch when it is done; a sub-agent fix never pushes, and `Apply to PR` brings it in. A PR head that moves while
+  an agent still works in that checkout leaves the checkout where it is, with one note.
 - `globalRules`: conventions every PR is checked against, next to the repo's own CLAUDE.md, AGENTS.md,
   CONTRIBUTING.md, `.github/*instructions*.md` and ADRs.
 - `ledger`: a folder for a usage ledger. Each LLM call appends one line to `usage-YYYY-MM.jsonl` there:

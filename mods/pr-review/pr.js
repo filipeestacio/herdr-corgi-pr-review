@@ -510,6 +510,21 @@ export const agoSpan = (ms) => { const m = Math.round(ms / 60000); return !Numbe
 export const fixStillWorking = ({ job, terminalLive = false, now = Date.now() } = {}) =>
   Boolean(job && job.state === "running" && ((job.terminal && terminalLive) || (job.at && now - job.at < 600000)));
 
+// What a "fixed" report names: the commit a reviewer can apply, or why there is none. known: whether this clone has
+// that commit (git cat-file; undefined while git has not answered). A report that names no commit, or one this clone
+// never fetched, is not a fix (review.js reportProblem, fixMeta): nothing can be applied from it, and its place among
+// the groups is decided without it.
+export function reportCommit(report, known = undefined) {
+  if (report?.status !== "fixed") return null;
+  const sha = report.commit ? String(report.commit) : "";
+  if (!sha) return { reason: "none", commit: null };
+  return { reason: known === false ? "unknown" : null, commit: sha };
+}
+// What such a report's row says, in its tooltip (review.js stageTip): one sentence, naming the sha when it named one.
+export const REPORT_NO_COMMIT = "The agent reported this fixed but named no commit.";
+export const reportUnknownTip = (sha) => `The agent reported this fixed but named a commit this clone does not have (${sha}).`;
+export const reportTip = (p) => (!p?.reason ? null : p.reason === "none" ? REPORT_NO_COMMIT : reportUnknownTip(p.commit));
+
 // Where a fix's "Go to fix" goes: to the tab that holds its agent when the job names one (agent-tab.js records the
 // tab's id with the job), else to a peek at its terminal, else nowhere. A text that is only a shell or a mod has no
 // terminal and no tab, and a job sent before the tab was recorded keeps its terminal alone.
@@ -723,14 +738,23 @@ export function pushNote(pr, branch = null) {
     " If the push is refused, say so in the report; do not report a finding as fixed when its commit is not on the remote.";
 }
 
+// The local branch a fix in the PR's own checkout commits on (review.js prepareFixCheckout): worktree.py checks that
+// checkout out on no branch, so a commit there is reachable only from the reflog until it is on a branch of its own.
+// It opens the push block, one sentence, and the push itself stays pushNote's: neither repeats the other.
+export const localBranchNote = (branch) => !branch ? null : `You are on the local branch ${branch}.`;
+// The one block a fix in the PR's checkout reads: its local branch to commit on, then where the commit goes. push is
+// null for a sub-agent (its own worktree, no push), and then the block is null too.
+export const checkoutNote = (pr, push, local = null) => !push ? null : [localBranchNote(local), pushNote(pr, push.branch)].filter(Boolean).join(" ");
+
 // One prompt asking the PR's agent to fix findings and to report each back as a JSON line in `report`.
 // push: {branch} when the fix runs in the PR's checkout (the branch, null when unknown); null for a sub-agent.
-export function fixPrompt(findings, pr, report, lang, push = null) {
+// local: the local branch that checkout is on (review.js fixLocalBranch), beside the push it feeds.
+export function fixPrompt(findings, pr, report, lang, push = null, local = null) {
   const items = findings.map((f, i) => [`${i + 1}. [${f.id}] ${f.severity} · ${f.reviewer} · \`${f.file}\`:${f.line}${f.end && f.end !== f.line ? `–${f.end}` : ""}: ${f.title}`,
     f.detail, f.suggestion ? `Suggestion:${/\n/.test(f.suggestion) ? "\n" : " "}${f.suggestion}` : null].filter(Boolean).join("\n")); // a list or a code block starts on its own line
   return [`${pr ? `PR #${pr.number} "${pr.title}"${pr.url ? ` (${pr.url})` : ""}` : "This branch"}: please fix ${findings.length === 1 ? "this review finding" : `these ${findings.length} review findings`}.`,
     ...items,
-    push ? pushNote(pr, push.branch) : null,
+    checkoutNote(pr, push, local),
     `Report each finding back once it is handled: append one JSON line per finding to ${report}, for example\n` +
     `echo '{"id": "${findings[0]?.id ?? "<id>"}", "status": "fixed", "commit": "<sha>", "note": "briefly, what you did"}' >> ${report}\n` +
     `(status "wontfix" with the reason in note when you don't fix it).`].filter(Boolean).join("\n\n") + answerIn(lang);

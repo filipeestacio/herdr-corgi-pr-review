@@ -20,7 +20,7 @@ servers are a fixed table, and request paths must resolve inside `root`. Exits a
 and once the process that started it (Herdr, which runs `start` through exec) is gone: it is detached from Herdr's
 session, so quitting Herdr would otherwise leave it and its language servers running until IDLE.
 """
-import fcntl, hashlib, hmac, json, os, secrets, shutil, subprocess, sys, threading, time, urllib.parse, urllib.request
+import fcntl, hashlib, hmac, json, os, re, secrets, shutil, subprocess, sys, threading, time, urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HOME = os.environ.get("HERDR_APP_HOME") or os.path.expanduser("~/.config/herdr-app")
@@ -302,11 +302,12 @@ def walk(root, depth):
 
 
 def throwaway(root):
-    # ponytail: the review worktree (worktree.py) is the linked worktree <worktrees>/<repo>/pr-review, or, from
-    # earlier versions, <clone>/.worktrees/review; caches may go inside it. A person's own worktree of a branch
-    # named pr-review would count too: worktree.py refuses to use that one, so the review never runs there.
+    # ponytail: a review worktree (worktree.py) is the linked worktree <worktrees>/<repo>/pr-review-<number> (one per
+    # PR), or, from earlier versions, <worktrees>/<repo>/pr-review and <clone>/.worktrees/review; caches may go inside
+    # it. A person's own worktree whose folder is named like one would count too: worktree.py refuses to use that one,
+    # so the review never runs there.
     root = root.rstrip(os.sep)
-    return f"{os.sep}.worktrees{os.sep}" in root + os.sep or (os.path.basename(root) == "pr-review" and os.path.isfile(os.path.join(root, ".git")))
+    return f"{os.sep}.worktrees{os.sep}" in root + os.sep or (re.fullmatch(r"pr-review(-\d+)?", os.path.basename(root)) is not None and os.path.isfile(os.path.join(root, ".git")))
 
 
 class Server:

@@ -8,7 +8,7 @@ Reads <app home>/pr-data/clones.json, where the panel records each clone it made
 {"<repo>": {"path": "/abs/clone", "at": 1795000000, "used": 1795600000}}, epoch seconds. Only a path
 recorded there can go, and only when all of this holds: it is a folder and not a link; no checkout has used
 it for more than --max-age days (default 30); git reports no local change; no review worktree is left for it
-at <worktrees>/<folder>/pr-review (nor inside an earlier version's <clone>/.worktrees/review); its host
+at <worktrees>/<folder>/pr-review or pr-review-<number> (nor inside an earlier version's <clone>/.worktrees/review); its host
 reports no open pull request (GitHub through gh, GitLab through glab, one call); it lies outside the app home
 and is not one of the clone roots. A host that cannot be asked, or that answers with an error, keeps the clone.
 
@@ -178,9 +178,11 @@ def evaluate(repo, entry, now, max_age, worktrees, roots, recorded):
         return keep("The clone has no origin, so its host cannot be told.")
     if not re.search(rf"[/:]{re.escape(repo)}(?:\.git)?/?$", remote, re.I):
         return keep(f"The clone's origin is not {repo}.")
-    tree = worktrees / path.name / NAME
-    if tree.exists():
-        return keep(f"A review checkout is still there: {tree}.")
+    # One tree per PR (pr-review-<number>) and, from earlier versions, one shared pr-review: any of them keeps the clone.
+    trees = sorted(p for p in (worktrees / path.name).glob(f"{NAME}*")) if (worktrees / path.name).is_dir() else []
+    if trees:
+        more = f" and {len(trees) - 1} more" if len(trees) > 1 else ""
+        return keep(f"A review checkout is still there: {trees[0]}{more}.")
     older = path / ".worktrees" / "review"
     if (older / ".git").exists():
         return keep(f"An earlier review checkout is still inside the clone: {older}.")

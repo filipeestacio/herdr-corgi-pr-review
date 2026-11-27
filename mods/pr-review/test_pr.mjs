@@ -201,7 +201,7 @@ assert.deepEqual(rangeOf(again, "+3", "+3"), [lo, lo]);
 console.log("ok");
 
 // Findings: reports (last line wins, half lines skipped) never settle a finding; moved code asks for a recheck.
-const { parseReports, findingStatus, fixStage, fixEndedLine, landedByFile, fixStillWorking, fixJump, findingGroup, selectableStage, stageNoFix, FINDING_GROUPS, GROUP_WORD, fixPrompt, mergeFindings, findingCounts, countLine, agoSpan } = await import("./pr.js");
+const { parseReports, findingStatus, fixStage, fixEndedLine, landedByFile, fixStillWorking, fixJump, findingGroup, selectableStage, stageNoFix, FINDING_GROUPS, GROUP_WORD, fixPrompt, reportCommit, reportTip, localBranchNote, checkoutNote, mergeFindings, findingCounts, countLine, agoSpan } = await import("./pr.js");
 const reps = parseReports('{"id":"a","status":"wontfix"}\n{"id":"a","status":"fixed","commit":"abc"}\n{"id":"b","sta');
 assert.deepEqual(Object.keys(reps), ["a"]);
 const fa = { id: "a", head: "h1", code: "x()" }, fb = { id: "b", head: "h1", code: "y()" };
@@ -286,6 +286,53 @@ assert.equal(fixEndedLine({ job: ended({ terminal: "t1" }), terminalLive: true, 
 assert.equal(fixEndedLine({ job: ended({ commit: "c1" }), now: clock }), null, "a reported commit is a fix to place");
 assert.equal(fixEndedLine({ job: ended(), verified: { result: "fixed", head: "h1" }, head: "h1", now: clock }), null, "a check that read this head answers");
 assert.equal(fixEndedLine({ job: null, now: clock }), null, "no job at all");
+// A "fixed" report is checked before it counts: it must name a commit, and that commit must be one this clone has, or
+// there is nothing to apply (reportCommit). The row then says exactly that (reportTip), and the fix reads as one that
+// ended without a result: Fix ready needs a commit to apply, and In the PR is never claimed.
+assert.deepEqual(reportCommit({ id: "a", status: "fixed", commit: "c1" }, true), { reason: null, commit: "c1" }, "a commit this clone has");
+assert.deepEqual(reportCommit({ id: "a", status: "fixed", commit: "c1" }), { reason: null, commit: "c1" }, "git has not answered yet: not called unknown");
+assert.deepEqual(reportCommit({ id: "a", status: "fixed", commit: "c1" }, null), { reason: null, commit: "c1" }, "a probe that could not run says nothing about the commit");
+assert.deepEqual(reportCommit({ id: "a", status: "fixed", commit: "c1" }, false), { reason: "unknown", commit: "c1" }, "a sha the clone does not have");
+assert.deepEqual(reportCommit({ id: "a", status: "fixed", note: "did it" }), { reason: "none", commit: null }, "no commit named");
+assert.equal(reportCommit({ id: "a", status: "wontfix", commit: "c1" }), null, "a declined fix names nothing to apply");
+assert.equal(reportCommit(undefined), null, "no report at all");
+assert.equal(reportTip(reportCommit({ id: "a", status: "fixed" })), "The agent reported this fixed but named no commit.");
+assert.equal(reportTip(reportCommit({ id: "a", status: "fixed", commit: "0".repeat(40) }, false)), "The agent reported this fixed but named a commit this clone does not have (0000000000000000000000000000000000000000).");
+assert.equal(reportTip(reportCommit({ id: "a", status: "fixed", commit: "c1" }, true)), null, "a commit to apply says nothing extra");
+assert.equal(reportTip(null), null);
+// What a fixStage needs from that answer, as review.js fixMeta builds it: no usable commit leaves the job's state but no
+// commit, and its agent is not working towards one any more (working false).
+const metaOf = (report, known) => {
+  const named = reportCommit(report, known), problem = named?.reason ? named : null;
+  return { state: "running", commit: report?.commit && !problem ? String(report.commit) : null, declined: report?.status === "wontfix", problem };
+};
+const stageOf = (report, known, landed) => fixStage({ job: metaOf(report, known), landed: landed ?? null, head: "h1", working: metaOf(report, known).problem ? false : null });
+assert.equal(stageOf({ id: "a", status: "fixed", commit: "c1" }, true, "in"), "in_pr", "a commit the clone has, in the head");
+assert.equal(stageOf({ id: "a", status: "fixed", commit: "c1" }, true, "out"), "ready", "a commit the clone has, not in the head: Fix ready");
+assert.equal(stageOf({ id: "a", status: "fixed", commit: "c1" }, true, "patch"), "in_pr");
+assert.equal(stageOf({ id: "a", status: "fixed" }, undefined), "ended", "no commit named: nothing to apply, and not progress");
+assert.equal(stageOf({ id: "a", status: "fixed", commit: "d34db33f" }, false, "out"), "ended", "a commit this clone does not have is not a fix to apply");
+assert.equal(stageOf({ id: "a", status: "fixed", commit: "d34db33f" }, false, "in"), "ended", "nor one the head carries: there is nothing to place");
+// The task of a fix in the PR's own checkout names the local branch it commits on (worktree.py leaves that checkout on
+// no branch, so a commit there is reachable only from the reflog), in one block with the push PR #25 added: the local
+// branch, then the remote branch and the command, then the refused-push clause. Neither sentence repeats the other.
+assert.equal(localBranchNote("pr-review/7"), "You are on the local branch pr-review/7.");
+assert.equal(localBranchNote(null), null, "no local branch: no sentence");
+const push = { branch: "feat/x" }, local = "pr-review/7";
+assert.equal(checkoutNote({ url: "https://github.com/o/r/pull/7" }, push, local),
+  "You are on the local branch pr-review/7. When you are done, commit your work and push it to the branch this PR merges from: `git push origin HEAD:feat/x`. " +
+  "If the push is refused, say so in the report; do not report a finding as fixed when its commit is not on the remote.", "one block: the local branch, then the push");
+assert.equal(checkoutNote({ url: "https://gitlab.com/o/r/-/merge_requests/7" }, push, local),
+  "You are on the local branch pr-review/7. When you are done, commit your work and push it to the branch this MR merges from: `git push origin HEAD:feat/x`. " +
+  "If the push is refused, say so in the report; do not report a finding as fixed when its commit is not on the remote.");
+assert.equal(checkoutNote({ url: "https://github.com/o/r/pull/7" }, push), "When you are done, commit your work and push it to the branch this PR merges from: `git push origin HEAD:feat/x`. " +
+  "If the push is refused, say so in the report; do not report a finding as fixed when its commit is not on the remote.", "no local branch: PR #25's block alone, byte for byte");
+assert.equal(checkoutNote({ url: "https://github.com/o/r/pull/7" }, null, local), null, "a sub-agent: no block, whatever local says");
+// In the finding's task it sits between the items and the report contract, and a sub-agent's text has no push at all.
+const oneTask = fixPrompt([{ id: "a", severity: "high", reviewer: "x", file: "a.js", line: 1, title: "T" }], { number: 7, title: "T", url: "u" }, "/r", null, push, local);
+assert.ok(oneTask.includes(`1. [a] high · x · \`a.js\`:1: T\n\n${checkoutNote({ url: "u" }, push, local)}\n\nReport each finding back`), "the block sits before the report contract");
+assert.equal(fixPrompt([{ id: "a", severity: "high", reviewer: "x", file: "a.js", line: 1, title: "T" }], { number: 7, title: "T", url: "u" }, "/r", null, null, local),
+  fixPrompt([{ id: "a", severity: "high", reviewer: "x", file: "a.js", line: 1, title: "T" }], { number: 7, title: "T", url: "u" }, "/r", null), "a sub-agent's task is unchanged");
 assert.equal(agoSpan(7200000), "2 h ago");
 assert.equal(agoSpan(60000), "1 min ago");
 assert.equal(agoSpan(3 * 86400000), "3 d ago");

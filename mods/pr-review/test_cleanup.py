@@ -105,10 +105,14 @@ assert item["eligible"] is False and "uncommitted" in item["why"], item
 assert cleanup.apply(recorded={"acme/api": entry(dirty)}, now=NOW)["removed"] == [] and dirty.exists()
 print("dirty ok")
 
-# A review checkout still there: kept.
+# A review checkout still there: kept. One per PR (pr-review-<number>) keeps the clone as the shared one did.
 left = folder("left")
-(WORKTREES / "left" / "pr-review").mkdir(parents=True)
 cleanup.call = stub()
+(WORKTREES / "left" / "pr-review-7").mkdir(parents=True)
+item = only_one({"acme/api": entry(left)})
+assert item["eligible"] is False and "review checkout" in item["why"] and "pr-review-7" in item["why"], item
+(WORKTREES / "left" / "pr-review-7").rmdir()
+(WORKTREES / "left" / "pr-review").mkdir(parents=True)
 item = only_one({"acme/api": entry(left)})
 assert item["eligible"] is False and "review checkout" in item["why"], item
 print("review worktree ok")
