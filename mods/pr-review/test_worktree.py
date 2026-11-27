@@ -193,3 +193,78 @@ with tempfile.TemporaryDirectory() as d:
     finally:
         os.environ["GIT_CONFIG_GLOBAL"] = before if before is not None else os.devnull
 print("created ok")
+
+# contains: a fix already in the PR, proven by git alone. applyFix cherry-picks the fix and deletes its branch, so the
+# commit the panel recorded is an ancestor ("in"); a rebase or a reworded cherry-pick keeps the patch instead
+# ("patch"); a change the head does not carry, or a sha this clone does not have, is "out"; a bad checkout, a bad ref
+# or bad arguments exit 1 with one sentence. Nothing is fetched, checked out or written.
+import sys  # noqa: E402
+with tempfile.TemporaryDirectory() as d:
+    base = pathlib.Path(d).resolve()
+    def g(*a):
+        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=base, check=True, capture_output=True, text=True).stdout.strip()
+    def write(name, text):
+        (base / name).write_text(text)
+    g("init", "-q", "-b", "main")
+    write("a.py", "x = 1\n"); g("add", "."); g("commit", "-qm", "base")
+    root = g("rev-parse", "HEAD")
+    g("checkout", "-q", "-b", "pr")
+    write("b.py", "y = 1\n"); g("add", "."); g("commit", "-qm", "pr one")
+    p1 = g("rev-parse", "HEAD")
+    write("c.py", "z = 1\n"); g("add", "."); g("commit", "-qm", "pr two")
+    p2 = g("rev-parse", "HEAD")
+    # The fix on its own branch off the older PR tip; applyFix cherry-picks it onto the PR and deletes the branch.
+    g("checkout", "-q", "-b", "fix/1", p1)
+    write("b.py", "y = 2\n"); g("commit", "-qam", "fix: the finding")
+    fix = g("rev-parse", "HEAD")
+    g("checkout", "-q", "pr"); g("cherry-pick", fix)
+    applied = g("rev-parse", "HEAD")
+    g("branch", "-qD", "fix/1")
+    assert applied != fix  # another parent, so another commit with the same patch
+    assert worktree.contains(base, applied, root, [applied, p2, fix]) == {applied: "in", p2: "in", fix: "patch"}
+    assert g("status", "--porcelain") == "", "contains writes nothing"
+    # A reworded cherry-pick: another commit and message, the same patch.
+    g("checkout", "-q", "-b", "fix/2", p2)
+    write("d.py", "w = 1\n"); g("add", "."); g("commit", "-qm", "fix: another finding")
+    worded = g("rev-parse", "HEAD")
+    g("checkout", "-q", "pr"); g("cherry-pick", worded); g("commit", "-q", "--amend", "-m", "fix: the other finding")
+    reworded = g("rev-parse", "HEAD")
+    assert reworded != worded and worktree.contains(base, reworded, root, [worded]) == {worded: "patch"}
+    # A rebase: the fix built on the older PR tip and moved onto the newer one keeps its patch.
+    g("checkout", "-q", "-b", "fix/3", p1)
+    write("f.py", "f = 1\n"); g("add", "."); g("commit", "-qm", "fix: also this")
+    moved = g("rev-parse", "HEAD")
+    g("rebase", "-q", p2)
+    rebased = g("rev-parse", "HEAD")
+    assert rebased != moved and worktree.contains(base, rebased, root, [moved]) == {moved: "patch"}
+    # The walk is bounded: a patch older than the newest PATCH_WALK commits is not looked for, so it is "out".
+    write("g.py", "g = 1\n"); g("add", "."); g("commit", "-qm", "pr goes on")
+    later = g("rev-parse", "HEAD")
+    assert worktree.contains(base, later, root, [moved]) == {moved: "patch"}
+    worktree.PATCH_WALK = 1
+    assert worktree.contains(base, later, root, [moved]) == {moved: "out"}
+    worktree.PATCH_WALK = 100
+    # A change this head does not carry, and a sha this clone does not have.
+    g("checkout", "-q", "-b", "elsewhere", root)
+    write("e.py", "v = 1\n"); g("add", "."); g("commit", "-qm", "not in the PR")
+    elsewhere = g("rev-parse", "HEAD")
+    assert worktree.contains(base, reworded, root, [elsewhere, "0" * 40, p2]) == {elsewhere: "out", "0" * 40: "out", p2: "in"}
+    # The panel's call: JSON states on stdout and exit 0; a missing checkout, a ref that is not a commit, and bad
+    # arguments each exit 1 with one sentence on stderr.
+    here = pathlib.Path(worktree.__file__).parent
+    def cli(*argv):
+        return subprocess.run([sys.executable, "worktree.py", "contains", *argv], cwd=here, capture_output=True, text=True)
+    r = cli(str(base), reworded, root, "--", applied, worded, "0" * 40)
+    assert r.returncode == 0 and json.loads(r.stdout) == {applied: "in", worded: "patch", "0" * 40: "out"}, (r.stdout, r.stderr)
+    r = cli(str(base / "missing"), reworded, root, "--", applied)
+    assert r.returncode == 1 and r.stdout == "" and "Not a checkout" in r.stderr and len(r.stderr.strip().splitlines()) == 1, r
+    r = cli(str(base), "nope", root, "--", applied)  # a ref the clone does not have: a git failure, not "out"
+    assert r.returncode == 1 and r.stdout == "" and "not a commit" in r.stderr and len(r.stderr.strip().splitlines()) == 1, r
+    r = cli(str(base), reworded, root)  # no -- and no sha
+    assert r.returncode == 1 and r.stdout == "" and "contains needs" in r.stderr, r
+    try:
+        worktree.contains(base / "missing", reworded, root, [applied])
+        raise AssertionError("a missing checkout must be refused")
+    except RuntimeError as e:
+        assert "Not a checkout" in str(e), e
+print("contains ok")

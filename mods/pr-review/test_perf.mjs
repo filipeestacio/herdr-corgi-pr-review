@@ -13,8 +13,8 @@ if (!hasFixtures) {
 }
 
 // What the views read of the findings, as text; fresh: the same with every memo dropped first.
-const MEMOS = ["findMemo", "fstMemo", "perMemo", "marksMemo", "rowsKey", "anchorMemo", "rowsMemo", "kept"];
-const snap = (v) => JSON.stringify({ findings: v.findings(), notes: v.merged().notes, status: v.findings().map((f) => v.fstatus(f)), counts: v.counts(), open: v.openFindings().map((f) => f.id),
+const MEMOS = ["findMemo", "fstMemo", "perMemo", "marksMemo", "rowsKey", "anchorMemo", "rowsMemo", "kept", "stageMemo", "groupMemo"];
+const snap = (v) => JSON.stringify({ findings: v.findings(), notes: v.merged().notes, status: v.findings().map((f) => v.fstatus(f)), groups: v.findings().map((f) => v.fgroup(f)), counts: v.counts(), open: v.openFindings().map((f) => f.id),
   marks: [[...v.archMarksNow().nodes.keys()], [...v.archMarksNow().edges.keys()]], crossings: v.crossingsNow(), rows: v.patch.slice(0, 12).map((f) => v.rowsFor(f.path, true).length) });
 const fresh = (v) => { for (const k of MEMOS) v[k] = null; return snap(v); };
 const same = (v, what) => { const kept = snap(v); assert.equal(kept, fresh(v), `${what}: the remembered findings, statuses, counts and marks are the ones a fresh computation gives`); };
@@ -477,4 +477,43 @@ for (const state of ["Files (all open)", "Walkthrough, a layer"]) {
   console.log(`${state}: ${queued} files colored in ${slices} slices, ${asks.length} frames asked for`);
 }
 await settle();
+// ---- where the fixes are (worktree.py contains): one call for every fix at a head, none for a head it already knows,
+// and a call that fails leaves the labels as they were rather than holding the tab.
+{
+  const v = await openReview(PR2());
+  const two = v.findings().slice(0, 2), calls = [];
+  v.worktree = { url: v.prSel.url, head: "h1", path: "/h/w" };
+  v.head = "h1";
+  v.find = { ...v.find, reports: Object.fromEntries(two.map((f, k) => [f.id, { id: f.id, status: "fixed", commit: k ? "c2" : "c1" }])),
+    status: Object.fromEntries(two.map((f) => [f.id, { s: "progress", fixHead: "h0", at: "2026-11-15T10:00:00Z" }])) };
+  S.exec = async (cmd, args) => {
+    if (!args.includes("contains")) return { code: 1, stdout: "", stderr: "stub" };
+    calls.push(args.slice(args.indexOf("--") + 1));
+    return { code: 0, stdout: JSON.stringify({ c1: "in", c2: "patch" }), stderr: "" };
+  };
+  const group = (f) => v.fgroup(v.findings().find((x) => x.id === f.id));
+  v.landedTick(cx); await settle();
+  assert.deepEqual(calls, [["c1", "c2"]], "one call carries every fix that has a commit");
+  assert.deepEqual(two.map(group), ["in_pr", "in_pr"], "an ancestor and the same change on another commit are both in the PR");
+  v.landedTick(cx); await settle();
+  assert.equal(calls.length, 1, "a head it already asked about asks nothing again");
+  v.worktree = { ...v.worktree, head: "h2" }; v.head = "h2";
+  v.landedTick(cx); await settle();
+  assert.deepEqual([calls.length, calls[1]], [2, ["c1", "c2"]], "a new head asks once more");
+  // A call that fails: the labels stay where they were (a fix whose place git cannot tell is ready, not in the PR).
+  const w = await openReview(PR2()), [one] = w.findings();
+  w.worktree = { url: w.prSel.url, head: "h1", path: "/h/w" }; w.head = "h1";
+  w.find = { ...w.find, reports: { [one.id]: { id: one.id, status: "fixed", commit: "c3" } }, status: { [one.id]: { s: "progress", fixHead: "h0", at: "2026-11-15T10:00:00Z" } } };
+  const asked = [];
+  S.exec = async (_cmd, args) => { if (args.includes("contains")) asked.push(args); return { code: 1, stdout: "", stderr: "no such ref" }; };
+  w.landedTick(cx); await settle(); w.landedTick(cx); await settle();
+  assert.deepEqual([w.fgroup(w.findings().find((x) => x.id === one.id)), asked.length], ["ready", 2], "nothing is claimed on a failed call, and a later frame asks again");
+  // No fix with a commit: nothing to ask.
+  asked.length = 0;
+  const none = await openReview(PR2());
+  none.worktree = { url: none.prSel.url, head: "h1", path: "/h/w" }; none.head = "h1";
+  none.landedTick(cx); await settle();
+  assert.equal(asked.length, 0, "no fix with a commit: no call");
+  S.exec = null;
+}
 console.log("perf ok");

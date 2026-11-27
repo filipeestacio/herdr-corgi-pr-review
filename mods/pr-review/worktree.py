@@ -23,6 +23,7 @@ ponytail: one tree per repo, so two review copies of different PRs of one repo a
 Prints {"path", "head", "clone", "created"}; `created` is true only when this run made the clone, false when it
 reused one (also with --clone) or worked in --local; exit 1 with the reason on stderr.
 `worktree.py since <checkout> <old> <head> [<path>…]`: what changed from old to head (since_diff), as JSON.
+`worktree.py contains <checkout> <head> <base> -- <sha> [<sha>…]`: where each commit is in that PR (contains), as JSON.
 """
 import json
 import os
@@ -40,6 +41,7 @@ BASES = [pathlib.Path.home() / "code"]  # --root replaces it
 WORKTREES = pathlib.Path.home() / ".herdr" / "worktrees"  # --worktrees replaces it
 NAME = "pr-review"  # the review worktree's folder, where a branch's name would be (lsp_bridge.py throwaway knows it)
 MAX_AGE = 7 * 86400
+PATCH_WALK = 100  # commits of base..head compared by patch id: enough for a rebase or a reworded fix
 BRIDGE = pathlib.Path(__file__).with_name("lsp_bridge.py")
 
 
@@ -164,6 +166,61 @@ def since_diff(cwd, old, head, paths=()):
             "note": None if ancestor else f"Force push: {old[:7]} is not an ancestor, so this compares both states of the PR's files (rebased base changes included)"}
 
 
+def patch_id(cwd, sha):
+    """The patch id of one commit (git patch-id --stable: its diff, without line numbers, whitespace or its message),
+    or None when its diff is empty here (a merge commit, an empty commit)."""
+    diff = subprocess.run(["git", "diff-tree", "-p", "--no-color", "--no-commit-id", sha], cwd=cwd, capture_output=True, text=True, timeout=120)
+    if diff.returncode != 0:
+        raise RuntimeError(f"git diff-tree: {(diff.stderr or diff.stdout).strip()[:300]}")
+    r = subprocess.run(["git", "patch-id", "--stable"], cwd=cwd, input=diff.stdout, capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        raise RuntimeError(f"git patch-id: {(r.stderr or r.stdout).strip()[:300]}")
+    return r.stdout.split()[0] if r.stdout.strip() else None
+
+
+def patch_ids(cwd, base, head, limit=PATCH_WALK):
+    """The patch id of each of the newest `limit` commits of base..head, mapped to the commit that carries it."""
+    log = subprocess.run(["git", "log", "--no-color", f"--max-count={limit}", "--format=commit %H", "-p", f"{base}..{head}", "--"],
+                         cwd=cwd, capture_output=True, text=True, timeout=300)
+    if log.returncode != 0:
+        raise RuntimeError(f"git log: {(log.stderr or log.stdout).strip()[:300]}")
+    r = subprocess.run(["git", "patch-id", "--stable"], cwd=cwd, input=log.stdout, capture_output=True, text=True, timeout=300)
+    if r.returncode != 0:
+        raise RuntimeError(f"git patch-id: {(r.stderr or r.stdout).strip()[:300]}")
+    return {pid: sha for pid, sha in (line.split() for line in r.stdout.splitlines() if line.strip())}
+
+
+def contains(cwd, head, base, shas):
+    """Where each fix commit is in this PR: "in" when it is an ancestor of `head`; "patch" when it is not, but a
+    commit of `base..head` (the newest PATCH_WALK) has its patch: the same change, other parents and message, as a
+    rebase or a reworded cherry-pick leaves it; "out" when neither, or the sha is unknown to this clone.
+    `applyFix` cherry-picks the fix and deletes its branch, so the commit it recorded is "in"; the agent's original
+    is its "patch" while that object is still here, else "out". Read only: no fetch, no checkout, nothing written."""
+    if not shas:
+        raise RuntimeError("contains: no sha to look for")
+    if not os.path.isdir(cwd):
+        raise RuntimeError(f"Not a checkout: {cwd}")
+    def run(*args):
+        return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=120)
+    for ref in (head, base):
+        if run("cat-file", "-e", f"{ref}^{{commit}}").returncode != 0:
+            raise RuntimeError(f"{ref} is not a commit in {cwd}")
+    found, patches = {}, None
+    for sha in shas:
+        if run("cat-file", "-e", f"{sha}^{{commit}}").returncode != 0:
+            found[sha] = "out"
+            continue
+        ancestor = run("merge-base", "--is-ancestor", sha, head)
+        if ancestor.returncode == 0:
+            found[sha] = "in"
+            continue
+        if ancestor.returncode != 1:
+            raise RuntimeError(f"git merge-base: {(ancestor.stderr or ancestor.stdout).strip()[:300]}")
+        patches = patch_ids(cwd, base, head, PATCH_WALK) if patches is None else patches
+        found[sha] = "patch" if patch_id(cwd, sha) in patches else "out"
+    return found
+
+
 def main(url, clone=False, local=None):
     link = host.parse_link(url)
     if not link:
@@ -193,7 +250,14 @@ def main(url, clone=False, local=None):
 
 if __name__ == "__main__":
     try:
-        if sys.argv[1] == "since":
+        if sys.argv[1] == "contains":
+            rest = sys.argv[2:]
+            cut = rest.index("--") if "--" in rest else len(rest)
+            where, shas = rest[:cut], rest[cut + 1:]
+            if len(where) != 3 or not shas:
+                raise RuntimeError("contains needs <checkout> <head> <base> -- <sha> [<sha>…]")
+            print(json.dumps(contains(where[0], where[1], where[2], shas)))
+        elif sys.argv[1] == "since":
             print(json.dumps(since_diff(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5:])))
         else:
             args = sys.argv[2:]

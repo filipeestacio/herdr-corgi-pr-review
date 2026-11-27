@@ -447,6 +447,38 @@ export function findingStatus(f, status, reports, head, lineNow) {
   return s;
 }
 
+// Where a finding's fix stands, from git and the one check: the result, not the journey.
+// "progress": a fix job is on its way and its agent has not reported a commit yet.
+// "ready": the agent reported a commit and the PR head does not carry it (worktree.py contains: "out"), or git has not
+// said yet (a call failed, none ran). Apply to PR and Discard act here.
+// "in_pr": the head carries the fix, either as the commit itself (an ancestor) or as the same change on another commit
+// (a cherry-pick, a rebase, a reworded message: "patch"). Verify acts here.
+// "verified": a check read this head and said fixed. "wontfix": the agent declined.
+// null: no fix to speak of. The finding was never sent to Fix, its job was discarded and its change is not in the head,
+// or a check on this head said it is still broken: unresolved.
+// What git cannot know stays in the persisted status (a dismissal, the check's result), which the caller reads.
+// job: the newest fix job (threads.js fixesOf) with what its agent reported: {state: "running" | "applied" |
+// "discarded", commit: the sha it reported | null, declined: true when its report says "wontfix"}. landed: where that
+// commit is in base..head (worktree.py contains: "in" | "patch" | "out"), null while unknown. verified: the persisted
+// check ({result, head, branch}; branch set = read on the fix branch), null when none. head: the PR head shown.
+export function fixStage({ job = null, landed = null, verified = null, head = null } = {}) {
+  if (job?.declined) return "wontfix";
+  const commit = job?.commit ?? null, read = Boolean(verified?.head) && Boolean(head) && verified.head === head && !verified.branch;
+  if (read && verified.result === "fixed") return "verified";
+  if (read && verified.result === "not_fixed") return null; // the head has the change and the finding is still there
+  if (commit && (landed === "in" || landed === "patch")) return "in_pr";
+  if (job?.state === "discarded") return null; // its worktree and branch are gone, and the head does not carry it
+  if (commit) return "ready";
+  return job?.state === "running" ? "progress" : null;
+}
+
+// The Findings tab's six groups, in the order it lists them (empty ones hidden): the key a finding's group is, and the
+// word its heading and its row show. A finding is in the group its stage names, else in the one its persisted status
+// names (a dismissal, a mark by hand, a fix sent before the mod knew where its commit was).
+export const FINDING_GROUPS = [["unresolved", "Unresolved"], ["progress", "Fix in progress"], ["ready", "Fix ready"], ["in_pr", "In the PR"], ["verified", "Verified"], ["wontfix", "Won't fix"]];
+export const GROUP_WORD = Object.fromEntries(FINDING_GROUPS);
+export const findingGroup = (stage, status) => status === "dismissed" ? "wontfix" : stage ?? (status === "fixed" ? "verified" : status === "progress" ? "progress" : "unresolved");
+
 // ---- one finding per defect (review.js: every view reads this list)
 
 const rank = (x) => RISKS.indexOf(x.severity);
@@ -576,27 +608,29 @@ export function mergeFindings(findings, suspects = [], status = {}, publicFiles 
 export const runsOf = (runs) => Object.fromEntries(Object.entries(runs ?? {}).map(([k, r]) => [k, { ...r,
   state: ["running", "done", "failed"].includes(r.state) ? r.state : r.busy ? "running" : r.error ? "failed" : r.at ? "done" : null, scope: r.scope ?? null, error: r.error ?? null }]));
 
-// The one way findings are counted (tab, bar, Overview, the Findings header): unresolved is open, recheck and fix
-// sent; high/medium/low and security count the unresolved ones, so the severities add up to `unresolved`.
+// The one way findings are counted (tab, bar, Overview, the Findings header): unresolved is every group but Verified
+// and Won't fix, so a fix in progress, a fix ready and a fix in the PR still count; high/medium/low and security count
+// the unresolved ones, so the severities add up to `unresolved`. `progress`, `ready`, `in_pr`, `verified` and `wontfix`
+// count the tab's groups (findingGroup, from fixStage over the persisted status): one number per heading.
 // causes: the unresolved ones counted once per cause (a finding with same_cause whose first is unresolved too is not
 // counted again); security counts causes, so the empty token at two places is ⛨ 1.
-export function findingCounts(findings, statusOf) {
-  const c = { total: findings.length, unresolved: 0, causes: 0, sent: 0, fixed: 0, dismissed: 0, high: 0, medium: 0, low: 0, security: 0 };
-  const open = findings.filter((f) => !["fixed", "dismissed"].includes(statusOf(f)));
+export function findingCounts(findings, statusOf, stageOf = () => null) {
+  const c = { total: findings.length, unresolved: 0, causes: 0, progress: 0, ready: 0, in_pr: 0, verified: 0, wontfix: 0, high: 0, medium: 0, low: 0, security: 0 };
+  const open = findings.filter((f) => !["verified", "wontfix"].includes(findingGroup(stageOf(f), statusOf(f))));
   for (const f of findings) {
-    const s = statusOf(f);
-    if (s === "fixed" || s === "dismissed") { c[s] += 1; continue; }
-    c.unresolved += 1; c[f.severity] = (c[f.severity] ?? 0) + 1;
-    if (s === "progress") c.sent += 1;
+    const g = findingGroup(stageOf(f), statusOf(f));
+    if (g === "verified" || g === "wontfix") { c[g] += 1; continue; }
+    c.unresolved += 1; if (g !== "unresolved") c[g] += 1; c[f.severity] = (c[f.severity] ?? 0) + 1;
     if (followsOpen(f, open)) continue;
     c.causes += 1;
     if (f.security) c.security += 1;
   }
   return c;
 }
-// "12 unresolved: 7 high, 5 medium · 1 with a fix sent · 2 fixed · 1 dismissed"
+// "3 unresolved: 2 high, 1 medium · 1 fix in progress · 1 fix ready · 1 in the PR · 1 verified · 1 won't fix"
 export const countLine = (c) => (!c.total ? "No findings" : [`${c.unresolved} unresolved${c.unresolved ? `: ${["high", "medium", "low"].filter((k) => c[k]).map((k) => `${c[k]} ${k}`).join(", ")}` : ""}`,
-  c.sent && `${c.sent} with a fix sent`, c.fixed && `${c.fixed} fixed`, c.dismissed && `${c.dismissed} dismissed`].filter(Boolean).join(" · "));
+  c.progress && `${c.progress} fix in progress`, c.ready && `${c.ready} fix ready`, c.in_pr && `${c.in_pr} in the PR`,
+  c.verified && `${c.verified} verified`, c.wontfix && `${c.wontfix} won't fix`].filter(Boolean).join(" · "));
 
 // One prompt asking the PR's agent to fix findings and to report each back as a JSON line in `report`.
 export function fixPrompt(findings, pr, report, lang) {
@@ -1053,13 +1087,12 @@ export function componentLine(cc) {
 // The review's state as plain text, to paste for a colleague ("Copy review state"). A security finding is in it with
 // its title only: no file, no line, nothing about how to reach it.
 // behavior: what the PR does at run time, first so the reader knows the PR; fixOf(f): the agent and branch of a fix sent
-// ("a sub-agent, fix/2-x"); cost: costLine's text.
-export function reviewState({ pr, head = "", list, counts, findings, statusOf, progress = "", behavior = "", fixOf = () => "", cost = "", oldRules = false }) {
+// ("a sub-agent, fix/2-x"); cost: costLine's text. stageOf(f): pr.js fixStage, so the groups are the tab's.
+export function reviewState({ pr, head = "", list, counts, findings, statusOf, stageOf = () => null, progress = "", behavior = "", fixOf = () => "", cost = "", oldRules = false }) {
   const word = (s) => s.replace("_", " ");
   const ask = (r) => `- ${word(r.ask.state)}: ${r.ask.text}${r.ask.acceptance ? " (acceptance criterion)" : ""}${r.ask.why ? `. ${r.ask.why}` : ""}${r.unlinked ? " No finding backs this." : ""}`;
   const one = (f) => `${secByEffect(f) ? `- ${f.severity}, security: ${f.title}` : `- ${f.severity}: ${f.title} (${f.file}:${f.line})`}${statusOf(f) === "progress" && fixOf(f) ? `. Fix: ${fixOf(f)}` : ""}`;
-  const groups = [["Unresolved", ["open", "recheck"]], ["Fix sent", ["progress"]], ["Fixed", ["fixed"]], ["Dismissed", ["dismissed"]]]
-    .map(([label, st]) => [label, findings.filter((f) => st.includes(statusOf(f)))]).filter(([, fs]) => fs.length);
+  const groups = FINDING_GROUPS.map(([key, label]) => [label, findings.filter((f) => findingGroup(stageOf(f), statusOf(f)) === key)]).filter(([, fs]) => fs.length);
   return [`Review state of ${pr.repo ?? ""}#${pr.number}: ${pr.title ?? ""}`, `${pr.url ?? ""}${head ? ` at ${String(head).slice(0, 7)}` : ""}`, "",
     ...(behavior ? [`What it does: ${String(behavior).replace(/\s+/g, " ").trim()}`, ""] : []),
     verdictParts(list, counts, { oldRules }).map((p) => p.text).join(" · "), "",
