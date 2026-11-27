@@ -20,7 +20,7 @@ import { v_flex, h_flex, InputState, Input, Scrollbar, Editor, EditorState, Text
 import { focused, exec, hc, run, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, home, layout, props, watchFolder, nextCommand, checking, openOverlay } from "herdr";
 import { spaces, panes, agents, terminals, feed, feedIfAsked, whenFed } from "./live.js"; // never straight from Herdr: one read and this copy is drawn on every agent's status change
 import { diffRows, buildPrompt, splitPatch, selection, nextChange, lineLabel, anchorRow, buildReview, hunksOf, hash, uiLine, reviewRequest, mapReview, triageOf, isSecurity, withThreats, knownOf } from "./pr.js";
-import { parsePrRef, ghTarget, pruneSources, mergeMine, codeModel, windowActive, pollDue, pollAfter, tabName } from "./pr.js";
+import { parsePrRef, ghTarget, pruneSources, mergeMine, codeModel, windowActive, pollDue, pollAfter, tabName, headMoved } from "./pr.js";
 import { cleanupCandidates, cleanupLine, cleanupNote, cleanupRemoved, cleanupDoc, cleanupDone, cleanupDoneDoc, localDay } from "./pr.js"; // the clones this mod made, and their one daily cleanup
 import { hostOfLink, parseRemote, parseLink, hostWord } from "./host.js";
 import * as C from "./context.js";
@@ -459,7 +459,7 @@ export default class PrReview extends View {
     return filesToDiff(files);
   }
 
-  // A shown PR's head, asked at most every PR_INFO_MS in the background; a new push marks it for a refresh.
+  // A shown PR's head, asked at most every PR_INFO_MS in the background; a new push moves the checkout and refreshes.
   checkHead(pr, cx) {
     const seen = this.heads.get(pr.url);
     if (seen && Date.now() - seen.at < PR_INFO_MS) return;
@@ -468,15 +468,30 @@ export default class PrReview extends View {
       const sha = await this.headOf(pr.url);
       if (!sha) return;
       this.heads.set(pr.url, { at: Date.now(), sha });
-      if (this.prSel?.url === pr.url && sha !== this.prSel.headSha) { this.prSel = { ...this.prSel, headSha: sha }; this.refresh(cx, true); }
+      if (this.prSel?.url === pr.url && sha !== this.prSel.headSha) this.applyHead(sha, cx);
     });
   }
 
-  // A PR's head from GitHub (gh pr view), null when gh can't say; asked once at a time per PR (a second ask shares it).
+  // A head the host reported (checkHead, or the review's ghTick): the diff and the checkout move to it, and an analysis
+  // made for the old commits says so instead of looking current. Nothing runs by itself.
+  applyHead(sha, cx) {
+    this.prSel = { ...this.prSel, headSha: sha };
+    this.headNote = this.ai && headMoved(sha, this.ai.head) ? "The PR head moved: this analysis is from the previous commits. Analyze again, or Only new changes." : null;
+    if (this.part === "review") this.makeWorktree(cx); // reviewers, the analysis and the whole files read this tree; the panel's diff comes from the host
+    this.refresh(cx, true);
+  }
+
+  // A PR's head from its host, null when the host can't say; asked once at a time per PR (a second ask shares it).
+  // GitHub answers `gh pr view`; a GitLab merge request answers mrs.py view, whose PR object carries headRefOid.
   headOf(url) {
     const busy = HEAD_ASKS;
-    if (!busy.has(url)) busy.set(url, exec("gh", ["pr", "view", url, "--json", "headRefOid"], { timeout: 30000 })
-      .then((v) => (v.code === 0 ? JSON.parse(v.stdout).headRefOid ?? null : null)).catch(() => null).finally(() => busy.delete(url)));
+    if (!busy.has(url)) {
+      const ask = (hostOfLink(url) === "gitlab"
+        ? exec("python3", [`${appHome()}/mods/pr-review/mrs.py`, "view", url], { timeout: 120000 })
+        : exec("gh", ["pr", "view", url, "--json", "headRefOid"], { timeout: 30000 }))
+        .then((v) => (v.code === 0 ? JSON.parse(v.stdout).headRefOid ?? null : null)).catch(() => null).finally(() => busy.delete(url));
+      busy.set(url, ask);
+    }
     return busy.get(url);
   }
 
@@ -513,6 +528,9 @@ export default class PrReview extends View {
   // change in the repo: no "…" while it runs, and nothing is drawn or replaced when the diff comes out the same.
   refresh(cx, force = false, quiet = false) {
     const { cwd } = location(), context = this.key(), picked = this.prSel;
+    // The checkout of this PR is behind the head its diff is for (a push): move it first, so nothing reads the old one.
+    // A space's own checkout is the person's tree and is not moved; makeWorktree returns at once at the wanted head.
+    if (picked && this.worktree?.url === picked.url && !this.worktree.local && headMoved(picked.headSha, this.worktree.head)) this.makeWorktree(cx);
     // One load per context. Another PR picked while a diff still loads starts its own at once (the older answer is
     // dropped where it arrives); before, the new title stood over the old PR's files until that load ended.
     if (this.loading && this.loadingFor === context) return;
@@ -520,7 +538,7 @@ export default class PrReview extends View {
     let unchanged = false;
     if (context !== this.context) {
       if (this.context && this.memo.has(this.context)) this.remember(this.context);
-      this.context = context; this.branchSig = null; this.root = null; this.files = []; this.open = null; this.rows = []; this.sel = null; this.selEnd = null; this.pr = null; this.error = null; this.patch = null; this.branchFiles = null; this.scrollRow = "top";
+      this.context = context; this.branchSig = null; this.root = null; this.files = []; this.open = null; this.rows = []; this.sel = null; this.selEnd = null; this.pr = null; this.error = null; this.patch = null; this.branchFiles = null; this.scrollRow = "top"; this.headNote = null; this.pendingReviewer = null;
       const hit = this.memo.get(context);
       if (hit) {
         Object.assign(this, hit.state);

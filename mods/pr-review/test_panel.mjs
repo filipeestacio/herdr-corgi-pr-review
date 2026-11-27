@@ -105,6 +105,23 @@ S.files.set("/h/pr-data/prs.json", JSON.stringify({ generated: new Date().toISOS
   S.exec = null;
 }
 
+// ---- a merge request's head comes from mrs.py, asked once for all copies; a host that cannot answer leaves it unknown
+{
+  let asks = 0;
+  S.exec = async (cmd, args) => {
+    if (cmd === "gh") throw new Error("gh is not asked for a merge request");
+    if (cmd === "python3" && String(args[0]).endsWith("mrs.py") && args[1] === "view") { asks++; return { code: 0, stdout: JSON.stringify({ headRefOid: "def456" }), stderr: "" }; }
+    return { code: 1, stdout: "", stderr: "stub" };
+  };
+  const mr = { url: "https://gitlab.com/g/r/-/merge_requests/3", number: 3, repo: "g/r", headSha: "def456" };
+  const a = new PrReview(), b = new PrReview();
+  assert.deepEqual(await Promise.all([a.headOf(mr.url), b.headOf(mr.url)]), ["def456", "def456"], "a merge request's head from mrs.py view");
+  assert.equal(asks, 1, "two copies at once ask mrs.py once");
+  S.exec = async () => ({ code: 1, stdout: "", stderr: "glab: not signed in" });
+  assert.equal(await a.headOf(mr.url), null, "a host that cannot answer gives no head");
+  S.exec = null;
+}
+
 // ---- a scan for session PRs that cannot reach GitHub waits longer each time (prs.py exit 3)
 {
   let code = 3, runs = 0;

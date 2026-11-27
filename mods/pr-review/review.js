@@ -26,7 +26,7 @@ import { highlightJob, highlightStep, highlightLines, langOf, firstLineOf, color
 import { lookup, warm, contents, where, setTrusted } from "./defs.js";
 import { recommendModel, tierSteps } from "./pr.js";
 import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf, codeModel, priceOf, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch, withSecurity, securityStart } from "./pr.js";
-import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf, cloneRootsFor, clonesDoc, withClone } from "./pr.js";
+import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf, cloneRootsFor, clonesDoc, withClone, headMoved } from "./pr.js";
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState, codeOf, isStale } from "./pr.js";
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible, pastTop } from "./views.js";
 import { worst, byFocus, layerAccess, analysisAge, stateHints, noteRule, mergeGroups, mergeFirst, mergeHeld, runLabel, byCause, sessionCost, sessionDir, fixEstimate, fixCostLine } from "./views.js";
@@ -1015,6 +1015,11 @@ export const ReviewMode = {
       if (!shared("gh.login")) exec("gh", ["api", "user", "--jq", ".login"]).then((r) => { if (r.code === 0) { setShared("gh.login", r.stdout.trim()); this.applyTrust(); } }).catch(() => null);
       this.applyTrust();
       if (this.pendingRun) { this.pendingRun = false; this.loadAi(cx, "run"); }
+      const queued = this.pendingReviewer; this.pendingReviewer = null;
+      if (queued) { // a reviewer clicked while the head moved: it starts now, or says why it cannot
+        if (headMoved(this.prSel?.headSha, this.worktree?.head)) this.note = "Could not start the review: the PR's new head was not checked out.";
+        else this.runReviewer(queued.kind, cx, null, queued.use);
+      }
       this.loadSince(cx); this.loadContext(cx); this.loadInfra(cx);
       cx.notify();
     });
@@ -1195,6 +1200,11 @@ export const ReviewMode = {
     if (mode === "run") {
       if (this.aiBusy) return;
       if (!job.req.hunks.length) { this.aiError = "No diff"; return cx.notify(); }
+      // The checkout is at another head than the PR's (a push): check the new head out first, then run; a run must never
+      // read the old commits. makeWorktree starts it again (pendingRun) when the checkout is made.
+      if (headMoved(this.prSel.headSha, this.worktree?.head)) {
+        this.pendingRun = true; this.note = "The PR head moved: checking it out, then starting the analysis."; this.makeWorktree(cx); return cx.notify();
+      }
       if (!this.worktree && !this.prSel.space) { this.pendingRun = true; return cx.notify(); } // the Analysis tab says it waits (stateHints)
       // Every hunk goes along: review.py inlines what fits and lets the model read the rest (no "too large" cut).
       const all = (hs) => hs.map(({ alias, id, path, lines }) => ({ alias, id, path, lines }));
@@ -1223,6 +1233,7 @@ export const ReviewMode = {
       if (this.prSel?.url !== url || model() !== m) return;
       const status = st ? JSON.parse(st) : null;
       this.ai = text || fallback ? this.mapSaved(JSON.parse(text ?? fallback), Boolean(text)) : null;
+      this.clearHeadNote(); // a new analysis may well be for the head now shown
       this.securityNow(cx); // the findings file may have been read before the analysis: its resilience block is derived on the analysis (withResilience)
       this.aiFile = text ? job.out : fallback ? job.latest : null;
       if (status?.busy && status.pid && !(await this.livePids([status.pid])).has(String(status.pid))) {
@@ -1237,6 +1248,9 @@ export const ReviewMode = {
       this.publish(); cx.notify();
     });
   },
+
+  // The shown analysis was made for the head shown now (or none is shown): the note about the previous commits goes.
+  clearHeadNote() { if (this.headNote && (!this.ai || !headMoved(this.prSel?.headSha, this.ai.head))) this.headNote = null; },
 
   // Refresh diagrams (a click, never by itself): review.py redraws only the pictures of the shown analysis for today's
   // diff, with its layers as context (one cheaper call, "Review diagrams" in the ledger), and writes them into the
@@ -1308,7 +1322,7 @@ export const ReviewMode = {
       if (st.error) this.aiError = st.error;
       else {
         const text = await readTextFile(job.out).catch(() => null);
-        if (text && model() === m) { this.ai = this.mapSaved(JSON.parse(text), true); this.aiFile = job.out; this.goStep(0, cx, false); }
+        if (text && model() === m) { this.ai = this.mapSaved(JSON.parse(text), true); this.aiFile = job.out; this.goStep(0, cx, false); this.clearHeadNote(); }
       }
       this.securityNow(cx);
       this.publish(); cx.notify();
@@ -1570,6 +1584,13 @@ export const ReviewMode = {
     if (!reviewersNow().some(([k]) => k === kind) || !pr?.url) return;
     if (noRunModel()) { this.note = `Could not start ${REVIEWERS[kind][0]}: ${providerLabel()} lists no models. Choose another provider in the bar.`; return cx.notify(); }
     if (!w || w.local) { this.note = !w ? "Could not run: the PR head is not checked out yet" : "Could not run: reviewers need a PR (not a branch diff)"; return cx.notify(); }
+    // The checkout is at another head than the PR's (a push): check the new head out first, then start. A run must never
+    // read the old head; makeWorktree starts this reviewer again when the checkout is at the wanted head.
+    if (headMoved(pr.headSha, w.head)) {
+      this.pendingReviewer = { kind, use };
+      this.note = "The PR head moved: checking it out, then starting the review.";
+      this.makeWorktree(cx); return cx.notify();
+    }
     // Codex on someone else's PR in Restricted Mode: asked once per PR (the note says what the run may do), the next click runs it.
     if (kind === "codex" && !this.trustedPr(pr) && this.codexAsked !== pr.url) { this.codexAsked = pr.url; this.note = TH.CODEX_ASK; return cx.notify(); }
     const req = { kind, url: pr.url, number: pr.number, context: this.ctxReq(), model: use ?? model(), codexModel: shared("review.codexModel") || null, worktree: w.path, base: pr.base ?? "main",
@@ -3733,6 +3754,8 @@ export const ReviewMode = {
           if (this.page === "overview" && !a.stale) return e;
           return e.child(div().id("rv-ai-age").tooltip(last.trim() || "The analysis shown").text_size(TYPE.small).text_color(a.stale ? t.ansi3 : t.muted).whitespace_normal()
             .child(a.stale ? `${a.text}: ${canInc ? "re-analyze, or analyze only the new changes." : "re-analyze for the current state."}` : a.text)); })
+        // A push came in while this analysis was shown: one muted line says it is from the previous commits (nothing runs by itself).
+        .when(Boolean(this.headNote), (e) => e.child(div().id("rv-head-note").text_size(TYPE.small).text_color(t.muted).whitespace_normal().child(this.headNote)))
         .when(Boolean(ai?.scope?.skimmed), (e) => e.child(div().text_size(TYPE.small).text_color(t.muted).whitespace_normal().child(scopeLine(ai.scope)))) // only when something was not read in detail
         .when(Boolean(ai?.cut.length) && !ai?.scope, (e) => e.child(div().text_size(TYPE.small).text_color(t.ansi3).whitespace_normal().child(`${ai.cut.length} hunks were too large for ${modelLabel(ai.model) ?? ai.model} and are not analyzed (an older analysis: re-analyze to read them).`)))
         .child(h_flex().flex_wrap().gap(6).items_center().text_size(TYPE.small)
@@ -6813,7 +6836,7 @@ export const ReviewMode = {
       if (fresh) this.gh = gh;
       await this.loadThreads(cx);
       if (sha && !known) this.heads.set(pr.url, { at: Date.now(), sha });
-      if (sha && sha !== this.prSel.headSha) { this.prSel = { ...this.prSel, headSha: sha }; this.refresh(cx, true); }
+      if (sha && sha !== this.prSel.headSha) this.applyHead(sha, cx); // the checkout moves too (main.js applyHead)
       if (fresh || force) cx.notify();
     });
     if (force) cx.notify();
