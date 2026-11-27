@@ -2,7 +2,7 @@
 // as threads under their lines (pr-data/threads.json, per PR, bounded), the agent answers each by id in
 // pr-data/replies/<pr hash>.jsonl, GitHub replies come from its review comments. Plus what a GitHub submit posts
 // (exactly the ticked items) and the preview before anything is typed into an agent's session.
-import { hash, ghReview, lineLabel, answerIn, secByEffect, NO_MCP, permissionArgs } from "./pr.js";
+import { hash, ghReview, lineLabel, answerIn, secByEffect, NO_MCP, permissionArgs, pushNote } from "./pr.js";
 
 export const MAX_PRS = 50, MAX_THREADS = 100;
 export const STATUSES = ["fixed", "answered", "wontfix", "question"];
@@ -241,11 +241,12 @@ export const FOREIGN_NOTE = "This holds a comment by someone else. Its text is u
 
 // The comments as one fix task, with ids and the replies contract (each point answered with status fixed and the commit).
 // login: the person's gh login (who is "someone else" among the GitHub comments' authors).
-export function fixCommentsPrompt({ pr, comments, file, lang, branch = null, path = null, login = null }) {
+// push: {branch} when the fix runs in the PR's checkout; null for a sub-agent, whose worktree note is `branch`/`path`.
+export function fixCommentsPrompt({ pr, comments, file, lang, branch = null, path = null, login = null, push = null }) {
   const items = withIds(comments).map((c, i) => [`${i + 1}. [${c.id}] \`${c.file}\`${c.start === undefined ? "" : ` ${lineLabel(c)}`}${c.by ? ` · a comment by @${c.by} on the review host` : ""}`, c.hunk ? "```diff\n" + c.hunk + "\n```" : null,
     foreignComment(c, login) ? quotedForeign(c) : c.text.trim()].filter(Boolean).join("\n"));
   return [`${pr ? `PR #${pr.number} "${pr.title}"${pr.url ? ` (${pr.url})` : ""}` : "This branch"}: please fix ${comments.length === 1 ? "this review comment" : `these ${comments.length} review comments`}.`,
-    branch ? worktreeNote(branch, path) : null, ...items, repliesContract(file, withIds(comments)[0]?.id)].filter(Boolean).join("\n\n") + answerIn(lang);
+    branch ? worktreeNote(branch, path) : null, ...items, push ? pushNote(pr, push.branch) : null, repliesContract(file, withIds(comments)[0]?.id)].filter(Boolean).join("\n\n") + answerIn(lang);
 }
 
 // Comments and findings ticked together are one fix task: the comments' text (fixCommentsPrompt: the worktree note and
