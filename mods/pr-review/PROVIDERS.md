@@ -110,6 +110,7 @@ All keys optional.
     "opencode": {
       "label": "opencode · Gateway",
       "command": ["opencode", "run", "--model", "{model}"],
+      "agent": ["aircode", "harness", "opencode"],
       "env": { "OPENAI_BASE_URL": "https://gateway.example/v1", "OPENAI_API_KEY": "${MY_GATEWAY_KEY}" },
       "timeout": 1800
     },
@@ -149,21 +150,27 @@ All keys optional.
 - `harness`: the name of the active profile in `harnesses`. Absent: the built-in `claude` profile. A string that
   names no profile fails the run, and the sentence lists the profiles it knows. The object form from 0.15 and before
   is one legacy profile named `"harness"`, and it is active:
-  `{"harness": {"command": ["opencode", "run"], "timeout": 1800}}`. It keeps its own `label`, `models` (an argv that
-  prints one id per line), `modelList` and `prefix`; an object with none of `command`, `models` or `modelList` is
-  ignored, so Claude Code runs.
+  `{"harness": {"command": ["opencode", "run"], "timeout": 1800}}`. It keeps its own `label`, `agent` (the argv that
+  opens it interactively, as under `harnesses`), `models` (an argv that prints one id per line), `modelList` and
+  `prefix`; an object with none of `command`, `models` or `modelList` is ignored, so Claude Code runs.
 - `harnesses`: one entry per profile, by name. `label` is what Setup and sentences show; `command` is the argv with
   `{model}` filled in and `{prompt}` optional (the prompt is appended when the command has no `{prompt}`); `timeout` is
   the seconds a run may take, in place of the caller's own limit (15 minutes for the analysis and 25 for a reviewer). A
   profile has no cost cap, so a slow CLI can be given more time. `env` values are strings, `null` unsets a variable,
   and `"${VAR}"` reads `VAR` from the environment: when it is not set the run fails with a sentence naming it. The
-  context's env wins where both set the same variable. A profile's `models` feeds the picker only when no `providers`
-  are declared: a `shortlist` (`[{id, price?}]`, no request), or a `command`, an argv that prints one id per line, with
-  `prefix`. A `provider` reference (with `prefix` and `deny`, globs) still fills the harness list from a declared
-  catalog, but the picker lists the provider's catalog once any provider is declared. A profile named `claude` is the
-  built-in Claude Code command (`claude -p --model`): its `env` points Claude Code at another endpoint, and its
-  `models` only feeds the picker. Any other declared profile needs a `command`: without one the run fails and the
-  sentence names the profile.
+  context's env wins where both set the same variable. `agent` is the argv that opens the same harness interactively,
+  such as `["aircode", "harness", "opencode"]`: a new agent tab for PR text (a fix, Ask, Send review) starts it, with
+  the task as the tab's prompt, in place of Claude Code. Two commands, two jobs: `command` is the headless call that
+  runs the analysis, the reviewers, triage and fix verification and prints the answer, and `agent` is the program you
+  would type to work in that harness yourself. The tab gets the context's `env`, as every program pr-review starts for
+  that context does; `agent` takes no placeholders, and Setup checks `command`'s program, not `agent`'s. `agent` is
+  optional: without it, a new tab is Claude Code. The legacy `harness` object takes `agent` too. A profile named
+  `claude` is the built-in Claude Code profile, so its `agent` is ignored. A profile's `models` feeds the picker only
+  when no `providers` are declared: a `shortlist` (`[{id, price?}]`, no request), or a `command`, an
+  argv that prints one id per line, with `prefix`. A `provider` reference (with `prefix` and `deny`, globs) still fills
+  the harness list from a declared catalog, but the picker lists the provider's catalog once any provider is declared.
+  The built-in Claude Code profile's `env` points Claude Code at another endpoint, and its `models` only feeds the
+  picker. Any other declared profile needs a `command`: without one the run fails and the sentence names the profile.
 - `providers`: where the AI's model catalogs come from, by name. `label` is what sentences and the picker show; `kind`
   is `openai`, `anthropic` or `openrouter`; `baseUrl` is read with `/models` appended. `apiKeyEnv` names the variable
   that holds the key, sent as `Authorization: Bearer` for `openai` and `x-api-key` for `anthropic`; the key is never
@@ -205,7 +212,7 @@ Enter in the terminal it opens.
 
 - Required: `git` (2.46 or later for the push lock where a remote has a push URL of its own) and `python3`, plus one
   member of each group: `gh` or `glab` (logged in), and `claude` (logged in) or a harness profile's program. Setup
-  lists one row per harness profile, found by the first word of its command, and those rows share the `llm` group
+  lists one row per harness profile, found by the first word of its `command` (not `agent`), and those rows share the `llm` group
   with `claude`: the group blocks only when none of them is usable, and the pane then names its members ("gh or
   glab", "claude or opencode"). A missing member of a satisfied group is listed as not installed, never as required.
 - Optional: `codex` (the Codex reviewer is offered only when it is on PATH; it needs a Codex with permission
