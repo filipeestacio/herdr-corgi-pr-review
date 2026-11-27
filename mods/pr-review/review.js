@@ -14,7 +14,7 @@ import { v_flex, h_flex, Scrollbar, TextView, v_virtual_list, VirtualListScrollH
 import { exec, hc, run, focused, pickFolder, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, nextCommand, watchFolder, openOverlay, closeOverlay, props, home, placement } from "herdr";
 import { spaces, agents, terminals, watch } from "./live.js";
 import { hostOfLink, parseLink, hostWord, hostLong } from "./host.js"; // never straight from Herdr (live.js says why)
-import { parseReports, findingStatus, mergeFindings, findingCounts, countLine, runsOf, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
+import { parseReports, findingStatus, fixStage, findingGroup, FINDING_GROUPS, GROUP_WORD, mergeFindings, findingCounts, countLine, runsOf, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
 import { agentArgs, harnessProfile, harnessAgent } from "./pr.js"; // a new agent tab: the harness profile's own command, else Claude Code
 import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig, writeConfig } from "./setup-view.js";
@@ -279,8 +279,11 @@ const ALL_REVIEWERS = { claude: ["Code review", "ansi5"], security: ["Security r
 // mergeFindings): a label and colour here, never a run of their own.
 const REVIEWERS = { ...ALL_REVIEWERS, analysis: ["Analysis", "ansi4"], ai: ["AI note", "ansi3"] }; // the same word as the one-line notes in the diff
 const reviewersNow = () => Object.entries(ALL_REVIEWERS).filter(([k]) => k !== "codex" || hasTool("codex"));
-// A finding's state words (pr.js findingStatus): "Fixed" only after a passed verification.
-const FSTATUS = { open: ["Unresolved", "muted"], progress: ["Fix sent", "ansi3"], fixed: ["Fixed", "ansi2"], dismissed: ["Dismissed", "dim"], recheck: ["Unresolved, line changed", "ansi3"] };
+// A finding's six groups (pr.js FINDING_GROUPS, findingGroup) and the colour of each in a heading, a row and a card:
+// the state is the result (Verified only after a check read the PR head), not the journey. The word is GROUP_WORD.
+const GTINT = { unresolved: "muted", progress: "ansi3", ready: "ansi3", in_pr: "ansi3", verified: "ansi2", wontfix: "dim" };
+const GTIP = { progress: "A fix agent is working on this finding; nothing is checked yet.", ready: "The fix exists, and the PR head does not carry it: apply it or discard it.",
+  in_pr: "The PR head carries the fix. Verify checks it on this head; a passed check moves it to Verified.", verified: "A check read the PR head and found the fix there.", wontfix: "The agent declined it, or you dismissed it." };
 const SEV = { high: "ansi1", medium: "ansi3", low: "ansi4" };
 // Where a card comes from: its stripe, and the Show switch's colours.
 const SOURCE = { mine: "accent", ai: "ansi3", agents: "ansi6", github: "ansi4", notes: "ansi5" };
@@ -705,7 +708,7 @@ export const ReviewMode = {
     else if (name === "def") this.defineAt(arg, cx);
     else if (name === "cfile") { this.tab = "comments"; this.openCommentFile(arg); } // a file heading's click in the Comments tab
     else if (name === "crow") { const r = this.commentRowsNow().find((x) => x.id === arg); if (r) { this.tab = "comments"; this.openCommentRow(r, cx); } } // a row's click in the Comments tab
-    // page:verify is the Findings tab now: fixes sent and their verification sit there, under "Fix sent".
+    // page:verify is the Findings tab now: a fix and its verification sit there, under its group.
     else if (name === "page" && arg === "verify") this.tab = "findings";
     else if (name === "page") { this.tab = "steps"; this.page = PAGES.some(([k]) => k === arg) ? arg : "overview"; this.defFile = null; }
     else if (name === "finding") { const f = this.findingById(arg); if (f) { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); } } // finding:<id>: a click on its row in the Findings tab
@@ -1438,8 +1441,9 @@ export const ReviewMode = {
   },
   findings() { return this.merged().findings; },
   findingById(id) { return this.findings().find((f) => f.ids.includes(id)) ?? null; },
-  // The one count every view shows (pr.js findingCounts): unresolved, of them with a fix sent, by severity, security.
-  counts() { return this.perFindings("counts", (fs) => findingCounts(fs, (f) => this.fstatus(f))); },
+  // The one count every view shows (pr.js findingCounts): unresolved, of them in each group the Findings tab lists,
+  // by severity, security.
+  counts() { return this.perFindings("counts", (fs) => findingCounts(fs, (f) => this.fstatus(f), (f) => this.fstage(f))); },
   // A value kept while its inputs are the same objects (the analysis' parts and the lists from merged() are replaced,
   // never changed in place): for what a page computes from them on every frame.
   keep(name, deps, make) {
@@ -1456,8 +1460,8 @@ export const ReviewMode = {
   // A value made from the findings and their statuses, kept until one of them changes (the list from merged(), and
   // what fstatus reads): the tab, the bar and every page ask for the same counts and lists in one frame.
   perFindings(name, make) {
-    const fs = this.findings(), st = this.find.status, rep = this.find.reports, head = this.head, rows = this.rowsSig(), k = this.perMemo;
-    const memo = k && k.fs === fs && k.st === st && k.rep === rep && k.head === head && k.rows === rows ? k : (this.perMemo = { fs, st, rep, head, rows, got: {} });
+    const fs = this.findings(), st = this.find.status, rep = this.find.reports, head = this.head, rows = this.rowsSig(), now = this.headNow(), land = this.landed, k = this.perMemo;
+    const memo = k && k.fs === fs && k.st === st && k.rep === rep && k.head === head && k.rows === rows && k.now === now && k.land === land ? k : (this.perMemo = { fs, st, rep, head, rows, now, land, got: {} });
     return name in memo.got ? memo.got[name] : (memo.got[name] = make(fs));
   },
   // "Security review: high · Analysis: medium": a finding's sources with their own severities (one source: its name).
@@ -1620,6 +1624,75 @@ export const ReviewMode = {
     if (s === undefined) { s = findingStatus(f, st, rep, head, this.rowsFor(f.file, true).find((x) => atLine(x, f.line, false))?.text); memo.of.set(f, s); }
     return s;
   },
+  // ---- where the fixes are, from git (one call per head for every finding)
+
+  // Where the fix commits are in the PR, keyed by the head that was asked about (worktree.py contains: "in" | "patch"
+  // | "out"). Empty for a head nobody asked about yet: an unknown commit stays unknown until that call answers.
+  landedNow(head = this.headNow()) { return this.landed && this.landed.head === head ? this.landed.map : {}; },
+  // The commits the fix agents reported for findings, one of each: duplicates go (one commit can fix several findings).
+  fixCommits() {
+    return [...new Set(this.findings().flatMap((f) => {
+      const r = this.find.reports[f.id];
+      return r?.status === "fixed" && r.commit ? [String(r.commit)] : [];
+    }))];
+  },
+  // From render: asks git where the fix commits it does not know are, once per checkout and head. No call without a fix
+  // that has a commit or without a checkout, none while that call is on its way, and a failed one leaves the labels as
+  // they were (a fix whose place is unknown stays "Fix ready"): the tab never waits for it.
+  landedTick(cx) {
+    const w = this.worktree, head = this.headNow();
+    if (!w?.path || !head) return;
+    const known = this.landedNow(head), shas = this.fixCommits().filter((s) => !(s in known));
+    if (!shas.length) return;
+    const key = `${head}|${shas.join(",")}`;
+    if (this.landedIn === key) return;
+    this.landedIn = key;
+    // The PR's base branch as the range's other end: what is reachable from the head and not from the base is the
+    // PR's own commits, whichever commit of the base the clone has fetched.
+    const base = `origin/${this.prSel?.base ?? "main"}`, url = this.prSel?.url;
+    cx.spawn(async (cx) => {
+      const r = await exec("python3", [`${appHome()}/mods/pr-review/worktree.py`, "contains", w.path, head, base, "--", ...shas], { timeout: 120000 })
+        .catch((e) => ({ code: 1, stderr: String(e) }));
+      if (this.landedIn === key) this.landedIn = null;
+      if (this.prSel?.url !== url || r.code !== 0) return;
+      let got; try { got = JSON.parse(r.stdout); } catch { return; }
+      if (this.headNow() !== head) return; // it moved meanwhile: that head's own call answers for it
+      this.landed = { head, map: { ...this.landedNow(head), ...got } };
+      cx.notify();
+    });
+  },
+  // What pr.js fixStage needs about a finding's fix: its newest job, the commit its agent reported (threads.js
+  // fixCommit: a "fixed" report with a sha), and whether the agent declined (the report outlives the job record, and a
+  // review from before jobs were kept has only the report).
+  fixMeta(f) {
+    const job = this.fixJob(f), r = this.find.reports[f.id];
+    if (!job && !r) return null;
+    return { state: job?.state ?? null, commit: r?.status === "fixed" && r.commit ? String(r.commit) : null, declined: r?.status === "wontfix" };
+  },
+  // Every finding's stage in one pass (pr.js fixStage), kept while the findings, their statuses, the fix jobs, the head
+  // and git's answer stay the same: a frame asks this from every row, heading and count.
+  stages() {
+    const deps = [this.findings(), this.find.status, this.find.reports, this.threadDoc, this.threadKey(), this.headNow(), this.landed];
+    if (this.stageMemo && deps.every((d, i) => d === this.stageMemo.deps[i])) return this.stageMemo.map;
+    const head = this.headNow(), landed = this.landedNow(head);
+    const map = new Map(this.findings().map((f) => {
+      const job = this.fixMeta(f), commit = job?.commit ?? null;
+      return [f.id, fixStage({ job, landed: commit ? landed[commit] ?? null : null, verified: this.find.status[f.id]?.verify ?? null, head })];
+    }));
+    this.stageMemo = { deps, map };
+    return map;
+  },
+  fstage(f) { return this.stages().get(f.id) ?? null; },
+  // The group a finding is listed in (pr.js findingGroup): its stage, else what its persisted status says. Every row,
+  // heading and count of a frame asks this, so the six groups are made once per change, not once per call.
+  fgroup(f) {
+    const deps = [this.stages(), this.find.status, this.find.reports, this.head, this.rowsSig()], memo = this.groupMemo;
+    if (!memo || !deps.every((d, i) => d === memo.deps[i])) {
+      const stages = this.stages(), map = new Map(this.findings().map((x) => [x.id, findingGroup(stages.get(x.id) ?? null, this.fstatus(x))]));
+      this.groupMemo = { deps, map };
+    }
+    return this.groupMemo.map.get(f.id) ?? findingGroup(this.fstage(f), this.fstatus(f));
+  },
   // A status set by hand drops an earlier verification; extra: {fixHead} when it goes to Fix.
   setFinding(f, st, cx, extra = {}) {
     const at = new Date().toISOString();
@@ -1628,7 +1701,7 @@ export const ReviewMode = {
   // Dismiss says what goes: the one finding, with every source merged into it.
   dismiss(f, cx) {
     this.setFinding(f, "dismissed", cx, { ids: f.ids }); // a source that joins the line later was not dismissed (pr.js findingStatus)
-    this.note = `Dismissed "${f.title}"${f.sources.length > 1 ? `, all ${f.sources.length} sources of it (${this.sourcesOf(f)})` : ` (${this.sourcesOf(f)})`}. It stays in the Findings tab under Dismissed; Reopen brings it back.`;
+    this.note = `Dismissed "${f.title}"${f.sources.length > 1 ? `, all ${f.sources.length} sources of it (${this.sourcesOf(f)})` : ` (${this.sourcesOf(f)})`}. It stays in the Findings tab under Won't fix; Reopen brings it back.`;
   },
 
   // The findings' status map changed by fn, here and in the file (compare-and-swap against reviewers.py writing it).
@@ -1657,17 +1730,19 @@ export const ReviewMode = {
   },
 
   // "Verify fixes (N)" (a click): one call (verify.py, "PR fix verification") in the PR's context with the review's
-  // model. On the PR head: fixed → ✓, not fixed → open again with the reason, unclear → as it was with the note. On a
-  // fix branch the verdict only stands next to the finding: it stays "Fix sent" until the fix is in the PR head.
-  runVerify(cx) {
-    const list = this.verifyList(), onBranch = this.branchVerifyList(), head = this.headNow(), w = this.worktree, url = this.prSel?.url;
+  // model. On the PR head: fixed → Verified, not fixed → unresolved again with the reason, unclear → as it was with the
+  // note. On a fix branch the verdict only stands next to the finding: it stays "Fix ready" until the fix is in the PR
+  // head. only: the one finding a row's "Verify" checks on the PR head.
+  runVerify(cx, only = null) {
+    const list = only ? only.filter((f) => !["verified", "wontfix"].includes(this.fgroup(f))) : this.verifyList();
+    const onBranch = only ? [] : this.branchVerifyList(), head = this.headNow(), w = this.worktree, url = this.prSel?.url;
     if (this.verifyBusy) return;
     if (!list.length && !onBranch.length) { this.note = "No fix to verify yet: no fix agent has reported a commit, and the PR head has not moved since the fixes were sent."; return cx.notify(); }
     if (!w) { this.note = "Could not verify: the PR head is not checked out yet"; return cx.notify(); }
     this.verifyBusy = { started: Date.now(), n: list.length + onBranch.length };
     const item = (f) => ({ id: f.id, file: f.file, line: f.line, title: f.title, detail: f.detail, suggestion: f.suggestion });
     const req = { context: this.ctxReq(), model: model(), worktree: w.path, head,
-      items: [...list.map((f) => ({ ...item(f), since: this.find.status[f.id].fixHead })),
+      items: [...list.map((f) => ({ ...item(f), since: this.find.status[f.id]?.fixHead ?? head })),
         ...onBranch.map((c) => ({ ...item(c.f), since: c.job.head, head: c.commit, worktree: c.job.path, branch: c.job.branch }))] };
     cx.spawn(async (cx) => {
       const r = await exec("python3", [`${appHome()}/mods/pr-review/verify.py`, JSON.stringify(req)], { timeout: 600000 }).catch((e) => ({ code: 1, stderr: String(e) }));
@@ -1795,8 +1870,8 @@ export const ReviewMode = {
       prompt: (sub) => TH.fixBothPrompt(c.prompt(sub, null), fixPrompt(list, this.pr, report, this.lang())), foreign: c.foreign,
       sent: (cx, how) => { for (const f of list) this.setFinding(f, "progress", cx, { fixHead: this.headNow() }); c.sent(cx, how); } });
   },
-  // The findings ticked in the Findings tab's "No fix sent". Only what can still be ticked counts: unresolved, no fix
-  // sent, and not a security finding about access or data (those go alone).
+  // The findings ticked in the Findings tab's Unresolved group. Only what can still be ticked counts: unresolved, no
+  // fix under way, and not a security finding about access or data (those go alone).
   pickedFindings() { return this.selection().findings; },
   pickedFindingsNow() {
     const ids = TH.selectedOf(this.threadDoc, this.threadKey(), TH.FINDINGS);
@@ -2662,25 +2737,31 @@ export const ReviewMode = {
     } catch (e) { this.note = `Not started: ${String(e).replace(/^Error: /, "")}`; }
     finally { this.sending = false; cx.notify(); }
   },
-  // A finding's buttons in the Findings tab, by where it stands. At most one is lit, the next step: "Add to review" on
-  // an unresolved finding, "Go to fix" while the agent works or after a failed check, "Apply to PR" once the fix is
-  // verified on its branch (before that the section's "Verify fixes" is the lit one). What ends something (Discard
-  // fix, Dismiss finding) comes last and stays quiet. A settled finding only reopens.
-  findingActions(x, settled, t) {
-    if (settled) return [pill(`rv-fro-${x.id}`, t, "Reopen", (_e, cx) => this.setFinding(x, "open", cx)).tooltip("Make this finding unresolved again")];
+  // A finding's buttons in the Findings tab, by the group it is in (pr.js fixStage, the same words its row shows). At
+  // most one is lit, the next step: "Add to review" on an unresolved one, "Go to fix" while its agent works, "Apply to
+  // PR" once the fix exists and the PR does not carry it, "Verify" once the PR head carries it (the one model call).
+  // What ends something (Discard fix, Dismiss finding) comes last and stays quiet. A verified or won't-fix finding only
+  // reopens.
+  findingActions(x, t, verifiable = false) {
+    const g = this.fgroup(x);
+    if (g === "verified" || g === "wontfix") return [pill(`rv-fro-${x.id}`, t, "Reopen", (_e, cx) => this.setFinding(x, "open", cx)).tooltip("Make this finding unresolved again")];
     const fv = this.fixView(this.fixOf(x.id)), v = this.find.status[x.id]?.verify, lit = t.foreground;
     const add = (on) => pill(`rv-fcm-${x.id}`, t, "Add to review", (_e, cx) => this.findingComment(x, cx), false, on ? lit : undefined).tooltip("Add this finding to your pending review comments; nothing is posted until you finish the review");
     const ask = pill(`rv-fdi-${x.id}`, t, "Ask an agent…", (_e, cx) => this.discuss(x, cx)).tooltip("Ask an agent about this finding: a preview first says what starts and what it may do");
     const refuted = x.proof?.result === "refuted";
-    const dismiss = pill(`rv-fdm-${x.id}`, t, "Dismiss finding", (_e, cx) => this.dismiss(x, cx), false, refuted ? lit : undefined).tooltip(refuted ? `An agent refuted this finding: ${x.proof.reason || "see Evidence"}. Dismiss it if you agree; nothing happens by itself.` : `Dismiss this finding${x.sources.length > 1 ? ` with all ${x.sources.length} of its sources` : ""}; it stays here under Dismissed`);
-    // The same order as on the card in the diff: Add, Ask, Fix, Dismiss; Verify with an agent before Dismiss.
-    if (!fv) return [add(!refuted), ask, pill(`rv-ffx-${x.id}`, t, "Fix with agent…", (_e, cx) => this.fix([x], cx)).tooltip("Have an agent fix this: a preview first says where it works, what it may do and that it never pushes"), this.verifyPill(x, t), dismiss];
-    const sub = fv.job.target === "sub", ready = Boolean(fv.commit) && sub, checked = v?.branch ? v.result : null;
-    return [badge(t, fv.commit ? `Fix ready on ${fv.job.branch ?? "the PR"}` : `Fixing · ${fv.status}`, fv.commit ? t.ansi2 : t.ansi3).id(`rv-ffb-${x.id}`).tooltip("The fix agent's progress on this finding"),
-      ...(fv.job.terminal ? [pill(`rv-fgo-${x.id}`, t, "Go to fix", () => this.goFix(fv.job), false, !ready || checked === "not_fixed" ? lit : undefined).tooltip("Show the fix agent's terminal")] : []),
-      ...(ready ? [pill(`rv-fap-${x.id}`, t, "Apply to PR", (_e, cx) => this.applyFix(fv.job, cx), false, checked === "fixed" ? t.ansi2 : undefined)
+    const dismiss = pill(`rv-fdm-${x.id}`, t, "Dismiss finding", (_e, cx) => this.dismiss(x, cx), false, refuted ? lit : undefined).tooltip(refuted ? `An agent refuted this finding: ${x.proof.reason || "see Evidence"}. Dismiss it if you agree; nothing happens by itself.` : `Dismiss this finding${x.sources.length > 1 ? ` with all ${x.sources.length} of its sources` : ""}; it stays here under Won't fix`);
+    const verify = (on) => pill(`rv-fch-${x.id}`, t, "Verify", (_e, cx) => this.runVerify(cx, [x]), false, on ? lit : undefined)
+      .tooltip("One model call checks this fix on the PR head. A passed check moves the finding to Verified; nothing is posted.");
+    // The same order as on the card in the diff: Add, Ask, Fix or Verify, Dismiss; Verify with an agent before Dismiss.
+    // A fix in the PR whose job record is gone still gets its Verify: git knows where the fix is without it.
+    if (!fv) return g === "in_pr" ? [add(!refuted), ask, verify(verifiable), dismiss]
+      : [add(!refuted), ask, pill(`rv-ffx-${x.id}`, t, "Fix with agent…", (_e, cx) => this.fix([x], cx)).tooltip("Have an agent fix this: a preview first says where it works, what it may do and that it never pushes"), this.verifyPill(x, t), dismiss];
+    const sub = fv.job.target === "sub", checked = v?.branch ? v.result : null;
+    return [badge(t, fv.commit ? `Fix on ${fv.job.branch ?? "the PR"}` : `Fixing · ${fv.status}`, fv.commit ? t.ansi2 : t.ansi3).id(`rv-ffb-${x.id}`).tooltip("The fix agent's progress on this finding"),
+      ...(fv.job.terminal ? [pill(`rv-fgo-${x.id}`, t, "Go to fix", () => this.goFix(fv.job), false, g === "progress" ? lit : undefined).tooltip("Show the fix agent's terminal")] : []),
+      ...(g === "ready" && fv.commit && sub ? [pill(`rv-fap-${x.id}`, t, "Apply to PR", (_e, cx) => this.applyFix(fv.job, cx), false, checked === "fixed" ? t.ansi2 : undefined)
         .tooltip("Cherry-pick the fix commits onto the local checkout of the PR's branch; nothing is pushed")] : []),
-      add(false), ask,
+      ...(g === "in_pr" ? [verify(verifiable)] : []), add(false), ask,
       ...(sub ? [pill(`rv-fdc-${x.id}`, t, "Discard fix", (_e, cx) => this.discardFix(fv.job, cx)).tooltip("Delete the fix's worktree and branch")] : []), dismiss];
   },
   goFix(job) { if (job?.terminal) run("terminal.peek", { terminal: job.terminal }); },
@@ -2714,6 +2795,11 @@ export const ReviewMode = {
       if (job.terminal) run("terminal.kill", { terminal: job.terminal });
       if (job.path) { await git(["worktree", "remove", "--force", job.path]); await git(["branch", "-D", job.branch]); }
       this.updateThreads(cx, (d) => TH.setFix(d, key, job.id, { state: "discarded" }));
+      // Its findings are unresolved again: nothing is on its way, and a check it had was on a branch that is gone.
+      const ids = job.items.filter((x) => x.kind === "finding").map((x) => x.id);
+      for (const f of this.findings().filter((x) => x.ids.some((id) => ids.includes(id)))) {
+        if (this.find.status[f.id]?.s === "progress") this.setFinding(f, "open", cx, { fixHead: undefined });
+      }
       this.note = `Discarded ${job.branch ?? "the fix"}`; cx.notify();
     });
   },
@@ -3617,13 +3703,13 @@ export const ReviewMode = {
       this.layerFindings(s).length > 0 && v_flex().pt(2).gap(6)
         .child(div().text_size(TYPE.small).font_semibold().text_color(t.muted).child("FINDINGS"))
         .children(this.layerFindings(s).map((f, k) => {
-          const st = this.fstatus(f), settled = ["fixed", "dismissed"].includes(st);
+          const st = this.fstatus(f), g = this.fgroup(f), settled = g === "verified" || g === "wontfix";
           return h_flex().id(`${p}-f-${n}-${k}`).tooltip(`${this.sourcesOf(f)}: open this finding in the Findings tab`).gap(8).items_center().text_size(TYPE.body).cursor_pointer()
             .on_click((_e, cx) => { this.openFinding(f); cx.stop_propagation(); cx.notify(); })
             .child(badge(t, f.severity, t[SEVERITY_COLOR[f.severity]] ?? t.accent)) // also "critical", which SEV does not have: without a colour the element, and with it the frame, failed
             .child(div().flex_1().min_w(0).truncate().text_color(settled ? t.muted : t.foreground).child(f.title))
             .child(div().flex_none().text_size(TYPE.small).text_color(t.muted).child(f.sources.length === 1 ? this.sourcesOf(f) : `${f.sources.length} sources`))
-            .when(st !== "open", (e) => e.child(div().flex_none().text_size(TYPE.small).text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(FSTATUS[st]?.[0] ?? st)));
+            .when(Boolean(stateWord(g, st)), (e) => e.child(div().flex_none().text_size(TYPE.small).text_color(t[GTINT[g]] ?? t.muted).child(stateWord(g, st))));
         })),
       pics && bar,
       pics && visualsCard(s.visuals, t, `${p}-vis-${n}`, (at, cx) => this.jumpTo(at, cx),
@@ -3669,9 +3755,9 @@ export const ReviewMode = {
   // the same click. No layers: those are the list below.
   attention() {
     return this.mergeRows().map((r) => {
-      const f = r.finding ?? null;
+      const f = r.finding ?? null, sent = Boolean(f) && this.fstatus(f) === "progress";
       return { row: r, severity: f?.severity ?? null, label: r.kind === "ask" ? `${r.title}: ${r.ask.state === "not_done" ? "not done" : r.ask.state}` : r.title, why: r.why || r.title, security: r.kind === "security",
-        certainty: f?.certainty ?? null, path_certainty: f?.path_certainty ?? null, probed: f?.probed ?? null, finding: Boolean(f), sent: Boolean(f) && this.fstatus(f) === "progress", at: r.where ? r.where.split("/").pop() : "", go: (cx) => this.goMergeRow(r, cx) };
+        certainty: f?.certainty ?? null, path_certainty: f?.path_certainty ?? null, probed: f?.probed ?? null, finding: Boolean(f), sent, stage: sent ? this.fgroup(f) : null, at: r.where ? r.where.split("/").pop() : "", go: (cx) => this.goMergeRow(r, cx) };
     });
   },
   // A click on a row of "Before merge" (or the box over the layers): the finding, the criterion, the check or the path.
@@ -3704,7 +3790,7 @@ export const ReviewMode = {
           : div().w(SIGN_W).flex_none().text_size(TYPE.body).text_color(t.muted).child(SYM[a.row.kind] ?? (a.finding ? "!" : "✗")))
         .children([certaintyWord(t, a, `rv-att-c-${k}`)].filter(Boolean))
         .child(div().flex_1().min_w(0).truncate().text_size(TYPE.body).child(a.label))
-        .when(a.sent, (x) => x.child(div().flex_none().text_size(TYPE.small).text_color(t[FSTATUS.progress[1]]).child(FSTATUS.progress[0])))
+        .when(a.sent && Boolean(a.stage), (x) => x.child(div().flex_none().text_size(TYPE.small).text_color(t[GTINT[a.stage]] ?? t.muted).child(GROUP_WORD[a.stage] ?? "")))
         .when(Boolean(a.at), (x) => x.child(div().flex_none().text_size(TYPE.small).text_color(t.muted).child(a.at)))))
         .when(rest.length > 0, (x) => x.child(div().id("rv-att-more").tooltip("Open the Overview: its Before merge list has them all").h(22).px(4).flex().items_center().rounded(5).cursor_pointer()
           .text_size(TYPE.small).text_color(t.muted).hover((s) => s.text_color(t.foreground))
@@ -5054,7 +5140,7 @@ export const ReviewMode = {
   secFinding(t, f, ctx) {
     // ponytail: formatted here until the Diff package's helper for these facts (views.js) is merged; then use that.
     const CERTAIN = { confirmed: "Confirmed: something that ran shows it.", derived: "Derived from the code that was read; nothing ran.", assumed: "Assumed: it depends on something that could not be checked." };
-    const st = this.fstatus(f), col = t[SEV[f.severity]] ?? t.accent, at = `${f.file}:${f.line}`, card = ctx.cardOf.get(f.id) ?? null, cr = ctx.rowOf(f), n = cr ? ctx.crossings.indexOf(cr) + 1 : 0;
+    const g = this.fgroup(f), col = t[SEV[f.severity]] ?? t.accent, at = `${f.file}:${f.line}`, card = ctx.cardOf.get(f.id) ?? null, cr = ctx.rowOf(f), n = cr ? ctx.crossings.indexOf(cr) + 1 : 0;
     const REACH = { public: "anyone can reach it", authenticated: "an authenticated caller can reach it", internal_only: "it can only be reached from inside", unknown: "the analysis could not tell from where it can be reached" };
     const level = REACH[f.reachability] ?? null, { ways, stated } = ctx.waysOf(f), nm = (id) => (id ? ctx.name(id) : null);
     const conflict = cr?.conflicts.find((c) => c.f === f);
@@ -5078,7 +5164,7 @@ export const ReviewMode = {
         .when(Boolean(cr), (e) => e.child(div().id(`rv-sec-card-${f.id}`).flex_none().text_size(TYPE.small).text_color(t.accent).cursor_pointer().hover((x) => x.underline()).tooltip("Open its crossing in the table above").on_click((_e, cx) => ctx.show(cr.key, cx)).child(`Crossing ${n} ↑`)))
         .child(div().id(`rv-sec-at-${f.id}`).flex_none().text_size(TYPE.small).text_color(t.accent).cursor_pointer().hover((x) => x.underline()).tooltip("Show this line in the diff").on_click((_e, cx) => this.jumpTo(at, cx)).child(`${f.file.split("/").pop()}:${f.line} ↗`))
         .children(this.editAt(t, `rv-sec-ed-${f.id}`, at))
-        .child(div().flex_none().text_size(TYPE.small).font_semibold().text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(FSTATUS[st]?.[0] ?? st)))
+        .child(div().flex_none().text_size(TYPE.small).font_semibold().text_color(t[GTINT[g]] ?? t.muted).child(GROUP_WORD[g] ?? g)))
       .child(v_flex().gap(3).children(facts.map(([label, text]) => h_flex().gap(8).items_start().text_size(TYPE.small).line_height(1.5)
         .child(div().w(98).flex_none().text_color(t.muted).child(label)).child(div().flex_1().min_w(0).whitespace_normal().child(text)))))
       .child(h_flex().gap(6).items_center().flex_wrap()
@@ -5673,7 +5759,7 @@ export const ReviewMode = {
     const REACH = { assumed: "assumed reachable", confirmed: "confirmed reachable", derived: "reachable by the code" };
     const sure = (f) => (f.security ? [f.certainty ? certaintyText(f) : "not rated", f.path_certainty && (REACH[f.path_certainty] ?? `reach ${f.path_certainty}`)].filter(Boolean).join(" · ") : f.certainty === "assumed" ? "assumed" : "");
     const finding = (f, id) => {
-      const st = this.fstatus(f), settled = st === "fixed" || st === "dismissed", note = [sure(f), st !== "open" && FSTATUS[st]?.[0]].filter(Boolean).join(" · ");
+      const st = this.fstatus(f), g = this.fgroup(f), settled = g === "verified" || g === "wontfix", note = [sure(f), stateWord(g, st)].filter(Boolean).join(" · ");
       return h_flex().id(id).tooltip([f.title, `${f.severity[0].toUpperCase()}${f.severity.slice(1)}`, secWhy(f), certaintyLine(f), "Click to open this finding."].filter(Boolean).join("\n")).gap(8).items_center()
         .pl(10).pr(6).py(3).rounded(4).border_l(3).border_color(settled ? t.border : t[SEV[f.severity]] ?? t.muted).cursor_pointer().hover((s) => s.bg(t.hover))
         .on_click((_e, cx) => { this.openFinding(f); this.jumpTo(`${f.file}:${f.line}`, cx); cx.stop_propagation(); })
@@ -5786,19 +5872,20 @@ export const ReviewMode = {
       return { k, n, text: runs[k]?.state === "running" ? `${name(k)}: running` : n ? `${name(k)} ${n}` : runs[k]?.state === "failed" ? `${name(k)}: failed` : ran[k] ? `${name(k)}: no findings` : `${name(k)}: not run` };
     }).filter((x) => x.k !== "ai" || x.n);
   },
-  // The Findings tab: every finding once, one line each, in sections by state (pr.js findingStatus): the unresolved
-  // ones with a fix sent (what is known about each fix, and Verify) and without, Fixed, Dismissed, then the AI notes. A click opens a finding in
-  // place and shows its line in the diff. It has no filters of its own: the bar's Show switch is the one filter.
+  // The Findings tab: every finding once, one line each, in the six groups of pr.js FINDING_GROUPS (in that order,
+  // empty ones hidden): where its fix stands, from git and the one check (fixStage), and what git cannot know from the
+  // persisted status. A click opens a finding in place and shows its line in the diff. It has no filters of its own:
+  // the bar's Show switch is the one filter.
   findingsPane(t) {
     const all = this.findings(), c = this.counts(), runs = this.find.runs, toVerify = [...this.verifyList(), ...this.branchVerifyList()], notes = this.openSugs(), m = model();
-    const by = (...st) => all.filter((x) => st.includes(this.fstatus(x)));
-    const unresolved = by("open", "recheck"), sent = by("progress");
+    const by = (g) => all.filter((x) => this.fgroup(x) === g), groups = Object.fromEntries(FINDING_GROUPS.map(([k]) => [k, by(k)]));
+    const unresolved = groups.unresolved, ready = groups.ready, inPr = groups.in_pr;
     const name = (k) => REVIEWERS[k]?.[0] ?? k, fun = funnel(all, (f) => this.fstatus(f));
     const ran = { analysis: Boolean(this.ai), ...Object.fromEntries(Object.keys(ALL_REVIEWERS).map((k) => [k, runs[k]?.state === "done"])) };
     const sources = this.findingSources(all);
     // The order "Quickest fix" is offered once a finding says how much work its fix is; it reorders every section.
     const efforts = hasEffort(all), order = (list) => (efforts && this.fsort ? quickFirst(list) : list);
-    // A row under "No fix sent" starts with a box, as a row of the Comments tab: ticked ones go to one fix agent
+    // A row of the unresolved ones starts with a box, as a row of the Comments tab: ticked ones go to one fix agent
     // together ("Fix selected (n)…"). A security finding about access or data keeps its box, switched off.
     // The box stands beside the part of the row that opens the finding, not inside it: its click is its own, on a
     // folded row as on an open one, whatever a press on the row does.
@@ -5809,7 +5896,8 @@ export const ReviewMode = {
         .flex().items_center().justify_center().text_size(TYPE.micro).text_color(t.accent_foreground).child(sel ? "✓" : "")
         .on_click((_e, cx) => { if (!alone) this.pickFinding(x.id, cx); cx.stop_propagation(); }); };
     const row = (x) => {
-      const st = this.fstatus(x), on = this.ffocus === x.id, col = t[SEV[x.severity]] ?? t.accent, li = this.layerOf(x), settled = st === "fixed" || st === "dismissed";
+      const st = this.fstatus(x), g = this.fgroup(x), on = this.ffocus === x.id, col = t[SEV[x.severity]] ?? t.accent, li = this.layerOf(x), settled = g === "verified" || g === "wontfix";
+      const job = this.fixJob(x), applied = Boolean(job?.appliedAt || job?.state === "applied");
       const wide = on || (x.security && x.severity === "high" && !settled); // an unresolved high security finding keeps its whole title
       const others = x.sources.filter((y) => y.title !== x.title || y.detail !== x.detail), owner = on ? ownerOf(x, this.ai?.components) : null;
       // Its way into the PR as five steps in one line; the step that is next says what is missing, a step with
@@ -5828,7 +5916,9 @@ export const ReviewMode = {
           .children([certaintyWord(t, x, `rv-fcert-${x.id}`)].filter(Boolean))
           .child(div().flex_1().min_w(120).font_semibold().text_color(settled ? t.muted : t.foreground).when(!wide, (e) => e.truncate()).when(wide, (e) => e.whitespace_normal()).child(x.title))
           .child(div().flex_none().text_size(TYPE.small).text_color(t.muted).child(`${x.file.split("/").pop()}:${x.line}${this.findRow(x) < 0 ? " · outside the diff" : ""}`))
-          .when(Boolean(stateWord(st)), (e) => e.child(div().flex_none().text_size(TYPE.small).font_semibold().text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(stateWord(st))))))
+          .when(Boolean(stateWord(g, st)), (e) => e.child(div().id(`rv-lfst-${x.id}`).tooltip(g === "ready" && applied
+            ? "Applied once, but the PR head does not carry this change any more: a force-push or a rebase took it away."
+            : GTIP[g] ?? "").flex_none().text_size(TYPE.small).font_semibold().text_color(t[GTINT[g]] ?? t.muted).child(stateWord(g, st))))))
         .when(on, (e) => e
           .child(div().text_size(TYPE.small).text_color(t.muted).whitespace_normal().child(`Found by ${this.sourcesOf(x)}${owner ? ` · Owner: ${owner}` : ""}${x.effort ? ` · Fix effort: ${x.effort}` : ""}`))
           // An analysis finding is part of its layer: name it, a click opens it.
@@ -5851,22 +5941,28 @@ export const ReviewMode = {
             .when(Boolean(shown), (e) => e.child(v_flex().p(8).gap(3).rounded(6).border_1().border_color(t.border)
               .children(shown.details.map(([label, text]) => h_flex().gap(8).items_start().text_size(TYPE.small).line_height(1.5)
                 .child(div().w(52).flex_none().text_color(t.muted).child(label)).child(div().flex_1().min_w(0).whitespace_normal().child(text)))))))
-          .child(h_flex().flex_wrap().gap(6).items_center().children(this.findingActions(x, settled, t))));
+          .child(h_flex().flex_wrap().gap(6).items_center().children(this.findingActions(x, t, toVerify.some((f) => f.id === x.id)))));
     };
     const section = (title, list, right = null, hint = null) => v_flex().flex_none().gap(2)
       .child(h_flex().pt(10).pb(2).px(6).gap(8).items_center().child(div().flex_1().text_size(TYPE.small).font_semibold().text_color(t.muted).child(`${title} · ${list.length}`)).children([right].filter(Boolean)))
       .when(Boolean(hint), (e) => e.child(div().px(6).pb(2).text_size(TYPE.small).line_height(1.5).text_color(t.muted).whitespace_normal().child(hint)))
       .children(order(list).map(row));
+    // One group, and nothing at all while it is empty (keep: a group with no row still holds the selection's button).
+    const part = (key, right = null, hint = null, keep = false) => groups[key].length || keep ? section(GROUP_WORD[key], groups[key], right, hint) : null;
     const verify = div().id("rv-verify").tooltip("One model call checks the fixes sent: a reported commit on its fix branch, or the PR head once it moved").px(9).h(26).flex().items_center().gap(6).rounded(6).border_1().text_size(TYPE.small)
       .border_color(toVerify.length && !this.verifyBusy ? t.foreground : t.border).text_color(toVerify.length && !this.verifyBusy ? t.foreground : t.muted)
       .when(toVerify.length > 0 && !this.verifyBusy, (e) => e.cursor_pointer().hover((h) => h.bg(t.hover)).on_click((_e, cx) => this.runVerify(cx)))
       .child(this.verifyBusy ? `Verifying ${this.verifyBusy.n}…` : `Verify fixes (${toVerify.length})`);
-    const sentHint = !sent.length ? "No fix is out. A finding sent to Fix stays unresolved and shows here until it is verified."
-      : `A fix sent does not resolve a finding. Verify is one ${modelLabel(m)} call: it checks a reported commit on its fix branch, and the PR head once the fix is pushed. Only a passed check on the PR head moves a finding to Fixed.${toVerify.length ? "" : " Nothing to verify yet."}`;
+    // The button has one home: over the fixes the PR head carries, else (a branch check waiting, nothing in the PR yet)
+    // over the ready ones.
+    const check = toVerify.length ? (inPr.length ? { in_pr: verify } : ready.length ? { ready: verify } : {}) : {};
+    const progressHint = groups.progress.length ? "A fix agent is working on this. It reports back with the commit when it is done; nothing is verified yet." : null;
+    const readyHint = ready.length ? "The fix exists, and the PR head does not carry it. Apply to PR cherry-picks a sub-agent's fix onto the local checkout of the PR's branch; nothing is pushed. A fix made in the PR's checkout itself goes in when you push it from there." : null;
+    const inPrHint = inPr.length ? `The PR head carries the fix, and no check has read it there. Verify is one ${modelLabel(m)} call; a passed check on the PR head moves the finding to Verified.` : null;
     return v_flex().flex_1().min_h(0)
       .child(v_flex().flex_none().px(14).py(10).gap(8).border_b(1).border_color(t.border)
         // How this number comes about: in short under it, as a sentence with every source in its help text.
-        .child(h_flex().gap(8).items_start().child(div().id("rv-fcount").flex_1().min_w(0).whitespace_normal().tooltip(`${funnelLine(fun, name)} A finding with a fix sent stays unresolved until it is verified.`).text_size(TYPE.body).font_semibold().child(countLine(c)))
+        .child(h_flex().gap(8).items_start().child(div().id("rv-fcount").flex_1().min_w(0).whitespace_normal().tooltip(`${funnelLine(fun, name)} The state comes from git: a finding stays unresolved until a check reads the PR head and finds it fixed.`).text_size(TYPE.body).font_semibold().child(countLine(c)))
           .when(Boolean(this.prSel), (e) => e.child(this.mdButton(t, "rv-md-f"))))
         .when(Boolean(funnelShort(fun)), (e) => e.child(div().id("rv-ffunnel").tooltip(funnelLine(fun, name)).mt(-6).truncate().text_size(TYPE.small).text_color(t.muted).child(funnelShort(fun))))
         // The sources are counts, not switches: a line of text (framed chips read as a second filter beside the bar's
@@ -5884,13 +5980,11 @@ export const ReviewMode = {
         .children(reviewersNow().map(([k, [label]]) => pill(`rv-frun-${k}`, t, runs[k]?.busy ? `${label} running…` : label, (_e, cx) => this.runReviewer(k, cx), false, t.foreground).tooltip("Run this reviewer read-only on the PR head; its findings show here")))))
       .child(div().flex_1().min_h(0).relative()
         .child(v_flex().id("rv-find-left").absolute().inset_0().overflow_y_scroll().px(8).pb(12).gap(2)
-          // The two kinds of unresolved findings add up to the number in the tab and in the line above.
-          .child(section("FIX SENT", sent, verify, sentHint))
-          .child(section("NO FIX SENT", unresolved, total > 0
+          // Where each fix stands, in the order of pr.js FINDING_GROUPS; a group with nothing in it is not drawn.
+          .children([part("unresolved", total > 0
             ? pill("rv-fixall", t, `Fix selected (${total})…`, (_e, cx) => this.fixSelected(cx), true).tooltip(total > picked.size ? `Hand everything selected to one agent together: ${picked.size} ${picked.size === 1 ? "finding" : "findings"} ticked here and ${total - picked.size} ${total - picked.size === 1 ? "comment" : "comments"}. A preview first.` : "Hand the ticked findings to one agent together; a preview first, where you can still change the ticks.")
-            : unresolved.filter((x) => !secByEffect(x)).length > 1 && pill("rv-fixall", t, "Fix several…", (_e, cx) => this.fixSeveral(cx)).tooltip("Pick which of these findings one agent fixes together; a preview first. Security findings are fixed one at a time.")))
-          .when(c.fixed > 0, (e) => e.child(section("FIXED", by("fixed"))))
-          .when(c.dismissed > 0, (e) => e.child(section("DISMISSED", by("dismissed"))))
+            : unresolved.filter((x) => !secByEffect(x)).length > 1 && pill("rv-fixall", t, "Fix several…", (_e, cx) => this.fixSeveral(cx)).tooltip("Pick which of these findings one agent fixes together; a preview first. Security findings are fixed one at a time."), null, total > 0),
+            part("progress", null, progressHint), part("ready", check.ready ?? null, readyHint), part("in_pr", check.in_pr ?? null, inPrHint), part("verified"), part("wontfix")].filter(Boolean))
           // Suggestions alone on their lines: notes, not findings, not counted above.
           .when(notes.length > 0, (e) => e.child(v_flex().flex_none().gap(2)
             .child(div().pt(10).pb(2).px(6).text_size(TYPE.small).font_semibold().text_color(t.muted).child(`AI NOTES · ${notes.length} · not counted as findings`))
@@ -6024,7 +6118,7 @@ export const ReviewMode = {
           .child(div().h(20).flex_none().text_size(TYPE.small).text_color(t.muted).child("A note, not a finding. Press a to add it as a comment, x to hide it."))));
     }
     if (it.t === "find" || it.t === "fact") {
-      const f = it.f, c = t[SEV[f.severity]] ?? t.accent, st = this.fstatus(f), line = this.fixLine(f);
+      const f = it.f, c = t[SEV[f.severity]] ?? t.accent, st = this.fstatus(f), g = this.fgroup(f), line = this.fixLine(f);
       const card = (e) => e.border_l(4).border_r(1).border_color(c).bg(c + "12");
       if (it.t === "fact") {
         const live = Boolean(this.fixOf(f.id)?.terminal);
@@ -6032,10 +6126,10 @@ export const ReviewMode = {
           .child(button(t, "Add to review", live ? t.border : c, t.foreground).id(`rv-fa-c-${f.id}`).tooltip("Add this finding to your pending review comments; nothing is posted until you finish the review"))
           .child(button(t, "Ask an agent…", t.border, t.foreground).id(`rv-fa-d-${f.id}`).tooltip("Ask an agent about this finding: a preview first says what starts and what it may do"))
           .child(button(t, live ? "Go to fix" : "Fix with agent…", live ? c : t.border, t.foreground).id(`rv-fa-f-${f.id}`).tooltip(live ? "Show the fix agent's terminal" : "Have an agent fix this: a preview first says where it works, what it may do and that it never pushes"))
-          .child(button(t, "Dismiss finding", t.border, t.muted).id(`rv-fa-x-${f.id}`).tooltip(`Dismiss this finding${f.sources.length > 1 ? ` with all ${f.sources.length} of its sources` : ""}; it stays in the Findings tab under Dismissed`)));
+          .child(button(t, "Dismiss finding", t.border, t.muted).id(`rv-fa-x-${f.id}`).tooltip(`Dismiss this finding${f.sources.length > 1 ? ` with all ${f.sources.length} of its sources` : ""}; it stays in the Findings tab under Won't fix`)));
       }
       // One line folded (severity, title, sources, state); open: the head, the fix line, the title and findRows.
-      const open = this.findOpen(f), state = stateWord(st) ? div().id(`rv-lfst-${f.id}`).tooltip("Where this finding stands: fix sent, fixed (verified), dismissed, or unresolved with its line changed since").flex_none().text_size(TYPE.small).font_semibold().text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(stateWord(st)) : null;
+      const open = this.findOpen(f), state = stateWord(g, st) ? div().id(`rv-lfst-${f.id}`).tooltip("Where this finding stands: unresolved, a fix in progress, a fix ready to apply, in the PR but not verified, verified, or won't fix").flex_none().text_size(TYPE.small).font_semibold().text_color(t[GTINT[g]] ?? t.muted).child(stateWord(g, st)) : null;
       const head = (e) => e.child(div().w(10).flex_none().text_size(TYPE.small).text_color(t.muted).child(open ? "▾" : "▸"))
         .child(badge(t, f.severity, c).id(`rv-lfs-${f.id}`).tooltip(`${f.severity} is the highest severity among this finding's sources. The scale:\n${SEVERITY_SCALE}`))
         .when(Boolean(f.security), (x) => x.child(secBadge(t, f).id(`rv-lfsec-${f.id}`).tooltip(secWhy(f) || "A security finding")));
@@ -6317,6 +6411,7 @@ export const ReviewMode = {
     if (this.prSel) this.loadModels(cx);
     this.impactTick(cx); // the Impact section (impact-view.js): only on the Architecture page
     this.schemaTick(cx); // "Schema changes" (schema-view.js): the same
+    this.landedTick(cx); // where each fix's commit is in the PR (worktree.py contains), once per head
     // The diff column's width: card heights wrap to it. on_size_change reports the window in logical px; the column and
     // its rows are laid out in px scaled by the person's zoom (as in settleTop).
     if (this.winW) this.listW = this.winW / (settings().zoom || 1) - this.leftW() - SPLIT - (this.drawerSqueezes() ? 380 : 0);
@@ -7033,8 +7128,9 @@ const SIGN_W = 26, SIGN_PAGE = { security: "blast", resilience: "res" }, PAGE_GL
 const rowSign = (t, glyph, fs) => div().w(SIGN_W).flex_none().flex().items_center().child(signEl(div, t, signOf(fs), glyph));
 // A finding's "⛨ Security" chip: the sign in the finding's severity color and certainty form, then the word.
 const secBadge = (t, f) => { const s = signOf([f]), c = t[s.color] ?? t.ansi1; return h_flex().flex_none().pl(3).pr(6).py(1).gap(3).items_center().rounded(5).bg(c + "26").text_size(TYPE.small).font_semibold().text_color(c).child(signEl(div, t, s, "⛨")).child("Security"); };
-// A finding's state as a word only when it is not the usual one: unresolved goes without saying.
-const stateWord = (st) => (st === "open" ? null : st === "recheck" ? "line changed" : FSTATUS[st]?.[0] ?? st);
+// A finding's group as a word (pr.js GROUP_WORD) only when it is not the usual one: unresolved goes without saying,
+// except a line the head changed under ("line changed", the recheck badge inside that group).
+const stateWord = (g, st) => (g === "unresolved" ? (st === "recheck" ? "line changed" : null) : GROUP_WORD[g] ?? g);
 
 // The note about an action just taken, under the right pane (views.js noteRule): in the text color and gone after a
 // few seconds, or, when the action did not happen, in red with a mark and a ✕, kept until closed or the next action.

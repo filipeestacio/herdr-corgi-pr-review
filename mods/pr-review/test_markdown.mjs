@@ -72,7 +72,7 @@ const all = [f("m1", "medium", { breaks: { node: "c" } }), sec, f("l1", "low"), 
   // All unresolved ones, most severe first; the dismissed one is out, a fix sent stays in.
   const list = findingsMd(all, { ...base, statusOf, asks });
   assert.ok(list.startsWith(`${first}\n\n# 3 unresolved findings: 1 high, 1 medium, 1 low\n\n`) && list.includes("\n\n## High (1)\n\n### 1. T s1\n"));
-  assert.match(list, /\n3 unresolved: 1 high, 1 medium, 1 low · 1 with a fix sent · 1 dismissed\n/, "the tab's count line");
+  assert.match(list, /\n3 unresolved: 1 high, 1 medium, 1 low · 1 fix in progress · 1 won't fix\n/, "the tab's count line");
   assert.match(list, /## Fixed or dismissed \(1\)\n\n- \*\*high\*\*: T d1/, "the settled ones by title");
   assert.deepEqual(list.match(/^##+ .*\(\d+\)$|^### \d+\. .*/gm), ["## High (1)", "### 1. T s1", "## Medium (1)", "### 2. T m1", "## Low (1)", "### 3. T l1", "## Fixed or dismissed (1)"], "a part per severity, the findings numbered through");
   assert.match(list, /### 2\. T m1\n\n- \*\*Severity:\*\* medium[^\n]*\n- \*\*Where:\*\* `a\.py:3`\n- \*\*State:\*\* Fix sent/);

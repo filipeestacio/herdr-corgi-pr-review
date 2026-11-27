@@ -1114,6 +1114,45 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   assert.ok(!got.texts.some((x) => x.startsWith("Fix selected")) && !got.ids.includes(`rv-fbox-${plain[0].id}`), "a finding with a fix sent has no box");
   v.command(`pick-finding:${plain[0].id}`, cx); assert.deepEqual(v.pickedFindings(), [], "nor can it be ticked by its command");
 }
+// The Findings tab's six groups, in the order of pr.js FINDING_GROUPS and with the empty ones left out: where a fix is
+// comes from git (landed: in | patch | out), and the status only settles what git cannot see (a dismissal, a check).
+{
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json") });
+  const all = v.findings(), [inPr, ready, working, gone, plain] = all, at = new Date().toISOString();
+  assert.ok(all.length >= 6, `the fixture has findings for every group (${all.length})`);
+  const st = (f, s, extra = {}) => ({ s, at, fixHead: "h0", ...extra }), rep = (f, c) => ({ id: f.id, status: "fixed", commit: c, note: "done" });
+  v.worktree = { url: v.prSel.url, head: v.head, path: "/h/w" };
+  v.find = { ...v.find,
+    status: { [inPr.id]: st(inPr, "progress"), [ready.id]: st(ready, "progress"), [working.id]: st(working, "progress"), [gone.id]: st(gone, "dismissed") },
+    reports: { [inPr.id]: rep(inPr, "c1"), [ready.id]: rep(ready, "c2") } };
+  // The fix jobs: one agent still working (no commit yet) and one whose fix is ready on its branch.
+  const fixJob = (id, branch, f) => ({ id, branch, path: `/h/f-${id}`, base: "/h/w", head: "h0", items: [{ kind: "finding", id: f.id }], target: "sub", at: Date.now(), state: "running" });
+  v.threadDoc = { ...v.threadDoc, [v.threadKey()]: { ...(v.threadDoc[v.threadKey()] ?? {}), fixes: [fixJob("j1", "fix/2-x", working), fixJob("j2", "fix/2-y", ready)] } };
+  v.landed = { head: v.headNow(), map: { c1: "in", c2: "out" } };
+  const tab = () => { S.ids = new Set(); S.texts = new Set(); act(v, "findings", "the six groups"); const got = { ids: [...S.ids], texts: [...S.texts] }; S.ids = S.texts = null; return got; };
+  let got = tab(), heads = got.texts.filter((x) => /^(Unresolved|Fix in progress|Fix ready|In the PR|Verified|Won't fix) · \d+$/.test(x));
+  assert.equal(got.texts.some((x) => /^Verified · \d+$/.test(x)), false, "a group with nothing in it is not drawn");
+  assert.deepEqual(heads.map((x) => x.split(" · ")[0]), ["Unresolved", "Fix in progress", "Fix ready", "In the PR", "Won't fix"], "the six groups in their order, the empty one left out");
+  // Every row of a group says the same word its heading does; an unresolved row says nothing.
+  const row = (f) => got.texts.some((x) => x === { in_pr: "In the PR", ready: "Fix ready", progress: "Fix in progress", wontfix: "Won't fix" }[v.fgroup(f)]) || ["unresolved"].includes(v.fgroup(f));
+  assert.ok([inPr, ready, working, gone].every(row), "each row carries its group's word");
+  // The action each group needs: Apply to PR and Discard on a fix the head does not carry, Verify once it does.
+  const idsOf = () => tab().ids;
+  v.find = { ...v.find, status: { ...v.find.status, [working.id]: st(working, "progress") } };
+  v.ffocus = ready.id; got = tab();
+  assert.ok(got.ids.includes(`rv-fap-${ready.id}`) && got.ids.includes(`rv-fdc-${ready.id}`), "Fix ready: Apply to PR and Discard");
+  v.ffocus = inPr.id; got = tab();
+  assert.ok(got.ids.includes(`rv-fch-${inPr.id}`) && !got.ids.includes(`rv-fap-${inPr.id}`), "In the PR: Verify, and no Apply");
+  v.ffocus = null;
+  // A force-push that takes an applied fix away reads Fix ready, with the reason on the row, not In the PR.
+  v.find = { ...v.find, status: { ...v.find.status, [inPr.id]: { ...v.find.status[inPr.id], appliedAt: Date.now() } } };
+  v.landed = { head: v.headNow(), map: { c1: "out", c2: "out" } };
+  got = tab();
+  assert.deepEqual([inPr, ready, working].map((f) => v.fgroup(f)), ["ready", "ready", "progress"], "a fix the head took away waits for Apply again; the one on its way is still in progress");
+  assert.ok(!got.texts.some((x) => x === "In the PR") && got.texts.some((x) => x === "Fix ready"), "and the rows say so");
+  assert.ok(idsOf().length > 0, "the tab draws");
+  v.worktree = null; v.landed = null;
+}
 // One selection: a box works on a folded row and on an open one; comments (your own and other people's GitHub
 // comments) and findings are ticked into the same selection, every place says its one number, and "Fix selected"
 // hands all of it to one agent. Nothing is written to GitHub for a GitHub comment.

@@ -192,7 +192,7 @@ assert.deepEqual(rangeOf(again, "+3", "+3"), [lo, lo]);
 console.log("ok");
 
 // Findings: reports (last line wins, half lines skipped) never settle a finding; moved code asks for a recheck.
-const { parseReports, findingStatus, fixPrompt, mergeFindings, findingCounts, countLine } = await import("./pr.js");
+const { parseReports, findingStatus, fixStage, findingGroup, FINDING_GROUPS, GROUP_WORD, fixPrompt, mergeFindings, findingCounts, countLine } = await import("./pr.js");
 const reps = parseReports('{"id":"a","status":"wontfix"}\n{"id":"a","status":"fixed","commit":"abc"}\n{"id":"b","sta');
 assert.deepEqual(Object.keys(reps), ["a"]);
 const fa = { id: "a", head: "h1", code: "x()" }, fb = { id: "b", head: "h1", code: "y()" };
@@ -211,6 +211,37 @@ assert.equal(findingStatus({ id: "b", ids: ["sec", "b"] }, { b: { s: "dismissed"
 assert.equal(findingStatus(fb, {}, reps, "h2", "  y()"), "open");
 assert.equal(findingStatus(fb, {}, reps, "h2", "y(1)"), "recheck");
 assert.equal(findingStatus(fb, { b: { s: "dismissed" } }, reps, "h2", "y(1)"), "dismissed");
+// Where a fix stands is the result, not the journey (fixStage): a job with no commit is on its way, a commit the PR
+// head carries is in the PR (as an ancestor, "in", or as the same change on another commit, "patch"), one it does not
+// carry is ready, and only a check that read this head settles it. What git cannot know (a dismissal, the check) stays
+// in the status the caller reads.
+const job = (s, extra = {}) => ({ state: s, ...extra });
+assert.deepEqual([fixStage({ job: job("running") }), fixStage({ job: job("running", { commit: "c1" }) }), fixStage({})], ["progress", "ready", null]);
+assert.equal(fixStage({ job: job("running", { commit: "c1" }), landed: "out" }), "ready", "a commit the head does not carry is ready, not in the PR");
+assert.equal(fixStage({ job: job("running", { commit: "c1" }), landed: "in" }), "in_pr");
+assert.equal(fixStage({ job: job("running", { commit: "c1" }), landed: "patch" }), "in_pr", "a cherry-pick or a rebase keeps the change, so the fix is in the PR");
+assert.equal(fixStage({ job: job("running", { commit: "c1" }), landed: null }), "ready", "an unknown place is not the PR's");
+// The check: it settles a finding only when it read this head and passed it.
+const fixed = { result: "fixed", head: "h1" };
+assert.equal(fixStage({ job: job("running", { commit: "c1" }), landed: "in", verified: fixed, head: "h1" }), "verified");
+assert.equal(fixStage({ job: job("running", { commit: "c1" }), landed: "patch", verified: { ...fixed, head: "h0" }, head: "h1" }), "in_pr", "a check of an older head proves nothing about this one");
+assert.equal(fixStage({ job: job("running", { commit: "c1" }), landed: "in", verified: { ...fixed, head: "h0" }, head: "h1" }), "in_pr");
+assert.equal(fixStage({ job: job("running", { commit: "c1" }), landed: "out", verified: { ...fixed, head: "h0" }, head: "h1" }), "ready", "and the head it read is gone: ready again");
+assert.equal(fixStage({ job: job("running", { commit: "c1" }), landed: "in", verified: { result: "fixed", head: "c1", branch: "fix/2-x" }, head: "h1" }), "in_pr", "a check on the fix branch is not the PR head");
+assert.equal(fixStage({ job: job("running", { commit: "c1" }), landed: "in", verified: { result: "not_fixed", head: "h1" }, head: "h1" }), null, "the head has the change and the finding is still there: unresolved");
+assert.equal(fixStage({ job: job("running", { commit: "c1" }), landed: "in", verified: { result: "unclear", head: "h1" }, head: "h1" }), "in_pr");
+// A revisited finding: the agent declined, the reviewer discarded the fix, or there was no fix at all.
+assert.equal(fixStage({ job: job("running", { commit: "c1", declined: true }), landed: "in", head: "h1" }), "wontfix");
+assert.equal(fixStage({ job: job("discarded", { commit: "c1" }), landed: "out" }), null);
+assert.equal(fixStage({ job: job("discarded", { commit: "c1" }), landed: "patch" }), "in_pr", "git still decides when the change is in the PR");
+assert.equal(fixStage({ job: job("applied", { commit: "c1" }), landed: "patch" }), "in_pr");
+assert.equal(fixStage({ job: job("discarded") }), null);
+// The six groups, and the word each shows; a status is the fallback for what git cannot see.
+assert.deepEqual(FINDING_GROUPS.map(([k, w]) => [k, w]), [["unresolved", "Unresolved"], ["progress", "Fix in progress"], ["ready", "Fix ready"], ["in_pr", "In the PR"], ["verified", "Verified"], ["wontfix", "Won't fix"]]);
+assert.deepEqual(["open", "recheck", "progress", "fixed", "dismissed"].map((s) => findingGroup(null, s)), ["unresolved", "unresolved", "progress", "verified", "wontfix"]);
+assert.equal(findingGroup("in_pr", "progress"), "in_pr", "the stage wins over the status it was sent under");
+assert.equal(findingGroup("ready", "dismissed"), "wontfix", "a dismissal is the person's, and git cannot undo it");
+assert.equal(GROUP_WORD.in_pr, "In the PR");
 {
   // One finding per defect: same file and new-side line merge, the highest severity leads, every source stays.
   const A = (id, file, line, severity, extra = {}) => ({ id, reviewer: "analysis", step: "k1", file, line, end: line, severity, category: "structure", title: `T ${id}`, detail: `D ${id}`, suggestion: "", ...extra });
@@ -266,8 +297,8 @@ assert.equal(findingStatus(fb, { b: { s: "dismissed" } }, reps, "h2", "y(1)"), "
   // One count for every view: the severities add up to the unresolved ones; a fix sent is still unresolved.
   const st = { sec1: "progress", a2: "open", a3: "dismissed" };
   const c = findingCounts(m.findings, (f) => st[f.id] ?? (f.line === 40 ? "fixed" : "recheck"));
-  assert.deepEqual(c, { total: 5, unresolved: 3, causes: 3, sent: 1, fixed: 1, dismissed: 1, high: 2, medium: 1, low: 0, security: 2 });
-  assert.equal(countLine(c), "3 unresolved: 2 high, 1 medium · 1 with a fix sent · 1 fixed · 1 dismissed");
+  assert.deepEqual(c, { total: 5, unresolved: 3, causes: 3, progress: 1, ready: 0, in_pr: 0, verified: 1, wontfix: 1, high: 2, medium: 1, low: 0, security: 2 });
+  assert.equal(countLine(c), "3 unresolved: 2 high, 1 medium · 1 fix in progress · 1 verified · 1 won't fix");
   assert.equal(countLine(findingCounts([], () => "open")), "No findings");
 }
 const fp = fixPrompt([{ id: "a1", severity: "high", reviewer: "codex", file: "a.js", line: 3, end: 4, title: "T", detail: "D", suggestion: "S" }], { number: 7, title: "Fix", url: "u" }, "/r.jsonl");
@@ -567,7 +598,7 @@ console.log("ok");
   // The copied state with the behavior first, a fix's agent and branch, and the cost.
   const handover = reviewState({ pr: { repo: "o/r", number: 2, title: "feat: x" }, list, counts, findings: all, statusOf, behavior: "Members get\n two mails.", fixOf: (x) => (x.id === "f3" ? "a sub-agent, fix/2-f3" : ""), cost: "$0.53 (Analysis $0.22, Security review $0.31)" });
   assert.match(handover, /\n\nWhat it does: Members get two mails\.\n\n1 security cause/);
-  assert.match(handover, /\nFix sent \(1\):\n- medium: T f3 \(a\.py:3\)\. Fix: a sub-agent, fix\/2-f3\n/);
+  assert.match(handover, /\nFix in progress \(1\):\n- medium: T f3 \(a\.py:3\)\. Fix: a sub-agent, fix\/2-f3\n/);
   assert.match(handover, /\nAI runs on this PR: \$0\.53 \(Analysis \$0\.22, Security review \$0\.31\)\.\n/);
   // Before the merge: security first, then the findings that break a criterion (most severe first), a criterion not met
   // without a finding, then the other blockers; a finding from before the PR or settled is not in it.
@@ -595,8 +626,8 @@ console.log("ok");
   assert.match(text, /\n1 security cause, high \(assumed reachable\) · 0 of 2 acceptance criteria met\n/);
   assert.match(text, /\n- broken: one \(acceptance criterion\). w1\n- partly: two \(acceptance criterion\). w2\n- met: three\n- extra: more\n/);
   assert.match(text, /\nUnresolved \(3\):\n- high, security: T s1\n- high: T f1 \(a\.py:3\)\n- medium: T f2 \(a\.py:3\)\n/);
-  assert.match(text, /\nFix sent \(1\):\n- medium: T f3 \(a\.py:3\)\n/);
-  assert.match(text, /\nFixed \(1\):\n- medium, security: T s2\n/);
+  assert.match(text, /\nFix in progress \(1\):\n- medium: T f3 \(a\.py:3\)\n/);
+  assert.match(text, /\nVerified \(1\):\n- medium, security: T s2\n/);
   assert.match(text, /\n1 of 9 files viewed\n/);
   assert.doesNotMatch(text, /no token set|T s1 \(/, "nothing of a security finding but its title");
   // A stacked PR is the base of this one: no blocker, and no reason to review early.

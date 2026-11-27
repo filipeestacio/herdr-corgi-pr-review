@@ -88,7 +88,7 @@ for (const n of [0, 3, 310]) {
     assert.ok(v.findRows(f).some(([l, x]) => l === "AI note" && x.startsWith("(medium) Unrelated change")));
     assert.deepEqual(v.openSugs().map((s) => s.reason), ["a nit"]);
     assert.equal(v.fstatus(f), "progress");
-    assert.deepEqual([v.counts().unresolved, v.counts().sent, v.counts().security, v.openFindings().length], [1, 1, 1, 1]);
+    assert.deepEqual([v.counts().unresolved, v.counts().ready, v.counts().security, v.openFindings().length], [1, 1, 1, 1]);
     assert.match(v.blockersNow().find((b) => b.finding === "a1").why, /unresolved high finding · fix sent, not verified/);
     assert.equal(v.fixLine(f), "commit 22e31c88 · agent reports fixed · not verified");
     assert.deepEqual(v.fixFacts(f).map(([k]) => k), ["Commit", "Report", "Check"]);

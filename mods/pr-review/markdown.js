@@ -273,7 +273,7 @@ export function findingsMd(findings, { pr, head, statusOf = () => "open", asks =
   const group = (title, l) => [`## ${title} (${l.length})`, "", ...l.flatMap((f) => [`### ${list.indexOf(f) + 1}. ${flat(f.title)}`, "", findingBody(f, { status: statusOf(f), asks, h: "####", cx, more: moreOf(f) })])];
   return doc(prLine({ pr, head }), "", `# ${count(list.length, "unresolved finding")}${list.length ? `: ${sevCount(list)}` : ""}`, "",
     findings.length > 0 && countLine(findingCounts(findings, statusOf)), Boolean(funnelShort(fun)) && `${funnelShort(fun)}.`, sources.length > 0 && `Sources: ${sources.map(flat).join(" · ")}.`,
-    "A finding with a fix sent stays unresolved until it is verified.", "",
+    "A finding stays unresolved until a check reads the PR head and finds it fixed.", "",
     ...groups.flatMap(([k, l]) => group(`${k[0].toUpperCase()}${k.slice(1)}`, l)), rest.length > 0 && group("Other severity", rest),
     settled.length > 0 && [`## Fixed or dismissed (${settled.length})`, "", ...settled.map((f) => `- ${findingLine(f, statusOf(f))}`), ""],
     notes.length > 0 && [`## AI notes (${notes.length})`, "", ...notes.map((x) => `- ${x.severity ?? "low"}: ${flat(x.reason)} (\`${x.path}:${x.line}\`)`), ""]);

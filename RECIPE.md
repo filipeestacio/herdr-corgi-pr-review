@@ -198,10 +198,14 @@ Explore shows Overview, Layers, Architecture and Files for a topic, without a di
   `Main agent` as a new tab in the PR's checkout (the active harness profile's `agent` command when it has one, else
   Claude Code), and `This session` when the PR has a live agent and is trusted without a stranger's comment, the only
   target that types into an existing session.
-  `Fix several…` lets you tick which findings one agent fixes together; security findings go one at a time. The finding reads "Fix sent" and stays
-  unresolved (in the diff, counted, a blocker when high) with the agent, branch, commit and report. "Verify fixes"
-  in the Findings tab checks a reported commit on its fix branch ("Verified on the fix branch, not in the PR yet")
-  and, after the next push, the PR head (fixed → Fixed, not fixed → Unresolved again, unclear).
+  `Fix several…` lets you tick which findings one agent fixes together. Security findings go one at a time.
+  The Findings tab lists every finding in six groups: Unresolved, Fix in progress, Fix ready, In the PR, Verified and
+  Won't fix. Each group follows git and the one check, not the journey. `worktree.py contains` says whether the fix
+  agent's commit is in the PR head, as an ancestor or as the same change on another commit (a cherry-pick, a rebase, a
+  reworded message). So Fix ready (Apply to PR, Discard) becomes In the PR (Verify) once the head carries the fix. A
+  force-push that takes the change away turns it back. Verify is the only model call. It reads the PR head and moves a
+  fixed finding to Verified, a broken one back to Unresolved, and leaves an unclear one as it was. A fix in progress,
+  ready or in the PR keeps its finding unresolved: in the diff, counted, and a blocker when high.
 - "Ask an agent…" pastes the finding into the live agent's terminal in a floating window without sending it (or
   into a chat mod's bubble, PROVIDERS.md); without a live agent it starts one in a new tab, in manual mode, on the
   review's checkout of the PR head. Its preview says which of these happens.
