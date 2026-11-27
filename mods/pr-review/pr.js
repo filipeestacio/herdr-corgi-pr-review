@@ -78,6 +78,10 @@ export function codeOf(rows, { start, end, old }) {
 // (or one of the heads is unknown), and the same lines read otherwise now. Nothing recorded, or unknown now: not stale.
 export const isStale = (a, head, now) => a?.code != null && !(a.head && head && a.head === head) && now !== undefined && now.trim() !== String(a.code).trim();
 
+// The PR's head moved away from the head a checkout (or an analysis) was made for: both are known and they differ.
+// An unknown head on either side is nothing to compare, so it counts as no move.
+export const headMoved = (prHead, checkoutHead) => Boolean(prHead && checkoutHead && prHead !== checkoutHead);
+
 // The first row of the next (dir 1) or previous (-1) block of changed lines from row i; -1 when none.
 export function nextChange(rows, i, dir) {
   const starts = rows.map((r, j) => (r.kind === "+" || r.kind === "-") && !(rows[j - 1]?.kind === "+" || rows[j - 1]?.kind === "-") ? j : -1).filter((j) => j >= 0);

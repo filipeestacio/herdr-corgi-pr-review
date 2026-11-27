@@ -46,6 +46,13 @@ assert.equal(isStale(mine, "h1", codeOf(pushed, mine)), false, "same head");
 assert.equal(isStale({ ...mine, head: null }, "h2", codeOf(pushed, mine)), true, "head unknown then: the text decides");
 assert.equal(isStale({ ...mine, code: undefined }, "h2", "x"), false, "an old comment without a record");
 assert.equal(isStale(mine, "h2", undefined), false, "its lines are not in the diff now");
+// A head the host reports against the one a checkout or an analysis was made for.
+assert.equal(pr.headMoved("a1", "a1"), false, "the same head");
+assert.equal(pr.headMoved("a1", "a2"), true, "the PR moved on");
+assert.equal(pr.headMoved(null, "a2"), false, "no PR head: nothing to compare");
+assert.equal(pr.headMoved("a1", null), false, "no checkout head: nothing to compare");
+assert.equal(pr.headMoved(undefined, undefined), false, "neither known");
+assert.equal(pr.headMoved("a1", undefined), false, "a checkout head that is not known yet");
 
 const review = buildReview({ pr: { number: 7, title: "Fix" }, comments: [{ file: "a.js", ...gone, hunk: "-c", text: "Why removed?" }, { file: "b.js", text: " Name? " }] });
 assert.equal(review, "PR #7 \"Fix\": code review with 2 points. Work through the points one by one: answer questions, make the requested changes. At the end, say briefly per point what you did." +
