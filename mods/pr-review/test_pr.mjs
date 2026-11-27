@@ -201,7 +201,7 @@ assert.deepEqual(rangeOf(again, "+3", "+3"), [lo, lo]);
 console.log("ok");
 
 // Findings: reports (last line wins, half lines skipped) never settle a finding; moved code asks for a recheck.
-const { parseReports, findingStatus, fixStage, landedByFile, fixStillWorking, findingGroup, FINDING_GROUPS, GROUP_WORD, fixPrompt, mergeFindings, findingCounts, countLine } = await import("./pr.js");
+const { parseReports, findingStatus, fixStage, fixEndedLine, landedByFile, fixStillWorking, findingGroup, FINDING_GROUPS, GROUP_WORD, fixPrompt, mergeFindings, findingCounts, countLine, agoSpan } = await import("./pr.js");
 const reps = parseReports('{"id":"a","status":"wontfix"}\n{"id":"a","status":"fixed","commit":"abc"}\n{"id":"b","sta');
 assert.deepEqual(Object.keys(reps), ["a"]);
 const fa = { id: "a", head: "h1", code: "x()" }, fb = { id: "b", head: "h1", code: "y()" };
@@ -245,6 +245,18 @@ assert.equal(fixStage({ job: job("discarded", { commit: "c1" }), landed: "out" }
 assert.equal(fixStage({ job: job("discarded", { commit: "c1" }), landed: "patch" }), "in_pr", "git still decides when the change is in the PR");
 assert.equal(fixStage({ job: job("applied", { commit: "c1" }), landed: "patch" }), "in_pr");
 assert.equal(fixStage({ job: job("discarded") }), null);
+// A job that still records "running" after its agent ended: the record cannot say, so the caller reads the terminal and
+// the age (fixStillWorking) and passes working. No commit came back: the fix ended without a result, not in progress.
+assert.equal(fixStage({ job: job("running"), working: true }), "progress", "its agent still works");
+assert.equal(fixStage({ job: job("running"), working: false }), "ended", "its agent is gone and reported nothing");
+assert.equal(fixStage({ job: job("running", { commit: "c1" }), working: false }), "ready", "a reported commit is still a fix to place");
+assert.equal(fixStage({ job: job("running", { commit: "c1" }), landed: "in", working: false }), "in_pr");
+assert.equal(fixStage({ job: job("running", { commit: "c1", declined: true }), working: false }), "wontfix");
+assert.equal(fixStage({ job: job("running", { commit: "c1" }), landed: "in", verified: { result: "fixed", head: "h1" }, head: "h1", working: false }), "verified", "a check that read this head settles it");
+assert.equal(fixStage({ job: job("running"), verified: { result: "not_fixed", head: "h1" }, head: "h1", working: false }), null, "a check that says it is still broken: unresolved, not ended");
+assert.equal(fixStage({ job: job("running"), verified: { result: "fixed", head: "h0" }, head: "h1", working: false }), "ended", "a check of an older head answers nothing about this one");
+assert.equal(fixStage({ job: job("applied"), working: false }), null);
+assert.equal(fixStage({ job: job("discarded"), working: false }), null);
 // The commits that touched a finding's file, from `git log --format=%h --name-only`: the weaker answer for a fix with
 // no reported commit. The log is newest first; a commit id line starts a commit, every other line is a path.
 assert.deepEqual(landedByFile("a1b2c3d\n\nsrc/one.ts\n", "src/one.ts"), ["a1b2c3d"], "one commit, one file");
@@ -264,11 +276,25 @@ assert.equal(fixStillWorking({ job: { state: "running", at: agoMs(600000) }, ter
 assert.equal(fixStillWorking({ job: { state: "applied", terminal: "t1", at: agoMs(1000) }, terminalLive: true, now: clock }), false, "a job that is not running: never working");
 assert.equal(fixStillWorking({ job: { state: "running" }, terminalLive: true, now: clock }), false, "no `at` and no terminal: nothing says it is working");
 assert.equal(fixStillWorking({ job: null, terminalLive: true, now: clock }), false, "no job at all");
+// What a fix that ended says about itself, for its row's badge and tooltip: where it was sent and how long ago. Every
+// other case answers null, from the same decision fixStage makes, so the row and its words cannot disagree.
+const ended = (extra = {}) => ({ id: "j9", state: "running", target: "main", at: clock - 7200000, ...extra });
+assert.equal(fixEndedLine({ job: ended(), now: clock }), "A fix was sent to a main agent 2 h ago; it ended without reporting a commit and nothing landed.");
+assert.equal(fixEndedLine({ job: ended({ target: "sub" }), now: clock }), "A fix was sent to a sub-agent 2 h ago; it ended without reporting a commit and nothing landed.");
+assert.equal(fixEndedLine({ job: ended({ at: clock - 60000 }), now: clock }), null, "a young job may still report a commit");
+assert.equal(fixEndedLine({ job: ended({ terminal: "t1" }), terminalLive: true, now: clock }), null, "a live terminal keeps it working");
+assert.equal(fixEndedLine({ job: ended({ commit: "c1" }), now: clock }), null, "a reported commit is a fix to place");
+assert.equal(fixEndedLine({ job: ended(), verified: { result: "fixed", head: "h1" }, head: "h1", now: clock }), null, "a check that read this head answers");
+assert.equal(fixEndedLine({ job: null, now: clock }), null, "no job at all");
+assert.equal(agoSpan(7200000), "2 h ago");
+assert.equal(agoSpan(60000), "1 min ago");
+assert.equal(agoSpan(3 * 86400000), "3 d ago");
 // The six groups, and the word each shows; a status is the fallback for what git cannot see.
 assert.deepEqual(FINDING_GROUPS.map(([k, w]) => [k, w]), [["unresolved", "Unresolved"], ["progress", "Fix in progress"], ["ready", "Fix ready"], ["in_pr", "In the PR"], ["verified", "Verified"], ["wontfix", "Won't fix"]]);
 assert.deepEqual(["open", "recheck", "progress", "fixed", "dismissed"].map((s) => findingGroup(null, s)), ["unresolved", "unresolved", "progress", "verified", "wontfix"]);
 assert.equal(findingGroup("in_pr", "progress"), "in_pr", "the stage wins over the status it was sent under");
 assert.equal(findingGroup("ready", "dismissed"), "wontfix", "a dismissal is the person's, and git cannot undo it");
+assert.deepEqual(["open", "progress", "dismissed"].map((s) => findingGroup("ended", s)), ["unresolved", "unresolved", "wontfix"], "a fix that ended with nothing puts the finding back in Unresolved, whatever it was sent under");
 assert.equal(GROUP_WORD.in_pr, "In the PR");
 {
   // One finding per defect: same file and new-side line merge, the highest severity leads, every source stays.
@@ -737,6 +763,18 @@ console.log("ok");
   assert.equal(show(s2), "+reported +evidence +sent >verified -in_pr");
   assert.equal(s2[3].missing, "Not verified: the check at abcdef1 says not fixed, still raises");
   assert.deepEqual(s2[3].details, [facts[4]]);
+  // A fix whose agent ended without a result (fixStage "ended"): its own step is the next one and asks for another try,
+  // not for a check there is nothing to run, whether or not the evidence step is reached.
+  const se = findingSteps({ certainty: "derived" }, { s: "progress", fixHead: "h1" }, { stage: "ended", facts: facts.slice(0, 4) });
+  assert.equal(show(se), "+reported -evidence >sent -verified -in_pr");
+  assert.equal(se[2].missing, "Fix again: the agent ended without reporting a commit, and nothing landed.");
+  assert.equal(se[2].details.length, 4, "what the agent left stays at its step");
+  assert.equal(show(findingSteps({ certainty: "confirmed" }, { s: "progress", fixHead: "h1" }, { stage: "ended" })), "+reported +evidence >sent -verified -in_pr", "the fix's step is still the next one");
+  // The other stages keep their words: the same status in progress still asks for the check, and in the PR is all five.
+  const sp = findingSteps({ certainty: "confirmed" }, { s: "progress", fixHead: "h1" }, { stage: "progress" });
+  assert.equal(show(sp), "+reported +evidence +sent >verified -in_pr");
+  assert.match(sp[3].missing, /^Not verified yet: Verify checks the commit/);
+  assert.equal(show(findingSteps({ certainty: "confirmed" }, { s: "progress", fixHead: "h1", verify: { result: "fixed", head: "h1" } }, { stage: "in_pr" })), "+reported +evidence +sent +verified +in_pr");
   // Checked on the fix branch: verified, not in the PR; on the PR head: all five; an older mark by hand.
   const branch = { s: "progress", fixHead: "h1", verify: { result: "fixed", head: "68999a3", branch: "fix/2-x" } };
   const sb = findingSteps({ certainty: "derived" }, branch, { report: { status: "fixed" } });

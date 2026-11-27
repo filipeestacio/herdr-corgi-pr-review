@@ -461,6 +461,9 @@ export function findingStatus(f, status, reports, head, lineNow) {
 // "in_pr": the head carries the fix, either as the commit itself (an ancestor) or as the same change on another commit
 // (a cherry-pick, a rebase, a reworded message: "patch"). Verify acts here.
 // "verified": a check read this head and said fixed. "wontfix": the agent declined.
+// "ended": the job is "running" but its agent is gone (working false: pr.js fixStillWorking, which the caller reads),
+// and it reported no commit: nothing is on its way, so the finding is unresolved again (findingGroup) and keeps the
+// word the job left behind.
 // null: no fix to speak of. The finding was never sent to Fix, its job was discarded and its change is not in the head,
 // or a check on this head said it is still broken: unresolved.
 // What git cannot know stays in the persisted status (a dismissal, the check's result), which the caller reads.
@@ -468,7 +471,9 @@ export function findingStatus(f, status, reports, head, lineNow) {
 // "discarded", commit: the sha it reported | null, declined: true when its report says "wontfix"}. landed: where that
 // commit is in base..head (worktree.py contains: "in" | "patch" | "out"), null while unknown. verified: the persisted
 // check ({result, head, branch}; branch set = read on the fix branch), null when none. head: the PR head shown.
-export function fixStage({ job = null, landed = null, verified = null, head = null } = {}) {
+// working: whether the job's agent still works (pr.js fixStillWorking, read by the caller with the terminal list and
+// the job's age); null when the caller cannot say, and then a running job keeps its word.
+export function fixStage({ job = null, landed = null, verified = null, head = null, working = null } = {}) {
   if (job?.declined) return "wontfix";
   const commit = job?.commit ?? null, read = Boolean(verified?.head) && Boolean(head) && verified.head === head && !verified.branch;
   if (read && verified.result === "fixed") return "verified";
@@ -476,8 +481,26 @@ export function fixStage({ job = null, landed = null, verified = null, head = nu
   if (commit && (landed === "in" || landed === "patch")) return "in_pr";
   if (job?.state === "discarded") return null; // its worktree and branch are gone, and the head does not carry it
   if (commit) return "ready";
-  return job?.state === "running" ? "progress" : null;
+  if (job?.state !== "running") return null;
+  // A job record stays "running" until it is applied or discarded, long after its agent ended. No commit came back and
+  // nothing says more is coming: the fix ended without a result ("ended").
+  return working === false ? "ended" : "progress";
 }
+
+// A fix that ended without a result, as its row says it (review.js stageTip and the row's badge): where it was sent and
+// how long ago, and that nothing came back. Null in every other case, because the same decision as fixStage answers:
+// no job, a reported commit (there is a fix to place), an agent that may still work (a live terminal, under ten
+// minutes), or a check that read this head. The caller's file answer can still make the row "in the PR"; it then asks
+// for no line.
+export function fixEndedLine({ job = null, terminalLive = false, verified = null, head = null, now = Date.now() } = {}) {
+  if (!job) return null;
+  if (fixStage({ job, verified, head, working: fixStillWorking({ job, terminalLive, now }) }) !== "ended") return null;
+  const target = job.target === "main" ? "a main agent" : "a sub-agent";
+  return `A fix was sent to ${target}${job.at ? ` ${agoSpan(now - job.at)}` : ""}; it ended without reporting a commit and nothing landed.`;
+}
+
+// How long ago, in words, from a span in ms: "8 min ago", "2 h ago", "3 d ago". review.js ago() reads a time with it.
+export const agoSpan = (ms) => { const m = Math.round(ms / 60000); return !Number.isFinite(m) ? "" : m < 60 ? `${m} min ago` : m < 2880 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`; };
 
 // Whether a fix's agent is still working, the way a run's state is read: a job record stays "running" long after its
 // agent ended (it ends only on apply or discard), so the record alone cannot say. Its terminal alive is the proof
@@ -504,10 +527,11 @@ export function landedByFile(log, file) {
 
 // The Findings tab's six groups, in the order it lists them (empty ones hidden): the key a finding's group is, and the
 // word its heading and its row show. A finding is in the group its stage names, else in the one its persisted status
-// names (a dismissal, a mark by hand, a fix sent before the mod knew where its commit was).
+// names (a dismissal, a mark by hand, a fix sent before the mod knew where its commit was). A stage of "ended" is
+// unresolved: the fix came back with nothing, whatever status it was sent under.
 export const FINDING_GROUPS = [["unresolved", "Unresolved"], ["progress", "Fix in progress"], ["ready", "Fix ready"], ["in_pr", "In the PR"], ["verified", "Verified"], ["wontfix", "Won't fix"]];
 export const GROUP_WORD = Object.fromEntries(FINDING_GROUPS);
-export const findingGroup = (stage, status) => status === "dismissed" ? "wontfix" : stage ?? (status === "fixed" ? "verified" : status === "progress" ? "progress" : "unresolved");
+export const findingGroup = (stage, status) => status === "dismissed" ? "wontfix" : stage === "ended" ? "unresolved" : stage ?? (status === "fixed" ? "verified" : status === "progress" ? "progress" : "unresolved");
 
 // ---- one finding per defect (review.js: every view reads this list)
 
@@ -1169,14 +1193,19 @@ const HTML_TAG = /<\/?(?:a|abbr|b|blockquote|br|code|details|div|em|h[1-6]|hr|i|
 // (and not declined by the agent), verified (a check said fixed: on the fix branch or on the PR head, or an older mark
 // by hand) and in the PR (that check read the PR head; one on the fix branch does not). st: its status entry (verify
 // {result, reason, head, branch?}: branch set = checked on the fix branch); report: the fix agent's; facts: review.js
-// fixFacts' [label, text] pairs. → [{key, label, done, next, missing, details}]: every step not reached says in one
-// sentence what is missing, `next` marks the first of them after the furthest step reached (the one the tab shows);
-// details are the pairs that belong to a step (agent, branch, commit and report to "Fix sent", the check to "Verified").
+// fixFacts' [label, text] pairs; stage: its stage (pr.js fixStage), so a fix that ended without a result (review.js
+// stages) asks for another try at its own step. → [{key, label, done, next, missing, details}]: every step not reached
+// says in one sentence what is missing, `next` marks the first of them after the furthest step reached (the one the tab
+// shows); details are the pairs that belong to a step (agent, branch, commit and report to "Fix sent", the check to
+// "Verified").
 export const STEPS = [["reported", "Reported"], ["evidence", "Evidence"], ["sent", "Fix sent"], ["verified", "Verified"], ["in_pr", "In the PR"]];
-export function findingSteps(f, st = null, { report = null, facts = [] } = {}) {
+export function findingSteps(f, st = null, { report = null, facts = [], stage = null } = {}) {
   const v = st?.verify ?? null, declined = report?.status === "wontfix", at = (x) => String(x ?? "").slice(0, 7), word = String(v?.result ?? "").replace("_", " ");
-  const done = { reported: true, evidence: f.certainty === "confirmed", sent: Boolean(st?.fixHead) && !declined, verified: v?.result === "fixed" || (st?.s === "fixed" && !v),
-    in_pr: v?.result === "fixed" && !v.branch };
+  // A fix that ended with nothing on its way (fixStage "ended") did not arrive anywhere: its step is not reached, and
+  // that step is the next one, saying to send it again rather than to check a commit there is not.
+  const ended = stage === "ended";
+  const done = { reported: true, evidence: f.certainty === "confirmed", sent: Boolean(st?.fixHead) && !declined && !ended,
+    verified: v?.result === "fixed" || (st?.s === "fixed" && !v), in_pr: v?.result === "fixed" && !v.branch };
   const p = f.proof?.state === "done" ? f.proof : null, checking = f.proof?.state === "running";
   const missing = {
     evidence: checking ? "No evidence yet: an agent is checking it now, in its own checkout of the PR head."
@@ -1184,14 +1213,15 @@ export function findingSteps(f, st = null, { report = null, facts = [] } = {}) {
       : p?.result === "not_reproduced" ? `No evidence yet: an agent could not reproduce it${p.reason ? `: ${p.reason.replace(/\.$/, "")}` : ""}.`
       : f.certainty === "derived" ? "No evidence yet: the finding is derived from the code." : f.certainty === "assumed" ? "No evidence yet: the finding rests on something that could not be checked."
       : "No evidence yet: nothing that ran shows it.",
-    sent: declined ? `No fix on its way: the agent declined${report.note ? `, ${report.note}` : "."}` : "No fix sent yet: Fix hands the finding to an agent.",
+    sent: ended ? "Fix again: the agent ended without reporting a commit, and nothing landed."
+      : declined ? `No fix on its way: the agent declined${report.note ? `, ${report.note}` : "."}` : "No fix sent yet: Fix hands the finding to an agent.",
     verified: !v ? "Not verified yet: Verify checks the commit the fix agent reports, on its branch or in the PR head."
       : `Not verified: the check ${v.branch ? `on ${v.branch} ` : ""}at ${at(v.head)} says ${word}${v.reason ? `, ${v.reason}` : "."}`,
     in_pr: v?.branch ? "Verified on the fix branch, not in the PR yet: Apply to PR brings it in, then Verify checks the PR head."
       : "Marked fixed by hand: no check has read the PR head.",
   };
   const own = { sent: ["Agent", "Branch", "Commit", "Report"], verified: v ? ["Check"] : [] };
-  const last = STEPS.map(([k]) => done[k]).lastIndexOf(true), next = STEPS.findIndex(([k], i) => i > last && !done[k]);
+  const last = STEPS.map(([k]) => done[k]).lastIndexOf(true), next = ended ? STEPS.findIndex(([k]) => k === "sent") : STEPS.findIndex(([k], i) => i > last && !done[k]);
   return STEPS.map(([key, label], i) => ({ key, label, done: done[key], next: i === next, missing: done[key] ? null : missing[key],
     details: key === "evidence" ? proofFacts(f.proof) : facts.filter(([l]) => own[key]?.includes(l)) }));
 }

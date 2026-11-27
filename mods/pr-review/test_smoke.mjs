@@ -1262,6 +1262,78 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   assert.equal(v.stageTip(f), "A fix agent is working on this finding; nothing is checked yet.");
   v.ffocus = null; S.exec = null; S.terminals = wasTerminals; v.worktree = null;
 }
+// A running fix job that crosses the ten-minute boundary gives stages() a new answer with no other state changed: the
+// signature carries each job's age, not only its terminal (review.js fixLiveSig). A main fix names no terminal, so
+// without that token the stage map made while the job was young, "Fix in progress", was returned for as long as the
+// panel was open and the finding never left it.
+{
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json") });
+  const touched = v.findings().find((f) => f.file === "library/reminders.py"), untouched = v.findings().find((f) => f.file === "library/handler.py");
+  assert.ok(touched && untouched, "two findings in two files");
+  const now = Date.now();
+  v.head = "h9";
+  // Set once: neither the status map nor the reports may change between the two calls, so only the signature can make
+  // the stage map again.
+  v.find = { ...v.find, reports: {}, status: { [touched.id]: { s: "progress", fixHead: "h1" }, [untouched.id]: { s: "progress", fixHead: "h1" } } };
+  // The file log is in hand already, and one commit touched both files: the derivation can answer at once, so a job
+  // whose agent is gone still reads In the PR and this test is about the memo alone.
+  v.fileLogs = { "h9|h1": `abc1234\n\n${touched.file}\n${untouched.file}\n` };
+  const main = (jobId, findingId, age) => ({ id: jobId, path: "/h/f-main", base: "/h/w", head: "h1", items: [{ kind: "finding", id: findingId }], target: "main", terminal: null, at: now - age, state: "running" });
+  const fixes = (list) => { v.threadDoc = { ...v.threadDoc, [v.threadKey()]: { ...(v.threadDoc[v.threadKey()] ?? {}), fixes: list } }; };
+  fixes([main("j1", touched.id, 0), main("j2", untouched.id, 0)]);
+  const young = v.fixLiveSig();
+  assert.equal(young, "j1:0:y|j2:0:y", "a young job with no terminal still reads young");
+  assert.deepEqual([v.fstage(touched), v.fstage(untouched)], ["progress", "progress"], "while the job is young, both keep its word");
+  // The same two jobs, ten minutes on, nothing else touched.
+  fixes([main("j1", touched.id, 601000), main("j2", untouched.id, 601000)]);
+  assert.equal(v.fixLiveSig(), "j1:0:o|j2:0:o", "past ten minutes the same jobs read old");
+  assert.notEqual(v.fixLiveSig(), young, "the signature changes at the boundary");
+  assert.deepEqual([v.fstage(touched), v.fstage(untouched)], ["in_pr", "in_pr"], "and stages() answers from the file: the commit touched both");
+  v.fileLogs = null;
+}
+// A fix whose agent is gone with nothing to show (pr.js fixStage "ended"): the row is back in Unresolved, says so, and
+// offers Fix again, with nothing to go to, apply or discard. The shape of MR 1510: a main job with no terminal, two
+// hours old, its fixHead the head itself, and no report.
+{
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json") });
+  const f = v.findings().find((x) => x.file === "library/reminders.py");
+  assert.ok(f, "a finding to fix");
+  const wasTerminals = S.terminals, t0 = Date.now();
+  v.head = "h9";
+  v.find = { ...v.find, reports: {}, status: { [f.id]: { s: "progress", fixHead: "h9" } } };
+  const job = (extra = {}) => ({ id: "j9", items: [{ kind: "finding", id: f.id }], target: "main", at: t0 - 7200000, state: "running", terminal: null, ...extra });
+  const fixes = (list) => { v.threadDoc = { ...v.threadDoc, [v.threadKey()]: { ...(v.threadDoc[v.threadKey()] ?? {}), fixes: list } }; };
+  const tab = (what) => { S.ids = new Set(); S.texts = new Set(); act(v, "findings", what); const got = { ids: [...S.ids], texts: [...S.texts] }; S.ids = S.texts = null; return got; };
+  const under = (word) => (x) => x.startsWith(`${word} · `);
+  S.terminals = [];
+  fixes([job()]); v.ffocus = f.id;
+  assert.deepEqual([v.fstage(f), v.fgroup(f)], ["ended", "unresolved"], "its job says running, its agent is gone: the fix ended, the finding is unresolved");
+  assert.equal(v.stageTip(f), "A fix was sent to a main agent 2 h ago; it ended without reporting a commit and nothing landed.");
+  let got = tab("a fix that ended without a result");
+  assert.ok(got.texts.some(under("Unresolved")) && !got.texts.some(under("Fix in progress")), "the row is listed under Unresolved");
+  assert.ok(got.texts.includes("fix ended without a result"), "and its badge says the fix ended without a result");
+  assert.ok(got.ids.includes(`rv-fga-${f.id}`) && got.ids.includes(`rv-fdm-${f.id}`), "it offers Fix again and Dismiss");
+  assert.ok(!got.ids.includes(`rv-fgo-${f.id}`) && !got.ids.includes(`rv-fap-${f.id}`) && !got.ids.includes(`rv-fdc-${f.id}`), "and no Go to fix, Apply to PR or Discard fix");
+  assert.ok(got.texts.includes("Fix again: the agent ended without reporting a commit, and nothing landed.")
+    && !got.texts.some((x) => x.startsWith("Not verified yet: Verify checks the commit")), "its steps ask for another try, not for a check there is nothing to run");
+  // The same job young, its terminal live: its agent works, so the row keeps Fix in progress and Go to fix.
+  fixes([job({ terminal: "t9", at: t0 })]);
+  S.terminals = [{ address: "t9", state: "live" }];
+  assert.deepEqual([v.fstage(f), v.fgroup(f)], ["progress", "progress"], "a live terminal keeps it in progress");
+  got = tab("a fix agent still working");
+  assert.ok(got.texts.some(under("Fix in progress")) && !got.texts.includes("fix ended without a result"), "the row says Fix in progress, with no badge");
+  assert.ok(got.ids.includes(`rv-fgo-${f.id}`), "and Go to fix opens its terminal");
+  // A reported commit the head carries: In the PR, with Verify.
+  v.find = { ...v.find, reports: { [f.id]: { id: f.id, status: "fixed", commit: "c1" } } };
+  v.landed = { head: "h9", map: { c1: "in" } };
+  assert.deepEqual([v.fstage(f), v.fgroup(f)], ["in_pr", "in_pr"], "a commit the head carries: in the PR");
+  got = tab("a fix the head carries");
+  assert.ok(got.texts.some(under("In the PR")) && !got.texts.includes("fix ended without a result"), "the row says In the PR");
+  assert.ok(got.ids.includes(`rv-fch-${f.id}`), "and it offers Verify");
+  assert.ok(got.texts.some((x) => x.startsWith("Not verified yet: Verify checks the commit"))
+    && !got.texts.includes("Fix again: the agent ended without reporting a commit, and nothing landed."), "and its steps still ask for the check");
+  v.ffocus = null; S.terminals = wasTerminals; v.landed = null;
+}
 // One selection: a box works on a folded row and on an open one; comments (your own and other people's GitHub
 // comments) and findings are ticked into the same selection, every place says its one number, and "Fix selected"
 // hands all of it to one agent. Nothing is written to GitHub for a GitHub comment.

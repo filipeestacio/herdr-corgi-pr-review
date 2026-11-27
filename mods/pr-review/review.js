@@ -14,7 +14,7 @@ import { v_flex, h_flex, Scrollbar, TextView, v_virtual_list, VirtualListScrollH
 import { exec, hc, run, focused, pickFolder, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, nextCommand, watchFolder, openOverlay, closeOverlay, props, home, placement } from "herdr";
 import { spaces, agents, terminals, watch } from "./live.js";
 import { hostOfLink, parseLink, hostWord, hostLong } from "./host.js"; // never straight from Herdr (live.js says why)
-import { parseReports, findingStatus, fixStage, landedByFile, fixStillWorking, findingGroup, FINDING_GROUPS, GROUP_WORD, mergeFindings, findingCounts, countLine, runsOf, runIsStale, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
+import { parseReports, findingStatus, fixStage, fixEndedLine, landedByFile, fixStillWorking, findingGroup, FINDING_GROUPS, GROUP_WORD, mergeFindings, findingCounts, countLine, runsOf, runIsStale, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt, agoSpan } from "./pr.js";
 import { agentArgs, harnessProfile, harnessAgent, pendingWaitNote, tabTaskDelivery } from "./pr.js"; // a new agent tab: the harness profile's own command, else Claude Code
 import { startAgentTab } from "./agent-tab.js"; // starts it and gets the text there (an argument, or a send once the agent reports ready)
 import * as C from "./context.js";
@@ -639,7 +639,7 @@ export function flowCard(f, t, id, onJump) {
 
 // Markdown markers dropped where a line is drawn as plain text (list rows).
 const plain = plainText; // one plain line of a Markdown text: its first paragraph, no code blocks, no marks (pr.js)
-const ago = (iso) => { const m = Math.round((Date.now() - Date.parse(iso)) / 60000); return !Number.isFinite(m) ? "" : m < 60 ? `${m} min ago` : m < 2880 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`; };
+const ago = (iso) => agoSpan(Date.now() - Date.parse(iso)); // "2 h ago": a comment's time, as pr.js reads a fix's age
 
 
 export const ReviewMode = {
@@ -1588,8 +1588,10 @@ export const ReviewMode = {
   fixFacts(f) {
     const st = this.find.status[f.id] ?? {}, r = this.find.reports[f.id], fv = this.fixView(this.fixJob(f)), job = fv?.job, v = st.verify;
     if (!st.fixHead && !r) return [];
+    // A running job whose agent is gone (fixStage "ended") says ended, not the word its own record still carries.
+    const ended = job?.state === "running" && this.fstage(f) === "ended";
     return [
-      job && ["Agent", `${job.target === "main" ? "the PR's agent" : "a sub-agent"}${job.terminal ? ` (${job.terminal})` : ""}, ${job.state === "running" ? fv.status : job.state}`],
+      job && ["Agent", `${job.target === "main" ? "the PR's agent" : "a sub-agent"}${job.terminal ? ` (${job.terminal})` : ""}, ${ended ? "ended" : job.state === "running" ? fv.status : job.state}`],
       job?.branch && ["Branch", job.branch],
       ["Commit", r?.commit ? String(r.commit).slice(0, 8) : "none reported yet"],
       r && ["Report", `${r.status === "fixed" ? "The agent reports it fixed" : "The agent declined"}${r.note ? `: ${r.note}` : "."}`],
@@ -1796,8 +1798,13 @@ export const ReviewMode = {
   },
   // What a row's state tooltip says: a reported commit keeps the contains answer; a fix with no reported commit says
   // which commits touched its file, or that there is no commit to check and the file did not change since it was sent.
+  // A fix that ended with nothing (pr.js fixStage "ended") names where it was sent and how long ago.
   stageTip(f) {
     const g = this.fgroup(f), job = this.fixMeta(f), by = this.fileFix(f), applied = Boolean(this.fixJob(f)?.appliedAt || this.fixJob(f)?.state === "applied");
+    if (g === "unresolved") {
+      const line = this.endedLine(f);
+      if (line) return line;
+    }
     if (g === "in_pr") {
       if (job?.commit) return "The fix commit is in the PR (not verified)";
       if (by?.shas.length) return `A commit touching ${f.file} landed after this fix was sent: ${by.shas.slice(0, 3).join(", ")} (not verified). Its agent is no longer running and no commit was reported, so this answer comes from the file's commits.`;
@@ -1819,27 +1826,44 @@ export const ReviewMode = {
   },
   // Whether this panel is waiting to send a fix's text (startMainFix): a state held in memory, never a fix job.
   startingFix(ids) { const s = this.fixStarting; return Boolean(s && s.ids.some((id) => ids.includes(id))); },
-  // Which of the running fix jobs' terminals are alive, as one string: a fix's stage depends on it (pr.js
-  // fixStillWorking), so stages() is made again when a terminal comes or goes. Empty when no running job names one, and
-  // then Herdr is not asked.
+  // What a running fix job's liveness is, per job, as one short string: a fix's stage depends on it (pr.js
+  // fixStillWorking: a live terminal, or a job under ten minutes old), so stages() is made again when either changes.
+  // The job's id, whether its terminal is alive (jobs with no terminal read 0), and whether it is still young. The
+  // young token is what a main fix needs: it names no terminal, so without it the stage map made while the job was
+  // young kept "Fix in progress" after the ten minutes ran out. Empty when no job runs, and then Herdr is not asked.
   fixLiveSig() {
-    const jobs = this.fixes().filter((j) => j.state === "running" && j.terminal);
+    const jobs = this.fixes().filter((j) => j.state === "running");
     if (!jobs.length) return "";
-    const live = terminals();
-    return jobs.map((j) => `${j.terminal}:${live.some((x) => x.address === j.terminal && x.state === "live") ? 1 : 0}`).join("|");
+    const now = Date.now(), live = jobs.some((j) => j.terminal) ? terminals() : [];
+    return jobs.map((j) => `${j.id}:${j.terminal && live.some((x) => x.address === j.terminal && x.state === "live") ? 1 : 0}:${j.at && now - j.at < 600000 ? "y" : "o"}`).join("|");
+  },
+  // Whether a job's agent still works (pr.js fixStillWorking), from one terminal list and one clock for the whole map:
+  // the same two readings fixLiveSig signs, so a stage map and its deps cannot disagree.
+  workingNow(live, now = Date.now()) {
+    return (job) => fixStillWorking({ job, now, terminalLive: Boolean(job?.terminal) && live.some((x) => x.address === job.terminal && x.state === "live") });
+  },
+  // What a fix that ended without a result says about itself (pr.js fixEndedLine), or null. Read from the stage, so a
+  // commit that touched the file (In the PR) never carries it, and from the same readings fixLiveSig signs.
+  endedLine(f) {
+    if (this.fstage(f) !== "ended") return null;
+    const job = this.fixJob(f), live = job?.terminal ? terminals() : [], now = Date.now();
+    return fixEndedLine({ job, terminalLive: Boolean(job?.terminal) && live.some((x) => x.address === job.terminal && x.state === "live"), verified: this.find.status[f.id]?.verify ?? null, head: this.headNow(), now });
   },
   // Every finding's stage in one pass (pr.js fixStage), kept while the findings, their statuses, the fix jobs, the head
   // and git's answer stay the same: a frame asks this from every row, heading and count.
   stages() {
     const deps = [this.findings(), this.find.status, this.find.reports, this.threadDoc, this.threadKey(), this.headNow(), this.landed, this.fixStarting, this.fileLogs, this.fixLiveSig()];
     if (this.stageMemo && deps.every((d, i) => d === this.stageMemo.deps[i])) return this.stageMemo.map;
-    const head = this.headNow(), landed = this.landedNow(head);
+    const head = this.headNow(), landed = this.landedNow(head), jobs = this.fixes().filter((j) => j.state === "running");
+    const working = this.workingNow(jobs.some((j) => j.terminal) ? terminals() : []);
     const map = new Map(this.findings().map((f) => {
-      const job = this.fixMeta(f), commit = job?.commit ?? null, stage = fixStage({ job, landed: commit ? landed[commit] ?? null : null, verified: this.find.status[f.id]?.verify ?? null, head });
+      const job = this.fixMeta(f), raw = this.fixJob(f), commit = job?.commit ?? null;
+      const stage = fixStage({ job, landed: commit ? landed[commit] ?? null : null, verified: this.find.status[f.id]?.verify ?? null, head, working: raw ? working(raw) : null });
       // A fix with no reported commit: git says whether a commit since it was sent touched its file. One did, so the
-      // head may carry the fix (In the PR, weaker than contains); none did, so it cannot be there (Fix ready).
-      const by = this.fileFix(f);
-      return [f.id, by && (stage === null || stage === "progress") ? (by.shas.length ? "in_pr" : "ready") : stage];
+      // head may carry the fix (In the PR, weaker than contains); none did, so it cannot be there (Fix ready). A fix
+      // whose agent is gone and whose file did not change stays ended: there is nothing to apply.
+      const by = this.fileFix(f), carried = by && (stage === null || stage === "progress" || stage === "ended");
+      return [f.id, carried ? (by.shas.length ? "in_pr" : stage === "ended" ? "ended" : "ready") : stage];
     }));
     this.stageMemo = { deps, map };
     return map;
@@ -2951,6 +2975,11 @@ export const ReviewMode = {
     const dismiss = pill(`rv-fdm-${x.id}`, t, "Dismiss finding", (_e, cx) => this.dismiss(x, cx), false, refuted ? lit : undefined).tooltip(refuted ? `An agent refuted this finding: ${x.proof.reason || "see Evidence"}. Dismiss it if you agree; nothing happens by itself.` : `Dismiss this finding${x.sources.length > 1 ? ` with all ${x.sources.length} of its sources` : ""}; it stays here under Won't fix`);
     const verify = (on) => pill(`rv-fch-${x.id}`, t, "Verify", (_e, cx) => this.runVerify(cx, [x]), false, on ? lit : undefined)
       .tooltip("One model call checks this fix on the PR head. A passed check moves the finding to Verified; nothing is posted.");
+    // A fix whose agent ended with nothing to show (pr.js fixStage "ended"): there is nothing to go to, apply or
+    // discard, so the finding is unresolved again and the row offers the fix it would offer a finding never sent.
+    if (this.fstage(x) === "ended") return [add(!refuted), ask,
+      pill(`rv-fga-${x.id}`, t, "Fix again", (_e, cx) => this.againFix(x, cx)).tooltip("Send this finding to an agent again: the old fix record goes first, then a preview says where the new agent works and what it may do"),
+      dismiss];
     // The same order as on the card in the diff: Add, Ask, Fix or Verify, Dismiss; Verify with an agent before Dismiss.
     // A fix in the PR whose job record is gone still gets its Verify: git knows where the fix is without it.
     if (!fv) {
@@ -2991,6 +3020,15 @@ export const ReviewMode = {
   },
   handOverApply(job, cx) {
     this.previewSend(cx, { what: "Apply fix", own: "", prompt: TH.applyPrompt(job), onSent: () => { this.applyBlocked = null; } });
+  },
+  // Fix again on a fix that ended with nothing (pr.js fixStage "ended"): the old record goes as Discard sends it, so
+  // the second start is clean (its findings unresolved again, a sub-agent's worktree and branch away), and the finding
+  // takes the row's usual Fix path.
+  againFix(f, cx) {
+    const job = this.fixJob(f);
+    if (job) this.discardFix(job, cx);
+    else if (this.find.status[f.id]?.s === "progress") this.setFinding(f, "open", cx, { fixHead: undefined });
+    this.fix([f], cx);
   },
   discardFix(job, cx) {
     const key = this.threadKey(), git = (args) => exec("git", ["-C", job.base, ...args], { timeout: 60000 });
@@ -6104,7 +6142,7 @@ export const ReviewMode = {
       const others = x.sources.filter((y) => y.title !== x.title || y.detail !== x.detail), owner = on ? ownerOf(x, this.ai?.components) : null;
       // Its way into the PR as five steps in one line; the step that is next says what is missing, a step with
       // details (the fix's agent, branch, commit and report, the check's result) opens them on a click.
-      const steps = on ? findingSteps(x, this.find.status[x.id], { report: this.find.reports[x.id], facts: this.fixFacts(x) }) : [];
+      const steps = on ? findingSteps(x, this.find.status[x.id], { report: this.find.reports[x.id], facts: this.fixFacts(x), stage: this.fstage(x) }) : [];
       const next = steps.find((s) => s.next), shown = steps.find((s) => this.fstep?.id === x.id && s.key === this.fstep.key && s.details.length);
       return v_flex().id(`rv-fc-${x.id}`).flex_none().px(8).py(on ? 8 : 4).gap(6).rounded(7).border_l(3).border_color(on ? t.accent : col).when(on, (e) => e.bg(t.surface)).text_size(TYPE.body)
         // A narrow column wraps the row: the place and the state go under the title instead of squeezing it to nothing.
@@ -6118,7 +6156,10 @@ export const ReviewMode = {
           .children([certaintyWord(t, x, `rv-fcert-${x.id}`)].filter(Boolean))
           .child(div().flex_1().min_w(120).font_semibold().text_color(settled ? t.muted : t.foreground).when(!wide, (e) => e.truncate()).when(wide, (e) => e.whitespace_normal()).child(x.title))
           .child(div().flex_none().text_size(TYPE.small).text_color(t.muted).child(`${x.file.split("/").pop()}:${x.line}${this.findRow(x) < 0 ? " · outside the diff" : ""}`))
-          .when(Boolean(stateWord(g, st)), (e) => e.child(div().id(`rv-lfst-${x.id}`).tooltip(this.stageTip(x)).flex_none().text_size(TYPE.small).font_semibold().text_color(t[GTINT[g]] ?? t.muted).child(stateWord(g, st))))))
+          .when(Boolean(stateWord(g, st)), (e) => e.child(div().id(`rv-lfst-${x.id}`).tooltip(this.stageTip(x)).flex_none().text_size(TYPE.small).font_semibold().text_color(t[GTINT[g]] ?? t.muted).child(stateWord(g, st))))
+          // A fix whose agent is gone with nothing to show (pr.js fixStage "ended"): the row says so, in the muted
+          // colour of the group it is back in, with where it was sent and how long ago in the tooltip.
+          .when(this.fstage(x) === "ended", (e) => e.child(badge(t, "fix ended without a result", t.muted).id(`rv-fend-${x.id}`).tooltip(this.stageTip(x))))))
         .when(on, (e) => e
           .child(div().text_size(TYPE.small).text_color(t.muted).whitespace_normal().child(`Found by ${this.sourcesOf(x)}${owner ? ` · Owner: ${owner}` : ""}${x.effort ? ` · Fix effort: ${x.effort}` : ""}`))
           // An analysis finding is part of its layer: name it, a click opens it.
@@ -6898,7 +6939,7 @@ export const ReviewMode = {
     const base = { pr: this.prSel, head: this.headNow() ?? "", code: code ? this.mdCode() : null, moreOf: (f) => this.mdMore(f) };
     const m = this.mdNow(), layer = this.steps()[this.cur], one = this.findingById(this.ffocus);
     const rows = this.mergeRows();
-    return { finding: () => findingMd(one, { ...base, status: statusOf(one), asks, stepsOf: (f) => findingSteps(f, this.find.status[f.id], { report: this.find.reports[f.id], facts: this.fixFacts(f) }) }),
+    return { finding: () => findingMd(one, { ...base, status: statusOf(one), asks, stepsOf: (f) => findingSteps(f, this.find.status[f.id], { report: this.find.reports[f.id], facts: this.fixFacts(f), stage: this.fstage(f) }) }),
       findings: () => findingsMd(findings, { ...base, statusOf, asks, notes: this.openSugs(), sources: this.findingSources().map((x) => x.text) }),
       layer: () => layerMd(layer, { ...base, n: this.cur + 1, files: this.filesOf(layer), findings: this.layerFindings(layer), statusOf, open: this.openFindings(), deps: this.stepDeps(layer).map(([d]) => plain(d.title)),
         access: layerAccess(ai?.access, this.filesOf(layer))?.text ?? null, hunks: this.present(layer).map((id) => this.byId.get(id)).filter(Boolean).map((h) => ({ path: h.path, rows: h.rows })) }),
