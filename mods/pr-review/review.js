@@ -15,7 +15,8 @@ import { exec, hc, run, focused, pickFolder, theme, settings, readTextFile, writ
 import { spaces, agents, terminals, watch } from "./live.js";
 import { hostOfLink, parseLink, hostWord, hostLong } from "./host.js"; // never straight from Herdr (live.js says why)
 import { parseReports, findingStatus, fixStage, findingGroup, FINDING_GROUPS, GROUP_WORD, mergeFindings, findingCounts, countLine, runsOf, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
-import { agentArgs, harnessProfile, harnessAgent } from "./pr.js"; // a new agent tab: the harness profile's own command, else Claude Code
+import { agentArgs, harnessProfile, harnessAgent, notReadyNote, tabTaskDelivery } from "./pr.js"; // a new agent tab: the harness profile's own command, else Claude Code
+import { startAgentTab } from "./agent-tab.js"; // starts it and gets the text there (an argument, or a send once the agent reports ready)
 import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig, writeConfig } from "./setup-view.js";
 import { taskList, taskHead, verdictParts, reviewState, certaintyLine, severityTip, componentLine, doesList, checkGroups, costLine, alreadyThere, criteriaGroups, beforeMerge, verdictAction, notChecked, surfaceLine, realRules } from "./pr.js"; // the Overview page
@@ -1802,10 +1803,20 @@ export const ReviewMode = {
       if (plan.kind === "new" && plan.where) {
         // Asked from the review, which shows no terminals: the tab starts in the background (focus: false), so the
         // space and tab shown before the review are still the ones shown after it. Its name says where to find it.
-        const name = tabName(origin?.repo ?? this.root, origin?.number ? `ask ${hostWord(origin.url)} #${origin.number}` : "ask");
-        run("tab.new", { space: this.spaceFor(this.ctxId(), origin?.cwd, this.root), folder: plan.where, name, focus: false,
-          argv: agentArgs({ profile: harnessProfile(this.cfg), env: this.ctxEnv(this.ctxId()), model: model(), ask: true, trusted: this.trustedPr() }), task: text });
-        this.note = `Started the agent tab "${name}" in the background with your question. The finding stays as it is.`;
+        // Claude Code gets the question as its argument; a harness tab starts bare and is sent it once ready.
+        const profile = harnessProfile(this.cfg), name = tabName(origin?.repo ?? this.root, origin?.number ? `ask ${hostWord(origin.url)} #${origin.number}` : "ask");
+        const url = origin?.url, gen = (this.tabGen = (this.tabGen ?? 0) + 1);
+        const r = await startAgentTab(cx, { profile, space: this.spaceFor(this.ctxId(), origin?.cwd, this.root), folder: plan.where, name, text, focus: false,
+          argv: agentArgs({ profile, env: this.ctxEnv(this.ctxId()), model: model(), ask: true, trusted: this.trustedPr() }),
+          stopped: () => this.tabGen !== gen || this.prSel?.url !== url,
+          onOpen: ({ delivery }) => {
+            this.note = delivery === "send" ? `Started the agent tab "${name}" in the background; your question is sent when its agent reports ready. The finding stays as it is.`
+              : `Started the agent tab "${name}" in the background with your question. The finding stays as it is.`;
+            cx.notify();
+          } });
+        if (r.stopped || this.tabGen !== gen) return cx.notify();
+        if (!r.sent) this.note = notReadyNote(name, "question");
+        else if (r.delivery === "send") this.note = `Sent your question to the agent tab "${name}". The finding stays as it is.`;
         return cx.notify();
       }
       await copyText(text);
@@ -2721,21 +2732,38 @@ export const ReviewMode = {
   },
   // "Main agent" is a new tab, never a send into a session: the active harness profile's own interactive command when
   // it has one, else Claude Code (pr.js agentArgs), in the PR's checkout (or the review's checkout of the PR head).
-  // Nothing is branched and nothing is pushed by the mod; a tab can push, so the preview says so.
+  // Nothing is branched and nothing is pushed by the mod; a tab can push, so the preview says so. Claude Code gets the
+  // fix as its argument; a harness tab starts bare and the text is sent once its agent reports ready (agent-tab.js).
+  // A newer tab, or another PR, supersedes a wait: this copy sends nothing and its note stays the other one's.
   startMainFix(p, text, cx) {
     const f = p.fix, folder = this.fixBase(), profile = harnessProfile(this.cfg), runner = this.runnerName();
     if (!folder) { this.note = "Not started: the PR has no local checkout or worktree to start a tab in"; return cx.notify(); }
     const trusted = this.trustedPr() && !f.foreign; // someone else's comment: the tab asks first, on this machine's settings only
+    const name = tabName(this.prSel?.repo ?? this.root, this.prSel?.number ? `fix ${hostWord(this.prSel.url)} #${this.prSel.number}` : "fix");
+    const space = this.spaceFor(this.ctxId(), folder), url = this.prSel?.url, gen = (this.tabGen = (this.tabGen ?? 0) + 1);
     this.sending = true; this.note = null;
-    try {
-      const name = tabName(this.prSel?.repo ?? this.root, this.prSel?.number ? `fix ${hostWord(this.prSel.url)} #${this.prSel.number}` : "fix");
-      run("tab.new", { space: this.spaceFor(this.ctxId(), folder), folder, name, focus: false,
-        argv: agentArgs({ profile, env: this.ctxEnv(this.ctxId()), model: model(), ask: !trusted, trusted }), task: text });
-      this.updateThreads(cx, (d) => TH.addFix(d, this.threadKey(), { id: Date.now().toString(36), items: f.items, target: "main", at: Date.now(), state: "running" }));
-      f.sent(cx, { route: "agent", agent: `${runner} tab · ${name}` });
-      this.note = `Fix: started a new ${runner} tab "${name}" in the background with the fix. Nothing was typed into another session.`;
-    } catch (e) { this.note = `Not started: ${String(e).replace(/^Error: /, "")}`; }
-    finally { this.sending = false; cx.notify(); }
+    cx.spawn(async (cx) => {
+      try {
+        const r = await startAgentTab(cx, {
+          profile, space, folder, name, text, focus: false,
+          argv: agentArgs({ profile, env: this.ctxEnv(this.ctxId()), model: model(), ask: !trusted, trusted }),
+          stopped: () => this.tabGen !== gen || this.prSel?.url !== url,
+          onOpen: ({ delivery }) => {
+            this.updateThreads(cx, (d) => TH.addFix(d, this.threadKey(), { id: Date.now().toString(36), items: f.items, target: "main", at: Date.now(), state: "running" }));
+            f.sent(cx, { route: "agent", agent: `${runner} tab · ${name}` });
+            this.sending = false;
+            this.note = delivery === "send" ? `Fix: started a new ${runner} tab "${name}" in the background; the fix text is sent when its agent reports ready.`
+              : `Fix: started a new ${runner} tab "${name}" in the background with the fix. Nothing was typed into another session.`;
+            cx.notify();
+          },
+        });
+        if (r.stopped || this.tabGen !== gen) return;
+        if (!r.sent) { this.note = notReadyNote(name, "fix text"); return cx.notify(); }
+        if (r.delivery === "send") { this.note = `Fix: the ${runner} tab "${name}" is ready; the fix text was sent.`; cx.notify(); }
+      } catch (e) { this.note = `Not sent: ${String(e).replace(/^Error: /, "")}`; cx.notify(); }
+      finally { this.sending = false; }
+    });
+    return cx.notify();
   },
   // A finding's buttons in the Findings tab, by the group it is in (pr.js fixStage, the same words its row shows). At
   // most one is lit, the next step: "Add to review" on an unresolved one, "Go to fix" while its agent works, "Apply to
@@ -3406,7 +3434,7 @@ export const ReviewMode = {
           .tooltip("Needs Claude Code: the sub-agent starts as a background claude agent, which a harness profile cannot replace")))
         .when(!this.subOffered(), (x) => x.child(div().pl(32).text_size(TYPE.small).text_color(t.muted).whitespace_normal()
           .child("The sub-agent is not offered: it needs Claude Code, and Setup did not find it.")))
-        .child(choice("main", "Main agent", `A new ${runner} tab${place ? ` in ${place}` : ""}, with this text as its task. It works in the PR's checkout like a tab you open there yourself: nothing separates the fix from the PR, and it can push.`))
+        .child(choice("main", "Main agent", `A new ${runner} tab${place ? ` in ${place}` : ""}, with this text${tabTaskDelivery(harnessProfile(this.cfg)) === "send" ? ", sent when its agent reports ready" : " as its task"}. It works in the PR's checkout like a tab you open there yourself: nothing separates the fix from the PR, and it can push.`))
         .when(this.sessionOffered(), (x) => x.child(choice("session", "This session", `${name}, the PR's own agent session. The text is typed into its terminal, so it joins that session's context. It changes the PR's checkout with its own permissions.`)))
         .when(!this.sessionOffered(), (x) => x.child(div().pl(32).text_size(TYPE.small).text_color(t.muted).whitespace_normal()
           .child(`This session is not offered: ${this.sessionWhy()}.`)))))

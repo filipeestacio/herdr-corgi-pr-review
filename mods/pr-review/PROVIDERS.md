@@ -159,8 +159,9 @@ All keys optional.
   profile has no cost cap, so a slow CLI can be given more time. `env` values are strings, `null` unsets a variable,
   and `"${VAR}"` reads `VAR` from the environment: when it is not set the run fails with a sentence naming it. The
   context's env wins where both set the same variable. `agent` is the argv that opens the same harness interactively,
-  such as `["aircode", "harness", "opencode"]`: a new agent tab for PR text (a fix, Ask, Send review) starts it, with
-  the task as the tab's prompt, in place of Claude Code. Two commands, two jobs: `command` is the headless call that
+  such as `["aircode", "harness", "opencode"]`: a new agent tab for PR text (a fix, Ask, Send review) starts it in
+  place of Claude Code, and the text is sent once its agent reports ready; a Claude Code tab takes the text as its
+  command's last argument. Two commands, two jobs: `command` is the headless call that
   runs the analysis, the reviewers, triage and fix verification and prints the answer, and `agent` is the program you
   would type to work in that harness yourself. The tab gets the context's `env`, as every program pr-review starts for
   that context does; `agent` takes no placeholders, and Setup checks `command`'s program, not `agent`'s. `agent` is

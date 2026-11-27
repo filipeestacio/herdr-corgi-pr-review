@@ -24,7 +24,8 @@ import { parsePrRef, ghTarget, pruneSources, mergeMine, codeModel, windowActive,
 import { cleanupCandidates, cleanupLine, cleanupNote, cleanupRemoved, cleanupDoc, cleanupDone, cleanupDoneDoc, localDay } from "./pr.js"; // the clones this mod made, and their one daily cleanup
 import { hostOfLink, parseRemote, parseLink, hostWord } from "./host.js";
 import * as C from "./context.js";
-import { agentArgs, harnessProfile, harnessAgent } from "./pr.js"; // a new agent tab with the PR's text: the harness profile's own command, else Claude Code
+import { agentArgs, harnessProfile, harnessAgent, notReadyNote } from "./pr.js"; // a new agent tab with the PR's text: the harness profile's own command, else Claude Code
+import { startAgentTab } from "./agent-tab.js"; // starts it and gets the text there (an argument, or a send once the agent reports ready)
 import { loadDiff, saveDiff } from "./diffcache.js";
 import { setupBanner, renderSetup, loadSetup, runSetup, openUrl, readConfig } from "./setup-view.js";
 import { chip, PRIORITY_TIP, layoutPump } from "./stack.js";
@@ -787,6 +788,8 @@ export default class PrReview extends View {
     const profile = harnessProfile(this.cfg), runner = harnessAgent(profile) ? profile.label : "Claude";
     this.sending = true; this.note = null;
     cx.spawn(async (cx) => {
+      // done runs once, when the text is on its way: with a tab, as soon as the tab exists, not after a wait.
+      const o = { done: false };
       try {
         if (agent) {
           const r = await hc(["send", agent.address, prompt]);
@@ -799,10 +802,20 @@ export default class PrReview extends View {
           this.note = `${what}: resumed the PR's session in a new tab`;
         } else {
           // The active harness profile's own interactive command when it has one, else Claude Code (pr.js agentArgs).
-          run("tab.new", { space: this.spaceFor(ctx, this.root), folder: this.root ?? location().cwd, name: tabName(origin?.repo ?? this.root, origin ? `${hostWord(origin.url)} #${origin.number}` : "review"), argv: agentArgs({ profile, env: this.ctxEnv(ctx), model: walkModel(), ask: guard, trusted: false }), task: prompt });
-          this.note = `${what}: started a new ${runner} tab${guard ? (harnessAgent(profile) ? " with someone else's comment; it runs with the harness's own permissions" : " in manual mode (it holds someone else's comment)") : ""}`;
+          // Claude Code takes the prompt as its argument; a harness tab starts bare and is sent it once its agent
+          // reports ready (agent-tab.js). A newer send, or another PR, supersedes the wait.
+          const name = tabName(origin?.repo ?? this.root, origin ? `${hostWord(origin.url)} #${origin.number}` : "review");
+          const url = origin?.url, gen = (this.tabGen = (this.tabGen ?? 0) + 1), perm = guard ? (harnessAgent(profile) ? " with someone else's comment; it runs with the harness's own permissions" : " in manual mode (it holds someone else's comment)") : "";
+          const r = await startAgentTab(cx, { profile, space: this.spaceFor(ctx, this.root), folder: this.root ?? location().cwd, name, text: prompt,
+            argv: agentArgs({ profile, env: this.ctxEnv(ctx), model: walkModel(), ask: guard, trusted: false }),
+            stopped: () => this.tabGen !== gen || this.prSel?.url !== url,
+            onOpen: () => { o.done = true; done(cx); this.sending = false; cx.notify(); } });
+          if (r.stopped || this.tabGen !== gen) return;
+          if (!r.sent) this.note = notReadyNote(name, what === "Review" ? "review" : "question");
+          else if (r.delivery === "send") this.note = `${what}: started a new ${runner} tab "${name}" and sent it there${perm}.`;
+          else this.note = `${what}: started a new ${runner} tab${perm}.`;
         }
-        done(cx);
+        if (!o.done) done(cx);
       } catch (e) { this.note = `Not sent: ${e}`; }
       finally { this.sending = false; cx.notify(); }
     });

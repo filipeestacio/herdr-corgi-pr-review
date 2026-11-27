@@ -1265,6 +1265,18 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
       assert.ok(tab2 && started.length === 0, "a new tab, nothing typed into the running agent");
       assert.deepEqual([tab2[1].folder, tab2[1].argv[0], tab2[1].argv.includes("--strict-mcp-config")], ["/h/base", "claude", true], "Claude Code's tab in the PR's checkout (no harness profile is configured)");
       assert.ok(tab2[1].task.includes("My own note."), "the tab's task is the fix text");
+      // A harness profile's `agent` is a launcher: it hands its arguments to the harness, so a task there became a
+      // command-line argument and the agent started with no message. Its tab therefore starts bare, and the text is
+      // sent once the agent reports ready (agent-tab.js).
+      { const cfg = v.cfg;
+        v.cfg = { ...cfg, harness: "work", harnesses: { work: { label: "OpenCode", command: ["opencode", "run"], agent: ["aircode", "harness", "opencode"] } } };
+        try {
+          v.command("fix:gh89", cx); await settle(); v.fixTarget("main"); S.runs.length = 0; started.length = 0;
+          v.command("send", cx); await settle();
+          const t = S.runs.find(([c]) => c === "tab.new");
+          assert.ok(t && !("task" in t[1]) && t[1].argv.slice(-3).join(" ") === "aircode harness opencode", `a harness tab starts bare with its own argv: ${JSON.stringify(t?.[1])}`);
+        } finally { v.cfg = cfg; started.length = 0; S.runs.length = 0; }
+      }
       // A PR head the review's checkout has not seen: a fix in that checkout (the new tab, or the session) waits for the
       // checkout, as a run does (#13), and starts once it is at the PR's head.
       { const w = v.worktree, head = v.prSel.headSha, mk = v.makeWorktree, noTab = () => S.runs.filter(([c]) => c === "tab.new").length;
