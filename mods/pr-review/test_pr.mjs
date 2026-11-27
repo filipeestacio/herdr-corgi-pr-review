@@ -201,7 +201,7 @@ assert.deepEqual(rangeOf(again, "+3", "+3"), [lo, lo]);
 console.log("ok");
 
 // Findings: reports (last line wins, half lines skipped) never settle a finding; moved code asks for a recheck.
-const { parseReports, findingStatus, fixStage, fixEndedLine, landedByFile, fixStillWorking, findingGroup, FINDING_GROUPS, GROUP_WORD, fixPrompt, mergeFindings, findingCounts, countLine, agoSpan } = await import("./pr.js");
+const { parseReports, findingStatus, fixStage, fixEndedLine, landedByFile, fixStillWorking, fixJump, findingGroup, FINDING_GROUPS, GROUP_WORD, fixPrompt, mergeFindings, findingCounts, countLine, agoSpan } = await import("./pr.js");
 const reps = parseReports('{"id":"a","status":"wontfix"}\n{"id":"a","status":"fixed","commit":"abc"}\n{"id":"b","sta');
 assert.deepEqual(Object.keys(reps), ["a"]);
 const fa = { id: "a", head: "h1", code: "x()" }, fb = { id: "b", head: "h1", code: "y()" };
@@ -289,6 +289,14 @@ assert.equal(fixEndedLine({ job: null, now: clock }), null, "no job at all");
 assert.equal(agoSpan(7200000), "2 h ago");
 assert.equal(agoSpan(60000), "1 min ago");
 assert.equal(agoSpan(3 * 86400000), "3 d ago");
+// Where "Go to fix" goes: the tab the job names, its terminal when the job names only that, and nowhere with neither.
+// An empty tab string is no tab (an old record, or one whose terminal carried no label).
+assert.deepEqual(fixJump({ tab: "tab9", terminal: "t9" }), { kind: "tab", id: "tab9", terminal: "t9" }, "the tab, and the terminal to focus in it");
+assert.deepEqual(fixJump({ tab: "tab9" }), { kind: "tab", id: "tab9", terminal: null }, "a tab without a recorded terminal");
+assert.deepEqual(fixJump({ terminal: "t9" }), { kind: "peek", terminal: "t9" }, "a job from before the tab was recorded: a peek");
+assert.equal(fixJump({ tab: "", terminal: "t9" })?.kind, "peek", "an empty tab string is no tab");
+assert.equal(fixJump({}), null, "neither: nothing to go to");
+assert.equal(fixJump(null), null, "no job at all");
 // The six groups, and the word each shows; a status is the fallback for what git cannot see.
 assert.deepEqual(FINDING_GROUPS.map(([k, w]) => [k, w]), [["unresolved", "Unresolved"], ["progress", "Fix in progress"], ["ready", "Fix ready"], ["in_pr", "In the PR"], ["verified", "Verified"], ["wontfix", "Won't fix"]]);
 assert.deepEqual(["open", "recheck", "progress", "fixed", "dismissed"].map((s) => findingGroup(null, s)), ["unresolved", "unresolved", "progress", "verified", "wontfix"]);
