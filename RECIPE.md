@@ -19,7 +19,8 @@ On the right of the window, a panel shows the diff of the focused space's
 branch against its PR base (or any PR you pick) with comments on lines that go to the agent who wrote the code.
 "Review" switches to a full-window layout: the AI's walkthrough of the PR in layers on the left, every diff line
 on the right with suggestions, reviewer findings and comments inline, and pages for the overview, the security
-blast radius, the architecture impact and fix verification.
+blast radius, the architecture impact and fix verification. In the UI, a GitLab merge request is called MR where
+GitHub's is called PR, and generic text says "the host".
 
 ![The review layout's overview of a demo PR](preview.png)
 
@@ -239,7 +240,7 @@ big PRs into cohort passes and a merge pass under one cap.
   `review.cloneRoots` (`{ "<owner>/<repo>": "<parent folder>" }`, newest 50) and becomes the first `--root` for that
   repository. The configured `cloneRoot` folders stay as fallbacks. "Choose folder…" runs the check again without
   `--clone`, so the banner names the exact destination, and the pill still does the clone.
-- A clone the mod made goes after 30 idle days, and only then if the tree is clean and the host reports no open PR
+- A clone the mod made goes after 30 idle days, and only then if the tree is clean and the host reports no open PR or MR
   (`cleanup.py`). Review worktrees already go after 7 days (`worktree.py`). The panel records each clone it made, and
   when a checkout last used it, in `pr-data/clones.json` (`{"<owner>/<repo>": {"path", "at", "used"}}`, epoch seconds,
   newest 200 repositories). It runs that pass once a day, on its first open, in the background: one muted sentence

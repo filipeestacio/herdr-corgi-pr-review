@@ -22,7 +22,7 @@ import { spaces, panes, agents, terminals, feed, feedIfAsked, whenFed } from "./
 import { diffRows, buildPrompt, splitPatch, selection, nextChange, lineLabel, anchorRow, buildReview, hunksOf, hash, uiLine, reviewRequest, mapReview, triageOf, isSecurity, withThreats, knownOf } from "./pr.js";
 import { parsePrRef, ghTarget, pruneSources, mergeMine, codeModel, windowActive, pollDue, pollAfter, tabName } from "./pr.js";
 import { cleanupCandidates, cleanupLine, cleanupNote, cleanupRemoved, cleanupDoc, cleanupDone, cleanupDoneDoc, localDay } from "./pr.js"; // the clones this mod made, and their one daily cleanup
-import { hostOfLink, parseRemote } from "./host.js";
+import { hostOfLink, parseRemote, parseLink, hostWord } from "./host.js";
 import * as C from "./context.js";
 import { tabArgs } from "./threads.js"; // a new Claude tab with the PR's text: no MCP servers
 import { loadDiff, saveDiff } from "./diffcache.js";
@@ -50,6 +50,11 @@ const cacheDir = () => `${appHome()}/pr-data/cache`;
 // least Sonnet (pr.js codeModel: an old haiku pick reads as sonnet).
 const walkModel = () => { const m = shared("review.model"); return codeModel(typeof m === "string" && m ? m : "sonnet"); }; // as review.js model()
 const STATE = { open: "ansi2", draft: "muted", merged: "ansi5", closed: "ansi1" };
+// The header's way out to the browser: the PR or MR in the host's own words, on the host's own name (host.js).
+const openTip = (url) => {
+  const host = parseLink(url)?.hostname;
+  return `Open this ${hostWord(url)}${host ? ` on ${host}` : " in the browser"}`;
+};
 const WEIGHT = { key: ["key", "ansi3"], skim: ["skim", "dim"] };
 const COVER = { seen: ["done", "ansi2"], partly: ["partly", "ansi3"], absent: ["missing", "ansi1"] };
 const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -64,7 +69,7 @@ const SRC_TIP = { mine: "Open PRs and MRs assigned to you or opened by you, on G
 const sourcesFile = () => `${appHome()}/pr-data/sources.json`;
 const SOURCE_MS = 3 * 60 * 1000, SOURCE_KEEP = 20, PICKED_KEEP = 20;
 // "Clean up…" with nothing to list: one muted sentence and no popup.
-const NO_CLONES = "Nothing to clean up: a clone this mod made goes after 30 idle days, when its tree is clean and its host has no open PR.";
+const NO_CLONES = "Nothing to clean up: a clone this mod made goes after 30 idle days, when its tree is clean and its host has no open PR or MR.";
 const GH_FIELDS = "number,title,author,headRefName,headRefOid,baseRefName,updatedAt,isDraft,reviewDecision,additions,deletions,url";
 const REVIEW = { APPROVED: ["approved", "ansi2"], CHANGES_REQUESTED: ["changes requested", "ansi1"], REVIEW_REQUIRED: ["review required", "ansi3"] };
 const BRANCH = "branch"; // shared "pr.selected": the current branch was picked (not a PR)
@@ -771,11 +776,11 @@ export default class PrReview extends View {
           this.note = `${what} sent to ${agent.tab_name || "agent"}`;
         } else if (!guard && origin?.session && this.root) {
           // The session lives in the config folder it ran under (sessionContext), which the rules' context may not be.
-          run("tab.new", { space: this.spaceFor(ctx, origin.cwd, this.root), folder: origin.cwd, name: tabName(origin.repo, `PR #${origin.number}`), argv: [...this.ctxEnv(origin.sessionContext ?? ctx), "claude", "--resume", origin.session], task: prompt });
+          run("tab.new", { space: this.spaceFor(ctx, origin.cwd, this.root), folder: origin.cwd, name: tabName(origin.repo, `${hostWord(origin.url)} #${origin.number}`), argv: [...this.ctxEnv(origin.sessionContext ?? ctx), "claude", "--resume", origin.session], task: prompt });
           this.note = `${what}: resumed the PR's session in a new tab`;
         } else {
-          run("tab.new", { space: this.spaceFor(ctx, this.root), folder: this.root ?? location().cwd, name: tabName(origin?.repo ?? this.root, origin ? `PR #${origin.number}` : "review"), argv: tabArgs({ env: this.ctxEnv(ctx), model: walkModel(), ask: guard, trusted: false }), task: prompt });
-          this.note = `${what}: started a new Claude tab${guard ? " in manual mode (it holds someone else's GitHub comment)" : ""}`;
+          run("tab.new", { space: this.spaceFor(ctx, this.root), folder: this.root ?? location().cwd, name: tabName(origin?.repo ?? this.root, origin ? `${hostWord(origin.url)} #${origin.number}` : "review"), argv: tabArgs({ env: this.ctxEnv(ctx), model: walkModel(), ask: guard, trusted: false }), task: prompt });
+          this.note = `${what}: started a new Claude tab${guard ? " in manual mode (it holds someone else's comment)" : ""}`;
         }
         done(cx);
       } catch (e) { this.note = `Not sent: ${e}`; }
@@ -1258,7 +1263,7 @@ export default class PrReview extends View {
     const open = g.here, done = g.done, rest = g.other;
     const item = (id, on, top, sub, state, tag, click, pr, tagTip = "Agent that opened this PR") => v_flex().id(id).flex_none().px(8).py(4).rounded(7).cursor_pointer().tooltip(pr ? "Select this PR to see its diff" : "Use the diff of the focused pane's branch")
       .when(on, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click(click)
-      .child(h_flex().gap(6).child(div().flex_1().min_w(0).truncate().child(top)).when(Boolean(state) && state !== "open", (e) => e.child(div().id(`${id}-st`).tooltip(`PR state: ${state}`).flex_none().text_size(TYPE.micro).text_color(t[STATE[state]] ?? t.muted).child(state)))
+      .child(h_flex().gap(6).child(div().flex_1().min_w(0).truncate().child(top)).when(Boolean(state) && state !== "open", (e) => e.child(div().id(`${id}-st`).tooltip(`${hostWord(pr?.url)} state: ${state}`).flex_none().text_size(TYPE.micro).text_color(t[STATE[state]] ?? t.muted).child(state)))
         .when(Boolean(pr && isOpenPr(pr)), (e) => { // the one way into the review; a merged or closed PR has none
           const r = started.get(pr.url);
           return e.child(r ? pill(`${id}-rv`, t, "Resume", (_e, cx) => { cx.stop_propagation(); this.toReview(r.target ?? r); }, false, "Continue this review where you left it")
@@ -1287,19 +1292,19 @@ export default class PrReview extends View {
     // One sentence for an empty list: what is going on, or what to do.
     const empty = src === "session" ? (this.scanning ? "Searching transcripts for PRs…" : this.prs.length ? "No recent PRs from Claude sessions in this repository." : "No PRs from Claude sessions")
       : src === "mine" ? (!sl || sl.loading ? "Asking GitHub and GitLab…" : sl.why ?? "")
-      : !sl || sl.loading ? "Asking GitHub…"
+      : !sl || sl.loading ? "Asking the host…"
       : src === "space" ? (above ? "Every open PR of this space's branches is in progress above." : sl.why ?? "")
-      : src === "repo" && sl?.key === null ? "Open a space on a GitHub repo to list its PRs."
-      : above ? "Every open PR here is in progress above." : src === "repo" ? `No open PRs in this repo${inView}` : `No open review requests${inView}`;
+      : src === "repo" && sl?.key === null ? "Open a space on a repository with a GitHub or GitLab remote to list its PRs."
+      : above ? "Every open PR here is in progress above." : src === "repo" ? `No open ${hostWord(this.spaceSlug?.host)}s in this repo${inView}` : `No open review requests${inView}`;
     return v_flex().flex_none().p(6)
         .child(h_flex().flex_none().flex_wrap().px(4).py(2).gap(6).items_center()
           .child(h_flex().flex_wrap().gap(2).p(2).rounded(7).border_1().border_color(t.border).children(SOURCES.map(([k, label]) =>
             div().id(`pr-src-${k}-${this.uid}`).tooltip(SRC_TIP[k]).px(8).h(24).flex().items_center().rounded(5).cursor_pointer().text_size(TYPE.panel)
               .bg(src === k ? t.selected : t.chrome).text_color(src === k ? t.foreground : t.muted)
               .on_click((_e, cx) => { this.pickSource(k); this.loadSource(cx); cx.notify(); }).child(label))))
-          .child(div().id(`pr-srcinfo-${this.uid}`).tooltip(src === "repo" ? "Repository these PRs come from" : "How long ago this list was fetched from GitHub").flex_1().min_w(0).truncate().text_size(TYPE.micro).text_color(t.muted)
+          .child(div().id(`pr-srcinfo-${this.uid}`).tooltip(src === "repo" ? "Repository these PRs come from" : "How long ago this list was fetched from the host").flex_1().min_w(0).truncate().text_size(TYPE.micro).text_color(t.muted)
             .child(src === "repo" ? this.spaceSlug?.slug ?? "" : sl?.loading ? "loading…" : sl?.at ? (Date.now() - sl.at < 60000 ? "just now" : `${age(new Date(sl.at).toISOString())} ago`) : ""))
-          .when(src !== "session", (e) => e.child(pill(`pr-src-reload-${this.uid}`, t, sl?.loading ? "…" : "↻", (_e, cx) => this.loadSource(cx, true), false, src === "mine" ? "Fetch this list from GitHub and GitLab again" : "Fetch this list from GitHub again", "Reload PR list"))))
+          .when(src !== "session", (e) => e.child(pill(`pr-src-reload-${this.uid}`, t, sl?.loading ? "…" : "↻", (_e, cx) => this.loadSource(cx, true), false, src === "mine" ? "Fetch this list from GitHub and GitLab again" : "Fetch this list again", "Reload PR list"))))
         .child(h_flex().flex_none().px(4).py(2).gap(6).items_center()
           .child(div().id(`pr-openref-${this.uid}`).flex_1().min_w(0).h(26).px(8).flex().items_center().rounded(6).border_1().border_color(t.border).cursor_text().tooltip("Paste a PR URL or owner/repo#123, then Open")
             .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.openRefInput).h_full().text_size(TYPE.panel).text_color(t.foreground)))
@@ -1307,7 +1312,7 @@ export default class PrReview extends View {
         .when(Boolean(sl?.error) && src !== "session", (e) => e.child(div().px(8).py(4).text_size(TYPE.panel).text_color(t.ansi1).whitespace_normal().child(sl.error)))
         // The triage line only when PRs were triaged (Setup is in the header).
         .when(n > 0, (e) => e.child(h_flex().flex_none().px(8).py(4).gap(6).items_center()
-          .child(div().id(`pr-triage-info-${this.uid}`).tooltip("Priority and chips come from cached data; no GitHub or AI call").flex_1().min_w(0).truncate().text_size(TYPE.panel).text_color(t.muted).child(n ? `${n} open ${n === 1 ? "PR" : "PRs"} triaged from cached data` : ""))
+          .child(div().id(`pr-triage-info-${this.uid}`).tooltip("Priority and chips come from cached data; no host or AI call").flex_1().min_w(0).truncate().text_size(TYPE.panel).text_color(t.muted).child(n ? `${n} open ${n === 1 ? "PR" : "PRs"} triaged from cached data` : ""))
           .when(n > 0, (e) => e.child(pill(`pr-triage-${this.uid}`, t, this.triaging ? "Triaging…" : "Triage PRs", (_e, cx) => this.runTriage(cx), false, "Rank the listed open PRs with one small AI call per context")))))
         .children(open.map(row))
         .when(rest.length > 0, (e) => e.child(h_flex().id(`pr-other-${this.uid}`).flex_none().mt(4).px(8).h(24).gap(6).items_center().rounded(6).cursor_pointer().text_size(TYPE.panel).text_color(t.muted)
@@ -1722,7 +1727,7 @@ export default class PrReview extends View {
         .child(div().id(`pr-title-${this.uid}`).tooltip(title).flex_1().min_w(150).max_h(36).overflow_hidden().whitespace_normal().line_height(1.35).font_semibold().child(title)) // two lines, then cut
         .child(pill(`pr-reload-${this.uid}`, t, this.loading && !this.quietLoad ? "…" : "↻", (_e, cx) => { if (this.prSel) this.heads.delete(this.prSel.url); this.refresh(cx, true); }, false, "Reload this PR's diff and details", "Reload PR"))
         .children(editorLink(this, t, `hd-${this.uid}`, { root: this.checkoutRoot(), foreign: this.editorForeign() }, cx)) // the PR's checkout (a trusted PR), or the branch's repo
-        .when(Boolean(named?.url), (e) => e.child(pill("pr-web", t, "GitHub ↗", () => openUrl(named.url), false, "Open this PR on GitHub in the browser")))
+        .when(Boolean(named?.url), (e) => e.child(pill("pr-web", t, "Open ↗", () => openUrl(named.url), false, openTip(named.url))))
         // The way into the review is the header's one filled button; Resume once this PR's review was started.
         .when(Boolean(this.pr?.url), (e) => e.child(div().id(`pr-rv-${this.uid}`).tooltip(resume ? "Continue this review where you left it" : "Open this PR in the review layout").flex_none().px(12).h(26).flex().items_center().rounded(6)
           .text_size(TYPE.small).font_semibold().bg(t.solid).text_color(t.solid_foreground).cursor_pointer().on_click(() => this.toReview(resume?.target ?? this.prSel ?? this.branchTarget())).child(resume ? "Resume" : "Review")))
@@ -1828,7 +1833,7 @@ export default class PrReview extends View {
           .child(div().id(`pr-err-${this.uid}`).whitespace_normal().text_size(TYPE.panel).text_color(t.ansi1).child(String(this.error).replace(/^Error: /, "")))
           .child(h_flex().gap(8)
             .child(pill(`pr-retry-${this.uid}`, t, "Retry", (_e, cx) => { if (this.prSel) this.heads.delete(this.prSel.url); this.refresh(cx, true); }, false, "Load this diff again"))
-            .when(Boolean(named?.url), (e) => e.child(pill(`pr-err-web-${this.uid}`, t, "Open on GitHub ↗", () => openUrl(named.url), false, "Open this PR on GitHub in the browser"))))))
+            .when(Boolean(named?.url), (e) => e.child(pill(`pr-err-web-${this.uid}`, t, "Open ↗", () => openUrl(named.url), false, openTip(named.url)))))))
         .when(tab === "diff" && !(this.error && !this.files.length), (e) => e.child(files()).child(diffBody())))
       .when(Boolean(this.note), (e) => e.child(div().flex_none().px(10).pt(6).text_size(TYPE.panel).whitespace_normal().text_color(/Could not|Not sent|Not a PR/.test(this.note ?? "") ? t.ansi1 : t.dim).child(this.note)))
       // The pending comments: a count, not a main button. For a PR it opens the review's "Finish your review" (post to
@@ -1840,7 +1845,7 @@ export default class PrReview extends View {
           .tooltip(this.discardAsk ? "Click again to delete all pending comments. They were not sent." : "Delete all pending comments without sending them; asks once")
           .on_click((_e, cx) => this.discardAll(cx)).child(this.discardAsk ? `Delete ${this.comments.length === 1 ? "this comment" : `all ${this.comments.length} comments`}?` : "Discard"))
         .child(div().id(this.pr?.url ? `rv-finish-${this.uid}` : `rv-send-${this.uid}`).flex_none().px(10).h(24).flex().items_center().rounded(6).text_size(TYPE.panel).font_semibold().bg(t.solid).text_color(t.solid_foreground).cursor_pointer()
-          .tooltip(this.pr?.url ? "Open the review with a preview of these comments, then post them to GitHub or send them to an agent" : "Send all pending comments to the coding agent as one prompt")
+          .tooltip(this.pr?.url ? "Open the review with a preview of these comments, then post them to the host or send them to an agent" : "Send all pending comments to the coding agent as one prompt")
           .on_click((_e, cx) => { if (this.pr?.url) this.finishReview(); else if (canSend) this.sendReview(cx); }).child(this.pr?.url ? "Finish your review" : this.sending ? "…" : "Send to agent"))));
   }
 

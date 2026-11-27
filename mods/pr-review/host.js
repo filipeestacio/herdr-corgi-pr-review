@@ -61,3 +61,21 @@ export function webUrl(link) {
     ? `https://${link.hostname}/${link.repo}/-/merge_requests/${link.number}`
     : `https://${link.hostname}/${link.repo}/pull/${link.number}`;
 }
+
+// What each host calls a change request: the short noun the UI shows, and the long one a sentence can use. A host
+// that nothing names stays "PR": it is the word the mod's own text used before there was a second host.
+export const HOST_WORD = { github: "PR", gitlab: "MR" };
+export const HOST_LONG = { github: "pull request", gitlab: "merge request" };
+
+// The host a caller names: a link, a parsed link or remote (its host field), or a host string; null when nothing says.
+function namedHost(linkOrHost) {
+  if (!linkOrHost) return null;
+  if (typeof linkOrHost === "object") return namedHost(linkOrHost.host);
+  const s = String(linkOrHost).trim();
+  if (s === GITHUB || s === GITLAB) return s;
+  return hostOfLink(s) ?? hostOf(s);
+}
+
+// The noun for a change request on that host: "PR", or "MR" on a GitLab merge request; "PR" when unknown.
+export const hostWord = (linkOrHost) => HOST_WORD[namedHost(linkOrHost)] ?? HOST_WORD[GITHUB];
+export const hostLong = (linkOrHost) => HOST_LONG[namedHost(linkOrHost)] ?? HOST_LONG[GITHUB];

@@ -13,7 +13,7 @@ import { div } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, TextView, v_virtual_list, VirtualListScrollHandle, ScrollHandle, Textarea, TextareaState, Input, InputState, HoverCard } from "gpui-base";
 import { exec, hc, run, focused, pickFolder, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, nextCommand, watchFolder, openOverlay, closeOverlay, props, home, placement } from "herdr";
 import { spaces, agents, terminals, watch } from "./live.js";
-import { hostOfLink } from "./host.js"; // never straight from Herdr (live.js says why)
+import { hostOfLink, parseLink, hostWord, hostLong } from "./host.js"; // never straight from Herdr (live.js says why)
 import { parseReports, findingStatus, mergeFindings, findingCounts, countLine, runsOf, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
 import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig, writeConfig } from "./setup-view.js";
@@ -285,11 +285,17 @@ const SEV = { high: "ansi1", medium: "ansi3", low: "ansi4" };
 const SOURCE = { mine: "accent", ai: "ansi3", agents: "ansi6", github: "ansi4", notes: "ansi5" };
 // Hover texts for the Show chips, the Comments tab's filters and its state chips.
 const SHOW_TIP = { mine: "Comments you wrote: drafts (local until you finish the review), sent to agents, or posted", ai: "Findings and AI notes under their lines", agents: "Replies from agent sessions", github: "Comments other people left on GitHub or GitLab", notes: "Your pinned notes, private to you" };
+// Where comments go, when the text must name it: the host's own name, never the word "host" (a self-hosted instance
+// reads by its host name, which is the other place this shows).
+const HOST_NAME = { github: "GitHub", gitlab: "GitLab" };
+// The brand behind a PR or MR link: "GitHub", "GitLab", or null when nothing names it. Text that says where comments
+// go uses this, never the word "host".
+const brandOf = (url) => HOST_NAME[hostOfLink(url)] ?? null;
 
-const TAB_TIP = { files: "The changed files; tick the ones you have viewed", steps: "The AI analysis: the PR's pages and the layers of this change, with explanations and pictures", findings: "Every finding once, with its sources and its state; fixes sent to an agent and their verification", comments: "All comments on this PR: yours, the agents' and GitHub's" };
+const TAB_TIP = { files: "The changed files; tick the ones you have viewed", steps: "The AI analysis: the PR's pages and the layers of this change, with explanations and pictures", findings: "Every finding once, with its sources and its state; fixes sent to an agent and their verification", comments: "All comments on this PR: yours, the agents' and the host's" };
 const COVER_TIP = { seen: "The diff does what this asks", partly: "The diff does only part of what this asks", absent: "Nothing in the diff does this", extra: "The diff does this, but it was not asked for" };
-const COMPOSE_TIP = { insertSuggestion: "Insert the selected lines as a GitHub suggestion block", closeComposer: "Close the composer without saving (Esc)", addDraft: "Add to your pending review; nothing is posted yet (⌘↩)", singleComment: "Post this one comment at once, or preview it first when it goes to an agent" };
-const STATE_TIP = { pending: "Pending: written by you, not sent yet", waiting: "Sent to agent: no reply yet", replied: "Agent replied, or someone answered on GitHub", fixed: "Reported fixed: the agent says it is done; nothing has checked it", declined: "Declined: the agent chose not to change it", github: "A comment from GitHub or GitLab", note: "A pinned note, private to you" };
+const COMPOSE_TIP = { insertSuggestion: "As a suggestion block", closeComposer: "Close the composer without saving (Esc)", addDraft: "Add to your pending review; nothing is posted yet (⌘↩)", singleComment: "Post this one comment at once, or preview it first when it goes to an agent" };
+const STATE_TIP = { pending: "Pending: written by you, not sent yet", waiting: "Sent to agent: no reply yet", replied: "Agent replied, or someone answered on the host", fixed: "Reported fixed: the agent says it is done; nothing has checked it", declined: "Declined: the agent chose not to change it", github: "A comment from GitHub or GitLab", note: "A pinned note, private to you" };
 const STALE_TIP = "The code here changed since this comment was written";
 const CARD_W = 720, CARD_MIN = 420, CARD_HEAD = 32, CARD_REPLY = 34, CARD_GAP = 6;
 // The "select to fix" box of a card that is one item of the list (a finding's card, a GitHub comment): it stands in
@@ -1694,7 +1700,7 @@ export const ReviewMode = {
       if (plan.kind === "new" && plan.where) {
         // Asked from the review, which shows no terminals: the tab starts in the background (focus: false), so the
         // space and tab shown before the review are still the ones shown after it. Its name says where to find it.
-        const name = tabName(origin?.repo ?? this.root, origin?.number ? `ask PR #${origin.number}` : "ask");
+        const name = tabName(origin?.repo ?? this.root, origin?.number ? `ask ${hostWord(origin.url)} #${origin.number}` : "ask");
         run("tab.new", { space: this.spaceFor(this.ctxId(), origin?.cwd, this.root), folder: plan.where, name, focus: false,
           argv: TH.tabArgs({ env: this.ctxEnv(this.ctxId()), model: model(), ask: true, trusted: this.trustedPr() }), task: text });
         this.note = `Started the agent tab "${name}" in the background with your question. The finding stays as it is.`;
@@ -1703,7 +1709,7 @@ export const ReviewMode = {
       await copyText(text);
       if (!agent) {
         // Resumed to paste the finding there: this tab takes the focus, so leaving the review lands on it.
-        if (plan.kind === "resume") run("tab.new", { space: this.spaceFor(this.ctxId(), origin.cwd), folder: origin.cwd, name: tabName(origin.repo, `PR #${origin.number}`),
+        if (plan.kind === "resume") run("tab.new", { space: this.spaceFor(this.ctxId(), origin.cwd), folder: origin.cwd, name: tabName(origin.repo, `${hostWord(origin.url)} #${origin.number}`),
           argv: [...this.ctxEnv(origin.sessionContext ?? this.ctxId()), "claude", "--resume", origin.session] });
         this.note = plan.kind === "resume" ? "Resumed the PR's session in a new tab; the finding is on the clipboard (⌘V)" : "No checkout to start an agent in: the finding is on the clipboard";
         return cx.notify();
@@ -2007,7 +2013,7 @@ export const ReviewMode = {
         if (it.t === "comment") { if (show.mine) items.push(...this.cardItems("c", it.c)); else hide("Yours"); continue; } // also one taken from an AI note: it is yours now
         if (it.t === "cact") continue;
         if (it.t === "gh") ghUsed.add(it.g);
-        if (it.t === "gh" && !show.github) { hide("GitHub"); continue; }
+        if (it.t === "gh" && !show.github) { hide("Host"); continue; }
         items.push(it);
       }
       for (const th of ths) if (atLine(r, th.end, th.old)) { if (show.mine) items.push(...this.cardItems("th", th)); else hide("Yours"); }
@@ -2292,7 +2298,7 @@ export const ReviewMode = {
           const v = hostOfLink(url) === "gitlab"
             ? await exec("python3", [`${appHome()}/mods/pr-review/mrs.py`, "view", url], { timeout: 60000 })
             : await exec("gh", ["pr", "view", url, "--json", "headRefOid"], { timeout: 30000 });
-          if (v.code !== 0) throw new Error("PR head unknown");
+          if (v.code !== 0) throw new Error(`${hostWord(url)} head unknown`);
           this.head = JSON.parse(v.stdout).headRefOid;
         }
         const head = this.head, w = this.worktree;
@@ -2463,7 +2469,7 @@ export const ReviewMode = {
         ...(fv.job.target === "sub" ? [{ label: "Discard fix", act: (cx) => this.discardFix(fv.job, cx) }] : [])];
     return [...fix, { label: "Reply", primary: !fv?.commit, act: (cx) => { this.replyTo = th.id; this.replyIn.set_value(""); cx.timer.after(0, () => this.replyIn.focus()); } },
       ...(v.fixedIn || v.entries.some((e) => e.commit) ? [{ label: `Open ${String(v.fixedIn ?? [...v.entries].reverse().find((e) => e.commit).commit).slice(0, 7)}`, act: () => this.openCommit(v.fixedIn ?? [...v.entries].reverse().find((e) => e.commit).commit) }] : []),
-      ...(th.url ? [{ label: "On GitHub ↗", act: () => openUrl(th.url) }] : []),
+      ...(th.url ? [{ label: "Open ↗", act: () => openUrl(th.url) }] : []),
       ...(v.status === "fixed" ? [{ label: "Fold", act: () => this.openThreads.delete(th.id) }] : [])];
   },
   // ---- Fix: comments (pending or sent) and findings to a sub-agent in its own worktree (default) or the main agent,
@@ -2495,7 +2501,7 @@ export const ReviewMode = {
   },
   // What a fix of these comments needs for its preview and after it was sent (fixComments, fixTogether).
   commentFix(ids) {
-    const comments = this.commentsById(ids), said = (c) => `${c.by ? `@${c.by} on GitHub or GitLab · ` : ""}${c.file} ${uiLine(c)}: ${c.text}`;
+    const comments = this.commentsById(ids), said = (c) => `${c.by ? `@${c.by} on ${brandOf(this.prSel?.url) ?? "the host"} · ` : ""}${c.file} ${uiLine(c)}: ${c.text}`;
     // foreign: one of them is a GitHub comment by someone else (threads.js foreignComment): its fix never runs
     // unattended and never in the PR's own session, whatever the PR's trust (previewFix, startSubFix, mainOffered).
     return { comments, items: comments.map((c) => ({ kind: "comment", id: c.id })), labels: comments.map(said), foreign: TH.hasForeign(comments, shared("gh.login")),
@@ -2678,7 +2684,7 @@ export const ReviewMode = {
         : v.status === "wontfix" ? ["Declined", "muted"] : v.status === "answered" || v.status === "question" ? ["Agent replied", "accent"]
         : o.route === "github" ? [o.dry ? "Dry run: not posted" : "Posted", "ansi4"] : ["Sent to agent", "ansi6"];
       const action = fv?.commit && fv.job.target === "sub" ? ["Apply to PR", (cx) => this.applyFix(fv.job, cx)] : fv ? ["Go to fix", () => this.goFix(fv.job)] : ["Fix", (cx) => this.fixComments([o.id], cx)];
-      const by = o.by ? `${o.by} · GitHub` : "You"; // someone else's GitHub comment that was sent to a fix (commentFix)
+      const by = o.by ? `${o.by} · ${brandOf(this.prSel?.url) ?? "the host"}` : "You"; // someone else's comment that was sent to a fix (commentFix)
       return { key: `th:${o.id}`, id: o.id, src: o.by ? "github" : "mine", author: by, time: hm(o.sentAt), sel: true, status, text: o.text, action,
         folded: v.collapsed ? `${by}: ${plain(o.text)} · ${status[0]}` : null,
         replies: v.entries.filter((e) => this.show().agents || e.who !== "agent").map((e) => ({ author: e.who === "you" ? "You" : e.who === "agent" ? agent : e.who, src: e.who === "you" ? "mine" : e.who === "agent" ? "agents" : "github",
@@ -2869,7 +2875,7 @@ export const ReviewMode = {
   // One line comment on a merge request now, as its own discussion.
   postSingleMr(c, cx, done) {
     const line = this.diffLines ?? new Map();
-    if (!inDiff(line, c)) { this.note = "Not posted: GitLab takes line comments on lines of the merge request's diff. Use Start a review: it goes into the summary note."; return cx.notify(); }
+    if (!inDiff(line, c)) { this.note = "Not posted: line comments must be on a line of the diff. Use Start a review: it goes into the summary note."; return cx.notify(); }
     this.sending = true; this.note = null;
     cx.spawn(async (cx) => {
       try {
@@ -2888,7 +2894,7 @@ export const ReviewMode = {
     const pr = this.prSel, m = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(pr?.url ?? "");
     if (!m || this.sending) return;
     const payload = TH.singlePayload(c, this.head, inDiff(this.diffLines ?? new Map(), c));
-    if (!payload) { this.note = "Not posted: GitHub takes line comments only on lines of the PR diff. Use Start a review: it goes into the review body."; return cx.notify(); }
+    if (!payload) { this.note = "Not posted: line comments must be on a line of the diff. Use Start a review: it goes into the review body."; return cx.notify(); }
     this.sending = true; this.note = null;
     const env = this.ctxEnv(this.ctxId()), sh = (script, ...args) => exec(env[0] ?? "sh", [...env.slice(1), ...(env.length ? ["sh"] : []), "-c", script, ...args], { timeout: 60000 });
     cx.spawn(async (cx) => {
@@ -2957,7 +2963,7 @@ export const ReviewMode = {
   ghPlanNow() {
     const repo = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(this.prSel?.url ?? "");
     return TH.ghPlan({ comments: this.comments, off: this.off, summary: this.summary.value(), summaryOn: this.summaryOn, event: this.verdict(), commit: this.head,
-      lines: this.diffLines ?? new Map(), repo: repo ? `${repo[1]}#${repo[2]}` : null, login: this.ghLogin?.[this.ctxId()] ?? null });
+      lines: this.diffLines ?? new Map(), repo: repo ? `${repo[1]}#${repo[2]}` : null, host: brandOf(this.prSel?.url), login: this.ghLogin?.[this.ctxId()] ?? null });
   },
 
   // One GitHub review with these comments (pr.js ghReview), JSON on stdin, as the PR's context (its gh account).
@@ -2973,7 +2979,7 @@ export const ReviewMode = {
       try {
         if (!this.head) {
           const v = await sh('gh pr view "$0" --json headRefOid --jq .headRefOid', pr.url);
-          if (v.code !== 0 || !v.stdout.trim()) throw new Error("PR head unknown");
+          if (v.code !== 0 || !v.stdout.trim()) throw new Error(`${hostWord(pr?.url)} head unknown`);
           this.head = v.stdout.trim();
         }
         const { payload, outside } = ghReview({ comments, event, summary, commit: this.head, lines: this.diffLines ?? new Map() });
@@ -3136,7 +3142,10 @@ export const ReviewMode = {
                 .child(pill(`rv-fic-${c.id}`, t, "Cancel", (_e, cx) => { this.editItem = null; cx.notify(); }).tooltip("Discard the edit")))
             : div().text_size(TYPE.small).line_height(1.45).text_color(on ? t.foreground : t.muted).child(TextView.markdown(`rv-fim-${c.id}`, c.text))));
     };
-    const summary = this.summary.value().trim(), repo = plan ? /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(this.prSel?.url ?? "") : null;
+    const summary = this.summary.value().trim(), link = parseLink(this.prSel?.url ?? "");
+    // Where the comments go: the repository and the host's own name, because a self-hosted instance's name says more
+    // than "GitHub" does.
+    const target = () => (link ? `Target: ${link.repo}#${link.number} on ${link.hostname}` : `Target: ${this.prSel?.url ?? "this review"}`);
     const ready = !this.sending && Boolean(ev) && (gh ? plan.ready : n > 0);
     return v_flex().id("rv-finish").absolute().top(8).right(12).w(520).max_h(760).p(14).gap(10).rounded(10).border_1().border_color(t.border).bg(t.popover).shadow_lg()
       .text_size(TYPE.body).text_color(t.foreground).on_mouse_down("left", (_e, cx) => cx.stop_propagation())
@@ -3144,9 +3153,9 @@ export const ReviewMode = {
         .when(Boolean(this.cfg?.dryRun), (e) => e.child(badge(t, "Dry run", t.ansi3).id("rv-finish-dry").tooltip(DRY_TIP))).child(div().flex_1())
         .child(pill("rv-finish-x", t, "✕", (_e, cx) => { this.finishOpen = false; this.fh.focus(); cx.notify(); }).tooltip("Close without sending anything").accessibility_label("Close")))
       .when(routes.length > 1, (e) => e.child(h_flex().gap(6).items_center().child(div().text_size(TYPE.small).text_color(t.muted).child("Send to"))
-        .child(pill("rv-route-github", t, "GitHub", (_e, cx) => { this.route = "github"; cx.notify(); }, route === "github").tooltip("Post these as one GitHub review"))
+        .child(pill("rv-route-github", t, HOST_NAME[link?.host] ?? "the host", (_e, cx) => { this.route = "github"; cx.notify(); }, route === "github").tooltip("Post these comments as one review"))
         .child(pill("rv-route-agent", t, "Agent session", (_e, cx) => { this.route = "agent"; cx.notify(); }, route === "agent").tooltip("Send these as a prompt to the PR's agent session instead"))))
-      .child(div().text_size(TYPE.small).text_color(t.muted).child(gh ? `Target: ${repo ? `${repo[1]}#${repo[2]}` : "GitHub"} on GitHub` : `Target: ${this.sendAgent().label}`))
+      .child(div().text_size(TYPE.small).text_color(t.muted).child(gh ? target() : `Target: ${this.sendAgent().label}`))
       .child(div().id("rv-summary").tooltip("The review's summary: posted as the review body").h(76).px(10).py(6).rounded(6).border_1().border_color(this.typing === "summary" ? t.accent : t.border).bg(t.background).cursor_text()
         .on_click(() => this.summary.focus()).child(Textarea.new(this.summary).size_full().text_size(TYPE.body).text_color(t.foreground)))
       .when(fc.unresolved > 0, (e) => e.child(h_flex().id("rv-finish-found").gap(8).items_center().text_size(TYPE.small)
@@ -3160,7 +3169,7 @@ export const ReviewMode = {
         .child(radio("approve", "Give your approval to merge these changes."))
         .child(radio("request_changes", "Submit feedback that must be addressed before merging.")))
       .when(risky, (e) => e.child(div().id("rv-approve-ask").p(8).rounded(6).bg(t.ansi1 + "1c").text_size(TYPE.small).line_height(1.45).whitespace_normal()
-        .child(`${fc.high} unresolved ${fc.high === 1 ? "finding is" : "findings are"} of high severity${fc.security ? `, ${fc.security} about security` : ""}. An approval on GitHub says nothing about them.${this.approveAsk ? " Click the button again to approve anyway." : ""}`)))
+        .child(`${fc.high} unresolved ${fc.high === 1 ? "finding is" : "findings are"} of high severity${fc.security ? `, ${fc.security} about security` : ""}. An approval on the host says nothing about them.${this.approveAsk ? " Click the button again to approve anyway." : ""}`)))
       // Exactly what goes out: nothing else (AI suggestions, findings, the analysis) unless it was added as a comment.
       .child(div().text_size(TYPE.small).font_semibold().text_color(t.muted).child(gh ? "WHAT IS POSTED (only what is ticked)" : `WHAT IS SENT · ${n} ${n === 1 ? "comment" : "comments"}`))
       .child(div().flex_1().min_h(0).relative().max_h(250)
@@ -3175,7 +3184,7 @@ export const ReviewMode = {
       .when(Boolean(this.posted?.url || this.posted?.dry), (e) => e.child(v_flex().gap(2).p(8).rounded(6).bg(t.surface).text_size(TYPE.small)
         .child(h_flex().gap(8).items_center().text_color(this.posted.dry ? t.muted : t.ansi2)
           .child(div().flex_1().min_w(0).truncate().child(this.posted.dry ? "Dry run: this is what would have been posted" : `Posted: ${this.posted.url}`))
-          .when(Boolean(this.posted.url), (x) => x.child(pill("rv-posted-open", t, "Show on GitHub", () => openUrl(this.posted.url)).tooltip("Show the posted review on GitHub"))))
+          .when(Boolean(this.posted.url), (x) => x.child(pill("rv-posted-open", t, "Show on the host", () => openUrl(this.posted.url)).tooltip("Show the posted review on the host"))))
         .children((this.posted.items ?? []).map((w) => div().truncate().text_color(t.muted).child(`· ${w}`)))))
       .when(Boolean(this.note) && /^(Not posted|Not sent|Dry run|Nothing)/.test(this.note ?? ""), (e) => e.child(div().text_size(TYPE.small).whitespace_normal()
         .text_color(/^Dry run/.test(this.note) ? t.muted : t.ansi1).child(this.note)))
@@ -3288,7 +3297,7 @@ export const ReviewMode = {
     const label = (k, l) => (k === "ai" && !this.findings().length ? (looked ? "Findings: none" : "Findings: not run") : l);
     return h_flex().flex_none().gap(6).items_center().child(div().text_size(TYPE.small).text_color(t.muted).child("In the diff:"))
       .children(TH.SHOW_KINDS.filter(([k]) => k === "ai" || counts[k] > 0).map(([k, l]) => sw(k, show[k], label(k, k === "mine" ? "Your comments" : l), k === "ai" && !this.findings().length ? null : counts[k], `${SHOW_TIP[k]}: click to hide or show them in the diff`, () => this.toggleShow(k))))
-      .when(g.resolved > 0, (e) => e.child(sw("resolved", this.showResolved, "Resolved", g.resolved, "GitHub threads marked resolved: hidden by default, click to show or hide them", () => { this.showResolved = !this.showResolved; })))
+      .when(g.resolved > 0, (e) => e.child(sw("resolved", this.showResolved, "Resolved", g.resolved, "Resolved threads: hidden by default, click to show or hide them", () => { this.showResolved = !this.showResolved; })))
       .when(g.botsHidden > 0, (e) => e.child(div().id(`${id}-bots`).tooltip(this.allBots ? "Show only each bot's comments on the commit it reviewed last" : "Bots comment again on every push: only each bot's comments on the commit it reviewed last show. Click to show them all")
         .flex_none().text_size(TYPE.small).text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => { this.allBots = !this.allBots; cx.notify(); })
         .child(this.allBots ? `Hide ${g.botsHidden} older bot comments` : `${g.botsHidden} older bot ${g.botsHidden === 1 ? "comment" : "comments"} hidden`)));
@@ -3307,7 +3316,7 @@ export const ReviewMode = {
     // No filters here: the bar's Show switch is the one filter, each row carries its state. A comment's states are
     // its own (the talk with the agent), not a finding's: "Fixed" is a finding's word, after a verification.
     const all = this.commentRowsNow(), rows = TH.filterRows(all, "all", this.show()), sel = new Set(this.selected());
-    const STATE = { pending: ["Pending", "ansi3"], waiting: ["Sent to agent", "ansi6"], replied: ["Agent replied", "accent"], fixed: ["Reported fixed", "ansi2"], declined: ["Declined", "muted"], github: ["GitHub", "ansi4"], note: ["Note", "ansi5"] };
+    const STATE = { pending: ["Pending", "ansi3"], waiting: ["Sent to agent", "ansi6"], replied: ["Agent replied", "accent"], fixed: ["Reported fixed", "ansi2"], declined: ["Declined", "muted"], github: [brandOf(this.prSel?.url) ?? "Host", "ansi4"], note: ["Note", "ansi5"] };
     // "Reported fixed" ones are folded into one line at the end, per PR; ticks on them still count.
     const fixedOpen = (this.fixedShown ??= new Set()).has(this.threadKey()), done = rows.filter((r) => r.state === "fixed");
     const listed = (list) => [...new Set(list.map((r) => r.file))];
@@ -3346,8 +3355,8 @@ export const ReviewMode = {
                 .child(div().flex_1().min_w(0).truncate().text_size(TYPE.body).child(plain(r.text)))
                 .when(r.replies > 0, (e) => e.child(div().id(`rv-crr-${r.id}`).tooltip(`${r.replies} replies in this thread`).flex_none().text_size(TYPE.small).text_color(t.muted).child(`↩ ${r.replies}`)))
                 .when(Boolean(r.stale), (e) => e.child(badge(t, "STALE", t.ansi3).id(`rv-crst-${r.id}`).tooltip(STALE_TIP)))
-                .when(Boolean(r.outdated), (e) => e.child(badge(t, "Outdated", t.muted).id(`rv-cro-${r.id}`).tooltip("GitHub marks this comment outdated: the code it was on changed since")))
-                .when(Boolean(r.resolved), (e) => e.child(badge(t, "Resolved", t.ansi2).id(`rv-crv-${r.id}`).tooltip("This thread is resolved on GitHub")))
+                .when(Boolean(r.outdated), (e) => e.child(badge(t, "Outdated", t.muted).id(`rv-cro-${r.id}`).tooltip("Marked outdated: the code it was on changed since")))
+                .when(Boolean(r.resolved), (e) => e.child(badge(t, "Resolved", t.ansi2).id(`rv-crv-${r.id}`).tooltip("Resolved on the host")))
                 .child(div().id(`rv-crs-${r.id}`).tooltip(STATE_TIP[r.state] ?? st[0]).flex_none().px(6).h(18).flex().items_center().rounded(9).border_1().border_color(t[st[1]] ?? t.muted).text_size(TYPE.small).text_color(t[st[1]] ?? t.muted).child(st[0]))), ...whole];
             })]);
   },
@@ -3403,7 +3412,7 @@ export const ReviewMode = {
           : div().id(`rv-bar-stack-${p.number}`).tooltip(`Open #${p.number}${p.title ? ` ${p.title}` : ""} in its own review`).text_color(t.accent).cursor_pointer().hover((s) => s.underline())
             .on_mouse_down("left", stop).on_click(() => run(`pr-review.stack:${p.url}`)).child(`#${p.number}`)]))))
       .when(Boolean(pr), (e) => e.child(div().id("rv-bar-repo").tooltip("Repository and PR number").flex_none().text_size(TYPE.small).text_color(t.muted).child(`${pr.repo ?? ""}#${pr.number ?? ""}`))
-        .child(badge(t, `PR ${pr.state ?? "?"}`, t[{ open: "ansi2", draft: "dim", merged: "ansi5", closed: "ansi1" }[pr.state]] ?? t.dim).id("rv-bar-state").tooltip("The PR's state on GitHub"))
+        .child(badge(t, `${hostWord(pr.url)} ${pr.state ?? "?"}`, t[{ open: "ansi2", draft: "dim", merged: "ansi5", closed: "ansi1" }[pr.state]] ?? t.dim).id("rv-bar-state").tooltip(`The ${hostLong(pr.url)}'s state on the host`))
         .when(C.tagged(ctxDoc()), (e) => e.child(badge(t, C.labelOf(ctxDoc(), prCtx(pr)), C.colorOf(ctxDoc(), prCtx(pr), t)).id("rv-bar-ctx").tooltip("The context this PR belongs to"))))
       .when(selected > 0, (e) => e.child(div().id("rv-bar-fixsel").tooltip("Fix everything selected, comments and findings, with one agent; a preview first. A sub-agent works on its own branch and never pushes").flex_none().px(14).h(32).flex().items_center().rounded(7).bg(t.accent).text_color(t.accent_foreground)
         .text_size(TYPE.body).font_semibold().cursor_pointer().on_mouse_down("left", stop).on_click(() => run("pr-review.fix")).child(`✦ Fix selected (${selected})`)))
@@ -3414,7 +3423,7 @@ export const ReviewMode = {
       .when(meta.url === pr?.url && Boolean(meta.dry), (e) => e.child(badge(t, "Dry run", t.ansi3).id("rv-bar-dry").tooltip(DRY_TIP)))
       // The green "Finish your review", with the pending count (one name for the step, with or without comments); the
       // review copy draws the popover.
-      .child(div().id("rv-finish-btn").tooltip("Preview your pending comments, then post them to GitHub or send them to an agent").flex_none().px(14).h(32).flex().items_center().gap(6).rounded(7).bg(GH_GREEN).text_color("#ffffff").text_size(TYPE.body).font_semibold()
+      .child(div().id("rv-finish-btn").tooltip("Preview your pending comments, then post them to the host or send them to an agent").flex_none().px(14).h(32).flex().items_center().gap(6).rounded(7).bg(GH_GREEN).text_color("#ffffff").text_size(TYPE.body).font_semibold()
         .cursor_pointer().on_mouse_down("left", stop).on_click(() => run("pr-review.finish"))
         .child("Finish your review")
         .when(pending > 0, (e) => e.child(div().px(6).rounded_full().bg("#ffffff").text_color(GH_GREEN).text_size(TYPE.small).child(String(pending))))
@@ -3810,7 +3819,7 @@ export const ReviewMode = {
     // The title with the PR's state; the verdict: the suggested action, then the numbers it rests on (only ⛨ red).
     const head = v_flex().flex_none().gap(6).max_w(1100)
       .child(h_flex().flex_wrap().gap(12).items_baseline().child(div().min_w(0).text_size(TYPE.page).font_semibold().line_height(1.3).whitespace_normal().child(pr.title ?? `#${pr.number}`))
-        .when(Boolean(state), (e0) => e0.child(div().id("rv-ov-state").flex_none().text_size(TYPE.small).text_color(t.muted).tooltip([ctx?.stacked_on ? `This PR's base is the branch of #${ctx.stacked_on.number} ${ctx.stacked_on.title ?? ""}, so it merges after it. Click to open it in its own review.` : "The PR's state on GitHub",
+        .when(Boolean(state), (e0) => e0.child(div().id("rv-ov-state").flex_none().text_size(TYPE.small).text_color(t.muted).tooltip([ctx?.stacked_on ? `This PR's base is the branch of #${ctx.stacked_on.number} ${ctx.stacked_on.title ?? ""}, so it merges after it. Click to open it in its own review.` : `The ${hostLong(pr.url)}'s state on the host`,
             ...above.map((p) => `#${p.number} ${p.title ?? ""} builds on this PR: it merges after this one.`)].join("\n"))
           .when(Boolean(ctx?.stacked_on), (e) => e.cursor_pointer().hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => this.openRelated(ctx.stacked_on, cx))).child(state))))
       .when(verdict.length > 0 || Boolean(ai), (e) => e.child(h_flex().id("rv-verdict").max_w(860).flex_wrap().gap(8).items_center().text_size(TYPE.title).font_semibold().line_height(1.35)
@@ -5970,21 +5979,24 @@ export const ReviewMode = {
         .child(v_flex().size_full().px(12).pt(8).gap(6).border_l(4).border_r(1).border_t(1).border_b(1)
         .border_color(t.border).bg(t.raised).rounded(4).text_size(TYPE.body)
         .child(h_flex().h(18).gap(8).items_center().text_size(TYPE.small)
-          .child(div().font_semibold().text_color(t.foreground).child(g.user ?? "?")).child(div().text_color(t.muted).child(`on GitHub · ${g.at ? ago(g.at) : ""}`))
+          .child(div().font_semibold().text_color(t.foreground).child(g.user ?? "?")).child(div().text_color(t.muted).child(`on ${brandOf(this.prSel?.url) ?? "the host"} · ${g.at ? ago(g.at) : ""}`))
           // Its line is gone: say which one it was on (GitHub's original line).
           .when(Boolean(it.loose), (e) => e.child(div().text_color(t.muted).child(g.line ?? g.original_line ? `· line ${g.line ?? g.original_line}, not shown` : "· on the file")))
-          .when(Boolean(g.outdated), (e) => e.child(badge(t, "Outdated", t.muted).id(`rv-gho-${g.id}`).tooltip("GitHub marks this comment outdated: the code it was on changed since")))
-          .when(Boolean(g.resolved), (e) => e.child(badge(t, "Resolved", t.ansi2).id(`rv-ghr-${g.id}`).tooltip("This thread is resolved on GitHub"))))
+          .when(Boolean(g.outdated), (e) => e.child(badge(t, "Outdated", t.muted).id(`rv-gho-${g.id}`).tooltip("Marked outdated: the code it was on changed since")))
+          .when(Boolean(g.resolved), (e) => e.child(badge(t, "Resolved", t.ansi2).id(`rv-ghr-${g.id}`).tooltip("Resolved on the host"))))
         .child(v_flex().flex_1().min_h(0).gap(GH_GAP).line_height(1.55).text_color(t.foreground).children(this.ghBlocks(g).map((b, k) => (b.code ? this.codeView(b, t)
           : div().w_full().max_w(FIND_TEXT).flex_none().child(TextView.markdown(`rv-ghm-${g.id}-${this.ghOpen?.has(g.id) ? 1 : 0}-${k}`, b.text)))))));
     }
     if (it.t === "compose") {
       const c = this.editing, a = c ?? this.selAnchor(), out = Boolean(a) && this.routeNow() === "github" && !inDiff(this.diffLines ?? new Map(), { file: this.fsel?.path, ...a });
+      // Outside the diff a line comment has no line to sit on: it goes with the review's text, whose name is the
+      // host's ("review body" on GitHub, "summary note" on a merge request, "the review" when nothing names the host).
+      const host = hostOfLink(this.prSel?.url), body = host === "gitlab" ? "summary note" : host === "github" ? "review body" : "review";
       return div().w_full().h(COMPOSE).pl(GUTTER).pr(16).pt(6).child(v_flex().size_full().px(12).pt(8).pb(4).gap(6).border_l(4).border_r(1).border_t(1)
         .border_color(t.muted).bg(t.surface).rounded_tl(4).rounded_tr(4)
         .child(h_flex().h(18).gap(8).items_center().text_size(TYPE.small)
           .child(div().font_semibold().text_color(t.foreground).child(c ? `Edit comment · ${uiLine(c)}` : a ? `Comment on ${uiLine(a)}` : "Comment"))
-          .when(out, (e) => e.child(badge(t, "not in the diff: will go into the review body", t.ansi3).id("rv-compose-out").tooltip("GitHub cannot attach a line comment outside the diff, so it goes into the review body")))
+          .when(out, (e) => e.child(badge(t, `not in the diff: will go into the ${body}`, t.ansi3).id("rv-compose-out").tooltip(`The host cannot attach a line comment outside the diff, so it goes into the ${body}`)))
           .child(div().flex_1().min_w(0).truncate().text_right().text_color(t.muted).child(`⌘↩: ${this.composeButtons().find((b) => b.primary).label} · Esc: Cancel`)))
         .child(div().flex_1().min_h(0).px(10).py(6).rounded(6).border_1().border_color(this.typing === "draft" ? t.accent : t.border).bg(t.background).cursor_text()
           .child(Textarea.new(this.draft).size_full().text_size(TYPE.body).text_color(t.foreground))));
@@ -5993,7 +6005,7 @@ export const ReviewMode = {
       const bs = this.composeButtons();
       return div().w_full().h(ACT + 4).pl(GUTTER).pr(16).pb(6).child(h_flex().size_full().px(12).items_center().border_l(4).border_r(1).border_b(1)
         .border_color(t.muted).bg(t.surface).rounded_bl(4).rounded_br(4)
-        .children(bs.map((b, i) => div().id(`rv-cb-${b.act}`).tooltip(COMPOSE_TIP[b.act] ?? (this.composeMore ? "Hide Post now to GitHub" : "Another way to send this comment: post it to GitHub at once, outside the review")).w(b.w).h(28).flex_none().ml(i === 0 ? 0 : b.x - bs[i - 1].x - bs[i - 1].w)
+        .children(bs.map((b, i) => div().id(`rv-cb-${b.act}`).tooltip(COMPOSE_TIP[b.act] ?? (this.composeMore ? `Hide Post now to ${brandOf(this.prSel?.url) ?? "the host"}` : `Another way to send this comment: post it to ${brandOf(this.prSel?.url) ?? "the host"} at once, outside the review`)).w(b.w).h(28).flex_none().ml(i === 0 ? 0 : b.x - bs[i - 1].x - bs[i - 1].w)
           .flex().items_center().justify_center().rounded(6).border_1().border_color(b.primary ? t.solid : t.border).bg(b.primary ? t.solid : t.background)
           .text_size(TYPE.small).text_color(b.primary ? t.solid_foreground : t.foreground).when(Boolean(b.primary), (e) => e.font_semibold())
           .child(this.sending && b.act !== "closeComposer" && b.act !== "insertSuggestion" ? "…" : b.label))));
@@ -6457,7 +6469,7 @@ export const ReviewMode = {
     const parts = [rules.length > 0 && [`Repo rules ${ok(rules)}/${rules.length}`, rules.some((c) => c.ok === false)], ci.length > 0 && [`CI ${ok(ci)}/${ci.length}`, ci.some((c) => c.ok === false)],
       checks.some((c) => c.name === "No merge conflicts" && c.ok === false) && ["Merge conflicts", true]].filter(Boolean);
     if (!parts.length) return null;
-    return { parts, tip: `${rules.length ? `Rules this PR is checked against: ${rules.map((c) => `${c.name} (${c.ok ? "met" : "not met"})`).join(", ")}. ` : ""}${this.ctx && !ci.length ? "GitHub reports no CI checks for this PR. " : ""}Click for the list on the Overview page.` };
+    return { parts, tip: `${rules.length ? `Rules this PR is checked against: ${rules.map((c) => `${c.name} (${c.ok ? "met" : "not met"})`).join(", ")}. ` : ""}${this.ctx && !ci.length ? `${brandOf(this.prSel?.url) ?? "The host"} reports no CI checks for this ${hostWord(this.prSel?.url)}. ` : ""}Click for the list on the Overview page.` };
   },
 
   // A click that leads to a part of the right pane's page (pageView's names): shown after the render that has it.
@@ -6806,12 +6818,12 @@ export const ReviewMode = {
     });
     if (force) cx.notify();
   },
-  // The Overview's "GitHub read … ago ↻": how old the GitHub facts on this page are (CI checks, mergeability, related PRs),
-  // and the way to fetch them again, instead of asking GitHub on a timer.
+  // The Overview's "GitHub read … ago ↻": how old the host's facts on this page are (CI checks, mergeability, related
+  // PRs), and the way to fetch them again, instead of asking the host on a timer.
   freshFact(fact) {
-    const busy = Boolean(this.ctxIn), at = Date.parse(this.ctx.at);
-    const label = busy ? "Reading GitHub…" : Date.now() - at < 60000 ? "GitHub read just now ↻" : `GitHub read ${ago(this.ctx.at)} ↻`; // it names what is as old as it says
-    return fact("rv-ov-fresh", label, "When CI checks, mergeability and related PRs were read from GitHub. New commits and review comments are checked every 5 minutes while this window is in front. Click to read all of it again now.",
+    const busy = Boolean(this.ctxIn), at = Date.parse(this.ctx.at), name = brandOf(this.prSel?.url) ?? "the host";
+    const label = busy ? `Reading ${name}…` : Date.now() - at < 60000 ? `${name === "the host" ? "The host" : name} read just now ↻` : `${name === "the host" ? "The host" : name} read ${ago(this.ctx.at)} ↻`; // it names what is as old as it says
+    return fact("rv-ov-fresh", label, `When CI checks, mergeability and related PRs were read from ${name}. New commits and review comments are checked every 5 minutes while this window is in front. Click to read all of it again now.`,
       busy ? null : (_e, cx) => { this.ghTick(cx, true); cx.stop_propagation(); });
   },
 
@@ -6899,7 +6911,7 @@ function tickBox(t, on) {
   return div().w(16).h(16).flex_none().flex().items_center().justify_center().rounded(4).border_1().border_color(on ? t.accent : t.muted).bg(on ? t.accent : t.background)
     .text_size(TYPE.small).font_semibold().text_color(t.accent_foreground).child(on ? "✓" : "");
 }
-const DRY_TIP = "Dry run: this installation posts nothing to GitHub. What a post would send is written to a file instead (\"dryRun\": true in pr-review.config.json).";
+const DRY_TIP = "Dry run: this installation posts nothing to the host. What a post would send is written to a file instead (\"dryRun\": true in pr-review.config.json).";
 const PUBLIC_TIP = "This comes from a security finding: once posted, its text is readable by everyone who can see the PR.";
 
 // A tab's help text: under the tab row and after a rest, in a hover card on the tab's label (the card takes no size

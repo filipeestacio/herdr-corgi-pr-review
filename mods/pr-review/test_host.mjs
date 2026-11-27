@@ -1,6 +1,6 @@
 // Run: node --test test_host.mjs  (the git host behind a remote or a link)
 import assert from "node:assert/strict";
-import { hostOf, hostOfLink, parseRemote, parseLink, webUrl, remoteHost, GITHUB, GITLAB } from "./host.js";
+import { hostOf, hostOfLink, parseRemote, parseLink, webUrl, remoteHost, GITHUB, GITLAB, HOST_WORD, HOST_LONG, hostWord, hostLong } from "./host.js";
 
 assert.equal(remoteHost("git@gitlab.com:g/p.git"), "gitlab.com");
 assert.equal(remoteHost("ssh://git.example.com/g/p.git"), "git.example.com");
@@ -33,4 +33,26 @@ assert.equal(hostOfLink("https://gitlab.com/g/sub/p/-/merge_requests/7"), GITLAB
 assert.equal(hostOfLink("https://git.company.example/g/p/-/merge_requests/7"), GITLAB); // a self-hosted name needs no setting
 assert.equal(hostOfLink("https://github.com/o/r/pull/12"), GITHUB);
 assert.equal(hostOfLink("https://example.com/x"), null);
+
+// The noun a host gives its change request: PR on GitHub, MR on a GitLab merge request, PR when nothing names it.
+assert.deepEqual(HOST_WORD, { github: "PR", gitlab: "MR" });
+assert.deepEqual(HOST_LONG, { github: "pull request", gitlab: "merge request" });
+assert.equal(hostWord("https://github.com/o/r/pull/12"), "PR");
+assert.equal(hostWord("https://gitlab.com/group/sub/p/-/merge_requests/7"), "MR"); // a nested group
+assert.equal(hostWord("https://gitlab.example.com/g/p/-/merge_requests/3"), "MR"); // a self-hosted name
+assert.equal(hostWord({ host: "gitlab" }), "MR");
+assert.equal(hostWord({ host: "github" }), "PR");
+assert.equal(hostWord("gitlab"), "MR");
+assert.equal(hostWord("github"), "PR");
+assert.equal(hostWord(parseLink("https://gitlab.com/g/sub/p/-/merge_requests/7")), "MR"); // a parsed link
+assert.equal(hostWord({ host: null }), "PR");
+assert.equal(hostWord("https://example.com/x"), "PR"); // a host nothing names
+assert.equal(hostWord(null), "PR");
+assert.equal(hostWord(undefined), "PR");
+assert.equal(hostLong("https://github.com/o/r/pull/12"), "pull request");
+assert.equal(hostLong("https://gitlab.com/g/sub/p/-/merge_requests/7"), "merge request");
+assert.equal(hostLong({ host: "gitlab" }), "merge request");
+assert.equal(hostLong("gitlab"), "merge request");
+assert.equal(hostLong("https://example.com/x"), "pull request");
+assert.equal(hostLong(null), "pull request");
 console.log("ok");
