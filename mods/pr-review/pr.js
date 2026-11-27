@@ -1850,6 +1850,27 @@ export const harnessAgent = (profile) => !profile?.builtin && Array.isArray(prof
 export const agentArgs = ({ profile, env = [], model, ask = false, trusted = false }) =>
   harnessAgent(profile) ? [...env, ...profile.agent.map(String)] : tabArgs({ env, model, ask, trusted });
 
+// How a new agent tab gets the PR text. Claude Code takes it as the last argument of its command ("arg"), the
+// documented way to start a session on a prompt. A harness `agent` is a launcher: `aircode harness opencode <text>`
+// hands the text to opencode as an argument, so the agent starts with no message and the text never arrives ("send":
+// the tab starts bare and the text goes to it with `hc send` once its agent reports ready). The tab's argv comes from
+// agentArgs above, so this decision and that argv name the same profile.
+export const tabTaskDelivery = (profile) => (harnessAgent(profile) ? "send" : "arg");
+// Whether a terminal from `hc get` is ready for the text: its agent reported an app (a plain shell, or a program that
+// died, reports none), and its state is idle or done.
+export const agentReady = (terminal) => Boolean(terminal?.status?.app && ["idle", "done"].includes(terminal.status.state));
+// The newest terminal of the tab `tab.new` just started: one labelled with the space it started in and a `where` that
+// names the tab (`hc ls` gives `where` at the top, `hc get` among the labels). `hc` lists terminals in creation order,
+// so the last match is the newest.
+export function tabTerminal(list, { space = null, name = "" } = {}) {
+  const where = (x) => (typeof x?.where === "string" ? x.where : typeof x?.labels?.where === "string" ? x.labels.where : "");
+  const named = (x) => Boolean(name) && where(x).includes(name);
+  return [...(list ?? [])].reverse().find((x) => x && named(x) && (space == null || !x.labels || x.labels["herdr.space"] === space)) ?? null;
+}
+// A tab that is up with an agent that never reported ready: the tab stays, the text is not sent, and the note names
+// the tab. what: the noun for the text ("fix text", "question", "review").
+export const notReadyNote = (name, what) => `The tab "${name}" is up but its agent did not report ready; the ${what} was not sent.`;
+
 // The one muted sentence after a pass that removed something: the count and the repositories. null: say nothing.
 export function cleanupNote(res) {
   const n = res?.count ?? res?.removed?.length ?? 0;

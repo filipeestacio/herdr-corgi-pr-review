@@ -1382,3 +1382,30 @@ console.log("ok");
   assert.deepEqual([ghost.name, ghost.builtin, harnessAgent(ghost), agentArgs({ profile: ghost, model: "m" })], ["ghost", false, false, claude("m")], "a name with no entry: Claude Code's argv");
   console.log("ok a new agent tab starts the harness profile's own command, else Claude Code's argv");
 }
+
+// How that tab gets the PR text: Claude Code as the last argument of its command; a harness `agent` launcher (which
+// hands its arguments to the harness) starts bare and is sent the text once its agent reports ready. The readiness is
+// the status `hc get` gives a terminal: an app it reported, and idle or done.
+{
+  const { tabTaskDelivery, agentReady, tabTerminal, notReadyNote } = await import("./pr.js");
+  const { harnessProfile } = await import("./pr.js");
+  const claude = harnessProfile({}), plain = harnessProfile({ harness: "plain", harnesses: { plain: { command: ["plain", "run"] } } });
+  const work = harnessProfile({ harness: "work", harnesses: { work: { command: ["work", "run"], agent: ["aircode", "harness", "opencode"] } } });
+  assert.deepEqual([tabTaskDelivery(claude), tabTaskDelivery(plain), tabTaskDelivery(work)], ["arg", "arg", "send"], "Claude Code takes a task; a harness with `agent` is sent to");
+  assert.equal(agentReady(null), false, "no terminal: not ready");
+  assert.equal(agentReady({}), false, "a terminal with no status: not ready");
+  assert.equal(agentReady({ status: null }), false, "a plain shell reports no status: never ready");
+  assert.equal(agentReady({ status: { state: "idle" } }), false, "a status without an app is a plain program, not an agent");
+  assert.equal(agentReady({ status: { app: "opencode", state: "working" } }), false, "a working agent is not ready");
+  assert.equal(agentReady({ status: { app: "opencode", state: "blocked" } }), false, "an agent waiting for a person is not ready");
+  assert.equal(agentReady({ status: { app: "opencode", state: "idle" } }), true, "an idle agent is ready");
+  assert.equal(agentReady({ status: { app: "opencode", state: "done" } }), true, "a done agent is ready");
+  const tabs = [{ address: "t1", where: "bookshelf fix PR #7", labels: { "herdr.space": "s1" } }, { address: "t2", where: "bookshelf fix PR #7", labels: { "herdr.space": "s1" } },
+    { address: "t3", where: "bookshelf fix PR #7", labels: { "herdr.space": "s2" } }, { address: "t4", where: "bookshelf ask PR #7", labels: { "herdr.space": "s1" } }];
+  assert.equal(tabTerminal(tabs, { space: "s1", name: "bookshelf fix PR #7" })?.address, "t2", "the newest tab of that name in that space, not the one in another space");
+  assert.equal(tabTerminal(tabs, { space: "s1", name: "bookshelf ask" })?.address, "t4", "the name is part of the where label");
+  assert.equal(tabTerminal(tabs, { space: "s3", name: "bookshelf fix PR #7" }), null, "no tab of that name in that space");
+  assert.equal(tabTerminal([{ address: "t5", where: "bookshelf fix PR #7" }], { space: "s1", name: "bookshelf fix PR #7" })?.address, "t5", "a list entry without labels still matches by its where");
+  assert.equal(notReadyNote("bookshelf fix PR #7", "fix text"), 'The tab "bookshelf fix PR #7" is up but its agent did not report ready; the fix text was not sent.');
+  console.log("ok how a new agent tab gets the text: an argument for Claude Code, a send for a harness");
+}
