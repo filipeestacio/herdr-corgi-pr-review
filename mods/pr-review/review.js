@@ -14,7 +14,7 @@ import { v_flex, h_flex, Scrollbar, TextView, v_virtual_list, VirtualListScrollH
 import { exec, hc, run, focused, pickFolder, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, nextCommand, watchFolder, openOverlay, closeOverlay, props, home, placement } from "herdr";
 import { spaces, agents, terminals, watch } from "./live.js";
 import { hostOfLink, parseLink, hostWord, hostLong } from "./host.js"; // never straight from Herdr (live.js says why)
-import { parseReports, findingStatus, fixStage, fixEndedLine, landedByFile, fixStillWorking, fixJump, findingGroup, selectableStage, stageNoFix, FINDING_GROUPS, GROUP_WORD, mergeFindings, findingCounts, countLine, runsOf, runIsStale, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt, agoSpan } from "./pr.js";
+import { parseReports, findingStatus, fixStage, fixEndedLine, landedByFile, fixStillWorking, fixJump, reportCommit, reportTip, findingGroup, selectableStage, stageNoFix, FINDING_GROUPS, GROUP_WORD, mergeFindings, findingCounts, countLine, runsOf, runIsStale, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt, agoSpan } from "./pr.js";
 import { agentArgs, harnessProfile, harnessAgent, pendingWaitNote, tabTaskDelivery } from "./pr.js"; // a new agent tab: the harness profile's own command, else Claude Code
 import { startAgentTab } from "./agent-tab.js"; // starts it and gets the text there (an argument, or a send once the agent reports ready)
 import * as C from "./context.js";
@@ -31,7 +31,7 @@ import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf,
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf, cloneRootsFor, clonesDoc, withClone, headMoved, checkoutAbandoned } from "./pr.js";
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState, codeOf, isStale } from "./pr.js";
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible, pastTop } from "./views.js";
-import { worst, byFocus, layerAccess, analysisAge, stateHints, noteRule, mergeGroups, mergeFirst, mergeHeld, runLabel, byCause, sessionCost, sessionDir, fixEstimate, fixCostLine } from "./views.js";
+import { worst, byFocus, layerAccess, analysisAge, stateHints, foreignCheckoutLine, noteRule, mergeGroups, mergeFirst, mergeHeld, runLabel, byCause, sessionCost, sessionDir, fixEstimate, fixCostLine } from "./views.js";
 import { archView, archLegend, visualsCard, visualCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR, bulletChart } from "./stack.js";
 import { visualPlan, laidOut } from "./stack.js";
 import { factRows, findingAnchor, rangeMarks, wrapCount, mdHeight, SEVERITY_SCALE } from "./views.js";
@@ -292,6 +292,9 @@ const GTINT = { unresolved: "muted", progress: "ansi3", ready: "ansi3", in_pr: "
 const GTIP = { progress: "A fix agent is working on this finding; nothing is checked yet.", ready: "The fix exists, and the PR head does not carry it: apply it or discard it.",
   in_pr: "The PR head carries the fix. Verify checks it on this head; a passed check moves it to Verified.", verified: "A check read the PR head and found the fix there.", wontfix: "The agent declined it, or you dismissed it." };
 const SEV = { high: "ansi1", medium: "ansi3", low: "ansi4" };
+// The one note a head move leaves while a fix works in the review's checkout (makeWorktree, fixFrozen): that checkout
+// is the agent's tree, so it stays at the commits the agent was started on until the agent ends.
+const FROZEN = "The PR head moved; the checkout stays while a fix is working in it.";
 // Where a card comes from: its stripe, and the Show switch's colours.
 const SOURCE = { mine: "accent", ai: "ansi3", agents: "ansi6", github: "ansi4", notes: "ansi5" };
 // Hover texts for the Show chips, the Comments tab's filters and its state chips.
@@ -886,6 +889,7 @@ export const ReviewMode = {
     this.rowsMemo = null; this.ghMemo = null; this.fitMemos = null; this.kept = null; this.openH = null; this.leanBy = null; this.cut = 0; // what was computed for the PR before goes with it
     this.ctx = null; this.since = null; this.sinceOn = false; this.lastReviewed = null; this.page = "overview"; this.aiFile = null; this.needClone = null;
     this.resumed = null; this.resumeIn = null; this.pendingScroll = null; this.infra = null; this.infraMemo = null;
+    this.foreign = null; this.checkout = null; // a refusal about the last PR's checkout says nothing about this one
   },
 
   // A new diff: its hunks, progress and the cached analysis, if any.
@@ -1000,6 +1004,11 @@ export const ReviewMode = {
 
   makeWorktree(cx, clone = false) {
     const url = this.prSel.url, want = this.prSel.headSha ?? null, job = `${url}|${want}|${clone}`;
+    // A fix still works in this checkout, so it keeps the commits that agent started on: moving it would take the tree
+    // from under the agent (worktree.py detaches, so a commit there lives only until the head moves). One note, no move;
+    // a later tick moves the head once the job is no longer working.
+    const now = this.worktree ?? shared("review.worktree");
+    if (now?.path && !now.local && now.url === url && headMoved(want, now.head) && this.fixFrozen(now.path)) { this.noteOnce(FROZEN, cx); return; }
     if (this.wtIn === job) {
       // The spawn that set this marker never cleared it (a reload during the checkout, or a throw before that line),
       // so no completion will resume what waits. Past the watchdog it gets one fresh attempt, with its own note.
@@ -1032,8 +1041,19 @@ export const ReviewMode = {
       if (this.wtIn === job) { this.wtIn = null; this.wtAt = null; }
       this.cloning = false; this.checkout = null;
       if (this.prSel?.url !== url) return;
-      if (r.code === 3) { const n = JSON.parse(r.stdout); this.needClone = n.need_clone; this.needCloneRoots = n.roots ?? []; this.loadContext(cx); cx.notify(); return; }
+      if (r.code === 3) { const n = JSON.parse(r.stdout); this.foreign = null; this.needClone = n.need_clone; this.needCloneRoots = n.roots ?? []; this.loadContext(cx); cx.notify(); return; }
       this.needClone = null;
+      // The folder at the review's own path is someone else's checkout (worktree.py: it is on a branch that is not a
+      // fix's). It is not a missing checkout, and the note says which branch and that one action brings it back.
+      if (r.code === 4) {
+        let f = null; try { f = JSON.parse(r.stdout ?? "{}").foreign ?? null; } catch { /* a broken answer: the note says what git said */ }
+        this.foreign = f ? { ...f, url } : null;
+        this.checkout = this.foreign ? { foreign: this.foreign } : { error: String(r.stderr ?? "").trim().slice(0, 200) };
+        if (this.foreign) this.noteOnce(foreignCheckoutLine(this.foreign), cx);
+        cx.notify();
+        return;
+      }
+      this.foreign = null;
       if (r.code !== 0) { this.checkout = { error: r.stderr.trim().slice(0, 200) }; cx.notify(); return; }
       const w = JSON.parse(r.stdout);
       this.head ??= w.head;
@@ -1048,6 +1068,28 @@ export const ReviewMode = {
       this.loadSince(cx); this.loadContext(cx); this.loadInfra(cx);
       cx.notify();
     });
+  },
+
+  // "Detach checkout" (stateHints): the folder at the review's own path holds someone else's branch, so the review's
+  // checkout cannot be made there. One click puts it back on no branch at the PR head; nothing is lost, because the
+  // branch and its commits stay on disk. Offered only for a clean tree (worktree.py says), so no change is discarded.
+  detachCheckout(cx) {
+    const f = this.foreign, head = f?.head ?? this.prSel?.headSha;
+    if (!f?.path || !head) return cx.notify();
+    cx.spawn(async (cx) => {
+      const r = await exec("git", ["-C", f.path, "switch", "--detach", head], { timeout: 60000 }).catch((e) => ({ code: 1, stderr: String(e) }));
+      if (r.code !== 0) { this.note = `Could not detach the checkout: ${String(r.stderr || r.stdout || "").trim().slice(0, 160)}`; return cx.notify(); }
+      this.foreign = null; this.checkout = null; this.note = null; // the refusal no longer stands
+      this.makeWorktree(cx); // the same checkout is the review's again: it resumes where it was
+      cx.notify();
+    });
+    return cx.notify();
+  },
+  // What a fix says when it has no checkout to start in: a folder on another branch is not a missing checkout, and
+  // the sentence names the action that brings it back (views.js foreignCheckoutLine, the same words as the hint).
+  noCheckoutNote(text) {
+    const f = this.foreign;
+    return f ? `Not started: ${foreignCheckoutLine(f).replace(/^The/, "the")}` : text;
   },
 
   // A run, a reviewer or a fix that waited for the PR's head: it starts once the checkout has it, wherever that
@@ -1728,11 +1770,14 @@ export const ReviewMode = {
   },
   // From render: asks git where the fix commits it does not know are, once per checkout and head. No call without a fix
   // that has a commit or without a checkout, none while that call is on its way, and a failed one leaves the labels as
-  // they were (a fix whose place is unknown stays "Fix ready"): the tab never waits for it.
+  // they were (a fix whose place is unknown stays "Fix ready"): the tab never waits for it. The same tick asks whether
+  // the clone has each of those commits at all (git cat-file): worktree.py contains answers "out" for a sha it does not
+  // have, as it does for a change the head does not carry, and only the second is a fix to apply.
   landedTick(cx) {
     const w = this.worktree, head = this.headNow();
     if (!w?.path || !head) return;
-    const known = this.landedNow(head), shas = this.fixCommits().filter((s) => !(s in known));
+    const known = this.landedNow(head), seen = this.shas ?? {};
+    const shas = this.fixCommits().filter((s) => !(s in known) || !Object.hasOwn(seen, s));
     if (!shas.length) return;
     const key = `${head}|${shas.join(",")}`;
     if (this.landedIn === key) return;
@@ -1741,12 +1786,17 @@ export const ReviewMode = {
     // PR's own commits, whichever commit of the base the clone has fetched.
     const base = `origin/${this.prSel?.base ?? "main"}`, url = this.prSel?.url;
     cx.spawn(async (cx) => {
-      const r = await exec("python3", [`${appHome()}/mods/pr-review/worktree.py`, "contains", w.path, head, base, "--", ...shas], { timeout: 120000 })
-        .catch((e) => ({ code: 1, stderr: String(e) }));
+      const [r, has] = await Promise.all([
+        exec("python3", [`${appHome()}/mods/pr-review/worktree.py`, "contains", w.path, head, base, "--", ...shas], { timeout: 120000 }).catch((e) => ({ code: 1, stderr: String(e) })),
+        Promise.all(shas.map((s) => exec("git", ["-C", w.path, "cat-file", "-e", `${s}^{commit}`], { timeout: 30000 }).catch(() => null))),
+      ]);
       if (this.landedIn === key) this.landedIn = null;
-      if (this.prSel?.url !== url || r.code !== 0) return;
+      if (this.prSel?.url !== url) return;
+      // null: git could not answer (it did not run), which is not "this clone does not have it"; asked once either way.
+      this.shas = { ...this.shas, ...Object.fromEntries(shas.map((s, i) => [s, has[i] ? has[i].code === 0 : null])) };
+      if (r.code !== 0) { cx.notify(); return; }
       let got; try { got = JSON.parse(r.stdout); } catch { return; }
-      if (this.headNow() !== head) return; // it moved meanwhile: that head's own call answers for it
+      if (this.headNow() !== head) { cx.notify(); return; } // it moved meanwhile: that head's own call answers for it
       this.landed = { head, map: { ...this.landedNow(head), ...got } };
       cx.notify();
     });
@@ -1756,15 +1806,16 @@ export const ReviewMode = {
   // and fix head; none while one is on its way; a failed call is not kept, so a later frame asks again. The labels stay
   // as they were until an answer arrives.
   fileLog(head, fixHead) { return this.fileLogs?.[`${head}|${fixHead}`] ?? null; },
-  // The fix head a finding's place depends on the file log for, or null: a fix sent on an older head, no commit
-  // reported, not declined and not discarded, the finding not dismissed, and no check on this head that would answer.
-  // Its agent is still working (pr.js fixStillWorking: a live terminal, or under ten minutes old) while it may yet
-  // report a commit, so nothing is read from the file then.
+  // The fix head a finding's place depends on the file log for, or null: a fix sent on an older head, no report from
+  // its agent (a "fixed" report answers for itself, or does not count: reportProblem), not declined and not discarded,
+  // the finding not dismissed, and no check on this head that would answer. Its agent is still working (pr.js
+  // fixStillWorking: a live terminal, or under ten minutes old) while it may yet report a commit, so nothing is read
+  // from the file then.
   fileFixHead(f) {
     const st = this.find.status[f.id] ?? {}, r = this.find.reports[f.id], job = this.fixJob(f), head = this.headNow(), fixHead = st.fixHead ?? null;
     if (!fixHead || !head || fixHead === head || st.s === "dismissed") return null;
     if (this.startingFix(f.ids)) return null; // a fix tab still booting: nothing was sent, so git has nothing to say
-    if (r?.commit || r?.status === "wontfix" || job?.state === "discarded") return null;
+    if (r?.status === "fixed" || r?.status === "wontfix" || job?.state === "discarded") return null; // reported: its own answer, or the report above
     if (fixStillWorking({ job, now: Date.now(), terminalLive: Boolean(job?.terminal) && terminals().some((x) => x.address === job.terminal && x.state === "live") })) return null;
     const v = st.verify;
     if (v?.head === head && !v.branch) return null; // a check read this head: its answer stands
@@ -1798,9 +1849,12 @@ export const ReviewMode = {
   },
   // What a row's state tooltip says: a reported commit keeps the contains answer; a fix with no reported commit says
   // which commits touched its file, or that there is no commit to check and the file did not change since it was sent.
-  // A fix that ended with nothing (pr.js fixStage "ended") names where it was sent and how long ago.
+  // A fix that ended with nothing (pr.js fixStage "ended") names where it was sent and how long ago. A report that says
+  // fixed without a commit this clone can apply says exactly that (pr.js reportTip): nothing there is a fix to apply.
   stageTip(f) {
     const g = this.fgroup(f), job = this.fixMeta(f), by = this.fileFix(f), applied = Boolean(this.fixJob(f)?.appliedAt || this.fixJob(f)?.state === "applied");
+    const said = g === "wontfix" || g === "verified" ? null : reportTip(this.reportProblem(f));
+    if (said) return said;
     if (g === "unresolved") {
       const line = this.endedLine(f);
       if (line) return line;
@@ -1818,11 +1872,20 @@ export const ReviewMode = {
   },
   // What pr.js fixStage needs about a finding's fix: its newest job, the commit its agent reported (threads.js
   // fixCommit: a "fixed" report with a sha), and whether the agent declined (the report outlives the job record, and a
-  // review from before jobs were kept has only the report).
+  // review from before jobs were kept has only the report). A report that says fixed but names no commit this clone
+  // can apply (reportProblem) leaves no commit for fixStage: nothing is on its way, so the fix reads as one that ended
+  // without a result, and its row offers Fix again.
   fixMeta(f) {
-    const job = this.fixJob(f), r = this.find.reports[f.id];
+    const job = this.fixJob(f), r = this.find.reports[f.id], named = this.reportProblem(f), problem = named?.reason ? named : null;
     if (!job && !r) return this.startingFix(f.ids) ? { state: "running" } : null;
-    return { state: job?.state ?? null, commit: r?.status === "fixed" && r.commit ? String(r.commit) : null, declined: r?.status === "wontfix" };
+    return { state: job?.state ?? (problem ? "running" : null), commit: r?.status === "fixed" && r.commit && !problem ? String(r.commit) : null, declined: r?.status === "wontfix", problem };
+  },
+  // What a finding's "fixed" report names, as pr.js reportCommit reads it: null when there is none, or it names a
+  // commit this clone has; else {reason: "none" | "unknown", commit}. The clone's answer (this.shas, landedTick's
+  // git cat-file) is undefined until git answered, and an unanswered commit is given the benefit of the doubt.
+  reportProblem(f) {
+    const r = this.find.reports[f.id], sha = r?.commit ? String(r.commit) : "";
+    return reportCommit(r, sha ? this.shas?.[sha] : undefined);
   },
   // Whether this panel is waiting to send a fix's text (startMainFix): a state held in memory, never a fix job.
   startingFix(ids) { const s = this.fixStarting; return Boolean(s && s.ids.some((id) => ids.includes(id))); },
@@ -1852,15 +1915,17 @@ export const ReviewMode = {
   // Every finding's stage in one pass (pr.js fixStage), kept while the findings, their statuses, the fix jobs, the head
   // and git's answer stay the same: a frame asks this from every row, heading and count.
   stages() {
-    const deps = [this.findings(), this.find.status, this.find.reports, this.threadDoc, this.threadKey(), this.headNow(), this.landed, this.fixStarting, this.fileLogs, this.fixLiveSig()];
+    const deps = [this.findings(), this.find.status, this.find.reports, this.threadDoc, this.threadKey(), this.headNow(), this.landed, this.fixStarting, this.fileLogs, this.fixLiveSig(), this.shas];
     if (this.stageMemo && deps.every((d, i) => d === this.stageMemo.deps[i])) return this.stageMemo.map;
     const head = this.headNow(), landed = this.landedNow(head), jobs = this.fixes().filter((j) => j.state === "running");
     const working = this.workingNow(jobs.some((j) => j.terminal) ? terminals() : []);
     const map = new Map(this.findings().map((f) => {
       const job = this.fixMeta(f), raw = this.fixJob(f), commit = job?.commit ?? null;
-      const stage = fixStage({ job, landed: commit ? landed[commit] ?? null : null, verified: this.find.status[f.id]?.verify ?? null, head, working: raw ? working(raw) : null });
-      // A fix with no reported commit: git says whether a commit since it was sent touched its file. One did, so the
-      // head may carry the fix (In the PR, weaker than contains); none did, so it cannot be there (Fix ready). A fix
+      // A reported fix with no commit this clone can apply has nothing on its way, whatever its agent does: it reads
+      // as one that ended without a result (working false).
+      const stage = fixStage({ job, landed: commit ? landed[commit] ?? null : null, verified: this.find.status[f.id]?.verify ?? null, head, working: job?.problem ? false : raw ? working(raw) : null });
+      // A fix whose agent reported nothing: git says whether a commit since it was sent touched its file. One did, so
+      // the head may carry the fix (In the PR, weaker than contains); none did, so it cannot be there (Fix ready). A fix
       // whose agent is gone and whose file did not change stays ended: there is nothing to apply.
       const by = this.fileFix(f), carried = by && (stage === null || stage === "progress" || stage === "ended");
       return [f.id, carried ? (by.shas.length ? "in_pr" : stage === "ended" ? "ended" : "ready") : stage];
@@ -2027,7 +2092,7 @@ export const ReviewMode = {
     const labels = list.map((f) => `${f.title} (${f.file}:${f.line})`), target = pool ? this.sendP?.fix?.target : null;
     this.previewFix(cx, { what: "Fix with agent", own: labels.join("\n"), ownLabel: list.length === 1 ? "FINDING" : "FINDINGS", items: list.map((f) => ({ kind: "finding", id: f.id })), labels,
       pool, alone, target,
-      prompt: (sub) => [fixPrompt(list, pr, report, this.lang(), sub ? null : { branch: pr?.head ?? null }), sub ? TH.worktreeNote(sub.branch, sub.path) : null].filter(Boolean).join("\n\n"),
+      prompt: (sub) => [fixPrompt(list, pr, report, this.lang(), sub ? null : { branch: pr?.head ?? null }, sub ? null : this.fixLocalBranch()), sub ? TH.worktreeNote(sub.branch, sub.path) : null].filter(Boolean).join("\n\n"),
       sent: (cx) => { for (const f of list) this.setFinding(f, "progress", cx, { fixHead: this.headNow() }); this.clearSel(cx); } });
   },
   // "Fix several…": the reviewer picks which unresolved findings one agent fixes together. Security findings about
@@ -2817,6 +2882,47 @@ export const ReviewMode = {
   // (which may be on another branch: the fix still starts at the PR head, threads.js fixStart), the branch's repo, else
   // the review's checkout of the PR head.
   fixBase() { return this.prSel?.cwd ?? (this.prSel?.space ? this.root : null) ?? this.worktree?.path ?? null; },
+  // The local branch a fix works on in the review's own checkout: pr-review/<number> (startFix). Null for a branch
+  // diff, which has no PR to branch from.
+  fixBranchName() { return this.prSel?.number ? `pr-review/${this.prSel.number}` : null; },
+  // The local branch a fix in the review's own checkout commits on, or null: a fix that runs in a person's own tree
+  // (a session's folder, a space's checkout) is not moved there, and a branch diff has no PR to branch from. Read when
+  // the fix text is built, so its task and the branch prepareFixCheckout makes are the same one.
+  fixLocalBranch() { return !this.worktree?.local && this.fixBase() === this.worktree?.path ? this.fixBranchName() : null; },
+  // Whether a fix still works in the checkout at this path (pr.js fixStillWorking: a live terminal, or a job under ten
+  // minutes old): its tree must stay where the agent found it (makeWorktree).
+  fixFrozen(path) {
+    if (!path) return false;
+    const jobs = this.fixes().filter((j) => j.folder === path && j.state === "running");
+    if (!jobs.length) return false;
+    const working = this.workingNow(jobs.some((j) => j.terminal) ? terminals() : []); // one terminal list for them all
+    return jobs.some((j) => working(j));
+  },
+  // Puts the review's own checkout on its fix branch before an agent starts there, so the agent's commit is on a branch
+  // and not only in the reflog of a detached HEAD (worktree.py checks it out on no branch). Nothing starts when the
+  // checkout has uncommitted changes or the branch cannot be made: {branch} on success, {behind} too when the branch was
+  // already there at another commit, or {error} with the note to show. A person's own tree (a session's folder, a
+  // space's checkout) is never moved: {branch: null}.
+  async prepareFixCheckout(folder) {
+    const branch = this.fixBranchName(), w = this.worktree;
+    if (!folder || !branch || !w || w.local || folder !== w.path) return { branch: null };
+    const run = (args) => exec("git", ["-C", folder, ...args], { timeout: 30000 }).catch((e) => ({ code: 1, stdout: "", stderr: String(e) }));
+    const why = (r) => String(r.stderr || r.stdout || "").trim().slice(0, 160);
+    const st = await run(["status", "--porcelain"]);
+    if (st.code !== 0) return { error: `Not started: git status in ${folder} failed: ${why(st)}` };
+    if (String(st.stdout ?? "").trim()) return { error: "The checkout has uncommitted changes: commit or stash them, then fix again." };
+    const head = this.prSel?.headSha ?? w.head;
+    const has = await run(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
+    if (has.code === 0) {
+      const sw = await run(["switch", branch]);
+      if (sw.code !== 0) return { error: `Not started: could not switch to ${branch}: ${why(sw)}` };
+      return { branch, behind: Boolean(head) && String(has.stdout ?? "").trim() !== head };
+    }
+    if (!head) return { error: "Not started: the PR head is not known, so its fix branch cannot be created" };
+    const sw = await run(["switch", "-C", branch, head]);
+    if (sw.code !== 0) return { error: `Not started: could not create ${branch}: ${why(sw)}` };
+    return { branch }; // the head it starts from: -C puts a new branch there
+  },
   // A job's state for its rows: running (with its agent's status), ready (a fixed report with a commit), main.
   fixView(job) {
     const commit = job && TH.fixCommit(job, this.replies, this.find.reports);
@@ -2841,7 +2947,7 @@ export const ReviewMode = {
     // note instead, and never pushes.
     const pr = this.prSel ?? null;
     return { comments, items: comments.map((c) => ({ kind: "comment", id: c.id })), labels: comments.map(said), foreign: TH.hasForeign(comments, shared("gh.login")),
-      prompt: (sub, lang = this.lang()) => TH.fixCommentsPrompt({ pr, comments, file: this.repliesFile(), lang, login: shared("gh.login"), push: sub ? null : { branch: pr?.head ?? null }, ...sub }),
+      prompt: (sub, lang = this.lang()) => TH.fixCommentsPrompt({ pr, comments, file: this.repliesFile(), lang, login: shared("gh.login"), push: sub ? null : { branch: pr?.head ?? null }, local: sub ? null : this.fixLocalBranch(), ...sub }),
       sent: (cx, how) => {
         const key = this.threadKey(), pending = TH.withIds(this.comments).filter((c) => ids.includes(c.id)), had = new Set(this.threads().map((t) => t.id));
         if (pending.length) { this.comments = TH.withIds(this.comments).filter((c) => !ids.includes(c.id)); this.persist(cx); }
@@ -2866,7 +2972,10 @@ export const ReviewMode = {
       const head = TH.fixStart({ local: Boolean(this.worktree?.local), prHead: this.headNow(), checkoutHead: at });
       const { label } = this.sendAgent(), sub = { branch, path, head };
       this.previewSend(cx, { what, own, ownLabel, prompt: prompt(sub), onSent: (cx) => {
-        const job = { id: `${Date.now().toString(36)}`, items, target: "main", at: Date.now(), state: "running" };
+        // The local branch a main or session fix commits on (fixLocalBranch) is recorded with the job: its task names
+        // it (pr.js checkoutNote, inside the fix's prompt), and prepareFixCheckout makes that same branch.
+        const pick = this.sendP?.fix?.target, local = pick && pick !== "sub" ? this.fixLocalBranch() : null;
+        const job = { id: `${Date.now().toString(36)}`, items, target: "main", at: Date.now(), state: "running", ...(local ? { branch: local, folder: base } : {}) };
         this.updateThreads(cx, (d) => TH.addFix(d, this.threadKey(), job));
         sent(cx, { route: "agent", agent: label });
       } });
@@ -2920,7 +3029,19 @@ export const ReviewMode = {
     if (target === "sub") return this.startSubFix(p, out.text, cx);
     if (target === "main") return this.startMainFix(p, out.text, cx);
     // "session": the one target that types into an existing session (main.js deliver, hc send).
-    return this.deliver(out.text, cx, out.what, (cx) => p.onSent?.(cx), Boolean(p.guard));
+    return this.startSessionFix(p, out, cx);
+  },
+  // "This session": the same folder as a new tab when the PR has no folder of its own (fixBase), so it is put on the
+  // fix's branch first, as startMainFix does. A session's own checkout is a person's tree and is not moved.
+  startSessionFix(p, out, cx) {
+    const folder = this.fixBase(), url = this.prSel?.url;
+    cx.spawn(async (cx) => {
+      const at = await this.prepareFixCheckout(folder);
+      if (at.error) { this.note = at.error; return cx.notify(); }
+      if (this.prSel?.url !== url) return;
+      this.deliver(out.text, cx, out.what, (cx) => p.onSent?.(cx), Boolean(p.guard));
+    });
+    return cx.notify();
   },
   // The push lock for an agent that works in a worktree of `base` (threads.js noPushEnv): every remote of the clone
   // gets a push URL no git can open, and git itself is asked where it would push now. A remote it would still push
@@ -2937,7 +3058,7 @@ export const ReviewMode = {
   // when one runs). Nothing is typed into another session: the fix stays on its branch until the reviewer applies it.
   startSubFix(p, text, cx) {
     const f = p.fix, base = this.fixBase(), key = this.threadKey(), trusted = this.trustedPr(); // trust of the PR the prompt is for
-    if (!base) { this.note = "Not started: the PR has no local checkout to branch the fix from"; return cx.notify(); }
+    if (!base) { this.note = this.noCheckoutNote("Not started: the PR has no local checkout to branch the fix from"); return cx.notify(); }
     this.sending = true; this.note = null;
     cx.spawn(async (cx) => {
       try {
@@ -2962,7 +3083,7 @@ export const ReviewMode = {
   // the finding as it was; until then the panel shows the in-memory "starting" state, never a running job.
   startMainFix(p, text, cx) {
     const f = p.fix, folder = this.fixBase(), profile = harnessProfile(this.cfg), runner = this.runnerName();
-    if (!folder) { this.note = "Not started: the PR has no local checkout or worktree to start a tab in"; return cx.notify(); }
+    if (!folder) { this.note = this.noCheckoutNote("Not started: the PR has no local checkout or worktree to start a tab in"); return cx.notify(); }
     const trusted = this.trustedPr() && !f.foreign; // someone else's comment: the tab asks first, on this machine's settings only
     const name = tabName(this.prSel?.repo ?? this.root, this.prSel?.number ? `fix ${hostWord(this.prSel.url)} #${this.prSel.number}` : "fix");
     const space = this.spaceFor(this.ctxId(), folder), url = this.prSel?.url, gen = (this.tabGen = (this.tabGen ?? 0) + 1), ids = f.items.map((x) => x.id);
@@ -2970,6 +3091,12 @@ export const ReviewMode = {
     this.sending = true; this.note = null;
     cx.spawn(async (cx) => {
       try {
+        // The review's own checkout goes on its fix branch first, and nothing starts when it cannot: a commit on a
+        // detached HEAD is reachable only from the reflog, and a head move takes the tree.
+        const at = await this.prepareFixCheckout(folder);
+        if (at.error) { this.note = at.error; return; }
+        if (this.prSel?.url !== url) return; // another PR was picked while the branch was made
+        const behind = at.behind ? ` The branch ${at.branch} was already there and is not at the PR head: the fix works on that branch, not on the head.` : "";
         const r = await startAgentTab(cx, {
           profile, space, folder, name, text, what: "fix text", prUrl: url, by: this.uid, focus: false,
           argv: agentArgs({ profile, env: this.ctxEnv(this.ctxId()), model: model(), ask: !trusted, trusted }),
@@ -2977,17 +3104,18 @@ export const ReviewMode = {
           onOpen: ({ delivery }) => {
             if (delivery === "send") this.fixStarting = pending = { ids, name, at: Date.now() };
             this.sending = false;
-            this.note = delivery === "send" ? `Fix: started a new ${runner} tab "${name}" in the background; the fix text is sent when its agent reports ready.`
-              : `Fix: started a new ${runner} tab "${name}" in the background with the fix. Nothing was typed into another session.`;
+            this.note = (delivery === "send" ? `Fix: started a new ${runner} tab "${name}" in the background; the fix text is sent when its agent reports ready.`
+              : `Fix: started a new ${runner} tab "${name}" in the background with the fix. Nothing was typed into another session.`) + behind;
             cx.notify();
           },
         });
         if (r.stopped || this.tabGen !== gen) return;
-        if (!r.sent) { this.note = pendingWaitNote(name, "fix text"); return cx.notify(); }
-        this.updateThreads(cx, (d) => TH.addFix(d, this.threadKey(), { id: Date.now().toString(36), items: f.items, target: "main", at: Date.now(), state: "running", terminal: r.terminal ?? null, tab: r.tab ?? null }));
+        if (!r.sent) { this.note = pendingWaitNote(name, "fix text") + behind; return cx.notify(); }
+        this.updateThreads(cx, (d) => TH.addFix(d, this.threadKey(), { id: Date.now().toString(36), items: f.items, target: "main", at: Date.now(), state: "running", terminal: r.terminal ?? null, tab: r.tab ?? null,
+          ...(at.branch ? { branch: at.branch, folder } : {}) }));
         f.sent(cx, { route: "agent", agent: `${runner} tab · ${name}` });
-        this.note = r.delivery === "send" ? `Fix: the ${runner} tab "${name}" is ready; the fix text was sent.`
-          : `Fix: started a new ${runner} tab "${name}" in the background with the fix. Nothing was typed into another session.`;
+        this.note = (r.delivery === "send" ? `Fix: the ${runner} tab "${name}" is ready; the fix text was sent.`
+          : `Fix: started a new ${runner} tab "${name}" in the background with the fix. Nothing was typed into another session.`) + behind;
         cx.notify();
       } catch (e) { this.note = `Not sent: ${String(e).replace(/^Error: /, "")}`; cx.notify(); }
       finally { if (pending && this.fixStarting === pending) this.fixStarting = null; this.sending = false; cx.notify(); }
@@ -4180,7 +4308,10 @@ export const ReviewMode = {
         // it runs: here, not as a grey line under the page.
         .children(stateHints({ checkout: this.checkout, pendingRun: this.pendingRun, runs: this.find.runs, names: Object.fromEntries(Object.entries(REVIEWERS).map(([k, v]) => [k, v[0]])) })
           .map((h) => h_flex().id(`rv-hint-${h.key}`).gap(8).items_center().text_size(TYPE.small).text_color(h.error ? t.ansi1 : t.foreground)
-            .when(Boolean(h.spin), (x) => x.child(div().flex_none().child(SPIN[0]).frames(SPIN, 90))).child(div().flex_1().min_w(0).whitespace_normal().child(h.text))))
+            .when(Boolean(h.spin), (x) => x.child(div().flex_none().child(SPIN[0]).frames(SPIN, 90))).child(div().flex_1().min_w(0).whitespace_normal().child(h.text))
+            // One action for a checkout held by someone else's branch: detach it at the PR head (its tree is clean).
+            .when(h.action === "detach", (x) => x.child(pill("rv-detach", t, "Detach checkout", (_e, cx) => this.detachCheckout(cx))
+              .tooltip(`Switch the checkout at ${this.foreign?.path ?? "the review's folder"} to the PR head, on no branch. The branch and its commits stay on disk.`)))))
         // Which head the analysis read and how old it is, in sight (the run's model and cost stay in Re-analyze's tooltip);
         // amber once the PR moved on, with what to do about it.
         .when(Boolean(ai), (e) => { const a = analysisAge({ head: ai.head, exact: ai.exact, now: this.worktree?.head ?? this.head, age: ago(ai.generated) });

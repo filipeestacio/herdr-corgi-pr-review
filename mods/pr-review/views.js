@@ -643,12 +643,19 @@ export function scopeConflicts(tab, open = []) {
   return out;
 }
 
+// The folder at the review's own path, held by someone else's checkout (worktree.py: it is on a branch that is not a
+// fix's, or another clone's detached tree). One sentence, so the note, the hint and a fix's refusal word it the same
+// way; f: {path, branch, clean, head}.
+export const foreignCheckoutLine = (f) => `The review's checkout is held by ${f?.branch ? `the branch ${f.branch}` : "another checkout of this repository"}, not by the PR head.`
+  + (f?.clean ? " Detach checkout moves it back." : " It has uncommitted changes: commit or stash them.");
+
 // The state hints at the top of the Analysis tab, where they are seen instead of a grey line under the page: the PR
-// head's checkout, an analysis waiting for it, reviewer runs. checkout: {busy} | {error} | null; runs: the findings
-// file's runs (busy while one runs); names: kind -> label. -> [{key, text, spin, error}]
+// head's checkout, an analysis waiting for it, reviewer runs. checkout: {busy} | {error} | {foreign} | null; runs: the
+// findings file's runs (busy while one runs); names: kind -> label. -> [{key, text, spin, error, action}]
 export function stateHints({ checkout = null, pendingRun = false, runs = {}, names = {} }) {
   return [
     checkout?.busy && { key: "checkout", spin: true, text: `Checking out the PR head${pendingRun ? ": the analysis starts once it is there" : ""}…` },
+    checkout?.foreign && { key: "checkout", error: true, text: foreignCheckoutLine(checkout.foreign), action: checkout.foreign.clean ? "detach" : null },
     checkout?.error && { key: "checkout", error: true, text: `Could not check out the PR head: ${checkout.error}` },
     pendingRun && !checkout && { key: "wait", text: "The analysis starts once the PR head is checked out." },
     ...Object.entries(runs ?? {}).filter(([, r]) => r?.busy).map(([k]) => ({ key: `run-${k}`, spin: true, text: `${names[k] ?? k} is running…` })),

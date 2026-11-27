@@ -1734,6 +1734,162 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   const f3 = plain.find((f) => v.fstatus(f) !== "progress");
   if (f3) { v.command(`pick-finding:${f3.id}`, cx); v.command("fix-picked", cx); await settle(); assert.deepEqual([v.sendP.fix.items.map((x) => x.id), Boolean(v.sendP.fix.pool)], [[f3.id], true]); v.sendP = null; v.command("clear-selection", cx); assert.equal(v.selCount(), 0); }
 }
+// A fix in the review's own checkout works on a local branch, and that checkout stays put while the agent works in it
+// (the shape of two fix agents that lost their work: MR 1510, a commit on a detached HEAD that an external checkout
+// took away; MR 1509, a finding reported fixed with a change that was never committed).
+{
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json") });
+  const free = v.findings().filter((f) => ["open", "recheck"].includes(v.fstatus(f)) && !v.fixJob(f));
+  const [f1, f2] = free;
+  assert.ok(f1 && f2, "two findings to fix");
+  const was = { exec: S.exec, runs: S.runs, base: v.fixBase, worktree: v.worktree, prSel: v.prSel, terminals: S.terminals };
+  const calls = [];
+  S.runs = []; S.terminals = [];
+  v.worktree = { url: v.prSel.url, head: "h9", path: "/h/w" }; v.head = "h9";
+  v.prSel = { ...v.prSel, number: 7, headSha: "h9", head: "feat/fix-1" };
+  v.fixBase = () => "/h/w";
+  // git as the fix's start reads it: the checkout's status, whether the branch is there (and at which commit), and the
+  // switch itself. Every call is kept, so a switch that should not happen is visible.
+  const git = (status, branchAt = null) => async (cmd, args = []) => { calls.push([cmd, ...args]);
+    if (cmd !== "git") return { code: 1, stdout: "", stderr: "stub" };
+    if (args.includes("status")) return { code: 0, stdout: status, stderr: "" };
+    if (args.includes("rev-parse")) return branchAt ? { code: 0, stdout: `${branchAt}\n`, stderr: "" } : { code: 1, stdout: "", stderr: "" };
+    if (args.includes("switch")) return { code: 0, stdout: "", stderr: "" };
+    return { code: 1, stdout: "", stderr: "stub" }; };
+  const tabs = () => S.runs.filter(([c]) => c === "tab.new"), switched = () => calls.filter(([c, ...a]) => c === "git" && a.includes("switch")).map(([_c, ...a]) => a.join(" "));
+  const send = async (f) => { v.sendP = null; v.fixStarting = null; v.command(`fix-finding:${f.id}`, cx); await settle(); v.fixTarget("main"); v.command("send", cx); await settle(); };
+  try {
+    // Uncommitted changes: nothing starts, and the note says what to do first.
+    S.exec = git(" M library/reminders.py\nlibrary/consumer.py\n");
+    await send(f1);
+    assert.deepEqual([tabs().length, switched(), v.fixJob(f1)], [0, [], null], "a dirty checkout starts no tab and moves no branch");
+    assert.equal(v.note, "The checkout has uncommitted changes: commit or stash them, then fix again.");
+    // Clean: a new branch at the PR head, the job records it and its folder, and the task names it.
+    calls.length = 0; S.exec = git("");
+    await send(f1);
+    const tab = tabs().at(-1);
+    assert.ok(tab, "a clean checkout starts the tab");
+    assert.deepEqual([tab[1].folder, switched()], ["/h/w", ["-C /h/w switch -C pr-review/7 h9"]], "the tab works in the review's checkout, on a branch made at the PR head");
+    assert.deepEqual([v.fixJob(f1)?.branch, v.fixJob(f1)?.folder], ["pr-review/7", "/h/w"], "the job records the branch and the folder");
+    // The task names the local branch it commits on and the remote branch it pushes to, in the one block PR #25 added
+    // the push to: the sentence of this change, then #25's, with its refused-push clause kept.
+    const task = v.sendText.value();
+    assert.ok(task.includes("You are on the local branch pr-review/7. When you are done, commit your work and push it to the branch this PR merges from: `git push origin HEAD:feat/fix-1`. " +
+      "If the push is refused, say so in the report; do not report a finding as fixed when its commit is not on the remote."), "the task names the local branch and the push, once each");
+    assert.equal((task.match(/You are on the local branch/g) ?? []).length, 1, "the local branch is said once");
+    assert.equal((task.match(/commit your work and push it/g) ?? []).length, 1, "the push is said once");
+    assert.equal(v.note, `Fix: started a new Claude tab "${S.runs.filter(([c]) => c === "tab.new").at(-1)?.[1].name}" in the background with the fix. Nothing was typed into another session.`);
+    // The branch was already there at another commit: the fix works on it as it is, and the note says so.
+    calls.length = 0; S.exec = git("", "h0");
+    await send(f2);
+    assert.deepEqual(switched(), ["-C /h/w switch pr-review/7"], "the existing branch is switched to, not reset to the head");
+    assert.match(v.note, / The branch pr-review\/7 was already there and is not at the PR head: the fix works on that branch, not on the head\.$/, "the note says the tree is not the head");
+    assert.equal(v.fixJob(f2)?.branch, "pr-review/7");
+    // The head moves while that fix works in the checkout: the tree stays, one note says why, and worktree.py is not run.
+    let checkouts = 0;
+    const countCheckouts = async (cmd, args = []) => { if (cmd === "python3" && String(args?.[0]).endsWith("worktree.py")) checkouts++; return { code: 1, stdout: "", stderr: "stub" }; };
+    S.exec = countCheckouts; S.store.delete("review.worktree");
+    v.prSel = { ...v.prSel, headSha: "h10" }; v.note = null;
+    v.makeWorktree(cx); await settle();
+    assert.deepEqual([checkouts, v.worktree.head, v.note], [0, "h9", "The PR head moved; the checkout stays while a fix is working in it."], "makeWorktree leaves the tree alone, with one note");
+    v.note = null; v.applyHead("h10", cx); await settle();
+    assert.deepEqual([checkouts, v.worktree.head, v.note], [0, "h9", "The PR head moved; the checkout stays while a fix is working in it."], "applyHead takes the same gate");
+    v.note = null; v.refresh(cx); await settle();
+    assert.deepEqual([checkouts, v.worktree.head], [0, "h9"], "and refresh does not move it either");
+    // The older fix's agent is gone, but the second one still works in the same tree: the freeze holds for it.
+    const key = v.threadKey(), ageOne = (j) => (j.id === v.fixJob(f2).id ? { ...j, at: Date.now() - 601000, terminal: null } : j);
+    const ageAll = (j) => (j.folder === "/h/w" ? { ...j, at: Date.now() - 601000, terminal: null } : j);
+    v.threadDoc = { ...v.threadDoc, [key]: { ...v.threadDoc[key], fixes: v.threadDoc[key].fixes.map(ageOne) } };
+    v.fixBase = was.base;
+    S.exec = async (cmd, args = []) => { if (cmd === "python3" && String(args?.[0]).endsWith("worktree.py")) { checkouts++; return { code: 0, stdout: JSON.stringify({ path: "/h/w", head: "h10" }), stderr: "" }; } return { code: 1, stdout: "", stderr: "stub" }; };
+    v.makeWorktree(cx); await settle();
+    assert.deepEqual([checkouts, v.worktree.head], [0, "h9"], "another fix still works in that tree, so the freeze holds");
+    // Ten minutes on, no agent works there any more: a later tick moves the head, as before.
+    v.threadDoc = { ...v.threadDoc, [key]: { ...v.threadDoc[key], fixes: v.threadDoc[key].fixes.map(ageAll) } };
+    v.makeWorktree(cx); await settle();
+    assert.deepEqual([checkouts, v.worktree.head], [1, "h10"], "the job is no longer working: the head moves");
+  } finally { S.exec = was.exec; S.runs = was.runs; S.terminals = was.terminals; v.fixBase = was.base; v.worktree = was.worktree; v.prSel = was.prSel; v.sendP = null; v.fixStarting = null; S.store.delete("review.worktree"); }
+}
+// A folder at the review's own path that holds someone else's branch is not a missing checkout: the review says which
+// branch it is on, the Analysis tab offers one action, and a fix says the same instead of "no local checkout". The
+// action detaches the folder at the PR head, and only a clean tree gets it (MR 1509 was left on MR 1510's branch).
+{
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json") });
+  const was = { exec: S.exec, worktree: v.worktree, prSel: v.prSel };
+  const calls = [], branch = "aircode/MES-5848-reminders";
+  const foreign = (clean) => async (cmd, args = []) => { calls.push([cmd, ...args]);
+    if (cmd === "python3" && String(args?.[0]).endsWith("worktree.py")) return { code: 4, stdout: JSON.stringify({ foreign: { path: "/h/w", branch, clean, head: "h11" } }), stderr: "" };
+    return { code: 1, stdout: "", stderr: "stub" }; };
+  const ids = (what) => { act(v, "steps", what); S.ids = new Set(); draw(v, what); const got = new Set(S.ids); S.ids = null; return got; };
+  v.worktree = null; v.head = "h11"; v.prSel = { ...v.prSel, headSha: "h11" }; S.store.delete("review.worktree");
+  try {
+    S.exec = foreign(true);
+    v.makeWorktree(cx); await settle();
+    assert.deepEqual([v.worktree, v.foreign?.path, v.foreign?.branch, v.foreign?.clean], [null, "/h/w", branch, true], "the refusal names the folder and the branch it is on");
+    assert.equal(v.note, `The review's checkout is held by the branch ${branch}, not by the PR head. Detach checkout moves it back.`);
+    assert.deepEqual(v.checkout, { foreign: v.foreign }, "the Analysis tab's hint carries the same state");
+    assert.ok(ids("the checkout held by another branch").has("rv-detach"), "the Analysis tab offers Detach checkout");
+    // A fix with no checkout says that, not "no local checkout", and names the one action.
+    const f = v.findings().find((x) => ["open", "recheck"].includes(v.fstatus(x)));
+    assert.ok(f, "a finding to fix");
+    v.startMainFix({ fix: { items: [{ kind: "finding", id: f.id }], foreign: false, sent: () => {} } }, "text", cx); await settle();
+    assert.equal(v.note, `Not started: the review's checkout is held by the branch ${branch}, not by the PR head. Detach checkout moves it back.`);
+    // The click: git switch --detach at the PR head in that folder, then the review's checkout again.
+    calls.length = 0;
+    S.exec = async (cmd, args = []) => { calls.push([cmd, ...args]);
+      if (cmd === "git") return { code: 0, stdout: "", stderr: "" };
+      if (cmd === "python3") return { code: 0, stdout: JSON.stringify({ path: "/h/w", head: "h11" }), stderr: "" };
+      return { code: 1, stdout: "", stderr: "stub" }; };
+    ids("the refusal, before the click");
+    click("rv-detach", "Detach checkout"); await settle();
+    assert.ok(calls.some(([c, ...a]) => c === "git" && a.join(" ") === "-C /h/w switch --detach h11"), `git switch --detach at the PR head: ${JSON.stringify(calls)}`);
+    assert.deepEqual([v.foreign, v.checkout, v.worktree?.head, v.worktree?.path], [null, null, "h11", "/h/w"], "the review's checkout is back, at the PR head");
+    // A tree with uncommitted changes: the note says so and there is no action to take.
+    S.exec = foreign(false); v.worktree = null; S.store.delete("review.worktree");
+    v.makeWorktree(cx); await settle();
+    assert.equal(v.note, `The review's checkout is held by the branch ${branch}, not by the PR head. It has uncommitted changes: commit or stash them.`);
+    assert.ok(!ids("a dirty tree on another branch").has("rv-detach"), "a dirty tree offers no action");
+    // A fix's own branch there (pr-review/<n>) is the review's checkout: worktree.py resets it, so nothing is refused.
+    S.exec = async (cmd) => (cmd === "python3" ? { code: 0, stdout: JSON.stringify({ path: "/h/w", head: "h11" }), stderr: "" } : { code: 1, stdout: "", stderr: "stub" });
+    v.worktree = null; v.checkout = null; S.store.delete("review.worktree");
+    v.makeWorktree(cx); await settle();
+    assert.deepEqual([v.foreign, v.checkout, v.worktree?.head], [null, null, "h11"], "worktree.py reset it as the review's own");
+    assert.ok(!ids("a checkout worktree.py may reset").has("rv-detach"), "and there is nothing to detach");
+  } finally { S.exec = was.exec; v.worktree = was.worktree; v.prSel = was.prSel; v.foreign = null; v.checkout = null; S.store.delete("review.worktree"); }
+}
+
+{
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json") });
+  const f = v.findings().find((x) => x.file === "library/reminders.py");
+  const wasTerminals = S.terminals, t0 = Date.now();
+  assert.ok(f, "a finding to report on");
+  v.head = "h9"; v.worktree = { url: v.prSel.url, head: "h9", path: "/h/w" };
+  v.find = { ...v.find, status: { [f.id]: { s: "progress", fixHead: "h9" } }, reports: { [f.id]: { id: f.id, status: "fixed", note: "did it" } } };
+  const job = { id: "j9", items: [{ kind: "finding", id: f.id }], target: "main", at: t0 - 7200000, state: "running", terminal: null, branch: "pr-review/7", folder: "/h/w" };
+  v.threadDoc = { ...v.threadDoc, [v.threadKey()]: { ...(v.threadDoc[v.threadKey()] ?? {}), fixes: [job] } };
+  S.terminals = []; v.ffocus = f.id;
+  const tab = (what) => { S.ids = new Set(); S.texts = new Set(); act(v, "findings", what); const got = { ids: [...S.ids], texts: [...S.texts] }; S.ids = S.texts = null; return got; };
+  assert.deepEqual([v.fstage(f), v.fgroup(f)], ["ended", "unresolved"], "no commit named: nothing is on its way, and Fix sent is not kept");
+  assert.equal(v.stageTip(f), "The agent reported this fixed but named no commit.");
+  let got = tab("a report that named no commit");
+  assert.ok(got.ids.includes(`rv-fga-${f.id}`) && got.texts.includes("fix ended without a result"), "the row offers Fix again");
+  const headings = (t) => t.filter((x) => /^(Fix ready|In the PR) · \d+$/.test(x));
+  assert.deepEqual(headings(got.texts), [], "and it claims neither In the PR nor Fix ready");
+  // The same report naming a commit this clone does not have: git's own answer (cat-file) says so, and the row says it.
+  let asked = 0;
+  v.find = { ...v.find, reports: { [f.id]: { id: f.id, status: "fixed", commit: "d34db33fd34db33f", note: "did it" } } };
+  S.exec = async (cmd, args = []) => { if (cmd === "git" && args.includes("cat-file")) { asked++; return { code: 1, stdout: "", stderr: "missing" }; }
+    if (cmd === "python3") return { code: 0, stdout: JSON.stringify({ d34db33fd34db33f: "out" }), stderr: "" };
+    return { code: 1, stdout: "", stderr: "stub" }; };
+  v.landedTick(cx); await settle();
+  assert.deepEqual([asked, v.shas?.["d34db33fd34db33f"]], [1, false], "git was asked once whether the clone has the commit");
+  assert.deepEqual([v.fstage(f), v.fgroup(f)], ["ended", "unresolved"], "a commit the clone does not have is nothing to place");
+  assert.equal(v.stageTip(f), "The agent reported this fixed but named a commit this clone does not have (d34db33fd34db33f).");
+  got = tab("a report that named a commit the clone does not have");
+  assert.ok(got.ids.includes(`rv-fga-${f.id}`) && got.texts.includes("fix ended without a result"), "the row offers Fix again too");
+  assert.deepEqual(headings(got.texts), [], "and still claims neither");
+  S.exec = null; S.terminals = wasTerminals; v.worktree = null; v.shas = null; v.ffocus = null;
+}
 // "Open in <Editor>" with editors installed (their Info.plist files are there; `open` is a stub, no editor starts):
 // the file heads' zones, the cards' monogram, the definition view, the panel's head and its file link, the state
 // "Opening …"; then a PR that is not trusted.

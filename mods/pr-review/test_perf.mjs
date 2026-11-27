@@ -487,6 +487,7 @@ await settle();
   v.find = { ...v.find, reports: Object.fromEntries(two.map((f, k) => [f.id, { id: f.id, status: "fixed", commit: k ? "c2" : "c1" }])),
     status: Object.fromEntries(two.map((f) => [f.id, { s: "progress", fixHead: "h0", at: "2026-11-15T10:00:00Z" }])) };
   S.exec = async (cmd, args) => {
+    if (cmd === "git" && args.includes("cat-file")) return { code: 0, stdout: "", stderr: "" }; // the clone has the commit
     if (!args.includes("contains")) return { code: 1, stdout: "", stderr: "stub" };
     calls.push(args.slice(args.indexOf("--") + 1));
     return { code: 0, stdout: JSON.stringify({ c1: "in", c2: "patch" }), stderr: "" };
@@ -505,7 +506,8 @@ await settle();
   w.worktree = { url: w.prSel.url, head: "h1", path: "/h/w" }; w.head = "h1";
   w.find = { ...w.find, reports: { [one.id]: { id: one.id, status: "fixed", commit: "c3" } }, status: { [one.id]: { s: "progress", fixHead: "h0", at: "2026-11-15T10:00:00Z" } } };
   const asked = [];
-  S.exec = async (_cmd, args) => { if (args.includes("contains")) asked.push(args); return { code: 1, stdout: "", stderr: "no such ref" }; };
+  S.exec = async (cmd, args) => { if (cmd === "git" && args.includes("cat-file")) return { code: 0, stdout: "", stderr: "" }; // the clone has the commit
+    if (args.includes("contains")) asked.push(args); return { code: 1, stdout: "", stderr: "no such ref" }; };
   w.landedTick(cx); await settle(); w.landedTick(cx); await settle();
   assert.deepEqual([w.fgroup(w.findings().find((x) => x.id === one.id)), asked.length], ["ready", 2], "nothing is claimed on a failed call, and a later frame asks again");
   // No fix with a commit: nothing to ask.
