@@ -203,9 +203,10 @@ Explore shows Overview, Layers, Architecture and Files for a topic, without a di
   Won't fix. Each group follows git and the one check, not the journey. `worktree.py contains` says whether the fix
   agent's commit is in the PR head, as an ancestor or as the same change on another commit (a cherry-pick, a rebase, a
   reworded message). So Fix ready (Apply to PR, Discard) becomes In the PR (Verify) once the head carries the fix. A
-  force-push that takes the change away turns it back. Verify is the only model call. It reads the PR head and moves a
-  fixed finding to Verified, a broken one back to Unresolved, and leaves an unclear one as it was. A fix in progress,
-  ready or in the PR keeps its finding unresolved: in the diff, counted, and a blocker when high.
+  force-push that takes the change away turns it back. A fix with no reported commit is judged by the commits that
+  touch its file since it was sent, which is weaker than a verified fix. Verify is the only model call. It reads the PR
+  head and moves a fixed finding to Verified, a broken one back to Unresolved, and leaves an unclear one as it was. A
+  fix in progress, ready or in the PR keeps its finding unresolved: in the diff, counted, and a blocker when high.
 - "Ask an agent…" pastes the finding into the live agent's terminal in a floating window without sending it (or
   into a chat mod's bubble, PROVIDERS.md); without a live agent it starts one in a new tab, in manual mode, on the
   review's checkout of the PR head. Its preview says which of these happens.

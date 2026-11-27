@@ -14,7 +14,7 @@ import { v_flex, h_flex, Scrollbar, TextView, v_virtual_list, VirtualListScrollH
 import { exec, hc, run, focused, pickFolder, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, nextCommand, watchFolder, openOverlay, closeOverlay, props, home, placement } from "herdr";
 import { spaces, agents, terminals, watch } from "./live.js";
 import { hostOfLink, parseLink, hostWord, hostLong } from "./host.js"; // never straight from Herdr (live.js says why)
-import { parseReports, findingStatus, fixStage, findingGroup, FINDING_GROUPS, GROUP_WORD, mergeFindings, findingCounts, countLine, runsOf, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
+import { parseReports, findingStatus, fixStage, landedByFile, findingGroup, FINDING_GROUPS, GROUP_WORD, mergeFindings, findingCounts, countLine, runsOf, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
 import { agentArgs, harnessProfile, harnessAgent, notReadyNote, fixNotSentNote, tabTaskDelivery } from "./pr.js"; // a new agent tab: the harness profile's own command, else Claude Code
 import { startAgentTab } from "./agent-tab.js"; // starts it and gets the text there (an argument, or a send once the agent reports ready)
 import * as C from "./context.js";
@@ -1676,6 +1676,63 @@ export const ReviewMode = {
       cx.notify();
     });
   },
+  // The commits from a fix's head to the head shown, by the path each touched, from `git log --name-only`: the weaker
+  // answer for a fix whose agent reported no commit, which worktree.py contains cannot take. One call per checkout, head
+  // and fix head; none while one is on its way; a failed call is not kept, so a later frame asks again. The labels stay
+  // as they were until an answer arrives.
+  fileLog(head, fixHead) { return this.fileLogs?.[`${head}|${fixHead}`] ?? null; },
+  // The fix head a finding's place depends on the file log for, or null: a fix sent on an older head, no commit
+  // reported, not declined and not discarded, the finding not dismissed, and no check on this head that would answer.
+  fileFixHead(f) {
+    const st = this.find.status[f.id] ?? {}, r = this.find.reports[f.id], job = this.fixJob(f), head = this.headNow(), fixHead = st.fixHead ?? null;
+    if (!fixHead || !head || fixHead === head || st.s === "dismissed") return null;
+    if (this.startingFix(f.ids)) return null; // a fix tab still booting: nothing was sent, so git has nothing to say
+    if (r?.commit || r?.status === "wontfix" || job?.state === "discarded") return null;
+    const v = st.verify;
+    if (v?.head === head && !v.branch) return null; // a check read this head: its answer stands
+    return fixHead;
+  },
+  // The commits since a fix was sent that touched the finding's file: {shas}, [] when none did, null while git has not
+  // answered (or when a reported commit makes worktree.py contains the one to ask).
+  fileFix(f) {
+    const fixHead = this.fileFixHead(f), log = fixHead && this.fileLog(this.headNow(), fixHead);
+    return log == null ? null : { shas: landedByFile(log, f.file) };
+  },
+  // From render: asks git for the file log of each fix head it does not know, one call at a time, and only when a
+  // finding's fix has no commit to ask worktree.py contains about.
+  fileLandedTick(cx) {
+    const w = this.worktree, head = this.headNow();
+    if (!w?.path || !head || this.fileIn) return;
+    const fixHead = [...new Set(this.findings().map((f) => this.fileFixHead(f)).filter(Boolean))].find((h) => this.fileLog(head, h) === null);
+    if (!fixHead) return;
+    const key = `${head}|${fixHead}`, url = this.prSel?.url;
+    this.fileIn = key;
+    cx.spawn(async (cx) => {
+      const r = await exec("git", ["-C", w.path, "log", "--format=%h", "--name-only", `${fixHead}..${head}`], { timeout: 60000 })
+        .catch((e) => ({ code: 1, stderr: String(e) }));
+      if (this.fileIn === key) this.fileIn = null;
+      if (this.prSel?.url !== url || r.code !== 0) return;
+      const logs = { ...(this.fileLogs ?? {}), [key]: String(r.stdout ?? "") }, keys = Object.keys(logs);
+      for (const k of keys.slice(0, Math.max(0, keys.length - 8))) delete logs[k];
+      this.fileLogs = logs;
+      cx.notify();
+    });
+  },
+  // What a row's state tooltip says: a reported commit keeps the contains answer; a fix with no reported commit says
+  // which commits touched its file, or that there is no commit to check and the file did not change since it was sent.
+  stageTip(f) {
+    const g = this.fgroup(f), job = this.fixMeta(f), by = this.fileFix(f), applied = Boolean(this.fixJob(f)?.appliedAt || this.fixJob(f)?.state === "applied");
+    if (g === "in_pr") {
+      if (job?.commit) return "The fix commit is in the PR (not verified)";
+      if (by?.shas.length) return `A commit touching ${f.file} landed after this fix was sent: ${by.shas.slice(0, 3).join(", ")} (not verified)`;
+      return GTIP.in_pr;
+    }
+    if (g === "ready") {
+      if (!job?.commit && by && !by.shas.length) return "The fix has no commit to check, and the file did not change since it was sent.";
+      if (applied) return "Applied once, but the PR head does not carry this change any more: a force-push or a rebase took it away.";
+    }
+    return GTIP[g] ?? "";
+  },
   // What pr.js fixStage needs about a finding's fix: its newest job, the commit its agent reported (threads.js
   // fixCommit: a "fixed" report with a sha), and whether the agent declined (the report outlives the job record, and a
   // review from before jobs were kept has only the report).
@@ -1689,12 +1746,15 @@ export const ReviewMode = {
   // Every finding's stage in one pass (pr.js fixStage), kept while the findings, their statuses, the fix jobs, the head
   // and git's answer stay the same: a frame asks this from every row, heading and count.
   stages() {
-    const deps = [this.findings(), this.find.status, this.find.reports, this.threadDoc, this.threadKey(), this.headNow(), this.landed, this.fixStarting];
+    const deps = [this.findings(), this.find.status, this.find.reports, this.threadDoc, this.threadKey(), this.headNow(), this.landed, this.fixStarting, this.fileLogs];
     if (this.stageMemo && deps.every((d, i) => d === this.stageMemo.deps[i])) return this.stageMemo.map;
     const head = this.headNow(), landed = this.landedNow(head);
     const map = new Map(this.findings().map((f) => {
-      const job = this.fixMeta(f), commit = job?.commit ?? null;
-      return [f.id, fixStage({ job, landed: commit ? landed[commit] ?? null : null, verified: this.find.status[f.id]?.verify ?? null, head })];
+      const job = this.fixMeta(f), commit = job?.commit ?? null, stage = fixStage({ job, landed: commit ? landed[commit] ?? null : null, verified: this.find.status[f.id]?.verify ?? null, head });
+      // A fix with no reported commit: git says whether a commit since it was sent touched its file. One did, so the
+      // head may carry the fix (In the PR, weaker than contains); none did, so it cannot be there (Fix ready).
+      const by = this.fileFix(f);
+      return [f.id, by && (stage === null || stage === "progress") ? (by.shas.length ? "in_pr" : "ready") : stage];
     }));
     this.stageMemo = { deps, map };
     return map;
@@ -5955,7 +6015,6 @@ export const ReviewMode = {
         .on_click((_e, cx) => { if (!alone) this.pickFinding(x.id, cx); cx.stop_propagation(); }); };
     const row = (x) => {
       const st = this.fstatus(x), g = this.fgroup(x), on = this.ffocus === x.id, col = t[SEV[x.severity]] ?? t.accent, li = this.layerOf(x), settled = g === "verified" || g === "wontfix";
-      const job = this.fixJob(x), applied = Boolean(job?.appliedAt || job?.state === "applied");
       const wide = on || (x.security && x.severity === "high" && !settled); // an unresolved high security finding keeps its whole title
       const others = x.sources.filter((y) => y.title !== x.title || y.detail !== x.detail), owner = on ? ownerOf(x, this.ai?.components) : null;
       // Its way into the PR as five steps in one line; the step that is next says what is missing, a step with
@@ -5974,9 +6033,7 @@ export const ReviewMode = {
           .children([certaintyWord(t, x, `rv-fcert-${x.id}`)].filter(Boolean))
           .child(div().flex_1().min_w(120).font_semibold().text_color(settled ? t.muted : t.foreground).when(!wide, (e) => e.truncate()).when(wide, (e) => e.whitespace_normal()).child(x.title))
           .child(div().flex_none().text_size(TYPE.small).text_color(t.muted).child(`${x.file.split("/").pop()}:${x.line}${this.findRow(x) < 0 ? " · outside the diff" : ""}`))
-          .when(Boolean(stateWord(g, st)), (e) => e.child(div().id(`rv-lfst-${x.id}`).tooltip(g === "ready" && applied
-            ? "Applied once, but the PR head does not carry this change any more: a force-push or a rebase took it away."
-            : GTIP[g] ?? "").flex_none().text_size(TYPE.small).font_semibold().text_color(t[GTINT[g]] ?? t.muted).child(stateWord(g, st))))))
+          .when(Boolean(stateWord(g, st)), (e) => e.child(div().id(`rv-lfst-${x.id}`).tooltip(this.stageTip(x)).flex_none().text_size(TYPE.small).font_semibold().text_color(t[GTINT[g]] ?? t.muted).child(stateWord(g, st))))))
         .when(on, (e) => e
           .child(div().text_size(TYPE.small).text_color(t.muted).whitespace_normal().child(`Found by ${this.sourcesOf(x)}${owner ? ` · Owner: ${owner}` : ""}${x.effort ? ` · Fix effort: ${x.effort}` : ""}`))
           // An analysis finding is part of its layer: name it, a click opens it.
@@ -6470,6 +6527,7 @@ export const ReviewMode = {
     this.impactTick(cx); // the Impact section (impact-view.js): only on the Architecture page
     this.schemaTick(cx); // "Schema changes" (schema-view.js): the same
     this.landedTick(cx); // where each fix's commit is in the PR (worktree.py contains), once per head
+    this.fileLandedTick(cx); // and the commits since a fix with no reported one, by the file it touched, once per head
     // The diff column's width: card heights wrap to it. on_size_change reports the window in logical px; the column and
     // its rows are laid out in px scaled by the person's zoom (as in settleTop).
     if (this.winW) this.listW = this.winW / (settings().zoom || 1) - this.leftW() - SPLIT - (this.drawerSqueezes() ? 380 : 0);

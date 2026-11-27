@@ -1153,6 +1153,36 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
   assert.ok(idsOf().length > 0, "the tab draws");
   v.worktree = null; v.landed = null;
 }
+// A fix whose agent reported no commit: git still says whether a commit since it was sent touched its file. One that
+// did reads In the PR (and offers Verify); a file no commit touched reads Fix ready, and says why the mod cannot know
+// more. One git log serves both findings, and a drawn frame asks for no second one.
+{
+  const v = await open({ ...PR2, analysis: fx("analysis-s.json"), findings: fx("findings-s.json") });
+  const all = v.findings(), touched = all.find((f) => f.file === "library/reminders.py"), untouched = all.find((f) => f.file === "library/handler.py");
+  assert.ok(touched && untouched && touched.id !== untouched.id, "two findings in two files");
+  const at = new Date().toISOString(), log = "abc1234\n\nlibrary/reminders.py\n", calls = [];
+  v.worktree = { url: v.prSel.url, head: "h9", path: "/h/w" }; v.head = "h9";
+  v.find = { ...v.find, reports: {}, status: { [touched.id]: { s: "progress", fixHead: "h1", at }, [untouched.id]: { s: "progress", fixHead: "h1", at } } };
+  S.exec = async (cmd, args) => { if (cmd === "git" && args[2] === "log") { calls.push(args); return { code: 0, stdout: log, stderr: "" }; } return { code: 1, stdout: "", stderr: "stub" }; };
+  v.fileLandedTick(cx); v.fileLandedTick(cx); await settle();
+  assert.equal(calls.length, 1, "one git log for both findings, and none while one is on its way");
+  assert.deepEqual([v.fgroup(touched), v.fgroup(untouched)], ["in_pr", "ready"], "the touched file is in the PR; the untouched one is ready");
+  const tab = () => { S.ids = new Set(); S.texts = new Set(); act(v, "findings", "the fixes with no report"); const got = { ids: [...S.ids], texts: [...S.texts] }; S.ids = S.texts = null; return got; };
+  v.ffocus = touched.id;
+  const got = tab();
+  assert.ok(got.texts.includes("In the PR") && got.texts.includes("Fix ready"), "the rows say where each stands");
+  assert.ok(got.ids.includes(`rv-fch-${touched.id}`), "In the PR offers Verify");
+  assert.ok(v.verifyList().some((f) => f.id === touched.id), "and Verify's list has it, on the fix head it was sent at");
+  assert.equal(calls.length, 1, "a drawn frame asks for no second log");
+  assert.equal(v.stageTip(touched), "A commit touching library/reminders.py landed after this fix was sent: abc1234 (not verified)");
+  assert.equal(v.stageTip(untouched), "The fix has no commit to check, and the file did not change since it was sent.");
+  // A reported commit answers by worktree.py contains, and its tooltip says so.
+  v.find = { ...v.find, reports: { [touched.id]: { id: touched.id, status: "fixed", commit: "c1" } } };
+  v.landed = { head: "h9", map: { c1: "in" } };
+  assert.equal(v.fgroup(touched), "in_pr");
+  assert.equal(v.stageTip(touched), "The fix commit is in the PR (not verified)", "the exact path keeps its own tooltip");
+  S.exec = null; v.worktree = null; v.landed = null;
+}
 // One selection: a box works on a folded row and on an open one; comments (your own and other people's GitHub
 // comments) and findings are ticked into the same selection, every place says its one number, and "Fix selected"
 // hands all of it to one agent. Nothing is written to GitHub for a GitHub comment.

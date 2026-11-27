@@ -472,6 +472,21 @@ export function fixStage({ job = null, landed = null, verified = null, head = nu
   return job?.state === "running" ? "progress" : null;
 }
 
+// The commits that touched one path, from the output of `git log --format=%h --name-only <since>..<head>`, in the log's
+// order (newest first). A line of hex is a commit id; every other line is a path, matched exactly. An empty path, or one
+// no commit changed, gives no commits.
+export function landedByFile(log, file) {
+  const out = [], path = String(file ?? "");
+  let sha = null;
+  for (const line of String(log ?? "").split("\n")) {
+    const s = line.replace(/\r$/, "");
+    if (!s) continue;
+    if (/^[0-9a-f]{7,40}$/.test(s)) sha = s;
+    else if (sha !== null && path && s === path && out.at(-1) !== sha) out.push(sha);
+  }
+  return out;
+}
+
 // The Findings tab's six groups, in the order it lists them (empty ones hidden): the key a finding's group is, and the
 // word its heading and its row show. A finding is in the group its stage names, else in the one its persisted status
 // names (a dismissal, a mark by hand, a fix sent before the mod knew where its commit was).
