@@ -1277,6 +1277,61 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
           assert.ok(t && !("task" in t[1]) && t[1].argv.slice(-3).join(" ") === "aircode harness opencode", `a harness tab starts bare with its own argv: ${JSON.stringify(t?.[1])}`);
         } finally { v.cfg = cfg; started.length = 0; S.runs.length = 0; }
       }
+      // A "Main agent" fix on a harness profile writes its job only once the text was sent: a tab that never got the
+      // text must not leave a fix record saying it runs. Until the call returns the panel derives a "starting" state
+      // from the pending start (never a job), and drops it either way.
+      { const cfg = v.cfg, wasHc = S.hc, wasTimer = cx.timer, realNow = Date.now;
+        v.cfg = { ...cfg, harness: "work", harnesses: { work: { label: "OpenCode", command: ["opencode", "run"], agent: ["aircode", "harness", "opencode"] } } };
+        const free = v.findings().filter((x) => ["open", "recheck"].includes(v.fstatus(x)) && !v.fixJob(x)), [fSent, fStopped, fLate] = free;
+        assert.ok(fSent && fStopped && fLate, "three open findings to send to a fix tab");
+        const name = () => S.runs.filter(([c]) => c === "tab.new").at(-1)?.[1].name;
+        const preview = async (f) => { v.sendP = null; v.fixStarting = null; v.command(`fix-finding:${f.id}`, cx); await settle(); assert.ok(v.sendP?.fix, `a fix preview for ${f.id}`); v.fixTarget("main"); };
+        try {
+          // The agent reports ready: the tab is found, the text is sent, and only then is the job written.
+          await preview(fSent);
+          const calls = []; let jobsAtSend = null, beforeSent = 0;
+          S.hc = async (args) => { calls.push(args);
+            const tab = S.runs.filter(([c]) => c === "tab.new").at(-1)?.[1];
+            if (args[0] === "ls") return { code: 0, stdout: JSON.stringify({ terminals: tab ? [{ address: "t9", where: tab.name, created_ms: Date.now() }] : [] }), stderr: "" };
+            if (args[0] === "get") return { code: 0, stdout: JSON.stringify({ address: "t9", where: tab?.name, created_ms: Date.now(), status: { app: "opencode", state: "idle" } }), stderr: "" };
+            if (args[0] === "send") jobsAtSend = v.fixes().length;
+            return { code: 0, stdout: JSON.stringify({ address: "t9" }), stderr: "" }; };
+          beforeSent = v.fixes().length; S.runs.length = 0; v.command("send", cx); await settle();
+          assert.deepEqual([jobsAtSend, v.fixes().length, v.fixJob(fSent)?.target, v.fstatus(fSent), v.fixStarting],
+            [beforeSent, beforeSent + 1, "main", "progress", null], "no job at the send, one after it, and no provisional state left");
+          assert.ok(calls.some(([c, a]) => c === "send" && a === "t9"), "the fix text went to the tab");
+          assert.equal(v.note, `Fix: the OpenCode tab "${name()}" is ready; the fix text was sent.`);
+          // Superseded while the tab boots: nothing is written and the note stays the one that named the tab.
+          await preview(fStopped);
+          const before = v.fixes().length;
+          S.hc = async (args) => { if (args[0] === "ls") { v.tabGen = (v.tabGen ?? 0) + 1; return { code: 0, stdout: JSON.stringify({ terminals: [] }), stderr: "" }; }
+            return { code: 0, stdout: JSON.stringify({ address: "t9" }), stderr: "" }; };
+          cx.timer = { after(_ms, done) { setImmediate(() => done(cx)); }, every() {} };
+          S.runs.length = 0; v.command("send", cx); await settle();
+          assert.deepEqual([v.fixes().length, v.fstatus(fStopped), v.fixStarting], [before, "open", null], "a superseded wait writes no job and leaves the finding alone");
+          assert.equal(v.note, `Fix: started a new OpenCode tab "${name()}" in the background; the fix text is sent when its agent reports ready.`, "the note is the one that named the tab, not a failure");
+          // The provisional state is the panel's own: it reads as a fix on its way, and it is never a job.
+          v.fixStarting = { ids: [fStopped.id], name: "corgi-demo fix github #2", at: Date.now() };
+          assert.deepEqual([v.fgroup(fStopped), v.fixJob(fStopped), v.fixes().length], ["progress", null, before], "a pending start reads as in progress, with no job written");
+          v.ffocus = fStopped.id; S.ids = new Set(); S.texts = new Set(); act(v, "findings", "a fix tab that is still booting"); const boot = { ids: [...S.ids], texts: [...S.texts] }; S.ids = S.texts = null;
+          assert.ok(boot.ids.includes(`rv-ffb-${fStopped.id}`) && boot.texts.includes("Starting · its agent"), "and the row says it is starting");
+          v.ffocus = null; v.fixStarting = null;
+          // The agent never reports ready: nothing is written, and the finding can be tried again.
+          await preview(fLate);
+          let skew = 0; // the 60 s wait: the first `hc ls` takes the clock past its end
+          S.hc = async (args) => { if (args[0] === "ls") { skew = 61000; return { code: 0, stdout: JSON.stringify({ terminals: [] }), stderr: "" }; }
+            return { code: 0, stdout: JSON.stringify({ address: "t9" }), stderr: "" }; };
+          const beforeLate = v.fixes().length;
+          S.runs.length = 0; Date.now = () => realNow() + skew;
+          try { v.command("send", cx); await settle(); } finally { Date.now = realNow; }
+          assert.deepEqual([v.fixes().length, v.fstatus(fLate), v.fixStarting], [beforeLate, "open", null], "a tab that never reported ready writes no job");
+          assert.equal(v.note, `The tab "${name()}" is up but its agent did not report ready; the fix text was not sent and no fix record was kept, so it can be tried again.`);
+          assert.equal(v.fgroup(fLate), "unresolved", "the finding is still unresolved");
+          v.ffocus = fLate.id; S.ids = new Set(); S.texts = new Set(); act(v, "findings", "after a fix text that was never sent"); const got = { ids: [...S.ids], texts: [...S.texts] }; S.ids = S.texts = null;
+          v.ffocus = null;
+          assert.ok(got.ids.includes(`rv-ffx-${fLate.id}`) && got.texts.includes("Fix with agent…"), "and it still offers to fix the finding again");
+        } finally { v.cfg = cfg; S.hc = wasHc; cx.timer = wasTimer; Date.now = realNow; v.sendP = null; v.fixStarting = null; S.runs.length = 0; }
+      }
       // A PR head the review's checkout has not seen: a fix in that checkout (the new tab, or the session) waits for the
       // checkout, as a run does (#13), and starts once it is at the PR's head.
       { const w = v.worktree, head = v.prSel.headSha, mk = v.makeWorktree, noTab = () => S.runs.filter(([c]) => c === "tab.new").length;
@@ -1296,7 +1351,41 @@ await tour(await open({ ...PR2 }), "PR #2 with nothing yet");
           const made2 = await queue("session");
           assert.deepEqual([made2.length, noTab(), started.length, Boolean(v.pendingFix)], [1, 0, 0, true], "the session waits for the checkout too: nothing is typed yet");
           v.pendingFix = null;
-        } finally { v.worktree = w; v.prSel = { ...v.prSel, headSha: head }; v.makeWorktree = mk; v.sendP = null; }
+          // A checkout that already has the PR's head needs no queue and no note: the tab starts now. (The review's
+          // own head may still be the older one; what counts is the checkout the tab works in.)
+          { v.worktree = { url: v.prSel.url, head: "new", path: "/h/w" }; v.prSel = { ...v.prSel, headSha: "new" };
+            S.runs.length = 0; started.length = 0; v.pendingFix = null;
+            v.command("fix:gh89", cx); await settle(); v.fixTarget("main");
+            v.command("send", cx);
+            assert.deepEqual([Boolean(v.pendingFix), noTab(), v.note], [false, 0, null], "the checkout is at the head: no queue and no note");
+            await settle();
+            assert.equal(noTab(), 1, "the tab starts at once");
+          }
+          // The wait does not depend on how the checkout comes about: one already at the PR's head (makeWorktree's
+          // `same` path, no worktree.py) resumes the queued fix once, also when two renders ask for that job.
+          { await queue("main"); const fix = v.pendingFix;
+            S.files.set("/h/w/.git", "gitdir: /h/w.git/worktrees/pr-review\n"); S.files.set("/h/w.git/worktrees/pr-review/HEAD", "new\n");
+            S.store.set("review.worktree", { url: v.prSel.url, head: "new", path: "/h/w" });
+            let checkouts = 0; S.exec = async (cmd, args) => { if (cmd === "python3" && String(args?.[0]).endsWith("worktree.py")) checkouts++; return { code: 1, stdout: "", stderr: "stub" }; };
+            S.runs.length = 0; started.length = 0; v.pendingFix = fix; v.makeWorktree = mk;
+            v.makeWorktree(cx); v.makeWorktree(cx); // two renders ask for the same checkout before it ends
+            await settle();
+            v.makeWorktree(cx); await settle(); // and one after: it finds nothing queued
+            assert.deepEqual([checkouts, noTab(), Boolean(v.pendingFix)], [0, 1, false], "already at the head: the queued fix starts once, with no checkout job");
+          }
+          // A space's own checkout is never moved: the fix starts on it as it is, and the note says so.
+          { v.worktree = { url: v.prSel.url, head: "old", path: "/h/base", local: true }; v.prSel = { ...v.prSel, headSha: "new" };
+            S.runs.length = 0; started.length = 0; v.pendingFix = null; v.makeWorktree = mk; v.note = null;
+            v.command("fix:gh89", cx); await settle(); v.fixTarget("main");
+            v.command("send", cx);
+            assert.deepEqual([Boolean(v.pendingFix), noTab(), v.note], [false, 0, "The fix runs in this space's own checkout, which the review does not move."], "no queue, and the note says why it runs on the old commits");
+            await settle();
+            assert.equal(noTab(), 1, "and the tab starts on that checkout");
+            // A reviewer queued meanwhile is consumed too, and says it cannot read a space's own checkout.
+            v.pendingReviewer = { kind: "claude", use: null }; v.resumePending(cx);
+            assert.deepEqual([Boolean(v.pendingReviewer), v.note], [false, "Could not run: reviewers need a PR (not a branch diff)"], "the queued reviewer does not stay behind");
+          }
+        } finally { v.worktree = w; v.prSel = { ...v.prSel, headSha: head }; v.makeWorktree = mk; v.sendP = null; S.store.delete("review.worktree"); S.files.delete("/h/w/.git"); S.files.delete("/h/w.git/worktrees/pr-review/HEAD"); }
       }
       // A reply in the thread of the stranger's comment (it is a thread since its fix was sent).
       const th = v.threads().find((t) => t.id === "gh88"); assert.equal(th?.by, "stranger");

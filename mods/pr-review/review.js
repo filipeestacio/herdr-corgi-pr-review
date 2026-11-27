@@ -15,7 +15,7 @@ import { exec, hc, run, focused, pickFolder, theme, settings, readTextFile, writ
 import { spaces, agents, terminals, watch } from "./live.js";
 import { hostOfLink, parseLink, hostWord, hostLong } from "./host.js"; // never straight from Herdr (live.js says why)
 import { parseReports, findingStatus, fixStage, findingGroup, FINDING_GROUPS, GROUP_WORD, mergeFindings, findingCounts, countLine, runsOf, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
-import { agentArgs, harnessProfile, harnessAgent, notReadyNote, tabTaskDelivery } from "./pr.js"; // a new agent tab: the harness profile's own command, else Claude Code
+import { agentArgs, harnessProfile, harnessAgent, notReadyNote, fixNotSentNote, tabTaskDelivery } from "./pr.js"; // a new agent tab: the harness profile's own command, else Claude Code
 import { startAgentTab } from "./agent-tab.js"; // starts it and gets the text there (an argument, or a send once the agent reports ready)
 import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig, writeConfig } from "./setup-view.js";
@@ -983,11 +983,11 @@ export const ReviewMode = {
 
   makeWorktree(cx, clone = false) {
     const url = this.prSel.url, want = this.prSel.headSha ?? null, job = `${url}|${want}|${clone}`;
-    if (this.wtIn === job) return; // the same checkout is being made
+    if (this.wtIn === job) return; // the same checkout is being made: its end resumes what waits
     this.worktree = null;
     if (this.prSel.space && this.root) {
       this.worktree = { url, head: this.head, path: this.root, local: true }; putShared("review.worktree", this.worktree); this.applyTrust();
-      this.loadSince(cx); this.loadContext(cx); return;
+      this.loadSince(cx); this.loadContext(cx); this.resumePending(cx); return;
     }
     // A PR you didn't open may use the active space's checkout of its repo (cwd); your own PRs keep the dedicated clones.
     const local = this.prSel.source && this.root ? ["--local", this.root] : [];
@@ -1019,20 +1019,33 @@ export const ReviewMode = {
       this.rememberClone(w.clone ?? null, w.created === true).catch(() => null);
       if (!shared("gh.login")) exec("gh", ["api", "user", "--jq", ".login"]).then((r) => { if (r.code === 0) { setShared("gh.login", r.stdout.trim()); this.applyTrust(); } }).catch(() => null);
       this.applyTrust();
-      if (this.pendingRun) { this.pendingRun = false; this.loadAi(cx, "run"); }
-      const queued = this.pendingReviewer; this.pendingReviewer = null;
-      if (queued) { // a reviewer clicked while the head moved: it starts now, or says why it cannot
-        if (headMoved(this.prSel?.headSha, this.worktree?.head)) this.note = "Could not start the review: the PR's new head was not checked out.";
-        else this.runReviewer(queued.kind, cx, null, queued.use);
-      }
-      const fix = this.pendingFix; this.pendingFix = null;
-      if (fix) { // a fix sent while the head moved: it starts now, or says why it cannot
-        if (headMoved(this.prSel?.headSha, this.worktree?.head)) this.note = "Could not start the fix: the PR's new head was not checked out.";
-        else this.startFixNow(fix.p, fix.out, cx);
-      }
+      this.resumePending(cx);
       this.loadSince(cx); this.loadContext(cx); this.loadInfra(cx);
       cx.notify();
     });
+  },
+
+  // A run, a reviewer or a fix that waited for the PR's head: it starts once the checkout has it, wherever that
+  // checkout comes from. makeWorktree calls this at every end that reaches one: a checkout it made, one it found
+  // already at the head, and a space's own checkout, which it never moves. An end with no checkout (a failed run, a
+  // clone to make) leaves the wait for the next one. Each one is cleared before it starts, so it starts at most once.
+  resumePending(cx) {
+    const w = this.worktree, head = this.prSel?.headSha, local = Boolean(w?.local), moved = headMoved(head, w?.head);
+    if (this.pendingRun) { this.pendingRun = false; this.loadAi(cx, "run"); }
+    const reviewer = this.pendingReviewer; this.pendingReviewer = null;
+    if (reviewer) { // a reviewer clicked while the head moved: it starts now, or says why it cannot
+      if (local) this.runReviewer(reviewer.kind, cx, null, reviewer.use); // a space's own checkout: runReviewer says it cannot
+      else if (moved) this.note = "Could not start the review: the PR's new head was not checked out.";
+      else this.runReviewer(reviewer.kind, cx, null, reviewer.use);
+    }
+    const fix = this.pendingFix; this.pendingFix = null;
+    if (fix) { // a fix sent while the head moved: it starts now, or says why it cannot
+      if (local) { // a space's own checkout is never moved: the fix runs in it as it is
+        this.startFixNow(fix.p, fix.out, cx);
+        if (this.sending && !this.note) this.note = "The fix runs in this space's own checkout, which the review does not move.";
+      } else if (moved) this.note = "Could not start the fix: the PR's new head was not checked out.";
+      else this.startFixNow(fix.p, fix.out, cx);
+    }
   },
 
   // pr-data/clones.json: the clones this mod made, by repository, so cleanup.py can remove them once they are idle
@@ -1211,8 +1224,9 @@ export const ReviewMode = {
       if (this.aiBusy) return;
       if (!job.req.hunks.length) { this.aiError = "No diff"; return cx.notify(); }
       // The checkout is at another head than the PR's (a push): check the new head out first, then run; a run must never
-      // read the old commits. makeWorktree starts it again (pendingRun) when the checkout is made.
-      if (headMoved(this.prSel.headSha, this.worktree?.head)) {
+      // read the old commits. makeWorktree starts it again (pendingRun) when the checkout is made. A space's own
+      // checkout is never moved, so the run reads it as it is (the head note says which commits it read).
+      if (!this.worktree?.local && headMoved(this.prSel.headSha, this.worktree?.head)) {
         this.pendingRun = true; this.note = "The PR head moved: checking it out, then starting the analysis."; this.makeWorktree(cx); return cx.notify();
       }
       if (!this.worktree && !this.prSel.space) { this.pendingRun = true; return cx.notify(); } // the Analysis tab says it waits (stateHints)
@@ -1667,13 +1681,15 @@ export const ReviewMode = {
   // review from before jobs were kept has only the report).
   fixMeta(f) {
     const job = this.fixJob(f), r = this.find.reports[f.id];
-    if (!job && !r) return null;
+    if (!job && !r) return this.startingFix(f.ids) ? { state: "running" } : null;
     return { state: job?.state ?? null, commit: r?.status === "fixed" && r.commit ? String(r.commit) : null, declined: r?.status === "wontfix" };
   },
+  // Whether this panel is waiting to send a fix's text (startMainFix): a state held in memory, never a fix job.
+  startingFix(ids) { const s = this.fixStarting; return Boolean(s && s.ids.some((id) => ids.includes(id))); },
   // Every finding's stage in one pass (pr.js fixStage), kept while the findings, their statuses, the fix jobs, the head
   // and git's answer stay the same: a frame asks this from every row, heading and count.
   stages() {
-    const deps = [this.findings(), this.find.status, this.find.reports, this.threadDoc, this.threadKey(), this.headNow(), this.landed];
+    const deps = [this.findings(), this.find.status, this.find.reports, this.threadDoc, this.threadKey(), this.headNow(), this.landed, this.fixStarting];
     if (this.stageMemo && deps.every((d, i) => d === this.stageMemo.deps[i])) return this.stageMemo.map;
     const head = this.headNow(), landed = this.landedNow(head);
     const map = new Map(this.findings().map((f) => {
@@ -2580,7 +2596,8 @@ export const ReviewMode = {
   // A thread's buttons, left to right (clicks placed by x in onItem): Reply, the agent's last commit, GitHub, fold.
   threadButtons(th, v = this.threadOfView(th)) {
     const fv = this.fixView(this.fixOf(th.id));
-    const fix = !fv ? [{ label: "Fix…", act: (cx) => this.fixComments([th.id], cx) }]
+    const fix = this.startingFix([th.id]) ? [{ label: "Starting…", act: () => {} }]
+      : !fv ? [{ label: "Fix…", act: (cx) => this.fixComments([th.id], cx) }]
       : [...(fv.job.terminal ? [{ label: "Go to fix", act: () => this.goFix(fv.job) }] : []), ...(fv.commit && fv.job.target === "sub" ? [{ label: "Apply to PR", primary: true, act: (cx) => this.applyFix(fv.job, cx) }] : []),
         ...(fv.job.target === "sub" ? [{ label: "Discard fix", act: (cx) => this.discardFix(fv.job, cx) }] : [])];
     return [...fix, { label: "Reply", primary: !fv?.commit, act: (cx) => { this.replyTo = th.id; this.replyIn.set_value(""); cx.timer.after(0, () => this.replyIn.focus()); } },
@@ -2690,7 +2707,10 @@ export const ReviewMode = {
       this.makeWorktree(cx);
       return cx.notify();
     }
-    return this.startFixNow(p, out, cx);
+    const local = target !== "sub" && w?.local && headMoved(this.prSel?.headSha, w.head);
+    const r = this.startFixNow(p, out, cx);
+    if (local && this.sending && !this.note) this.note = "The fix runs in this space's own checkout, which the review does not move.";
+    return r;
   },
   startFixNow(p, out, cx) {
     const target = p.fix?.target;
@@ -2734,13 +2754,16 @@ export const ReviewMode = {
   // it has one, else Claude Code (pr.js agentArgs), in the PR's checkout (or the review's checkout of the PR head).
   // Nothing is branched and nothing is pushed by the mod; a tab can push, so the preview says so. Claude Code gets the
   // fix as its argument; a harness tab starts bare and the text is sent once its agent reports ready (agent-tab.js).
-  // A newer tab, or another PR, supersedes a wait: this copy sends nothing and its note stays the other one's.
+  // A newer tab, or another PR, supersedes a wait: this copy sends nothing and its note stays the other one's. The job
+  // is written only once the text is sent, so a tab that never got it leaves the finding as it was; until then the
+  // panel shows the in-memory "starting" state, never a running job.
   startMainFix(p, text, cx) {
     const f = p.fix, folder = this.fixBase(), profile = harnessProfile(this.cfg), runner = this.runnerName();
     if (!folder) { this.note = "Not started: the PR has no local checkout or worktree to start a tab in"; return cx.notify(); }
     const trusted = this.trustedPr() && !f.foreign; // someone else's comment: the tab asks first, on this machine's settings only
     const name = tabName(this.prSel?.repo ?? this.root, this.prSel?.number ? `fix ${hostWord(this.prSel.url)} #${this.prSel.number}` : "fix");
-    const space = this.spaceFor(this.ctxId(), folder), url = this.prSel?.url, gen = (this.tabGen = (this.tabGen ?? 0) + 1);
+    const space = this.spaceFor(this.ctxId(), folder), url = this.prSel?.url, gen = (this.tabGen = (this.tabGen ?? 0) + 1), ids = f.items.map((x) => x.id);
+    let pending = null; // this call's provisional state while a harness tab boots
     this.sending = true; this.note = null;
     cx.spawn(async (cx) => {
       try {
@@ -2749,8 +2772,7 @@ export const ReviewMode = {
           argv: agentArgs({ profile, env: this.ctxEnv(this.ctxId()), model: model(), ask: !trusted, trusted }),
           stopped: () => this.tabGen !== gen || this.prSel?.url !== url,
           onOpen: ({ delivery }) => {
-            this.updateThreads(cx, (d) => TH.addFix(d, this.threadKey(), { id: Date.now().toString(36), items: f.items, target: "main", at: Date.now(), state: "running" }));
-            f.sent(cx, { route: "agent", agent: `${runner} tab · ${name}` });
+            if (delivery === "send") this.fixStarting = pending = { ids, name, at: Date.now() };
             this.sending = false;
             this.note = delivery === "send" ? `Fix: started a new ${runner} tab "${name}" in the background; the fix text is sent when its agent reports ready.`
               : `Fix: started a new ${runner} tab "${name}" in the background with the fix. Nothing was typed into another session.`;
@@ -2758,10 +2780,14 @@ export const ReviewMode = {
           },
         });
         if (r.stopped || this.tabGen !== gen) return;
-        if (!r.sent) { this.note = notReadyNote(name, "fix text"); return cx.notify(); }
-        if (r.delivery === "send") { this.note = `Fix: the ${runner} tab "${name}" is ready; the fix text was sent.`; cx.notify(); }
+        if (!r.sent) { this.note = fixNotSentNote(name); return cx.notify(); }
+        this.updateThreads(cx, (d) => TH.addFix(d, this.threadKey(), { id: Date.now().toString(36), items: f.items, target: "main", at: Date.now(), state: "running" }));
+        f.sent(cx, { route: "agent", agent: `${runner} tab · ${name}` });
+        this.note = r.delivery === "send" ? `Fix: the ${runner} tab "${name}" is ready; the fix text was sent.`
+          : `Fix: started a new ${runner} tab "${name}" in the background with the fix. Nothing was typed into another session.`;
+        cx.notify();
       } catch (e) { this.note = `Not sent: ${String(e).replace(/^Error: /, "")}`; cx.notify(); }
-      finally { this.sending = false; }
+      finally { if (pending && this.fixStarting === pending) this.fixStarting = null; this.sending = false; cx.notify(); }
     });
     return cx.notify();
   },
@@ -2782,8 +2808,12 @@ export const ReviewMode = {
       .tooltip("One model call checks this fix on the PR head. A passed check moves the finding to Verified; nothing is posted.");
     // The same order as on the card in the diff: Add, Ask, Fix or Verify, Dismiss; Verify with an agent before Dismiss.
     // A fix in the PR whose job record is gone still gets its Verify: git knows where the fix is without it.
-    if (!fv) return g === "in_pr" ? [add(!refuted), ask, verify(verifiable), dismiss]
-      : [add(!refuted), ask, pill(`rv-ffx-${x.id}`, t, "Fix with agent…", (_e, cx) => this.fix([x], cx)).tooltip("Have an agent fix this: a preview first says where it works, what it may do and that it never pushes"), this.verifyPill(x, t), dismiss];
+    if (!fv) {
+      const start = this.startingFix(x.ids)
+        ? badge(t, "Starting · its agent", t.ansi3).id(`rv-ffb-${x.id}`).tooltip(`The tab "${this.fixStarting.name}" is up; the fix text is sent when its agent reports ready`)
+        : pill(`rv-ffx-${x.id}`, t, "Fix with agent…", (_e, cx) => this.fix([x], cx)).tooltip("Have an agent fix this: a preview first says where it works, what it may do and that it never pushes");
+      return g === "in_pr" ? [add(!refuted), ask, verify(verifiable), dismiss] : [add(!refuted), ask, start, this.verifyPill(x, t), dismiss];
+    }
     const sub = fv.job.target === "sub", checked = v?.branch ? v.result : null;
     return [badge(t, fv.commit ? `Fix on ${fv.job.branch ?? "the PR"}` : `Fixing · ${fv.status}`, fv.commit ? t.ansi2 : t.ansi3).id(`rv-ffb-${x.id}`).tooltip("The fix agent's progress on this finding"),
       ...(fv.job.terminal ? [pill(`rv-fgo-${x.id}`, t, "Go to fix", () => this.goFix(fv.job), false, g === "progress" ? lit : undefined).tooltip("Show the fix agent's terminal")] : []),
